@@ -1,0 +1,26 @@
+# loops/dead-import-clean/loop.yaml
+name: dead-import-clean
+description: >
+  Drive an agent until a Python module imports nothing it doesn't use. The
+  gate is `seed/check_imports.py` — a tiny, dependency-free,
+  pure-standard-library checker (built on `ast`) shipped WITH the loop: no
+  network, no pip-installed linter, no key. Ships a real `module.py` with
+  working order-total/most-common-item/to_json logic plus two genuinely dead
+  imports (`os`, `sys`) left over from a refactor.
+pattern: evaluator-optimizer
+role:
+  - backend
+  - quality
+rung: L1
+spec: PROMPT.md
+# The gate's LOGIC is the checker. The agent fixes the MODULE, never the
+# checker, to force a pass.
+forbid:
+  - "seed/check_imports.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_imports.py seed/module.py"
+bounds: bounds.yaml
+memory: STATE.md

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "agent-authoring",
+  "created": "2026-07-05",
+  "description": "Lap 1 writes a corrected output.json directly (keyless demo: the stub IS the 'agent'). Adds a valid non-empty tools array and sets model to an allowed value. JsonSchemaGate goes green on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read output.json and schema.json. tools is missing entirely and model is \"gpt-4\", which is not in the allowed enum. Adding tools: [\"Read\", \"Grep\"] and setting model to \"sonnet\". name and description already conform, left untouched. Not editing schema.json.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "output.json",
+          "content": "{\n  \"name\": \"release-notes-writer\",\n  \"description\": \"Drafts release notes from a merged PR list and changelog entries.\",\n  \"tools\": [\"Read\", \"Grep\"],\n  \"model\": \"sonnet\"\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 231,
+      "notes": "The fix — output.json now validates against schema.json. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+# loops/alert-runbook-link/loop.yaml
+name: alert-runbook-link
+description: >
+  Drive an agent until every alert definition links to a non-empty
+  runbook URL. The gate is `seed/check_alerts.py` — a tiny,
+  dependency-free, pure-standard-library checker shipped WITH the loop, so
+  it runs anywhere Python does: no network, no key. Ships a real
+  `alerts.json` where one of four alerts has an empty `runbook_url` — an
+  alert that fires with zero context for whoever is paged. The agent must
+  fix the ALERT DEFINITION, never edit the checker to force a pass.
+pattern: evaluator-optimizer
+role:
+  - operations
+rung: L1
+spec: PROMPT.md
+# The gate's verification anchor. The engine refuses any runner write to a
+# path matching this glob, so the agent (or a community cassette) cannot
+# neuter the checker to fake a green gate.
+forbid:
+  - "seed/check_alerts.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_alerts.py seed/alerts.json"
+bounds: bounds.yaml
+memory: STATE.md

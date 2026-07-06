@@ -1,0 +1,12 @@
+# seed/Cargo.toml — starter crate for {{LOOP_NAME}}
+#
+# Fixed crate name (not templated with {{LOOP_NAME}}) so this always
+# resolves to a valid crate-name shape regardless of the loop's own name.
+# Zero dependencies, deliberately — `cargo test` never needs network access.
+[package]
+name = "example-crate"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]

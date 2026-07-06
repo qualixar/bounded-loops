@@ -1,0 +1,28 @@
+# loops/inventory-nonnegative/loop.yaml
+name: inventory-nonnegative
+description: >
+  Drive an agent until a sequence of inventory movements never oversells a
+  SKU below zero. The gate is `seed/check_inventory.py` — a tiny,
+  dependency-free, pure-standard-library checker shipped WITH the loop, so
+  it runs anywhere Python does: no network, no WMS API, no key. Ships a
+  real movements.json where one movement (a -8 delta against an opening
+  balance of 5) oversells SKU-200 below zero. The opening balances and
+  movement order are ground truth: the agent must correct the OFFENDING
+  movement's magnitude, never edit the checker to force a pass.
+pattern: evaluator-optimizer
+role:
+  - retail
+rung: L2
+spec: PROMPT.md
+# The gate's LOGIC is the checker. The agent fixes the movement; it must
+# never rewrite the checker to fake a green gate.
+# The engine refuses any runner write matching these globs (anchor integrity).
+forbid:
+  - "seed/check_inventory.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_inventory.py seed/movements.json"
+bounds: bounds.yaml
+memory: STATE.md

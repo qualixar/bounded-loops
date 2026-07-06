@@ -1,0 +1,6 @@
+{
+  "slo_target_pct": 99.9,
+  "window_minutes": 43200,
+  "downtime_minutes": 30,
+  "budget_remaining_minutes": 20
+}

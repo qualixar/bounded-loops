@@ -1,0 +1,29 @@
+# loops/test-presence-per-module/loop.yaml
+name: test-presence-per-module
+description: >
+  Drive an agent until every module in `seed/src/` has a matching
+  `seed/tests/test_<mod>.py` file. The gate is
+  `seed/check_test_presence.py` — a tiny, dependency-free,
+  pure-standard-library checker shipped WITH the loop, so it runs anywhere
+  Python does: no network, no key. Ships a real two-module layout where
+  `src/a.py` has `tests/test_a.py` but `src/b.py` has no test file at all,
+  so `multiply` in b.py has zero verified coverage. The agent must write a
+  real test for the missing module, never a no-op file, and never weaken
+  the checker to force a pass.
+pattern: evaluator-optimizer
+role:
+  - testing
+rung: L1
+spec: PROMPT.md
+# The gate's verification anchor. The engine refuses any runner write to a
+# path matching this glob, so the agent (or a community cassette) cannot
+# neuter the checker to fake a green gate.
+forbid:
+  - "seed/check_test_presence.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_test_presence.py seed/src seed/tests"
+bounds: bounds.yaml
+memory: STATE.md

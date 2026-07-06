@@ -1,0 +1,13 @@
+# loops/dead-import-clean/bounds.yaml
+max_iterations: 10
+no_progress_window: 3
+max_tokens: null
+max_wallclock_s: 60
+sandbox: true
+quarantine_inputs: true
+schema: null
+trace: true
+# L1 in production: a passing lint check is a fast dev-loop gate, not a
+# human sign-off point. The keyless demo runs unattended so it can reach
+# DONE offline; flip this to true when you wire a real runner.
+require_approval: false

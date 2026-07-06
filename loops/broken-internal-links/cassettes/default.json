@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "broken-internal-links",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/content/a.md to repoint the broken './missing.md' link at the real 'b.md' that already exists in the same directory. The remaining link ('b.md') already resolved, so check_links.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_links.py: 1 broken link — content/a.md -> ./missing.md (target does not exist on disk). There is no separate 'advanced guide' page in content/; the sentence was pointing at a page that was never written. Repointing it at the existing introduction page (b.md) instead of leaving a dangling link. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/content/a.md",
+          "content": "# Getting Started with Loop Engineering\n\nLoop Engineering is the discipline of driving an agent against a bounded,\nverifiable gate instead of trusting a single unchecked pass.\n\nIf you're new here, start with the [introduction](b.md) before going\nfurther. For advanced patterns, see the [introduction](b.md) as well —\nit covers the core loop mechanics that later posts build on.\n\nOnce you've read the introduction, come back and explore the rest of the\nseries.\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 241,
+      "notes": "The fix — check_links.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

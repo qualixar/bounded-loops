@@ -1,0 +1,48 @@
+[project]
+name = "bounded-loops"
+version = "0.1.0"
+description = "Runnable, CLI-agent-portable reference library of bounded AI-agent loops."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "pyyaml>=6.0",
+    "jsonschema>=4.0",
+]
+
+[project.optional-dependencies]
+qualixar-gates = [
+    # optional Qualixar gate adapters (not bundled by default)
+]
+otel = [
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-api>=1.27",
+]
+dev = [
+    "pytest>=8.0",
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "types-PyYAML",
+]
+mcp = [
+    "mcp>=1.27,<2",
+]
+
+[project.scripts]
+bl = "bounded_loops.cli:main"
+bounded-loops-mcp = "bounded_loops.mcp_server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["bounded_loops"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest.importorskip() must run before the guarded imports that follow it —
+# E402 is a false positive for this well-known optional-dependency test pattern.
+"tests/adapters/io/test_otel_tracer.py" = ["E402"]

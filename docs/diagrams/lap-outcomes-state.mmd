@@ -1,0 +1,16 @@
+stateDiagram-v2
+    [*] --> LapStart
+    LapStart --> Killed: kill switch tripped
+    LapStart --> BoundTrip: max_iterations / max_tokens / max_wallclock_s exceeded
+    LapStart --> RunAgent: no trip
+    RunAgent --> GateCheck: runner returns RunResult
+    GateCheck --> Done: verdict.passed AND stop_condition_met AND (no approval needed OR approved)
+    GateCheck --> Pause: verdict.passed AND stop_condition_met AND approval required but not granted
+    GateCheck --> Stall: verdict failed AND no_progress_window laps unchanged
+    GateCheck --> Continue: verdict failed, still making progress
+    Continue --> LapStart: next lap
+    Killed --> [*]: Outcome(KILLED)
+    BoundTrip --> [*]: Outcome(HALT, reason)
+    Done --> [*]: Outcome(DONE, "gate-passed")
+    Pause --> [*]: Outcome(PAUSE, "awaiting-approval")
+    Stall --> [*]: Outcome(HALT, "no progress in last N laps")

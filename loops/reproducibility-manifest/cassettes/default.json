@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "reproducibility-manifest",
+  "created": "2026-07-06",
+  "description": "Lap 1 writes a corrected output.json: adds the missing data_hash (a real-format 64-char lowercase hex SHA-256 digest) and fixes seed from the string '42' to the integer 42. JsonSchemaGate validates cleanly on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read schema.json: seed/env/data_hash/code_version are all required, additionalProperties is false, data_hash must match a 64-char lowercase hex pattern, seed must be an integer. Read output.json: data_hash is missing entirely and seed is the string '42', not the integer 42. Adding data_hash and fixing seed to the integer 42.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "output.json",
+          "content": "{\n  \"seed\": 42,\n  \"env\": \"py3.11-cuda12.1\",\n  \"data_hash\": \"d957b0daad5ea77c73d3d49e7dfff2743a91c8b5bb77d1b9a14a493513455f65\",\n  \"code_version\": \"a1b2c3d\"\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 224,
+      "notes": "The fix — output.json now validates against schema.json. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

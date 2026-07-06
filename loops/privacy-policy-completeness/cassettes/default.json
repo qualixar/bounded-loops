@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "privacy-policy-completeness",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/privacy.md to add the two missing required sections: Data Retention and Your Rights. All other sections (Data We Collect, How We Use Your Data, Data Sharing, Contact) are left untouched, so check_privacy.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_privacy.py: 2 required sections missing — Data Retention and Your Rights. Adding a Data Retention section stating how long data is kept, and a Your Rights section describing access, correction, and deletion rights. Not touching the checker or any existing section.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/privacy.md",
+          "content": "# Privacy Policy\n\nThis Privacy Policy explains how we collect, use, and share information\nwhen you use our services.\n\n## Data We Collect\n\nWe collect information you provide directly to us, such as your name,\nemail address, and account credentials, as well as information collected\nautomatically, including device identifiers, IP address, and usage logs.\n\n## How We Use Your Data\n\nWe use the information we collect to provide, maintain, and improve our\nservices, to communicate with you, and to detect and prevent fraud and\nabuse.\n\n## Data Sharing\n\nWe do not sell your personal information. We may share information with\nservice providers who perform services on our behalf, and where required\nto comply with applicable law.\n\n## Data Retention\n\nWe retain personal information for as long as necessary to provide our\nservices and for legitimate business purposes, such as complying with our\nlegal obligations, resolving disputes, and enforcing our agreements.\nAccount information is generally retained for the duration of your\naccount plus a reasonable period thereafter, after which it is deleted or\nanonymized.\n\n## Your Rights\n\nDepending on your jurisdiction, you may have the right to access,\ncorrect, delete, or receive a copy of the personal information we hold\nabout you, and to object to or restrict certain processing. To exercise\nany of these rights, contact us using the details below.\n\n## Contact\n\nIf you have questions about this Privacy Policy, please contact us at\nprivacy@example.com.\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 231,
+      "notes": "The fix — check_privacy.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

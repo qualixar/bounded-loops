@@ -1,0 +1,3 @@
+{"hooks": {"Stop": [{"matcher": "", "hooks": [{"type": "command",
+  "command": "python3 -m bounded_loops.hooks.verify_bounded_loop codex",
+  "timeout": 130}]}]}}

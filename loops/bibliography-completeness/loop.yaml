@@ -1,0 +1,29 @@
+# loops/bibliography-completeness/loop.yaml
+name: bibliography-completeness
+description: >
+  Drive an agent until every pandoc-style inline citation key `[@key]` in a
+  paper's body appears as a listed key under its own `## References` section.
+  The gate is `seed/check_biblio.py` — a tiny, dependency-free,
+  pure-standard-library checker shipped WITH the loop, so it runs anywhere
+  Python does: no network, no external tool, no key. Ships a real paper.md
+  that cites a typo'd key (`[@jones2021]`, which is not listed — the intended
+  real reference is `[@lee2019]`) — the exact "cited but never listed"
+  bibliography-completeness failure common in AI-assisted paper drafting.
+  The agent fixes the DOCUMENT's citation key, never edits the checker to
+  force a pass.
+pattern: evaluator-optimizer
+role:
+  - research
+rung: L1
+spec: PROMPT.md
+# The gate's LOGIC is the checker. The agent fixes the document's citation
+# key; it must never rewrite the checker to fake a green gate.
+forbid:
+  - "seed/check_biblio.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_biblio.py seed/paper.md"
+bounds: bounds.yaml
+memory: STATE.md

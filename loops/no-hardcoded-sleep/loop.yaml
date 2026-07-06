@@ -1,0 +1,29 @@
+# loops/no-hardcoded-sleep/loop.yaml
+name: no-hardcoded-sleep
+description: >
+  Drive an agent until no test contains a hardcoded `time.sleep(...)` call.
+  The gate is `seed/check_sleep.py` — a tiny, dependency-free,
+  pure-standard-library checker (uses `ast`) shipped WITH the loop, so it
+  runs anywhere Python does: no network, no key. Ships a real
+  `sample_tests.py` where `test_worker_finishes` sleeps for a guessed 5
+  seconds instead of polling a real completion signal — the classic
+  flaky-and-slow anti-pattern. The agent must replace the sleep with a real
+  poll on the already-available `worker_is_done` helper, never weaken the
+  checker to force a pass.
+pattern: evaluator-optimizer
+role:
+  - testing
+rung: L1
+spec: PROMPT.md
+# The gate's verification anchor. The engine refuses any runner write to a
+# path matching this glob, so the agent (or a community cassette) cannot
+# neuter the checker to fake a green gate.
+forbid:
+  - "seed/check_sleep.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_sleep.py seed/sample_tests.py"
+bounds: bounds.yaml
+memory: STATE.md

@@ -1,0 +1,29 @@
+# loops/conventional-commits/loop.yaml
+name: conventional-commits
+description: >
+  Drive an agent until every commit subject in a list conforms to
+  Conventional Commits (`type(scope): description`). The gate is
+  `seed/check_commits.py` — a tiny, dependency-free, pure-standard-library
+  checker shipped WITH the loop, so it runs anywhere Python does: no
+  network, no key. Ships a real `commits.txt` with two malformed subjects
+  (a free-text subject with no type, and a "WIP ..." subject) that would
+  break changelog generation and semantic-release version bumps. The agent
+  must fix the SUBJECTS, never edit the checker to force a pass.
+pattern: evaluator-optimizer
+role:
+  - operations
+  - engineering
+rung: L1
+spec: PROMPT.md
+# The gate's verification anchor. The engine refuses any runner write to a
+# path matching this glob, so the agent (or a community cassette) cannot
+# neuter the checker to fake a green gate.
+forbid:
+  - "seed/check_commits.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_commits.py seed/commits.txt"
+bounds: bounds.yaml
+memory: STATE.md

@@ -1,0 +1,18 @@
+# loops/catalog-required-fields/loop.yaml
+name: catalog-required-fields
+description: >
+  Drive an agent until a retail catalog entry carries all of its required
+  display fields. Demonstrates the JsonSchemaGate end to end: real
+  gate FAIL on a broken output.json (description missing entirely), then real
+  gate PASS after the agent adds a valid description against schema.json.
+pattern: evaluator-optimizer
+role:
+  - retail
+rung: L1
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: jsonschema
+bounds: bounds.yaml
+memory: STATE.md

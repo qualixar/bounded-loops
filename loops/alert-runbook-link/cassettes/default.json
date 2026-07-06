@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "alert-runbook-link",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/alerts.json to fill in the missing runbook_url for queue-depth-critical, following the same https://runbooks.internal/<name> convention as the other three alerts. check_alerts.py exits 0 on lap 1.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_alerts.py: queue-depth-critical has an empty runbook_url. Filling it in following the same runbooks.internal convention as the other alerts. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/alerts.json",
+          "content": "[\n  {\"alert\": \"apigw-5xx-rate-high\", \"runbook_url\": \"https://runbooks.internal/apigw-5xx-rate-high\"},\n  {\"alert\": \"db-replication-lag-high\", \"runbook_url\": \"https://runbooks.internal/db-replication-lag-high\"},\n  {\"alert\": \"queue-depth-critical\", \"runbook_url\": \"https://runbooks.internal/queue-depth-critical\"},\n  {\"alert\": \"disk-usage-critical\", \"runbook_url\": \"https://runbooks.internal/disk-usage-critical\"}\n]\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 198,
+      "notes": "The fix — check_alerts.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+[
+  {
+    "entry_id": "JE-1001",
+    "description": "Record cash sale",
+    "lines": [
+      {"account": "Cash", "debit": 500.00, "credit": 0.00},
+      {"account": "Revenue", "debit": 0.00, "credit": 500.00}
+    ]
+  },
+  {
+    "entry_id": "JE-1002",
+    "description": "Pay office rent",
+    "lines": [
+      {"account": "Rent Expense", "debit": 200.00, "credit": 0.00},
+      {"account": "Cash", "debit": 0.00, "credit": 250.00}
+    ]
+  },
+  {
+    "entry_id": "JE-1003",
+    "description": "Purchase equipment on credit",
+    "lines": [
+      {"account": "Equipment", "debit": 1000.00, "credit": 0.00},
+      {"account": "Accounts Payable", "debit": 0.00, "credit": 1000.00}
+    ]
+  }
+]

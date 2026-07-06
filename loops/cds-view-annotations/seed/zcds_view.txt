@@ -1,0 +1,10 @@
+@AbapCatalog.sqlViewName: 'ZINVSUM'
+@Metadata.allowExtensions: true
+define view ZI_INVOICE_SUMMARY
+  as select from zinvoice_hdr as Invoice
+{
+  key Invoice.invoice_id   as InvoiceId,
+      Invoice.customer_id  as CustomerId,
+      Invoice.gross_amount as GrossAmount,
+      Invoice.currency     as Currency
+}

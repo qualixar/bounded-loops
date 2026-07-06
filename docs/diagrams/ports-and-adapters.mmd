@@ -1,0 +1,41 @@
+flowchart TB
+    subgraph Domain["Domain (pure, stdlib-only)"]
+        Models["models.py — Spec, Bounds, Verdict,\nRunResult, LoopContext, LedgerEntry, Outcome"]
+        Rules["rules.py — stop_condition_met,\nno_progress, rung_requires_approval"]
+        Errors["errors.py — ManifestError, RunnerError,\nGateError, KillSwitchTripped"]
+    end
+
+    subgraph Application["Application (orchestration)"]
+        Ports["ports.py — the seam:\nRunnerPort GatePort MemoryPort LedgerPort\nTracerPort BudgetMeterPort KillSwitchPort\nApprovalPort ClockPort"]
+        RunLoop["run_loop.py — RunLoopUseCase\n(the lap algorithm)"]
+        Bounds["bounds.py — BoundsEnforcer"]
+        Manifest["manifest.py — LoopManifest loader"]
+    end
+
+    subgraph Adapters["Adapters (concrete implementations)"]
+        Runners["adapters/runners/\nstub · shell · python_callable\nclaude-code · codex · antigravity\nAnchorGuardRunner (decorator)"]
+        Gates["adapters/gates/\ncommand · pytest · jsonschema\nosv · checkov"]
+        IO["adapters/io/\nFileLedger · FileMemory\nOtelTracer/NoopTracer · BudgetMeter\nEnvKillSwitch · CliApproval/AutoApproval\nUtcClock"]
+    end
+
+    Composition["composition.py — THE composition root\n(only file that imports concrete adapters)"]
+
+    RunLoop --> Ports
+    RunLoop --> Rules
+    RunLoop --> Models
+    Bounds --> Rules
+    Manifest --> Models
+    Manifest --> Errors
+
+    Runners -.implements.-> Ports
+    Gates -.implements.-> Ports
+    IO -.implements.-> Ports
+
+    Composition -->|instantiates + injects| Runners
+    Composition -->|instantiates + injects| Gates
+    Composition -->|instantiates + injects| IO
+    Composition -->|builds| RunLoop
+    Composition --> Manifest
+
+    CLI["cli.py (bl run / lint / list / new)"] --> Composition
+    MCP["mcp_server.py (bl_run / bl_lint / bl_list)"] --> Composition

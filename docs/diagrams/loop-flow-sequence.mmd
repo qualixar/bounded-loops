@@ -1,0 +1,48 @@
+sequenceDiagram
+    participant Engine as RunLoopUseCase
+    participant Kill as KillSwitchPort
+    participant Budget as BudgetMeterPort
+    participant Runner as RunnerPort
+    participant WS as Workspace (scratch copy)
+    participant Gate as GatePort
+    participant Ledger as LedgerPort
+
+    loop each lap
+        Engine->>Kill: tripped()?
+        alt kill switch tripped
+            Engine->>Ledger: record(decision="killed")
+            Engine-->>Engine: return Outcome(KILLED)
+        end
+        Engine->>Budget: exceeded(lap, bounds)?
+        alt a bound tripped (laps/tokens/wallclock)
+            Engine->>Ledger: record(decision="halt")
+            Engine-->>Engine: return Outcome(HALT, reason)
+        end
+        Engine->>Runner: run_once(spec, ctx)
+        Runner->>WS: propose a change (write files)
+        Runner-->>Engine: RunResult(changed, agent_claimed_done, tokens, log)
+        Engine->>Budget: spend(result.tokens)
+        Note over Engine: agent_claimed_done is recorded,<br/>never read for the exit decision
+        Engine->>Gate: check(ctx) — independent of RunResult
+        Gate->>WS: inspect workspace only
+        Gate-->>Engine: Verdict(passed, detail, evidence)
+        alt verdict.passed AND stop_condition_met
+            alt approval required (rung L2/L3)
+                Engine->>Engine: ApprovalPort.granted()?
+                alt not granted
+                    Engine->>Ledger: record(decision="pause")
+                    Engine-->>Engine: return Outcome(PAUSE)
+                end
+            end
+            Engine->>Ledger: record(decision="done")
+            Engine-->>Engine: return Outcome(DONE, "gate-passed")
+        else gate failed or condition not met
+            Engine->>Engine: no_progress check (BoundsEnforcer)
+            alt no progress for no_progress_window laps
+                Engine->>Ledger: record(decision="halt")
+                Engine-->>Engine: return Outcome(HALT, "no-progress...")
+            else keep going
+                Engine->>Ledger: record(decision="continue")
+            end
+        end
+    end

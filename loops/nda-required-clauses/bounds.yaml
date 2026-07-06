@@ -1,0 +1,14 @@
+# loops/nda-required-clauses/bounds.yaml
+max_iterations: 10
+no_progress_window: 3
+max_tokens: null
+max_wallclock_s: 60
+sandbox: true
+quarantine_inputs: true
+schema: null
+trace: true
+# L2 in production: a passing clause check should gate human legal sign-off
+# before an NDA is sent for signature, not auto-send. The keyless demo runs
+# unattended so it can reach DONE offline; flip this to true when you wire a
+# real runner.
+require_approval: false

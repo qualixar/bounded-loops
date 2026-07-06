@@ -1,0 +1,25 @@
+# loops/broken-internal-links/loop.yaml
+name: broken-internal-links
+description: >
+  Drive an agent until every relative internal markdown link in a content
+  directory resolves to a real file on disk. The gate is
+  `seed/check_links.py` — a tiny, dependency-free, pure-standard-library
+  checker shipped WITH the loop, so it runs anywhere Python does: no
+  network, no external tool. Ships `content/a.md`, which links to a
+  `missing.md` that does not exist — the exact "read the introduction"
+  404 every content team eventually ships. The agent must fix the content,
+  never the checker.
+pattern: evaluator-optimizer
+role:
+  - content
+rung: L1
+spec: PROMPT.md
+forbid:
+  - "seed/check_links.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_links.py seed/content"
+bounds: bounds.yaml
+memory: STATE.md

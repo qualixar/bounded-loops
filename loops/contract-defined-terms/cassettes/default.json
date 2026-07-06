@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "contract-defined-terms",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/contract.md to add the missing 'Effective Date' definition to the Definitions section, in the same bolded-quoted style as the existing entries. All existing bolded usages in the body are left untouched, so check_defined.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_defined.py: 1 bolded term used but not defined — Effective Date. Adding a definition for Effective Date to the Definitions section in the same style as the existing entries. Not unbolding any usage and not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/contract.md",
+          "content": "# Master Services Agreement\n\nThis Master Services Agreement (the \"**Agreement**\") is entered into as of\nthe **Effective Date** by and between the parties identified in the\nsignature block below.\n\n## Definitions\n\n- **\"Agreement\"** means this Master Services Agreement, together with all\n  exhibits, schedules, and amendments hereto.\n- **\"Services\"** means the professional services described in one or more\n  Statements of Work executed under this Agreement.\n- **\"Confidential Information\"** means any non-public information disclosed\n  by either party that is designated as confidential or that reasonably\n  should be understood to be confidential.\n- **\"Effective Date\"** means the date first written above on which this\n  Agreement is executed by both parties, as set forth in the signature\n  block.\n\n## Scope of Services\n\nProvider shall perform the **Services** described in each Statement of\nWork in accordance with the terms of this **Agreement**. All work shall\nbe completed on or before the delivery dates specified therein.\n\n## Confidentiality\n\nEach party shall protect the other party's **Confidential Information**\nusing at least the same degree of care it uses to protect its own\nconfidential information, but in no event less than a reasonable degree\nof care.\n\n## Term\n\nThis Agreement commences on the **Effective Date** and continues until\nterminated in accordance with its terms.\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 214,
+      "notes": "The fix — check_defined.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

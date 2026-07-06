@@ -1,0 +1,8 @@
+{
+  "patient_id": "PT-10492",
+  "encounter_date": "2026-07-06",
+  "subjective": "Patient reports increased thirst, frequent urination, and fatigue over the past 3 weeks. No prior diabetes diagnosis. Denies chest pain or blurred vision.",
+  "objective": "Vitals: BP 138/86, HR 82, BMI 31.2. Random plasma glucose 248 mg/dL. Fasting glucose repeated at 212 mg/dL. No acanthosis nigricans noted.",
+  "assessment": "New-onset type 2 diabetes mellitus, likely contributed to by obesity. Elevated blood pressure noted, monitor for hypertension.",
+  "icd10_codes": ["ABC"]
+}

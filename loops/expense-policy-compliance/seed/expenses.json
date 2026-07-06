@@ -1,0 +1,7 @@
+[
+  {"category": "meals", "amount": 42.50, "description": "Team lunch with client"},
+  {"category": "travel", "amount": 890.00, "description": "Flight to conference"},
+  {"category": "meals", "amount": 110.00, "description": "Dinner with prospect"},
+  {"category": "entertainment", "amount": 60.00, "description": "Client concert tickets"},
+  {"category": "software", "amount": 79.00, "description": "IDE license renewal"}
+]

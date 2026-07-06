@@ -1,0 +1,30 @@
+# loops/cds-view-annotations/loop.yaml
+name: cds-view-annotations
+description: >
+  Drive an agent until a SAP Core Data Services (CDS) view DDL source
+  declares its required annotations: @AccessControl.authorizationCheck,
+  @EndUserText.label, and @Metadata.allowExtensions. The gate is
+  `seed/check_cds.py` — a tiny, dependency-free, pure-standard-library
+  checker (simple substring checks) shipped WITH the loop, so it runs
+  anywhere Python does: no network, no SAP ABAP Development Tools (ADT)
+  connection, no key. Ships a real zcds_view.txt missing the authorization
+  check and end-user label annotations — a security and usability gap that
+  would fail a customer ABAP release-quality guideline. The agent must fix
+  the VIEW, never the checker.
+pattern: evaluator-optimizer
+role:
+  - enterprise
+  - erp
+rung: L2
+spec: PROMPT.md
+# The gate's LOGIC is the checker. The agent fixes the view; it must never
+# rewrite the checker to fake a green gate.
+forbid:
+  - "seed/check_cds.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_cds.py seed/zcds_view.txt"
+bounds: bounds.yaml
+memory: STATE.md

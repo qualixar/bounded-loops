@@ -1,0 +1,8 @@
+{
+  "jwt": {
+    "algorithm": "none",
+    "issuer": "https://auth.example.com",
+    "audience": "billing-service",
+    "expiry_seconds": 3600
+  }
+}

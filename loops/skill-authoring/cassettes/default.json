@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "skill-authoring",
+  "created": "2026-07-06",
+  "description": "Lap 1 writes a corrected output.json directly (keyless demo: the stub IS the 'agent'). Rewrites name to kebab-case and replaces description with a substantive (>=20 char) explanation. JsonSchemaGate goes green on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read output.json and schema.json. name is \"My Cool Skill\", which violates the kebab-case pattern (spaces, uppercase). description is \"does stuff\", which is under the 20-char minimum. Rewriting name to \"my-cool-skill\" and description to a real, substantive explanation. allowed_tools already conforms, left untouched. Not editing schema.json.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "output.json",
+          "content": "{\n  \"name\": \"my-cool-skill\",\n  \"description\": \"Formats and validates cool-skill inputs before handing off to downstream agents.\",\n  \"allowed_tools\": [\"Read\", \"Grep\"]\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 224,
+      "notes": "The fix — output.json now validates against schema.json. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "receipt_number": "GR-2001",
+  "po_number": "PO-1001",
+  "lines": [
+    {"sku": "WIDGET-A", "quantity_received": 100},
+    {"sku": "WIDGET-B", "quantity_received": 50},
+    {"sku": "WIDGET-C", "quantity_received": 20}
+  ]
+}

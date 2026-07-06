@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# wreck.sh — the UNGATED version of {{LOOP_NAME}}. Same spec, no independent
+# gate. Demonstrates why a gate matters: without one, the loop trusts
+# whatever the agent claims, even if the underlying bug is still present.
+#
+# Requirements: bash 3.2+, Go 1.21+ (used only by the diagnostic epilogue
+# below — the wrecked loop itself never calls go test, that's the point).
+
+set -euo pipefail
+
+LOOP_DIR="$(cd "$(dirname "$0")" && pwd)"
+SEED_DIR="$LOOP_DIR/seed"
+MAX_ITER=10
+
+if ! command -v go >/dev/null 2>&1; then
+    echo "error: 'go' not found on PATH." >&2
+    echo "       Install it first: https://go.dev/dl/" >&2
+    exit 2
+fi
+
+AGENT_CLI="${AGENT_CLI:-bash $LOOP_DIR/cassettes/stub-agent.sh}"
+
+echo "=== {{LOOP_NAME}} — WRECKED (no gate) ==="
+echo "WARNING: this loop trusts the agent's own claim — it never checks go test."
+echo ""
+
+i=0
+cd "$SEED_DIR"
+
+while [ "$i" -lt "$MAX_ITER" ]; do
+    i=$((i + 1))
+    echo "--- Lap $i (no gate) ---"
+    $AGENT_CLI < "$LOOP_DIR/PROMPT.md"
+    echo "(no gate check here — this is the point)"
+done
+
+echo ""
+echo "--- Diagnostic epilogue (NOT part of the wrecked loop's own logic) ---"
+if go_test_output="$(go test ./... 2>&1)"; then
+    echo "go test actually passes — the fix happened to land anyway."
+    exit 0
+else
+    echo "The ungated loop ran to completion with no gate ever checking the result."
+    echo "$go_test_output"
+    exit 1
+fi

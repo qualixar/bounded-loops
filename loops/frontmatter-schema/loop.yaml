@@ -1,0 +1,19 @@
+# loops/frontmatter-schema/loop.yaml
+name: frontmatter-schema
+description: >
+  Drive an agent until a blog post's parsed frontmatter conforms to its
+  contract. Demonstrates the JsonSchemaGate end to end: real gate FAIL on a
+  broken output.json (missing required "slug" + "tags" is a string instead of
+  an array), then real gate PASS after the agent corrects it against
+  schema.json.
+pattern: evaluator-optimizer
+role:
+  - content
+rung: L1
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: jsonschema
+bounds: bounds.yaml
+memory: STATE.md

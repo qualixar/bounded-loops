@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "cors-not-wildcard",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/security_config.json to drop the wildcard '*' from allow_origins, keeping only the explicit https://app.example.com origin, while allow_credentials stays true. check_cors.py then finds no violation and exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_cors.py: allow_credentials is true while allow_origins contains the wildcard '*'. Removing the wildcard and keeping the explicit real origin. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/security_config.json",
+          "content": "{\n  \"cors\": {\n    \"allow_origins\": [\"https://app.example.com\"],\n    \"allow_credentials\": true,\n    \"allow_methods\": [\"GET\", \"POST\", \"PUT\", \"DELETE\"]\n  }\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 160,
+      "notes": "The fix — check_cors.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

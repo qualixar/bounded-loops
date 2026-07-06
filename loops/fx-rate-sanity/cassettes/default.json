@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "fx-rate-sanity",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/rates.json to correct EUR/USD from the stale 1.0870 to 1.0/0.92 = 1.0869565..., rounded to 1.086957, so USD/EUR * EUR/USD ~= 1 within tolerance. check_fx.py exits 0 on lap 1.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_fx.py: USD/EUR * EUR/USD = 0.92 * 1.0870 = 1.00004, outside the 1e-6 tolerance -- a no-arbitrage violation. Correcting EUR/USD to the exact inverse of USD/EUR (1/0.92 = 1.0869565217...), rounded to 1.0869565217. GBP/USD was already the exact inverse of USD/GBP (1.2658227848) so left unchanged. Not touching check_fx.py.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/rates.json",
+          "content": "{\n  \"base\": \"USD\",\n  \"pairs\": {\n    \"USD/USD\": 1.0,\n    \"USD/EUR\": 0.92,\n    \"EUR/USD\": 1.0869565217,\n    \"USD/GBP\": 0.79,\n    \"GBP/USD\": 1.2658227848\n  }\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 260,
+      "notes": "The fix -- check_fx.py now exits 0. GBP/USD is the exact inverse of USD/GBP (1/0.79 = 1.2658227848101264), so only the EUR pair needed correction."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 -- should not be reached in the happy path."
+    }
+  ]
+}

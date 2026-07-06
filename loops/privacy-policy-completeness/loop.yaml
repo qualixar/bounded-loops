@@ -1,0 +1,30 @@
+# loops/privacy-policy-completeness/loop.yaml
+name: privacy-policy-completeness
+description: >
+  Drive an agent until a privacy policy contains every section a working
+  policy needs: Data We Collect, How We Use Your Data, Data Sharing, Data
+  Retention, Your Rights, and Contact. The gate is
+  `seed/check_privacy.py` — a tiny, dependency-free, pure-standard-library
+  checker shipped WITH the loop, so it runs anywhere Python does: no
+  network, no legal API, no key. Ships a real privacy.md that is missing
+  the Data Retention and Your Rights sections — a common defect in
+  quickly-assembled privacy policies that explain what is collected and
+  shared but never say how long data is kept or what choices an individual
+  has over their own data. The agent must ADD the missing sections; it
+  must never delete existing content or edit the checker to force a pass.
+pattern: evaluator-optimizer
+role:
+  - legal
+rung: L2
+spec: PROMPT.md
+# The gate's LOGIC is the checker. The agent fixes the document; it must
+# never rewrite the checker to fake a green gate.
+forbid:
+  - "seed/check_privacy.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_privacy.py seed/privacy.md"
+bounds: bounds.yaml
+memory: STATE.md

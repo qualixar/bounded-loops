@@ -1,0 +1,30 @@
+# loops/material-master-completeness/loop.yaml
+name: material-master-completeness
+description: >
+  Drive an agent until a SAP material master record carries every field its
+  material type requires, mirroring SAP's material-type-driven field
+  selection (OMS9/MM01): a FERT (finished product) requires non-empty
+  base_uom, description, and division; a ROH (raw material) requires
+  base_uom and description. The gate is `seed/check_material.py` — a tiny,
+  dependency-free, pure-standard-library checker shipped WITH the loop, so
+  it runs anywhere Python does: no network, no SAP MM01/MM02 transaction,
+  no key. Ships a real material.json for a FERT material with an empty
+  division — a record that would fail sales-area determination at order
+  entry. The agent must fix the RECORD, never the checker.
+pattern: evaluator-optimizer
+role:
+  - enterprise
+  - erp
+rung: L2
+spec: PROMPT.md
+# The gate's LOGIC is the checker. The agent fixes the record; it must
+# never rewrite the checker to fake a green gate.
+forbid:
+  - "seed/check_material.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_material.py seed/material.json"
+bounds: bounds.yaml
+memory: STATE.md

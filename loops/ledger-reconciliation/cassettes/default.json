@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "ledger-reconciliation",
+  "created": "2026-07-06",
+  "description": "Lap 1 writes the fully-corrected ledger.csv: fixes the typo'd contractor payment (1080.00 -> 1800.00) so debits equal credits, and categorizes the previously-empty row 5 as 'expense'. pytest goes green on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read seed/test_ledger.py and seed/ledger.csv. The debit total (12780.00) does not match the credit total (13500.00) - a difference of 720.00. Row 5 (Contractor payment - design work) shows debit 1080.00; comparing against the other transaction sizes and the imbalance amount, this looks like a transposition typo of 1800.00 (1800.00 - 1080.00 = 720.00, exactly the imbalance). Correcting the amount to 1800.00. Row 5 also has an empty category; a contractor payment is an operating cost, so categorizing it as 'expense'.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/ledger.csv",
+          "content": "id,description,debit,credit,category\n1,Opening capital contribution,,10000.00,equity\n2,Client invoice - Acme Corp consulting,,3500.00,revenue\n3,Office rent - July,1200.00,,expense\n4,Cloud hosting - AWS,250.00,,expense\n5,Contractor payment - design work,1800.00,,expense\n6,Cash drawdown to checking account,10250.00,,asset\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 312,
+      "notes": "The fix - pytest -q now exits 0. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 - should not be reached in the happy path."
+    }
+  ]
+}

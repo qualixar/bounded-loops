@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BapiMaterialSaveDataPayload",
+  "description": "API contract for a BAPI_MATERIAL_SAVEDATA-style material-create payload.",
+  "type": "object",
+  "properties": {
+    "HEADDATA": {
+      "type": "object",
+      "description": "Material master control data.",
+      "properties": {
+        "MATERIAL": {
+          "type": "string",
+          "description": "Material number."
+        },
+        "IND_SECTOR": {
+          "type": "string",
+          "description": "Industry sector."
+        },
+        "MATL_TYPE": {
+          "type": "string",
+          "description": "Material type (e.g. FERT, ROH)."
+        }
+      },
+      "required": ["MATERIAL", "IND_SECTOR", "MATL_TYPE"],
+      "additionalProperties": false
+    },
+    "CLIENTDATA": {
+      "type": "object",
+      "description": "Client-level material data.",
+      "properties": {
+        "BASE_UOM": {
+          "type": "string",
+          "description": "Base unit of measure."
+        }
+      },
+      "required": ["BASE_UOM"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["HEADDATA", "CLIENTDATA"],
+  "additionalProperties": false
+}

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "okr-measurable",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/okrs.json to fix the vague key result: adds a concrete numeric target (12) and unit ('percent') to the 'increase conversion rate' key result, which had target: null and unit: ''. The other two key results already have a target, unit, and deadline. check_okrs.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_okrs.py: 1 vague key result — 'Increase course landing page conversion rate' has no numeric target and no unit. Adding target: 12 and unit: 'percent' (raise conversion rate by 12 percentage points). Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/okrs.json",
+          "content": "[\n  {\n    \"objective\": \"Grow paid conversion of the loop-engineering course\",\n    \"key_results\": [\n      {\n        \"text\": \"Increase course landing page conversion rate\",\n        \"target\": 12,\n        \"unit\": \"percent\",\n        \"deadline\": \"2026-09-30\"\n      },\n      {\n        \"text\": \"Reach 500 paying customers\",\n        \"target\": 500,\n        \"unit\": \"customers\",\n        \"deadline\": \"2026-09-30\"\n      }\n    ]\n  },\n  {\n    \"objective\": \"Reduce support burden from onboarding friction\",\n    \"key_results\": [\n      {\n        \"text\": \"Cut first-response time on onboarding tickets\",\n        \"target\": 4,\n        \"unit\": \"hours\",\n        \"deadline\": \"2026-08-15\"\n      }\n    ]\n  }\n]\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 214,
+      "notes": "The fix — check_okrs.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

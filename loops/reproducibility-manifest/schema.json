@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ReproducibilityManifest",
+  "description": "Contract for a research run's reproducibility manifest.",
+  "type": "object",
+  "properties": {
+    "seed": {
+      "type": "integer",
+      "description": "Random seed used for the run."
+    },
+    "env": {
+      "type": "string",
+      "description": "Environment identifier (e.g. container image or venv lockfile hash)."
+    },
+    "data_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hex digest of the exact dataset snapshot used."
+    },
+    "code_version": {
+      "type": "string",
+      "description": "Git commit SHA or release tag of the code that produced the run."
+    }
+  },
+  "required": ["seed", "env", "data_hash", "code_version"],
+  "additionalProperties": false
+}

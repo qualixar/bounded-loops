@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "loop": "{{LOOP_NAME}}",
+  "description": "Lap 1 writes the correct add() fix directly (keyless demo: the stub IS the 'agent'). cargo test goes green on lap 1.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read seed/src/lib.rs. add() always returns 0. Fixing to return a + b.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/src/lib.rs",
+          "content": "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn test_positive() {\n        assert_eq!(add(2, 3), 5);\n    }\n\n    #[test]\n    fn test_negative() {\n        assert_eq!(add(-1, -1), -2);\n    }\n\n    #[test]\n    fn test_zero() {\n        assert_eq!(add(0, 0), 0);\n    }\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 0,
+      "notes": "The fix — cargo test -q now exits 0. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

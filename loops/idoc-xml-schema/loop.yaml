@@ -1,0 +1,30 @@
+# loops/idoc-xml-schema/loop.yaml
+name: idoc-xml-schema
+description: >
+  Drive an agent until a simplified SAP IDoc (Intermediate Document) XML file
+  is structurally valid: a control segment (EDI_DC40 with MANDT/DOCNUM/MESTYP),
+  a header segment (E1EDK01), and at least one item segment (E1EDP01) carrying
+  a non-empty quantity (MENGE). The gate is `seed/check_idoc.py` — a tiny,
+  dependency-free, pure-standard-library checker (xml.etree.ElementTree)
+  shipped WITH the loop, so it runs anywhere Python does: no network, no SAP
+  RFC connection, no key. Ships a real idoc.xml missing the item quantity —
+  the exact shape of an inbound IDoc that SAP would reject into status 51
+  (application error) for an incomplete order item. The agent must fix the
+  IDOC, never the checker.
+pattern: evaluator-optimizer
+role:
+  - enterprise
+  - erp
+rung: L2
+spec: PROMPT.md
+# The gate's LOGIC is the checker. The agent fixes the document; it must
+# never rewrite the checker to fake a green gate.
+forbid:
+  - "seed/check_idoc.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_idoc.py seed/idoc.xml"
+bounds: bounds.yaml
+memory: STATE.md

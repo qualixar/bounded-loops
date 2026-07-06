@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "claim-source-mapping",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/article.md to fix the one bad citation: the multi-agent-coordination sentence cites '[S3]', which does not exist in sources.json, but is really supported by S2 (the retrieval-augmented paper, whose network-bottleneck framing is the actual source for that claim) — a mis-numbered reference. Correcting [S3] to [S2] makes check_claims.py exit 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_claims.py: 1 citation not found in sources.json — '[S3]', cited on the multi-agent-coordination sentence. sources.json only has S1 and S2. The sentence's claim (removing a shared network bottleneck) is actually supported by S2, the retrieval-augmented paper describing network-dependent querying; this is a mis-numbered reference, not a fabricated claim. Correcting [S3] to [S2] in the article body. Not touching sources.json or the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/article.md",
+          "content": "# The Rise of Local-First AI Memory\n\nLocal-first agent memory systems keep state on-device instead of round-tripping\nto a cloud store, cutting both latency and exposure of sensitive context [S1].\n\nRetrieval-augmented approaches remain popular, but they depend on network\navailability for every query, which local-first memory avoids by design [S2].\n\nSome vendors claim on-device memory also improves multi-agent coordination by\nremoving a shared network bottleneck [S2].\n\nAdoption is accelerating as agent frameworks add native support for local\nmemory backends [S1].\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 241,
+      "notes": "The fix — check_claims.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

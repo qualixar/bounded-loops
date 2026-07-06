@@ -1,0 +1,19 @@
+# loops/adk-example/loop.yaml
+name: adk-example
+description: >
+  Wires an existing Google Agent Development Kit (ADK) LoopAgent/Runner into
+  bounded-loops, per this repo's own frozen vocabulary
+  (LoopAgent(max_iterations/escalate, deterministic)). NOT a keyless demo —
+  requires `pip install google-adk`. Shows the PythonCallableRunner contract
+  applied to a real production agent framework.
+pattern: evaluator-optimizer
+role: [backend, engineering]
+rung: L1
+runner:
+  default: python_callable
+  module_path: loops.adk-example.glue
+  function_name: run_turn
+gate:
+  kind: pytest
+  run: "pytest -q"
+bounds: bounds.yaml

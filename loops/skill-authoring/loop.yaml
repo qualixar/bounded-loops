@@ -1,0 +1,21 @@
+# loops/skill-authoring/loop.yaml
+name: skill-authoring
+description: >
+  Drive an agent until an authored agent-skill's manifest conforms to a
+  required JSON Schema shape before it's considered publishable.
+  Demonstrates the JsonSchemaGate: a broken skill manifest
+  (bad kebab-case name, too-short description) ships in
+  seed/output.json; the loop runs until output.json validates cleanly
+  against schema.json.
+pattern: evaluator-optimizer
+role:
+  - agent-development
+  - tooling
+rung: L2
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: jsonschema
+bounds: bounds.yaml
+memory: STATE.md

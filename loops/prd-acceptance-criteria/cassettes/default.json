@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "prd-acceptance-criteria",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/prd.md to add an Acceptance Criteria subsection to the 'receipt emailed' story, which had none. The other two stories already have Acceptance Criteria. check_prd.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_prd.py: 1 story missing acceptance criteria — 'As a customer, I want a receipt emailed to me'. Adding an Acceptance Criteria subsection with testable bullets matching the story's own description (email sent after successful purchase, receipt has proof-of-purchase details). Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/prd.md",
+          "content": "# PRD: Course Checkout Flow\n\n## Story: As a visitor, I want to buy the course with a credit card\n\nA visitor lands on the course page, clicks \"Buy now\", and completes checkout\nvia Paddle without leaving a hosted checkout overlay.\n\n### Acceptance Criteria\n- [ ] Clicking \"Buy now\" opens the Paddle checkout overlay within 1 second.\n- [ ] A successful payment redirects to the course access page.\n- [ ] A failed payment shows an inline error and does not close the overlay.\n\n## Story: As a customer, I want a receipt emailed to me\n\nAfter a successful purchase, the customer should get an email receipt so\nthey have proof of purchase for expensing or taxes.\n\n### Acceptance Criteria\n- [ ] A receipt email is sent within 5 minutes of a successful payment.\n- [ ] The receipt includes the buyer's email, amount charged, and purchase\n      date/time.\n- [ ] If the email fails to send, the purchase still completes and a retry\n      is queued.\n\n## Story: As an admin, I want to see all completed purchases in a dashboard\n\nThe admin dashboard lists every completed purchase with buyer email, amount,\nand timestamp, sortable by date.\n\n### Acceptance Criteria\n- [ ] The dashboard lists every completed purchase with email, amount, and\n      timestamp.\n- [ ] The list is sortable by timestamp, newest first by default.\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 296,
+      "notes": "The fix — check_prd.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

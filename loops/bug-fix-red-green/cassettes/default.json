@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "bug-fix-red-green",
+  "created": "2026-07-04",
+  "description": "Lap 1 writes the correct slugify.py fix directly (keyless demo: the stub IS the 'agent'). pytest goes green on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read seed/test_slugify.py. The buggy slugify() uses .replace(\" \", \"-\") which does not collapse runs of spaces. Fixing with re.sub(r\"\\s+\", \"-\", text).",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/slugify.py",
+          "content": "import re\n\n\ndef slugify(text: str) -> str:\n    \"\"\"Convert *text* to a URL-safe slug.\"\"\"\n    text = text.lower()\n    text = re.sub(r\"[^a-z0-9\\s-]\", \"\", text)\n    text = re.sub(r\"\\s+\", \"-\", text)\n    return text.strip(\"-\")\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 287,
+      "notes": "The fix — pytest -q now exits 0. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "slo-error-budget",
+  "created": "2026-07-06",
+  "description": "Lap 1 writes a corrected slo.json: fixes budget_remaining_minutes from the wrong 20 to the correct 13.2 (allowed 43.2 minus 30 downtime minutes). pytest goes green on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "pytest failed: budget_remaining_minutes=20 does not match allowed(43.2) - downtime_minutes(30) = 13.2. Fixing budget_remaining_minutes to 13.2 in seed/slo.json. Not touching the test.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/slo.json",
+          "content": "{\n  \"slo_target_pct\": 99.9,\n  \"window_minutes\": 43200,\n  \"downtime_minutes\": 30,\n  \"budget_remaining_minutes\": 13.2\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 219,
+      "notes": "The fix — pytest -q now exits 0. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

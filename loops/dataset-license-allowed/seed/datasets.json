@@ -1,0 +1,6 @@
+[
+  {"name": "OpenImages-Subset", "license": "Apache-2.0"},
+  {"name": "CommonCrawl-News", "license": "CC-BY-4.0"},
+  {"name": "InternalBenchmark-v3", "license": "MIT"},
+  {"name": "SynthConvQA", "license": "GPL-3.0"}
+]

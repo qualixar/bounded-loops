@@ -1,0 +1,40 @@
+# {{LOOP_NAME}}
+
+Scaffolded via `bl new go-test-basic`. A go-test-gated bounded loop: an agent
+edits `seed/example.go` until `go test ./...` passes, or the loop halts at
+`bounds.yaml`'s `max_iterations`.
+
+## Files
+
+- `loop.yaml` — the manifest (name, gate, runner, bounds).
+- `bounds.yaml` — safety bounds (max iterations, no-progress window, etc).
+- `PROMPT.md` — the task spec given to the agent. Edit this first.
+- `STATE.md` — cross-lap memory, populated automatically.
+- `seed/` — the workspace the agent edits (`example.go`, `go.mod`) plus the
+  gate anchor test (`example_test.go`, don't edit).
+- `cassettes/default.json` — a keyless, deterministic stub-agent recording
+  used by `bl run` (via `runner.default: stub` in `loop.yaml`).
+- `run.sh` / `wreck.sh` — standalone bash versions of the loop that need no
+  engine at all: `run.sh` is gated, `wreck.sh` deliberately removes the gate
+  to show why gating matters.
+
+## Quickstart
+
+```bash
+cd {{LOOP_NAME}}
+bl run .                 # via the bounded-loops engine (keyless stub runner)
+./run.sh                 # or standalone, no engine required
+```
+
+Replace `PROMPT.md`, `seed/`, and `cassettes/default.json` with your own
+task once you're ready to move past the starter example.
+
+## Note on `gate.run`
+
+`loop.yaml`'s `gate.run` is `cd seed && go test ./...`, not a bare
+`go test ./...` — the bounded-loops engine always runs the gate command
+with its working directory set to the loop's scratch workspace ROOT (the
+directory whose child is `seed/`), not `seed/` itself. `go test ./...`
+needs a `go.mod` at its own working directory, so the `cd seed &&` prefix
+is required (unlike `pytest -q`, which recurses into subdirectories on its
+own).

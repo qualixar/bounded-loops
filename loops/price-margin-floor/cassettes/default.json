@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "price-margin-floor",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/catalog.json to raise SKU-200's price from 21.50 to 24.00, clearing the 15% margin floor (23.00 minimum against a 20.00 cost). The remaining SKUs (SKU-100, SKU-300) already clear the floor, so check_margin.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_margin.py: 1 SKU below the margin floor — SKU-200 priced at 21.50 against a floor of 23.00 (cost 20.00, min_margin 15%). Raising SKU-200's price to 24.00 to clear the floor with headroom. Not touching the policy or the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/catalog.json",
+          "content": "[\n  {\"sku\": \"SKU-100\", \"cost\": 10.00, \"price\": 15.00},\n  {\"sku\": \"SKU-200\", \"cost\": 20.00, \"price\": 24.00},\n  {\"sku\": \"SKU-300\", \"cost\": 8.00, \"price\": 12.00}\n]\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 231,
+      "notes": "The fix — check_margin.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

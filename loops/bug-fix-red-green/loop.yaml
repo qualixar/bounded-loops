@@ -1,0 +1,24 @@
+# loops/bug-fix-red-green/loop.yaml
+name: bug-fix-red-green
+description: >
+  Drive an agent until a failing pytest passes.
+  The canonical Loop Engineering example: "keep working until the test is green."
+  Reproduces the course running example (COURSE §4–§6) as a repo artifact.
+pattern: evaluator-optimizer
+role:
+  - backend
+  - engineering
+rung: L2
+spec: PROMPT.md
+# The gate's verification anchor. The engine refuses any runner write to a
+# path matching these globs, so the agent (or a community cassette) cannot
+# neuter the test to fake a green gate.
+forbid:
+  - "seed/test_*.py"
+runner:
+  default: stub
+gate:
+  kind: pytest
+  run: "pytest -q"
+bounds: bounds.yaml
+memory: STATE.md

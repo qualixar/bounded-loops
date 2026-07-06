@@ -1,0 +1,31 @@
+# loops/nda-required-clauses/loop.yaml
+name: nda-required-clauses
+description: >
+  Drive an agent until a mutual Non-Disclosure Agreement contains every
+  clause a working NDA needs: Confidentiality, Term/Duration, Governing Law,
+  Return of Materials, and Permitted Disclosures. The gate is
+  `seed/check_clauses.py` — a tiny, dependency-free, pure-standard-library
+  checker shipped WITH the loop, so it runs anywhere Python does: no
+  network, no legal API, no key. Ships a real nda.md that is missing the
+  Governing Law and Return of Materials clauses — the exact defect shape of
+  an NDA drafted from a partial template that quietly omits the forum for
+  disputes and the obligation to give back or destroy confidential
+  materials at the end of the relationship. The agent must ADD the missing
+  sections; it must never delete existing content or edit the checker to
+  force a pass.
+pattern: evaluator-optimizer
+role:
+  - legal
+rung: L2
+spec: PROMPT.md
+# The gate's LOGIC is the checker. The agent fixes the document; it must
+# never rewrite the checker to fake a green gate.
+forbid:
+  - "seed/check_clauses.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_clauses.py seed/nda.md"
+bounds: bounds.yaml
+memory: STATE.md

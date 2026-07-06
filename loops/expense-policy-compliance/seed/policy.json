@@ -1,0 +1,10 @@
+{
+  "allowed_categories": ["meals", "travel", "lodging", "supplies", "software"],
+  "caps": {
+    "meals": 75.00,
+    "travel": 1200.00,
+    "lodging": 300.00,
+    "supplies": 150.00,
+    "software": 500.00
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "data-contract",
+  "created": "2026-07-06",
+  "description": "Lap 1 writes a corrected output.json: adds the missing created_at timestamp and fixes role from the invalid 'superuser' to the valid enum value 'admin'. JsonSchemaGate validates cleanly on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read schema.json: id/email/created_at/role are all required, additionalProperties is false, role must be one of admin/member/viewer. Read output.json: created_at is missing entirely and role is 'superuser', which is not in the enum. Adding created_at and fixing role to 'admin'.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "output.json",
+          "content": "{\n  \"id\": 42,\n  \"email\": \"jane.doe@example.com\",\n  \"created_at\": \"2026-07-06T12:00:00Z\",\n  \"role\": \"admin\"\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 231,
+      "notes": "The fix — output.json now validates against schema.json. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

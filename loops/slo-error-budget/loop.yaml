@@ -1,0 +1,28 @@
+# loops/slo-error-budget/loop.yaml
+name: slo-error-budget
+description: >
+  Drive an agent until a failing pytest passes.
+  Reproduces a common SRE/operations bug: an SLO's reported error-budget
+  remainder doesn't match what the target, window, and downtime actually
+  allow, understating (or overstating) how much downtime is left before
+  the SLO breaches. `seed/test_error_budget.py` is the ground truth: it
+  recomputes the correct value from the other three fields and asserts
+  `slo.json` reports exactly that.
+pattern: evaluator-optimizer
+role:
+  - operations
+  - engineering
+rung: L1
+# The gate's verification anchor. The engine refuses any runner write to a
+# path matching this glob, so the agent (or a community cassette) cannot
+# neuter the test to fake a green gate.
+forbid:
+  - "seed/test_*.py"
+runner:
+  default: stub
+gate:
+  kind: pytest
+  run: "pytest -q"
+bounds: bounds.yaml
+memory: STATE.md
+spec: PROMPT.md

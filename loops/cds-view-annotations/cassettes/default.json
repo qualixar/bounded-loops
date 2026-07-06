@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "cds-view-annotations",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/zcds_view.txt to add the missing @AccessControl.authorizationCheck and @EndUserText.label annotations. check_cds.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_cds.py: 2 required annotations missing — @AccessControl.authorizationCheck and @EndUserText.label. Adding both near the other annotations at the top of the view, with sensible values consistent with an invoice-summary view. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/zcds_view.txt",
+          "content": "@AbapCatalog.sqlViewName: 'ZINVSUM'\n@AccessControl.authorizationCheck: #CHECK\n@EndUserText.label: 'Invoice Summary'\n@Metadata.allowExtensions: true\ndefine view ZI_INVOICE_SUMMARY\n  as select from zinvoice_hdr as Invoice\n{\n  key Invoice.invoice_id   as InvoiceId,\n      Invoice.customer_id  as CustomerId,\n      Invoice.gross_amount as GrossAmount,\n      Invoice.currency     as Currency\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 226,
+      "notes": "The fix — check_cds.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

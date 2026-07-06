@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "bapi-payload-contract",
+  "created": "2026-07-06",
+  "description": "Lap 1 writes a corrected output.json: adds the missing MATL_TYPE to HEADDATA. JsonSchemaGate validates cleanly on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read schema.json: HEADDATA requires MATERIAL/IND_SECTOR/MATL_TYPE, CLIENTDATA requires BASE_UOM, additionalProperties is false throughout. Read output.json: HEADDATA is missing MATL_TYPE entirely. Adding MATL_TYPE='FERT' to HEADDATA.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "output.json",
+          "content": "{\n  \"HEADDATA\": {\n    \"MATERIAL\": \"000000000100123456\",\n    \"IND_SECTOR\": \"M\",\n    \"MATL_TYPE\": \"FERT\"\n  },\n  \"CLIENTDATA\": {\n    \"BASE_UOM\": \"EA\"\n  }\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 214,
+      "notes": "The fix — output.json now validates against schema.json. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

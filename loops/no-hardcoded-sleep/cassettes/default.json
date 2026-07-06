@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "no-hardcoded-sleep",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/sample_tests.py to replace time.sleep(5) in test_worker_finishes with a direct call to worker_is_done(handle), removing the only hardcoded sleep the checker flags (no time.sleep anywhere in the file, including inside loops). check_sleep.py exits 0 on lap 1. Demonstrates the loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_sleep.py: 1 hardcoded sleep call found — 'time.sleep(5)' in test_worker_finishes, guessing a fixed duration instead of checking real completion. Replacing it with a direct call to worker_is_done(handle) and removing the now-unused time import. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/sample_tests.py",
+          "content": "\"\"\"sample_tests.py — a text fixture of test code (not collected by pytest;\nit lives under loops/no-hardcoded-sleep/seed/ and is read by the checker as\nsource text/AST, never executed).\n\nFixed: 'test_worker_finishes' now checks worker_is_done(handle) directly\ninstead of guessing a fixed sleep duration. No time.sleep(...) remains.\n\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef start_worker():\n    return {\"status\": \"running\"}\n\n\ndef worker_is_done(handle):\n    return True\n\n\ndef test_addition():\n    assert add(2, 2) == 4\n\n\ndef test_worker_finishes():\n    handle = start_worker()\n    assert worker_is_done(handle)\n\n\ndef test_subtraction():\n    assert add(5, -3) == 2\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 210,
+      "notes": "The fix — check_sleep.py now exits 0 because no time.sleep(...) call remains anywhere in the file."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

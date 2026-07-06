@@ -1,0 +1,13 @@
+# seed/test_example.py — gate anchor for {{LOOP_NAME}} (DO NOT EDIT)
+from example import add
+
+
+class TestAdd:
+    def test_positive(self):
+        assert add(2, 3) == 5
+
+    def test_negative(self):
+        assert add(-1, -1) == -2
+
+    def test_zero(self):
+        assert add(0, 0) == 0

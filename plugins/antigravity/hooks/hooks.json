@@ -1,0 +1,2 @@
+{"Stop": [{"hooks": [{"type": "command",
+  "command": "python3 -m bounded_loops.hooks.verify_bounded_loop antigravity"}]}]}

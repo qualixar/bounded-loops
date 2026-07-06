@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "dependency-pinning",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/requirements.txt to pin flask to an exact version (2.3.3) and numpy to an exact version (1.26.4), replacing the range and the bare name. check_pins.py then finds every line exactly pinned and exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_pins.py: 2 unpinned dependencies found — 'flask>=2.3.0' (a range, not an exact pin) and 'numpy' (a bare name with no version at all). Pinning both to exact versions. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/requirements.txt",
+          "content": "# Runtime dependencies for the billing service\nrequests==2.31.0\nflask==2.3.3\npydantic==2.5.0\nnumpy==1.26.4\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 180,
+      "notes": "The fix — check_pins.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

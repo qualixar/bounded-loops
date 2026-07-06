@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "inventory-nonnegative",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/movements.json to reduce SKU-200's offending movement (index 1) from delta -8 to delta -5, so the running balance stays at 0 instead of going to -3. The remaining movements are unchanged and already keep every SKU's balance non-negative, so check_inventory.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_inventory.py: SKU-200 goes to -3 after movement index 1 (delta=-8) against an opening balance of 5. Reducing that movement's delta to -5 so the balance stays at 0 instead of going negative. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/movements.json",
+          "content": "{\n  \"opening\": {\n    \"SKU-100\": 10,\n    \"SKU-200\": 5\n  },\n  \"movements\": [\n    {\"sku\": \"SKU-100\", \"delta\": -3},\n    {\"sku\": \"SKU-200\", \"delta\": -5},\n    {\"sku\": \"SKU-100\", \"delta\": 2},\n    {\"sku\": \"SKU-200\", \"delta\": 6}\n  ]\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 214,
+      "notes": "The fix — check_inventory.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

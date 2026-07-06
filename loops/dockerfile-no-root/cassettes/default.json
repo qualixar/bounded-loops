@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "dockerfile-no-root",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/Dockerfile to pin the base image to python:3.12-slim and add a non-root USER (app) before CMD. check_dockerfile.py then finds both checks satisfied and exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_dockerfile.py: 2 violations found — base image 'python:latest' floats on :latest, and no USER instruction switches away from root. Pinning the base image and adding a non-root user. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/Dockerfile",
+          "content": "FROM python:3.12-slim\n\nWORKDIR /app\n\nCOPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\n\nCOPY . .\n\nRUN useradd -m app\nUSER app\n\nEXPOSE 8080\nCMD [\"python3\", \"app.py\"]\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 195,
+      "notes": "The fix — check_dockerfile.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

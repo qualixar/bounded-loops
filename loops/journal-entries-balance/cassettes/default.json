@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "journal-entries-balance",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/journal.json to correct JE-1002's Cash credit from 250.00 to 200.00, matching the 200.00 Rent Expense debit. All three entries then balance, so check_balance.py exits 0 on lap 1.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_balance.py: JE-1002 unbalanced (total_debit=200.0, total_credit=250.0). Correcting the Cash credit line from 250.00 to 200.00 so the rent payment entry balances. Not touching check_balance.py.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/journal.json",
+          "content": "[\n  {\n    \"entry_id\": \"JE-1001\",\n    \"description\": \"Record cash sale\",\n    \"lines\": [\n      {\"account\": \"Cash\", \"debit\": 500.00, \"credit\": 0.00},\n      {\"account\": \"Revenue\", \"debit\": 0.00, \"credit\": 500.00}\n    ]\n  },\n  {\n    \"entry_id\": \"JE-1002\",\n    \"description\": \"Pay office rent\",\n    \"lines\": [\n      {\"account\": \"Rent Expense\", \"debit\": 200.00, \"credit\": 0.00},\n      {\"account\": \"Cash\", \"debit\": 0.00, \"credit\": 200.00}\n    ]\n  },\n  {\n    \"entry_id\": \"JE-1003\",\n    \"description\": \"Purchase equipment on credit\",\n    \"lines\": [\n      {\"account\": \"Equipment\", \"debit\": 1000.00, \"credit\": 0.00},\n      {\"account\": \"Accounts Payable\", \"debit\": 0.00, \"credit\": 1000.00}\n    ]\n  }\n]\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 255,
+      "notes": "The fix — check_balance.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

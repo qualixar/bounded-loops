@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# wreck.sh — the UNGATED version of {{LOOP_NAME}}. Same spec, no independent
+# gate. Demonstrates why a gate matters: without one, the loop trusts
+# whatever the agent claims, even if the underlying bug is still present.
+#
+# Requirements: bash 3.2+, a JDK 11+ (javac/java on PATH), curl, shasum
+# (used only by the diagnostic epilogue below — the wrecked loop itself
+# never runs the JUnit gate, that's the point).
+
+set -euo pipefail
+
+LOOP_DIR="$(cd "$(dirname "$0")" && pwd)"
+SEED_DIR="$LOOP_DIR/seed"
+MAX_ITER=10
+
+export PATH="/opt/homebrew/opt/openjdk/bin:$PATH"
+
+if ! command -v javac >/dev/null 2>&1 || ! command -v java >/dev/null 2>&1; then
+    echo "error: 'javac'/'java' not found on PATH." >&2
+    echo "       Install a JDK first, e.g.: brew install openjdk" >&2
+    exit 2
+fi
+
+JUNIT_VERSION="6.1.1"
+JUNIT_SHA256="7b16416e5727c645105c31b533440397f20df68f6ae850c6bfd0ce1d88db66c3"
+CACHE_DIR="$HOME/.cache/bounded-loops/junit"
+JAR="$CACHE_DIR/junit-platform-console-standalone-$JUNIT_VERSION.jar"
+
+fetch_junit_jar() {
+    mkdir -p "$CACHE_DIR"
+    if [ -f "$JAR" ]; then
+        return 0
+    fi
+    echo "Fetching JUnit Platform Console Standalone $JUNIT_VERSION (first use, cached after)..."
+    curl -fsSL -o "$JAR.tmp" \
+        "https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/$JUNIT_VERSION/junit-platform-console-standalone-$JUNIT_VERSION.jar"
+    if ! echo "$JUNIT_SHA256  $JAR.tmp" | shasum -a 256 -c - >/dev/null 2>&1; then
+        rm -f "$JAR.tmp"
+        echo "error: downloaded JUnit jar failed sha256 verification." >&2
+        exit 2
+    fi
+    mv "$JAR.tmp" "$JAR"
+}
+
+run_gate() {
+    rm -rf "$SEED_DIR/classes"
+    mkdir -p "$SEED_DIR/classes"
+    javac -d "$SEED_DIR/classes" -cp "$JAR" "$SEED_DIR"/*.java \
+        && java -jar "$JAR" execute --class-path "$SEED_DIR/classes" \
+            --scan-classpath --details=summary --disable-banner
+}
+
+fetch_junit_jar
+
+AGENT_CLI="${AGENT_CLI:-bash $LOOP_DIR/cassettes/stub-agent.sh}"
+
+echo "=== {{LOOP_NAME}} — WRECKED (no gate) ==="
+echo "WARNING: this loop trusts the agent's own claim — it never checks the JUnit gate."
+echo ""
+
+i=0
+cd "$SEED_DIR"
+
+while [ "$i" -lt "$MAX_ITER" ]; do
+    i=$((i + 1))
+    echo "--- Lap $i (no gate) ---"
+    $AGENT_CLI < "$LOOP_DIR/PROMPT.md"
+    echo "(no gate check here — this is the point)"
+done
+
+echo ""
+echo "--- Diagnostic epilogue (NOT part of the wrecked loop's own logic) ---"
+if gate_output="$(run_gate 2>&1)"; then
+    echo "the JUnit gate actually passes — the fix happened to land anyway."
+    exit 0
+else
+    echo "The ungated loop ran to completion with no gate ever checking the result."
+    echo "$gate_output"
+    exit 1
+fi

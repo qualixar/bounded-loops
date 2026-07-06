@@ -1,0 +1,24 @@
+# loops/fx-rate-sanity/loop.yaml
+name: fx-rate-sanity
+description: >
+  Drive an agent until a table of FX rates is internally consistent: every
+  rate is positive, the base-to-base rate is 1, and every inverse pair
+  multiplies to ~1 (no-arbitrage). The gate is `seed/check_fx.py`, a tiny,
+  dependency-free, pure-standard-library checker shipped WITH the loop.
+  Ships a real rates.json where USD/EUR (0.92) and EUR/USD (1.0870) do not
+  multiply to 1 — a classic stale-quote inconsistency. The agent must fix
+  the RATES, never the checker.
+pattern: evaluator-optimizer
+role:
+  - finance
+rung: L2
+spec: PROMPT.md
+forbid:
+  - "seed/check_fx.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_fx.py seed/rates.json"
+bounds: bounds.yaml
+memory: STATE.md

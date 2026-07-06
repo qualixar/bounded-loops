@@ -1,0 +1,5 @@
+{
+  "name": "release-notes-writer",
+  "description": "Drafts release notes from a merged PR list and changelog entries.",
+  "model": "gpt-4"
+}

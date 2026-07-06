@@ -1,0 +1,52 @@
+# {{LOOP_NAME}}
+
+Scaffolded via `bl new junit-basic`. A JUnit5-gated bounded loop: an agent
+edits `seed/Example.java` until the JUnit Platform Console Standalone
+launcher exits 0, or the loop halts at `bounds.yaml`'s `max_iterations`.
+
+## Files
+
+- `loop.yaml` — the manifest (name, gate, runner, bounds). `gate.kind:
+  command` runs the JUnit console-launcher directly (no Maven/Gradle
+  needed) — see below.
+- `bounds.yaml` — safety bounds (max iterations, no-progress window, etc).
+- `PROMPT.md` — the task spec given to the agent. Edit this first.
+- `STATE.md` — cross-lap memory, populated automatically.
+- `seed/` — the workspace the agent edits (`Example.java`) plus the gate
+  anchor test (`ExampleTest.java`, don't edit).
+- `cassettes/default.json` — a keyless, deterministic stub-agent recording
+  used by `bl run` (via `runner.default: stub` in `loop.yaml`).
+- `run.sh` / `wreck.sh` — standalone bash versions of the loop that need no
+  engine at all: `run.sh` is gated, `wreck.sh` deliberately removes the gate
+  to show why gating matters.
+
+## JUnit without a build tool
+
+There is no Maven/Gradle dependency here. The gate command (and `run.sh`/
+`wreck.sh`) fetch the official, single-jar **JUnit Platform Console
+Standalone** launcher (`org.junit.platform:junit-platform-console-standalone`)
+directly from Maven Central on first use, verify its sha256 checksum, and
+cache it at `~/.cache/bounded-loops/junit/` — every later lap and every
+other `junit-basic` loop on the same machine reuses the cached jar, so the
+fetch happens at most once.
+
+## Requirements
+
+- A JDK (11+) with `javac`/`java` on `PATH`. If you installed OpenJDK via
+  Homebrew, it is keg-only and not linked onto the default `PATH` — export
+  it first: `export PATH="/opt/homebrew/opt/openjdk/bin:$PATH"` (`run.sh`/
+  `wreck.sh` already do this defensively; `bl run`'s `gate.kind: command`
+  command does too).
+- `curl` and `shasum` (both standard on macOS/Linux) for the one-time jar
+  fetch.
+
+## Quickstart
+
+```bash
+cd {{LOOP_NAME}}
+bl run .                 # via the bounded-loops engine (keyless stub runner)
+./run.sh                 # or standalone, no engine required
+```
+
+Replace `PROMPT.md`, `seed/`, and `cassettes/default.json` with your own
+task once you're ready to move past the starter example.

@@ -1,0 +1,15 @@
+{
+  "name": "bounded-loops",
+  "owner": {
+    "name": "Varun Pratap Bhardwaj",
+    "email": "varun.pratap.bhardwaj@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "bounded-loops",
+      "source": "./",
+      "description": "Run, lint, and list bounded AI-agent loops via the bounded-loops engine — a gate-verified, nine-bound-safe alternative to trusting an agent's own claim of DONE.",
+      "version": "0.1.0"
+    }
+  ]
+}

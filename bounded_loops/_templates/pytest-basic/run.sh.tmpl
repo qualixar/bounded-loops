@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# run.sh — standalone bounded loop for {{LOOP_NAME}}
+# NO engine required — this script IS a minimal bounded loop on its own.
+#
+# Usage:
+#   ./run.sh                          # uses stub agent (fixes seed/example.py)
+#   AGENT_CLI="claude -p" ./run.sh    # plug in any agent CLI
+#   AGENT_CLI="codex exec" ./run.sh   # same, with Codex
+#
+# Requirements: bash 3.2+, Python 3.11+, pytest (pip install pytest)
+
+set -euo pipefail
+
+LOOP_DIR="$(cd "$(dirname "$0")" && pwd)"
+SEED_DIR="$LOOP_DIR/seed"
+MAX_ITER=10
+
+if ! command -v pytest >/dev/null 2>&1; then
+    echo "error: 'pytest' not found on PATH." >&2
+    echo "       Install it first: pip install pytest" >&2
+    exit 2
+fi
+
+AGENT_CLI="${AGENT_CLI:-bash $LOOP_DIR/cassettes/stub-agent.sh}"
+
+echo "=== {{LOOP_NAME}} — standalone run ==="
+echo "Workspace : $SEED_DIR"
+echo "Agent     : $AGENT_CLI"
+echo "Max laps  : $MAX_ITER"
+echo ""
+
+i=0
+cd "$SEED_DIR"
+
+while [ "$i" -lt "$MAX_ITER" ]; do
+    i=$((i + 1))
+    echo "--- Lap $i ---"
+
+    # Direct stdin redirection, not a `cat | $AGENT_CLI` pipe: avoids a
+    # SIGPIPE/pipefail abort if AGENT_CLI doesn't fully drain stdin.
+    $AGENT_CLI < "$LOOP_DIR/PROMPT.md"
+
+    if pytest -q; then
+        echo ""
+        echo "GREEN — gate passed on lap $i"
+        exit 0
+    fi
+
+    echo "Gate failed. Looping..."
+done
+
+echo "HALT — max iterations ($MAX_ITER) reached without green gate"
+exit 1

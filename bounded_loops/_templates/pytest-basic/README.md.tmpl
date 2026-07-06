@@ -1,0 +1,30 @@
+# {{LOOP_NAME}}
+
+Scaffolded via `bl new pytest-basic`. A pytest-gated bounded loop: an agent
+edits `seed/example.py` until `pytest -q` passes, or the loop halts at
+`bounds.yaml`'s `max_iterations`.
+
+## Files
+
+- `loop.yaml` — the manifest (name, gate, runner, bounds).
+- `bounds.yaml` — safety bounds (max iterations, no-progress window, etc).
+- `PROMPT.md` — the task spec given to the agent. Edit this first.
+- `STATE.md` — cross-lap memory, populated automatically.
+- `seed/` — the workspace the agent edits (`example.py`) plus the gate
+  anchor test (`test_example.py`, don't edit).
+- `cassettes/default.json` — a keyless, deterministic stub-agent recording
+  used by `bl run` (via `runner.default: stub` in `loop.yaml`).
+- `run.sh` / `wreck.sh` — standalone bash versions of the loop that need no
+  engine at all: `run.sh` is gated, `wreck.sh` deliberately removes the gate
+  to show why gating matters.
+
+## Quickstart
+
+```bash
+cd {{LOOP_NAME}}
+bl run .                 # via the bounded-loops engine (keyless stub runner)
+./run.sh                 # or standalone, no engine required
+```
+
+Replace `PROMPT.md`, `seed/`, and `cassettes/default.json` with your own
+task once you're ready to move past the starter example.

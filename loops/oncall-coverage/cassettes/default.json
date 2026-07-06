@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "oncall-coverage",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/schedule.json to extend bob's shift from 8-14 to 8-16, closing the 14-16 gap so every hour of the 24-hour period is covered exactly once. check_coverage.py exits 0 on lap 1.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_coverage.py: hours 14-16 are an uncovered gap. Extending bob's shift end from 14 to 16 so it abuts carol's 16-24 shift with no gap and no overlap. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/schedule.json",
+          "content": "{\n  \"period_hours\": 24,\n  \"shifts\": [\n    {\"start\": 0, \"end\": 8, \"engineer\": \"alice\"},\n    {\"start\": 8, \"end\": 16, \"engineer\": \"bob\"},\n    {\"start\": 16, \"end\": 24, \"engineer\": \"carol\"}\n  ]\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 241,
+      "notes": "The fix — check_coverage.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

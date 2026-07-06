@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "idoc-xml-schema",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/idoc.xml to add the missing <MENGE> quantity to the item segment <E1EDP01>. check_idoc.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_idoc.py: 1 required element missing — <E1EDP01>/<MENGE> (quantity) is empty on the only item segment. Adding a non-empty MENGE value to the item. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/idoc.xml",
+          "content": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<IDOC BEGIN=\"1\">\n  <EDI_DC40 SEGMENT=\"1\">\n    <MANDT>800</MANDT>\n    <DOCNUM>0000000123456789</DOCNUM>\n    <MESTYP>ORDERS</MESTYP>\n  </EDI_DC40>\n  <E1EDK01 SEGMENT=\"1\">\n    <CURCY>USD</CURCY>\n    <WKURS>1.00000</WKURS>\n    <ZTERM>0001</ZTERM>\n  </E1EDK01>\n  <E1EDP01 SEGMENT=\"1\">\n    <POSEX>000010</POSEX>\n    <MATNR>000000000100123456</MATNR>\n    <MENGE>10</MENGE>\n  </E1EDP01>\n</IDOC>\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 241,
+      "notes": "The fix — check_idoc.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

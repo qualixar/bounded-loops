@@ -1,0 +1,14 @@
+# loops/transport-request-manifest/bounds.yaml
+max_iterations: 10
+no_progress_window: 3
+max_tokens: null
+max_wallclock_s: 60
+sandbox: true
+quarantine_inputs: true
+schema: null
+trace: true
+# L2 in production: a passing dependency check should gate human sign-off
+# before a transport request is released for import, not auto-release. The
+# keyless demo runs unattended so it can reach DONE offline; flip this to
+# true when you wire a real runner.
+require_approval: false

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "iso20022-payment-valid",
+  "created": "2026-07-06",
+  "description": "Lap 1 writes a corrected output.json: converts amount from the string '1500.00' to the number 1500.00, and adds the missing currency field with the valid enum value 'EUR'. JsonSchemaGate validates cleanly on lap 1.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read schema.json: msgId/amount/currency/debtorIban/creditorIban are all required, additionalProperties is false, amount must be a number > 0, currency must be one of EUR/USD/GBP. Read output.json: amount is the string '1500.00' (wrong type) and currency is missing entirely. Converting amount to the number 1500.00 and adding currency: 'EUR'.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "output.json",
+          "content": "{\n  \"msgId\": \"MSG-20260706-0001\",\n  \"amount\": 1500.00,\n  \"currency\": \"EUR\",\n  \"debtorIban\": \"DE89370400440532013000\",\n  \"creditorIban\": \"FR1420041010050500013M02606\"\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 246,
+      "notes": "The fix — output.json now validates against schema.json. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

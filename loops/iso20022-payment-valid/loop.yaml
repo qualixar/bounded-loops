@@ -1,0 +1,19 @@
+# loops/iso20022-payment-valid/loop.yaml
+name: iso20022-payment-valid
+description: >
+  Drive an agent until a simplified ISO 20022 pain.001 credit-transfer
+  instruction conforms to its contract. Demonstrates the JsonSchemaGate
+  end to end: real gate FAIL on a broken output.json (amount is a
+  string instead of a positive number, and currency is missing entirely),
+  then real gate PASS after the agent corrects it against schema.json.
+pattern: evaluator-optimizer
+role:
+  - finance
+rung: L2
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: jsonschema
+bounds: bounds.yaml
+memory: STATE.md

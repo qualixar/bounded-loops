@@ -1,0 +1,9 @@
+{
+  "invoice_number": "INV-3001",
+  "po_number": "PO-1001",
+  "lines": [
+    {"sku": "WIDGET-A", "unit_price": 12.50, "quantity": 100},
+    {"sku": "WIDGET-B", "unit_price": 7.25, "quantity": 65},
+    {"sku": "WIDGET-C", "unit_price": 30.00, "quantity": 20}
+  ]
+}

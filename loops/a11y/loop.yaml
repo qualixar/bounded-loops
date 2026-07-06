@@ -1,0 +1,31 @@
+# loops/a11y/loop.yaml
+name: a11y
+description: >
+  Drive an agent until a static accessibility linter reports zero violations
+  in an HTML file. The gate is `seed/a11y_lint.py` — a tiny, dependency-free,
+  pure-standard-library checker shipped WITH the loop, so it runs anywhere
+  Python does: no browser, no WebDriver, no npm, no external tool, no API key.
+  Ships a real index.html with a missing <img alt>, a missing <html lang>, and
+  an unlabeled <input> — the fixable, statically-detectable WCAG subset.
+  (axe-core was rejected repo-wide: it needs a running browser + WebDriver +
+  a live URL, which does not fit bounded-loops' keyless/static design; and no
+  keyless universal a11y tool exists, so this loop ships a small honest linter
+  rather than fake a dependency-heavy one.)
+pattern: evaluator-optimizer
+role:
+  - frontend
+  - engineering
+rung: L2
+spec: PROMPT.md
+# The gate's LOGIC is the linter script itself — the agent fixes index.html,
+# it must never rewrite the checker to pass. The engine refuses any runner
+# write matching these globs (anchor integrity).
+forbid:
+  - "seed/a11y_lint.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/a11y_lint.py seed/index.html"
+bounds: bounds.yaml
+memory: STATE.md

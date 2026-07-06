@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "gdpr-dpa-terms",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/dpa.md to add the two missing mandatory Art.28(3) terms: Sub-Processor and Audit. All other terms are left untouched, so check_dpa.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_dpa.py: 2 mandatory Art.28(3) terms missing — Sub-Processor and Audit. Adding a Sub-Processor section covering engagement and flow-down of obligations, and an Audit section granting the controller audit and inspection rights. Not touching the checker or any existing term.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/dpa.md",
+          "content": "# Data Processing Agreement\n\nThis Data Processing Agreement (\"DPA\") supplements the underlying services\nagreement between Controller and Processor and governs the processing of\npersonal data carried out by Processor on behalf of Controller.\n\n## Subject Matter of Processing\n\nThis DPA covers the processing of personal data necessary for Processor to\nprovide the hosting and analytics services described in the underlying\nservices agreement.\n\n## Duration of Processing\n\nProcessing shall continue for the term of the underlying services\nagreement and shall cease upon termination, subject to the data return and\ndeletion provisions herein.\n\n## Nature and Purpose of Processing\n\nThe nature of the processing includes storage, retrieval, and analysis of\npersonal data for the purpose of providing the contracted services to\nController.\n\n## Type of Personal Data and Categories of Data Subjects\n\nThe personal data processed includes contact details and usage data\nrelating to Controller's employees and end users.\n\n## Obligations of the Controller\n\nController shall ensure it has a valid legal basis for the processing and\nshall provide instructions to Processor consistent with applicable data\nprotection law.\n\n## Sub-Processor\n\nProcessor shall not engage a sub-processor to carry out any processing\nactivities without prior specific or general written authorization from\nController. Where a sub-processor is engaged, Processor shall impose on\nthat sub-processor, by way of contract, data protection obligations no\nless protective than those set out in this DPA, and Processor shall\nremain fully liable to Controller for the sub-processor's performance.\n\n## Confidentiality\n\nProcessor shall ensure that persons authorized to process personal data\nhave committed themselves to confidentiality or are under an appropriate\nstatutory obligation of confidentiality.\n\n## Security Measures\n\nProcessor shall implement appropriate technical and organizational\nmeasures to ensure a level of security appropriate to the risk, including\nencryption, access controls, and regular testing of such measures.\n\n## Audit\n\nProcessor shall make available to Controller all information necessary to\ndemonstrate compliance with this DPA and shall allow for and contribute\nto audits, including inspections, conducted by Controller or an auditor\nmandated by Controller, on reasonable prior notice and no more than once\nper year absent a security incident.\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 289,
+      "notes": "The fix — check_dpa.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

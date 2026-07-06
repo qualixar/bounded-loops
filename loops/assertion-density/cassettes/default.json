@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "assertion-density",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/sample_tests.py to add a real assertion to test_login_flow, the only test the checker flags as assertion-free. It now asserts the login result is truthy for valid credentials, actually checking the behavior it exercises. check_assertions.py exits 0 on lap 1. Demonstrates the loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_assertions.py: 1 assertion-free test found — 'test_login_flow' (calls login(...) and prints the result but never asserts anything, so it passes even if login is broken). Adding a real assertion on the actual returned value. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/sample_tests.py",
+          "content": "\"\"\"sample_tests.py — a text fixture of test code (not collected by pytest;\nit lives under loops/assertion-density/seed/ and is read by the checker as\nsource text/AST, never executed).\n\nFixed: 'test_login_flow' now asserts on the actual return value of login(),\nso it can fail if login() is broken.\n\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef login(username, password):\n    return bool(username) and bool(password)\n\n\ndef test_addition():\n    assert add(2, 2) == 4\n\n\ndef test_login_flow():\n    result = login(\"alice\", \"hunter2\")\n    assert result is True\n\n\ndef test_login_rejects_empty_password():\n    assert login(\"alice\", \"\") is False\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 205,
+      "notes": "The fix — check_assertions.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

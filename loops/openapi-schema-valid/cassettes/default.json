@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "openapi-schema-valid",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/openapi.json to add a responses object to the POST /widgets operation (201 Created), the only operation missing one. All required top-level fields (openapi, info.title, info.version) were already present, so check_openapi.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_openapi.py: 1 violation — operation 'POST /widgets' is missing a non-empty 'responses' object. Adding a 201 Created response to POST /widgets. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/openapi.json",
+          "content": "{\n  \"openapi\": \"3.0.3\",\n  \"info\": {\n    \"title\": \"Widgets API\",\n    \"version\": \"1.0.0\"\n  },\n  \"paths\": {\n    \"/widgets\": {\n      \"get\": {\n        \"summary\": \"List widgets\",\n        \"responses\": {\n          \"200\": {\n            \"description\": \"A list of widgets\"\n          }\n        }\n      },\n      \"post\": {\n        \"summary\": \"Create a widget\",\n        \"responses\": {\n          \"201\": {\n            \"description\": \"The created widget\"\n          }\n        }\n      }\n    },\n    \"/widgets/{id}\": {\n      \"get\": {\n        \"summary\": \"Get a widget by id\",\n        \"responses\": {\n          \"200\": {\n            \"description\": \"The requested widget\"\n          },\n          \"404\": {\n            \"description\": \"Widget not found\"\n          }\n        }\n      }\n    }\n  }\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 214,
+      "notes": "The fix — check_openapi.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

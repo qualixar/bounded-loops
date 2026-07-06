@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# run.sh — standalone bounded loop for {{LOOP_NAME}}
+# NO engine required — this script IS a minimal bounded loop on its own.
+#
+# Usage:
+#   ./run.sh                          # uses stub agent (fixes seed/Example.java)
+#   AGENT_CLI="claude -p" ./run.sh    # plug in any agent CLI
+#   AGENT_CLI="codex exec" ./run.sh   # same, with Codex
+#
+# Requirements: bash 3.2+, a JDK 11+ (javac/java on PATH), curl, shasum.
+# The JUnit Platform Console Standalone launcher jar is fetched once from
+# Maven Central on first use and cached at ~/.cache/bounded-loops/junit/ —
+# no build tool (Maven/Gradle) needed.
+
+set -euo pipefail
+
+LOOP_DIR="$(cd "$(dirname "$0")" && pwd)"
+SEED_DIR="$LOOP_DIR/seed"
+MAX_ITER=10
+
+# Defensive: Homebrew's openjdk formula is keg-only (not linked onto the
+# default PATH) so it doesn't collide with a system/other JDK. Prepending
+# it here is a no-op if some other JDK is already earlier on PATH.
+export PATH="/opt/homebrew/opt/openjdk/bin:$PATH"
+
+if ! command -v javac >/dev/null 2>&1 || ! command -v java >/dev/null 2>&1; then
+    echo "error: 'javac'/'java' not found on PATH." >&2
+    echo "       Install a JDK first, e.g.: brew install openjdk" >&2
+    exit 2
+fi
+
+JUNIT_VERSION="6.1.1"
+JUNIT_SHA256="7b16416e5727c645105c31b533440397f20df68f6ae850c6bfd0ce1d88db66c3"
+CACHE_DIR="$HOME/.cache/bounded-loops/junit"
+JAR="$CACHE_DIR/junit-platform-console-standalone-$JUNIT_VERSION.jar"
+
+fetch_junit_jar() {
+    mkdir -p "$CACHE_DIR"
+    if [ -f "$JAR" ]; then
+        return 0
+    fi
+    echo "Fetching JUnit Platform Console Standalone $JUNIT_VERSION (first use, cached after)..."
+    curl -fsSL -o "$JAR.tmp" \
+        "https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/$JUNIT_VERSION/junit-platform-console-standalone-$JUNIT_VERSION.jar"
+    if ! echo "$JUNIT_SHA256  $JAR.tmp" | shasum -a 256 -c - >/dev/null 2>&1; then
+        rm -f "$JAR.tmp"
+        echo "error: downloaded JUnit jar failed sha256 verification." >&2
+        exit 2
+    fi
+    mv "$JAR.tmp" "$JAR"
+}
+
+run_gate() {
+    rm -rf "$SEED_DIR/classes"
+    mkdir -p "$SEED_DIR/classes"
+    javac -d "$SEED_DIR/classes" -cp "$JAR" "$SEED_DIR"/*.java \
+        && java -jar "$JAR" execute --class-path "$SEED_DIR/classes" \
+            --scan-classpath --details=summary --disable-banner
+}
+
+fetch_junit_jar
+
+AGENT_CLI="${AGENT_CLI:-bash $LOOP_DIR/cassettes/stub-agent.sh}"
+
+echo "=== {{LOOP_NAME}} — standalone run ==="
+echo "Workspace : $SEED_DIR"
+echo "Agent     : $AGENT_CLI"
+echo "Max laps  : $MAX_ITER"
+echo ""
+
+i=0
+cd "$SEED_DIR"
+
+while [ "$i" -lt "$MAX_ITER" ]; do
+    i=$((i + 1))
+    echo "--- Lap $i ---"
+
+    # Direct stdin redirection, not a `cat | $AGENT_CLI` pipe: avoids a
+    # SIGPIPE/pipefail abort if AGENT_CLI doesn't fully drain stdin.
+    $AGENT_CLI < "$LOOP_DIR/PROMPT.md"
+
+    if run_gate; then
+        echo ""
+        echo "GREEN — gate passed on lap $i"
+        exit 0
+    fi
+
+    echo "Gate failed. Looping..."
+done
+
+echo "HALT — max iterations ($MAX_ITER) reached without green gate"
+exit 1

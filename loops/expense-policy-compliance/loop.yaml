@@ -1,0 +1,25 @@
+# loops/expense-policy-compliance/loop.yaml
+name: expense-policy-compliance
+description: >
+  Drive an agent until every line of an expense report complies with the
+  company's expense policy: allowed category and within its per-line cap.
+  The gate is `seed/check_expenses.py`, a tiny, dependency-free,
+  pure-standard-library checker shipped WITH the loop. Ships a real
+  expenses.json with one line over its category cap (a $110 meal against a
+  $75 cap) and one line in a disallowed category ("entertainment"). The
+  agent must fix the EXPENSES, never the policy or the checker.
+pattern: evaluator-optimizer
+role:
+  - finance
+rung: L2
+spec: PROMPT.md
+forbid:
+  - "seed/check_expenses.py"
+  - "seed/policy.json"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_expenses.py seed/expenses.json seed/policy.json"
+bounds: bounds.yaml
+memory: STATE.md

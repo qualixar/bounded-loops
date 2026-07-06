@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "clinical-note-completeness",
+  "created": "2026-07-06",
+  "description": "Lap 1 writes a corrected output.json: adds the missing plan section and fixes icd10_codes from the invalid 'ABC' to real, correctly-shaped ICD-10-CM codes. JsonSchemaGate validates cleanly on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read schema.json: patient_id/encounter_date/subjective/objective/assessment/plan/icd10_codes are all required, additionalProperties is false, icd10_codes entries must match the ICD-10-CM pattern. Read output.json: plan is missing entirely and icd10_codes contains 'ABC', which does not match the pattern. Adding a plan consistent with the assessment and fixing the codes to valid ICD-10-CM values (E11.9 for new-onset type 2 diabetes, I10 for the noted elevated blood pressure).",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "output.json",
+          "content": "{\n  \"patient_id\": \"PT-10492\",\n  \"encounter_date\": \"2026-07-06\",\n  \"subjective\": \"Patient reports increased thirst, frequent urination, and fatigue over the past 3 weeks. No prior diabetes diagnosis. Denies chest pain or blurred vision.\",\n  \"objective\": \"Vitals: BP 138/86, HR 82, BMI 31.2. Random plasma glucose 248 mg/dL. Fasting glucose repeated at 212 mg/dL. No acanthosis nigricans noted.\",\n  \"assessment\": \"New-onset type 2 diabetes mellitus, likely contributed to by obesity. Elevated blood pressure noted, monitor for hypertension.\",\n  \"plan\": \"Start metformin 500mg twice daily with meals, titrate as tolerated. Order HbA1c and lipid panel. Refer to nutrition for diabetic diet counseling. Recheck fasting glucose and blood pressure in 4 weeks. Advise home glucose monitoring twice daily.\",\n  \"icd10_codes\": [\"E11.9\", \"I10\"]\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 268,
+      "notes": "The fix — output.json now validates against schema.json. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

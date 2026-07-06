@@ -1,0 +1,15 @@
+{
+  "contract_title": "Master Services Agreement",
+  "parties": ["Acme Corp", "Globex LLC"],
+  "clauses": {
+    "termination": {
+      "present": true,
+      "text": "Either party may terminate this Agreement upon 30 days written notice."
+    },
+    "indemnification": {
+      "present": true,
+      "text": "Each party shall indemnify the other against third-party claims arising from breach of this Agreement."
+    },
+    "governing_law": "Delaware"
+  }
+}

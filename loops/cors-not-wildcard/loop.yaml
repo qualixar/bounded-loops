@@ -1,0 +1,23 @@
+name: cors-not-wildcard
+description: >
+  Drive an agent until `seed/security_config.json` never combines a
+  wildcard CORS origin with credentialed requests. The gate is
+  `seed/check_cors.py` — a tiny, dependency-free, pure-standard-library
+  checker shipped WITH the loop (no network, no external tool): it fails if
+  `allow_credentials` is true while `allow_origins` contains `"*"`. Ships a
+  real security_config.json with exactly that misconfiguration. The agent
+  must fix the CONFIG, never the checker.
+pattern: evaluator-optimizer
+role:
+  - security
+rung: L1
+spec: PROMPT.md
+forbid:
+  - "seed/check_cors.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_cors.py seed/security_config.json"
+bounds: bounds.yaml
+memory: STATE.md

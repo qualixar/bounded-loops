@@ -1,0 +1,17 @@
+# loops/langgraph-example/loop.yaml
+name: langgraph-example
+description: >
+  Wires an existing LangGraph graph into bounded-loops. NOT a keyless demo —
+  requires `pip install langgraph`. Shows the PythonCallableRunner contract
+  applied to a real production agent framework.
+pattern: evaluator-optimizer
+role: [backend, engineering]
+rung: L1
+runner:
+  default: python_callable
+  module_path: loops.langgraph-example.glue
+  function_name: run_turn
+gate:
+  kind: pytest
+  run: "pytest -q"
+bounds: bounds.yaml

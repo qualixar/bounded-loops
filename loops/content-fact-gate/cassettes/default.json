@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "content-fact-gate",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/article.md, replacing the dead .invalid citation with the same live IANA reference already used elsewhere in the article (both sentences are genuinely about IANA-administered domain-name policy). markdown-link-check goes green (exit 0) on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran npx --yes markdown-link-check seed/article.md. It reports https://this-domain-absolutely-does-not-exist-boundedloops-demo.invalid/some-page as dead. That citation supports a claim about domain-name policy, which the article's second citation (https://www.iana.org/domains/reserved) already covers with a real, live source. Replacing the dead URL with that same live IANA reference rather than inventing a new source.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/article.md",
+          "content": "# Why Verifying Citations Matters\n\nPublishing content with unverified links is a quiet form of misinformation.\nA broken or fabricated citation erodes trust the moment a reader clicks\nthrough and finds nothing there.\n\nConsider a claim about domain-name policy. One version of this article\ncited a fabricated source for that claim: [registry policy\nnotes](https://www.iana.org/domains/reserved).\nThat link now resolves, because the citation was replaced with a real,\nlive source for the same domain-name-policy claim.\n\nA second claim, about which top-level domains are reserved for\ndocumentation and testing, cites a real, stable source: [IANA reserved\ndomains](https://www.iana.org/domains/reserved).\n\nBefore any content ships, every citation link should be checked for\nliveness — not just plausibility. A link that reads correctly but resolves\nto nothing is still a broken promise to the reader.\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 241,
+      "notes": "The fix — markdown-link-check now exits 0. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

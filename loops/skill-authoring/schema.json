@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Skill manifest",
+  "description": "Required shape for an agent-skill's metadata/frontmatter before it is considered publishable.",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Kebab-case skill identifier, e.g. 'pdf-extractor'."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 20,
+      "description": "A substantive, non-trivial explanation of what the skill does and when to use it."
+    },
+    "allowed_tools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "description": "Tool names this skill is permitted to invoke."
+    }
+  },
+  "required": ["name", "description", "allowed_tools"],
+  "additionalProperties": false
+}

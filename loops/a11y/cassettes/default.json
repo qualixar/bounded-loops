@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "a11y",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/index.html to fix all three static a11y violations: adds `lang=\"en\"` to <html>, an `alt` to the <img>, and a <label for> for the email <input> (keyless demo: the stub IS the 'agent'). a11y_lint.py goes clean (exit 0) on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran python3 seed/a11y_lint.py seed/index.html. 3 violations: <img> missing alt (A1), <html> missing lang (A2), <input> unlabeled (A3). Fixing all three.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/index.html",
+          "content": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <title>Sign up</title>\n</head>\n<body>\n  <img src=\"logo.png\" alt=\"Acme logo\">\n  <h1>Create your account</h1>\n  <form>\n    <label for=\"email\">Email</label>\n    <input type=\"email\" id=\"email\">\n    <button type=\"submit\">Sign up</button>\n  </form>\n</body>\n</html>\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 214,
+      "notes": "The fix — a11y_lint.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

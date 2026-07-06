@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "bibliography-completeness",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/paper.md to fix the one bad citation key: the body cites '[@jones2021]', which is not listed under '## References' (only smith2020 and lee2019 are listed). The claim about stale/duplicated memory entries degrading accuracy is really the finding backed by lee2019 (the versioned-state-stores paper) — a typo'd key, not a fabricated claim. Correcting [@jones2021] to [@lee2019] makes check_biblio.py exit 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_biblio.py: 1 citation key not found in References — '[@jones2021]', cited on the memory-staleness sentence. The References section only lists smith2020 and lee2019. The claim (stale/duplicated memory entries degrading accuracy, motivating governed versioned state) is really the finding of lee2019, the versioned-state-stores paper; this is a typo'd/mis-keyed reference, not a fabricated claim. Correcting [@jones2021] to [@lee2019] in the paper body. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/paper.md",
+          "content": "# Toward Reliable Local-First Agent Memory\n\nLocal-first software preserves user ownership of data even when a network\nconnection is unavailable [@smith2020].\n\nRecent work on retrieval quality in long-running agent sessions has shown\nthat stale or duplicated memory entries degrade downstream task accuracy\nover time [@lee2019].\n\nWe build on these findings to argue that a governed, versioned memory store\nis necessary for production agent deployments [@lee2019].\n\n## References\n\n- smith2020: Smith, J. \"Local-First Software: You Own Your Data.\" 2020.\n- lee2019: Lee, K. \"Versioned State Stores for Long-Running Agents.\" 2019.\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 253,
+      "notes": "The fix — check_biblio.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

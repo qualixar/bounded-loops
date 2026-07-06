@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SOAPClinicalNote",
+  "description": "Structural completeness contract for a SOAP clinical note.",
+  "type": "object",
+  "properties": {
+    "patient_id": {
+      "type": "string",
+      "description": "Unique patient identifier."
+    },
+    "encounter_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Date of the clinical encounter (ISO 8601 date)."
+    },
+    "subjective": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Patient-reported symptoms and history (the S in SOAP)."
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Observable, measurable clinical findings (the O in SOAP)."
+    },
+    "assessment": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Clinician's diagnosis or differential (the A in SOAP)."
+    },
+    "plan": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Treatment plan and next steps (the P in SOAP)."
+    },
+    "icd10_codes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-TV-Z][0-9][0-9AB](\\.[0-9A-TV-Z]{1,4})?$"
+      },
+      "description": "ICD-10-CM diagnosis codes supporting the assessment."
+    }
+  },
+  "required": [
+    "patient_id",
+    "encounter_date",
+    "subjective",
+    "objective",
+    "assessment",
+    "plan",
+    "icd10_codes"
+  ],
+  "additionalProperties": false
+}

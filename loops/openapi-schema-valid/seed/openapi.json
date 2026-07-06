@@ -1,0 +1,35 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Widgets API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/widgets": {
+      "get": {
+        "summary": "List widgets",
+        "responses": {
+          "200": {
+            "description": "A list of widgets"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a widget"
+      }
+    },
+    "/widgets/{id}": {
+      "get": {
+        "summary": "Get a widget by id",
+        "responses": {
+          "200": {
+            "description": "The requested widget"
+          },
+          "404": {
+            "description": "Widget not found"
+          }
+        }
+      }
+    }
+  }
+}

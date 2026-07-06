@@ -1,0 +1,21 @@
+# loops/osv-scanner-example/loop.yaml
+name: osv-scanner-example
+description: >
+  Drive an agent until osv-scanner reports no known vulnerabilities.
+  Ships with a real, deliberately-outdated package-lock.json pinning
+  minimatch@3.0.4 (4 real, live-confirmed CVEs — GHSA-23c5-xmqv-rm74,
+  GHSA-3ppc-4f35-3m26, GHSA-7r86-cg39-jmmj, GHSA-f8q6-p94x-37v3).
+  Demonstrates the OsvGate end to end: real gate FAIL on the
+  vulnerable lockfile, then real gate PASS after the agent bumps the pin.
+pattern: evaluator-optimizer
+role:
+  - security
+  - engineering
+rung: L2
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: osv
+bounds: bounds.yaml
+memory: STATE.md

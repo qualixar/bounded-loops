@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BlogPostFrontmatter",
+  "description": "Contract for a blog post's parsed frontmatter.",
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Human-readable post title."
+    },
+    "date": {
+      "type": "string",
+      "format": "date",
+      "description": "Publish date, ISO 8601 (YYYY-MM-DD)."
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$",
+      "description": "URL-safe slug: lowercase letters, digits, hyphens only."
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "description": "One or more topic tags."
+    }
+  },
+  "required": ["title", "date", "slug", "tags"],
+  "additionalProperties": false
+}

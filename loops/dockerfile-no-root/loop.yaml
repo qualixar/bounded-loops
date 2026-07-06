@@ -1,0 +1,23 @@
+name: dockerfile-no-root
+description: >
+  Drive an agent until `seed/Dockerfile` pins its base image and drops root
+  before CMD. The gate is `seed/check_dockerfile.py` — a tiny, dependency-
+  free, pure-standard-library checker shipped WITH the loop (no hadolint, no
+  trivy, no network): it requires a `USER` instruction that is not
+  root/0 and forbids a `:latest`-tagged or untagged base image. Ships a
+  real Dockerfile that floats on `python:latest` and never drops root. The
+  agent must fix the DOCKERFILE, never the checker.
+pattern: evaluator-optimizer
+role:
+  - security
+rung: L1
+spec: PROMPT.md
+forbid:
+  - "seed/check_dockerfile.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_dockerfile.py seed/Dockerfile"
+bounds: bounds.yaml
+memory: STATE.md

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# cassettes/stub-agent.sh — used only by the standalone run.sh/wreck.sh
+# scripts (NOT by `bl run`, which uses cassettes/default.json directly via
+# the stub runner adapter). Writes the fixed example.go to the CURRENT
+# directory (cwd = seed/ — run.sh/wreck.sh both `cd "$SEED_DIR"` before
+# invoking $AGENT_CLI), matching lap 1 of default.json, so the standalone
+# scripts have a keyless "agent" to drive against without any API key.
+set -euo pipefail
+
+cat > example.go <<'GO'
+package example
+
+// Add adds two integers.
+func Add(a int, b int) int {
+	return a + b
+}
+GO
+
+echo "stub-agent: wrote example.go"

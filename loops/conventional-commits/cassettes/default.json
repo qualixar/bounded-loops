@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "conventional-commits",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/commits.txt to fix the two malformed subjects: 'Updated the readme with new setup instructions' becomes 'docs(readme): update setup instructions' and 'WIP fix login bug' becomes 'fix(auth): fix login bug'. check_commits.py exits 0 on lap 1.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_commits.py: 2 malformed subjects — line 3 has no type prefix, line 6 is a WIP marker not a Conventional Commits type. Rewriting both to conform while preserving their meaning. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/commits.txt",
+          "content": "feat(auth): add refresh-token rotation\nfix(api): correct off-by-one in pagination cursor\ndocs(readme): update setup instructions\ndocs(readme): document the new deploy pipeline\nrefactor(core): extract retry policy into its own module\nfix(auth): fix login bug\nchore(deps): bump requests to 2.32.0\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 254,
+      "notes": "The fix — check_commits.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

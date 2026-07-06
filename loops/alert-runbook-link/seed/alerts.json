@@ -1,0 +1,6 @@
+[
+  {"alert": "apigw-5xx-rate-high", "runbook_url": "https://runbooks.internal/apigw-5xx-rate-high"},
+  {"alert": "db-replication-lag-high", "runbook_url": "https://runbooks.internal/db-replication-lag-high"},
+  {"alert": "queue-depth-critical", "runbook_url": ""},
+  {"alert": "disk-usage-critical", "runbook_url": "https://runbooks.internal/disk-usage-critical"}
+]

@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ExtractedContractClauses",
+  "description": "Required-clauses contract for a legal-document clause-extraction pipeline. Every extraction must confirm presence (or deliberate absence) of the four load-bearing clauses, each with its own source text.",
+  "type": "object",
+  "properties": {
+    "contract_title": {
+      "type": "string",
+      "description": "Title of the source contract, e.g. 'Master Services Agreement'."
+    },
+    "parties": {
+      "type": "array",
+      "description": "Named parties to the contract.",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 2
+    },
+    "clauses": {
+      "type": "object",
+      "description": "Extraction result for each required clause type.",
+      "properties": {
+        "termination": {
+          "$ref": "#/definitions/clause"
+        },
+        "indemnification": {
+          "$ref": "#/definitions/clause"
+        },
+        "governing_law": {
+          "$ref": "#/definitions/clause"
+        },
+        "confidentiality": {
+          "$ref": "#/definitions/clause"
+        }
+      },
+      "required": [
+        "termination",
+        "indemnification",
+        "governing_law",
+        "confidentiality"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": ["contract_title", "parties", "clauses"],
+  "additionalProperties": false,
+  "definitions": {
+    "clause": {
+      "type": "object",
+      "description": "Extraction result for a single clause type.",
+      "properties": {
+        "present": {
+          "type": "boolean",
+          "description": "Whether the clause was found in the source contract."
+        },
+        "text": {
+          "type": "string",
+          "description": "Verbatim or summarized clause text; empty string if not present."
+        }
+      },
+      "required": ["present", "text"],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,19 @@
+# loops/autogen-example/loop.yaml
+name: autogen-example
+description: >
+  Wires an existing Microsoft Agent Framework team (AutoGen's converged
+  successor) into bounded-loops. NOT a keyless
+  demo — requires `pip install agent-framework`. Shows the
+  PythonCallableRunner contract applied to a real production agent
+  framework.
+pattern: evaluator-optimizer
+role: [backend, engineering]
+rung: L1
+runner:
+  default: python_callable
+  module_path: loops.autogen-example.glue
+  function_name: run_turn
+gate:
+  kind: pytest
+  run: "pytest -q"
+bounds: bounds.yaml

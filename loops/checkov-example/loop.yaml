@@ -1,0 +1,22 @@
+# loops/checkov-example/loop.yaml
+name: checkov-example
+description: >
+  Drive an agent until checkov reports zero failed infrastructure-as-code
+  checks. Ships with a real, deliberately-misconfigured Terraform security
+  group (open to 0.0.0.0/0 on all ports/protocols, both directions) —
+  6 real, live-confirmed checkov findings (CKV_AWS_24, CKV_AWS_23,
+  CKV_AWS_25, CKV_AWS_260, CKV_AWS_277, CKV_AWS_382).
+  Demonstrates the CheckovGate end to end: real gate FAIL on the
+  misconfigured resource, then real gate PASS after the agent restricts it.
+pattern: evaluator-optimizer
+role:
+  - security
+  - engineering
+rung: L2
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: checkov
+bounds: bounds.yaml
+memory: STATE.md

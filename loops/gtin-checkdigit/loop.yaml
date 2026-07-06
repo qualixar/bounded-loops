@@ -1,0 +1,27 @@
+# loops/gtin-checkdigit/loop.yaml
+name: gtin-checkdigit
+description: >
+  Drive an agent until every product's GTIN-13 has a valid mod-10 check
+  digit. The gate is `seed/check_gtin.py` — a tiny, dependency-free,
+  pure-standard-library checker shipped WITH the loop, so it runs anywhere
+  Python does: no network, no GS1 lookup API, no key. Ships a real
+  products.json where one GTIN (SKU-200) has a corrupted final check digit
+  (5 instead of the correct 1). The agent must correct that single digit,
+  never edit the checker to force a pass.
+pattern: evaluator-optimizer
+role:
+  - retail
+rung: L1
+spec: PROMPT.md
+# The gate's LOGIC is the checker. The agent fixes the check digit; it must
+# never rewrite the checker to fake a green gate.
+# The engine refuses any runner write matching these globs (anchor integrity).
+forbid:
+  - "seed/check_gtin.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_gtin.py seed/products.json"
+bounds: bounds.yaml
+memory: STATE.md

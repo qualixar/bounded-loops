@@ -1,0 +1,5 @@
+# Runtime dependencies for the billing service
+requests==2.31.0
+flask>=2.3.0
+pydantic==2.5.0
+numpy

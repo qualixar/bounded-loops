@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ledger.jsonl
+dist/
+build/
+node_modules/
+
+# macOS
+.DS_Store
+
+# coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+
+# runtime memory log (bl run) — template STATE.md stays tracked
+*.runtime

@@ -1,0 +1,31 @@
+# loops/citation-existence-check/loop.yaml
+name: citation-existence-check
+description: >
+  Drive an agent until every case citation in a legal document resolves to a
+  real case in a trusted reporter. The gate is `seed/check_citations.py` — a
+  tiny, dependency-free, pure-standard-library checker shipped WITH the loop,
+  so it runs anywhere Python does: no network, no legal API, no key. Ships a
+  real brief.md that cites a mis-paginated case (Miranda at the wrong page) and
+  a fully fabricated one (Thompson v. Halden) — the exact hallucination shape
+  behind the 1,600+ documented AI legal-sanction cases (Charlotin database,
+  mid-2026). The reporter is ground truth: the agent must fix the BRIEF, never
+  edit the reporter or the checker to force a pass.
+pattern: evaluator-optimizer
+role:
+  - legal
+  - research
+rung: L2
+spec: PROMPT.md
+# The gate's LOGIC is the checker, and its GROUND TRUTH is the reporter. The
+# agent fixes the document; it must never rewrite either to fake a green gate.
+# The engine refuses any runner write matching these globs (anchor integrity).
+forbid:
+  - "seed/check_citations.py"
+  - "seed/known_reporter.json"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_citations.py seed/brief.md seed/known_reporter.json"
+bounds: bounds.yaml
+memory: STATE.md

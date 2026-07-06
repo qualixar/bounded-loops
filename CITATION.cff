@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use bounded-loops, please cite it as below."
+type: software
+title: "bounded-loops"
+abstract: "Runnable, bounded AI-agent loops: an independent gate verifies every lap under nine enforced safety bounds plus a kill switch, so a loop is DONE only when the gate says so — never when the agent claims it. The runnable engine layer for loop engineering, with 63 runnable loops across a dozen industries."
+authors:
+  - family-names: "Bhardwaj"
+    given-names: "Varun Pratap"
+    affiliation: "Qualixar"
+version: "0.1.0"
+date-released: "2026-07-07"
+license: Apache-2.0
+url: "https://qualixar.com/products/bounded-loops"
+repository-code: "https://github.com/qualixar/bounded-loops"
+keywords:
+  - "AI agents"
+  - "loop engineering"
+  - "AI reliability engineering"
+  - "agent loops"
+  - "bounded loops"
+  - "independent gate"

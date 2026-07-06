@@ -1,0 +1,20 @@
+# loops/clinical-note-completeness/loop.yaml
+name: clinical-note-completeness
+description: >
+  Drive an agent until a SOAP clinical note is complete and structurally
+  valid. Demonstrates the JsonSchemaGate in a HEALTHCARE setting:
+  real gate FAIL on a broken output.json (missing required `plan` section +
+  invalid ICD-10 code), then real gate PASS after the agent corrects it
+  against schema.json.
+pattern: evaluator-optimizer
+role:
+  - healthcare
+  - clinical-documentation
+rung: L3
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: jsonschema
+bounds: bounds.yaml
+memory: STATE.md

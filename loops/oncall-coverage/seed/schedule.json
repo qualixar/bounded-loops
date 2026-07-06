@@ -1,0 +1,8 @@
+{
+  "period_hours": 24,
+  "shifts": [
+    {"start": 0, "end": 8, "engineer": "alice"},
+    {"start": 8, "end": 14, "engineer": "bob"},
+    {"start": 16, "end": 24, "engineer": "carol"}
+  ]
+}

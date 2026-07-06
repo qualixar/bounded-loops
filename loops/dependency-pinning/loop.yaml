@@ -1,0 +1,23 @@
+name: dependency-pinning
+description: >
+  Drive an agent until every dependency in `seed/requirements.txt` is pinned
+  to an exact version. The gate is `seed/check_pins.py` — a tiny,
+  dependency-free, pure-standard-library checker shipped WITH the loop (no
+  network, no PyPI lookup): it rejects any non-comment, non-blank line that
+  isn't an exact `pkg==version` pin. Ships a real requirements.txt with a
+  `>=` range and a bare unpinned name. The agent must fix the
+  REQUIREMENTS file, never the checker.
+pattern: evaluator-optimizer
+role:
+  - security
+rung: L1
+spec: PROMPT.md
+forbid:
+  - "seed/check_pins.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_pins.py seed/requirements.txt"
+bounds: bounds.yaml
+memory: STATE.md

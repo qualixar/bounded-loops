@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "loop": "{{LOOP_NAME}}",
+  "description": "Lap 1 writes the correct add() fix directly (keyless demo: the stub IS the 'agent'). The JUnit gate goes green on lap 1.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read seed/ExampleTest.java. Example.add() always returns 0. Fixing to return a + b.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/Example.java",
+          "content": "public class Example {\n    /** Add two integers. */\n    public static int add(int a, int b) {\n        return a + b;\n    }\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 0,
+      "notes": "The fix — the JUnit gate now exits 0. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

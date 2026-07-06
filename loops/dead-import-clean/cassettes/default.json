@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "dead-import-clean",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/module.py to remove the two dead imports (os, sys), keeping every function's logic (order_total, most_common_item, to_json) exactly as-is, so check_imports.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_imports.py: 2 unused imports — 'os' at line 9 and 'sys' at line 10, neither referenced anywhere in the module. Removing both import lines and leaving every function body untouched. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/module.py",
+          "content": "\"\"\"\nmodule.py — a small order-total helper with real logic (and two dead imports\nthe checker should flag).\n\"\"\"\nfrom __future__ import annotations\n\nimport json\nimport math\nfrom collections import Counter\nfrom typing import Iterable\n\n\ndef order_total(prices: Iterable[float], tax_rate: float) -> float:\n    \"\"\"Sum `prices` and apply `tax_rate`, rounding to 2 decimal places.\"\"\"\n    subtotal = math.fsum(prices)\n    total = subtotal * (1 + tax_rate)\n    return round(total, 2)\n\n\ndef most_common_item(items: Iterable[str]) -> str:\n    \"\"\"Return the most frequently occurring item in `items`.\"\"\"\n    counts = Counter(items)\n    return counts.most_common(1)[0][0]\n\n\ndef to_json(data: dict) -> str:\n    \"\"\"Serialize `data` to a JSON string.\"\"\"\n    return json.dumps(data)\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 187,
+      "notes": "The fix — check_imports.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

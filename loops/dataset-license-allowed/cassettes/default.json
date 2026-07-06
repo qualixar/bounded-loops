@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "dataset-license-allowed",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/datasets.json to drop the one dataset under a disallowed license: SynthConvQA is licensed GPL-3.0, which is not in allowlist.json (MIT, Apache-2.0, CC-BY-4.0). Because copyleft-vs-permissive license conflicts cannot be resolved by relabeling, the fix removes the dataset entirely rather than mislabeling its license. check_licenses.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_licenses.py: 1 dataset with a disallowed license — 'SynthConvQA' is GPL-3.0, which is not in allowlist.json (MIT, Apache-2.0, CC-BY-4.0). GPL-3.0 is a genuine copyleft license, not a mislabel of an allowed one, so it cannot be relabeled to pass. Removing the SynthConvQA entry from datasets.json rather than using disallowed-license data. Not touching allowlist.json or the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/datasets.json",
+          "content": "[\n  {\"name\": \"OpenImages-Subset\", \"license\": \"Apache-2.0\"},\n  {\"name\": \"CommonCrawl-News\", \"license\": \"CC-BY-4.0\"},\n  {\"name\": \"InternalBenchmark-v3\", \"license\": \"MIT\"}\n]\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 219,
+      "notes": "The fix — check_licenses.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

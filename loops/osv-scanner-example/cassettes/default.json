@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "osv-scanner-example",
+  "created": "2026-07-05",
+  "description": "Lap 1 bumps the vulnerable minimatch@3.0.4 pin to 3.1.4 (real fixed version for the 0.x-3.x advisory range, confirmed live against osv-scanner 2.4.0). osv-scanner goes clean (exit 0) on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read seed/package-lock.json. minimatch@3.0.4 carries 4 disclosed CVEs (GHSA-23c5-xmqv-rm74, GHSA-3ppc-4f35-3m26, GHSA-7r86-cg39-jmmj, GHSA-f8q6-p94x-37v3), all fixed at or before 3.1.4 in the 0.x-3.x line. Bumping the pin.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/package-lock.json",
+          "content": "{\n  \"name\": \"osv-scanner-example\",\n  \"version\": \"1.0.0\",\n  \"lockfileVersion\": 3,\n  \"requires\": true,\n  \"packages\": {\n    \"\": {\n      \"name\": \"osv-scanner-example\",\n      \"version\": \"1.0.0\",\n      \"dependencies\": {\n        \"minimatch\": \"3.1.4\"\n      }\n    },\n    \"node_modules/minimatch\": {\n      \"version\": \"3.1.4\",\n      \"resolved\": \"https://registry.npmjs.org/minimatch/-/minimatch-3.1.4.tgz\",\n      \"integrity\": \"sha512-U6EnQMflZZ8gQ1kwiiVWXhh08XlPP/l55zzZ1JuMEEUJHKMVWl/AeH2NG5EOvIsRWTRIsW6bUcXHhaVX93B9fw==\",\n      \"dependencies\": {\n        \"brace-expansion\": \"^1.1.7\"\n      },\n      \"engines\": {\n        \"node\": \"*\"\n      }\n    }\n  }\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 214,
+      "notes": "The fix — osv-scanner now exits 0. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

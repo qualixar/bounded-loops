@@ -1,0 +1,14 @@
+name: {{LOOP_NAME}}
+description: >
+  A pytest-gated bounded loop, scaffolded via `bl new pytest-basic`.
+pattern: evaluator-optimizer
+role: [backend]
+rung: L2
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: pytest
+  run: "pytest -q"
+bounds: bounds.yaml
+memory: STATE.md

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "catalog-required-fields",
+  "created": "2026-07-06",
+  "description": "Lap 1 writes a corrected output.json: adds the missing description field. JsonSchemaGate validates cleanly on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read schema.json: title/price/image/description are all required, additionalProperties is false. Read output.json: description is missing entirely. Adding a valid description.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "output.json",
+          "content": "{\n  \"title\": \"Recycled Wool Throw Blanket\",\n  \"price\": 42.5,\n  \"image\": \"https://example.com/images/throw-blanket.jpg\",\n  \"description\": \"Cozy recycled-wool throw blanket, machine washable, 130x170cm.\"\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 198,
+      "notes": "The fix — output.json now validates against schema.json. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

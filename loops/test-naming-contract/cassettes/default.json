@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "test-naming-contract",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/sample_tests.py to rename check_addition to test_addition, the only test-like function the checker flags as misnamed. All functions are now test_*-named, so check_test_names.py exits 0 on lap 1. Demonstrates the loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_test_names.py: 1 misnamed test function found — 'check_addition' (asserts add(2, 2) == 4 but does not start with 'test_', so pytest would never collect it). Renaming it to 'test_addition' in place, no behavior change. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/sample_tests.py",
+          "content": "\"\"\"sample_tests.py — a text fixture of test code (not collected by pytest;\nit lives under loops/test-naming-contract/seed/ and is read by the checker\nas source text/AST, never executed).\n\nFixed: 'check_addition' renamed to 'test_addition' so a pytest-style runner\nactually collects it.\n\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef subtract(a, b):\n    return a - b\n\n\ndef test_subtraction():\n    assert subtract(5, 3) == 2\n\n\ndef test_addition():\n    assert add(2, 2) == 4\n\n\nclass TestMath:\n    def test_add_negative(self):\n        assert add(-1, -1) == -2\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 190,
+      "notes": "The fix — check_test_names.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+# loops/oncall-coverage/loop.yaml
+name: oncall-coverage
+description: >
+  Drive an agent until an on-call schedule covers every hour of its
+  rotation period exactly once. The gate is `seed/check_coverage.py` — a
+  tiny, dependency-free, pure-standard-library checker shipped WITH the
+  loop, so it runs anywhere Python does: no network, no key. Ships a real
+  schedule.json with a 2-hour gap (14:00-16:00) where nobody is on call —
+  a schedule that looks fine in a spreadsheet but leaves an incident
+  unpaged. The agent must fix the SCHEDULE, never edit the checker to
+  force a pass.
+pattern: evaluator-optimizer
+role:
+  - operations
+rung: L1
+spec: PROMPT.md
+# The gate's verification anchor. The engine refuses any runner write to a
+# path matching this glob, so the agent (or a community cassette) cannot
+# neuter the checker to fake a green gate.
+forbid:
+  - "seed/check_coverage.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_coverage.py seed/schedule.json"
+bounds: bounds.yaml
+memory: STATE.md

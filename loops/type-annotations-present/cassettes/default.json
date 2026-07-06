@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "type-annotations-present",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/api.py to add a str annotation to create_user's name parameter, the only missing annotation on a public top-level function. _internal_helper stays unannotated (private, out of scope), so check_types.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_types.py: 1 violation — 'create_user' (line 13): parameter 'name' has no type annotation. Based on how 'name' is used (assigned directly into the returned dict as a string field alongside email: str), the correct annotation is str. Adding it. Not touching the checker or the private _internal_helper.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/api.py",
+          "content": "\"\"\"\napi.py — a small public API surface (and one function missing annotations\nthe checker should flag).\n\"\"\"\nfrom __future__ import annotations\n\n\ndef get_user(user_id: int) -> dict:\n    \"\"\"Return a user record by id.\"\"\"\n    return {\"id\": user_id, \"name\": \"placeholder\"}\n\n\ndef create_user(name: str, email: str) -> dict:\n    \"\"\"Create a new user record.\"\"\"\n    return {\"name\": name, \"email\": email}\n\n\ndef _internal_helper(payload):\n    \"\"\"Private helper — not part of the public contract, may stay bare.\"\"\"\n    return payload\n\n\ndef delete_user(user_id: int) -> None:\n    \"\"\"Delete a user record by id.\"\"\"\n    return None\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 198,
+      "notes": "The fix — check_types.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

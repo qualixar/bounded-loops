@@ -1,0 +1,45 @@
+flowchart LR
+    subgraph YAML["bounds.yaml fields"]
+        B1["max_iterations\nno_progress_window"]
+        B2["sandbox"]
+        B3["quarantine_inputs"]
+        B4["schema"]
+        B5["trace"]
+        B7["max_tokens"]
+        B8["require_approval"]
+        B9["max_wallclock_s"]
+        BK["(env var)\nBOUNDED_LOOPS_KILL"]
+    end
+
+    subgraph Manifest["manifest.py"]
+        M["load() validates + normalizes\n(e.g. null wallclock -> 3600,\nmax_iterations <= 1000)"]
+    end
+
+    subgraph Composition["composition.py (wiring)"]
+        C2["_make_scratch_workspace()"]
+        C3["_quarantine_ignore()"]
+        C4["JsonSchemaGate wiring"]
+        C5["OtelTracer / NoopTracer choice"]
+    end
+
+    subgraph Engine["run_loop.py + bounds.py (RunLoopUseCase)"]
+        E1["BudgetMeter.exceeded()\n(lap cap)"]
+        E6["gate.check() — the GatePort\nadapter IS bound #6"]
+        E7["BudgetMeter.exceeded()\n(token cap)"]
+        E8["rung_requires_approval()\n+ ApprovalPort"]
+        E9["BudgetMeter.exceeded()\n(wallclock cap)"]
+        EK["killswitch.tripped()\n(polled FIRST, every lap)"]
+        ENP["BoundsEnforcer.check_no_progress()"]
+    end
+
+    B1 --> M --> E1
+    B1 --> ENP
+    B2 --> M --> C2
+    B3 --> M --> C3
+    B4 --> M --> C4
+    B5 --> M --> C5
+    B7 --> M --> E7
+    B8 --> M --> E8
+    B9 --> M --> E9
+    BK --> EK
+    Gate["gate.kind in loop.yaml"] --> E6

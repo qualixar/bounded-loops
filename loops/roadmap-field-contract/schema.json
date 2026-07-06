@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RoadmapItem",
+  "description": "Contract for a single product roadmap item.",
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Short, human-readable name of the roadmap item."
+    },
+    "owner": {
+      "type": "string",
+      "description": "Person or team accountable for delivering this item."
+    },
+    "quarter": {
+      "type": "string",
+      "enum": ["Q1", "Q2", "Q3", "Q4"],
+      "description": "Target delivery quarter."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["planned", "in_progress", "done"],
+      "description": "Current delivery status."
+    }
+  },
+  "required": ["title", "owner", "quarter", "status"],
+  "additionalProperties": false
+}

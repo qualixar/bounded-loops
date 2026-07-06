@@ -1,0 +1,27 @@
+# loops/type-annotations-present/loop.yaml
+name: type-annotations-present
+description: >
+  Drive an agent until every public top-level function in a Python module
+  fully annotates its parameters and return type. The gate is
+  `seed/check_types.py` — a tiny, dependency-free, pure-standard-library
+  checker (built on `ast`) shipped WITH the loop: no network, no
+  mypy/pyright install, no key. Ships a real `api.py` where `create_user`'s
+  `name` parameter has no annotation — an undocumented contract on a public
+  function.
+pattern: evaluator-optimizer
+role:
+  - backend
+  - quality
+rung: L1
+spec: PROMPT.md
+# The gate's LOGIC is the checker. The agent fixes the MODULE, never the
+# checker, to force a pass.
+forbid:
+  - "seed/check_types.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_types.py seed/api.py"
+bounds: bounds.yaml
+memory: STATE.md

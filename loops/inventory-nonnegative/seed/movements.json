@@ -1,0 +1,12 @@
+{
+  "opening": {
+    "SKU-100": 10,
+    "SKU-200": 5
+  },
+  "movements": [
+    {"sku": "SKU-100", "delta": -3},
+    {"sku": "SKU-200", "delta": -8},
+    {"sku": "SKU-100", "delta": 2},
+    {"sku": "SKU-200", "delta": 6}
+  ]
+}

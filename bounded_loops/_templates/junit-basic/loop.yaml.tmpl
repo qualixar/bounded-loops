@@ -1,0 +1,14 @@
+name: {{LOOP_NAME}}
+description: >
+  A JUnit5-gated bounded loop, scaffolded via `bl new junit-basic`.
+pattern: evaluator-optimizer
+role: [backend]
+rung: L2
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "export PATH=\"/opt/homebrew/opt/openjdk/bin:$PATH\"; JUNIT_VERSION=\"6.1.1\"; JUNIT_SHA256=\"7b16416e5727c645105c31b533440397f20df68f6ae850c6bfd0ce1d88db66c3\"; CACHE_DIR=\"$HOME/.cache/bounded-loops/junit\"; JAR=\"$CACHE_DIR/junit-platform-console-standalone-$JUNIT_VERSION.jar\"; mkdir -p \"$CACHE_DIR\"; if [ ! -f \"$JAR\" ]; then curl -fsSL -o \"$JAR.tmp\" \"https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/$JUNIT_VERSION/junit-platform-console-standalone-$JUNIT_VERSION.jar\" && echo \"$JUNIT_SHA256  $JAR.tmp\" | shasum -a 256 -c - >/dev/null 2>&1 && mv \"$JAR.tmp\" \"$JAR\" || { rm -f \"$JAR.tmp\"; echo 'error: JUnit console-launcher download/checksum failed' >&2; exit 2; }; fi; rm -rf classes && mkdir -p classes && javac -d classes -cp \"$JAR\" seed/*.java && java -jar \"$JAR\" execute --class-path classes --scan-classpath --details=summary --disable-banner"
+bounds: bounds.yaml
+memory: STATE.md

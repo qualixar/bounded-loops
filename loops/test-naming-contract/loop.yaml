@@ -1,0 +1,29 @@
+# loops/test-naming-contract/loop.yaml
+name: test-naming-contract
+description: >
+  Drive an agent until every test-like function in a Python test file is
+  named `test_*` so a pytest-style runner actually collects it. The gate is
+  `seed/check_test_names.py` — a tiny, dependency-free, pure-standard-library
+  checker (uses `ast`) shipped WITH the loop, so it runs anywhere Python
+  does: no network, no key. Ships a real `sample_tests.py` where
+  `check_addition` is clearly a test (asserts `add(2, 2) == 4`) but is
+  misnamed, so it silently never runs under a normal pytest collection rule.
+  The agent must rename the function in place, never delete it or weaken the
+  checker to force a pass.
+pattern: evaluator-optimizer
+role:
+  - testing
+rung: L1
+spec: PROMPT.md
+# The gate's verification anchor. The engine refuses any runner write to a
+# path matching this glob, so the agent (or a community cassette) cannot
+# neuter the checker to fake a green gate.
+forbid:
+  - "seed/check_test_names.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_test_names.py seed/sample_tests.py"
+bounds: bounds.yaml
+memory: STATE.md

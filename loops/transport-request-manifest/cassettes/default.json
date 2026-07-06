@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "transport-request-manifest",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/transport.json to add the dangling dependency id 'R3TR DTEL ZINVOICE_STATUS' to the objects array. check_transport.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_transport.py: 1 dangling dependency — 'R3TR DTEL ZINVOICE_STATUS' is listed in dependencies but not carried in objects. Adding it to objects so the request actually ships what it depends on. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/transport.json",
+          "content": "{\n  \"request_id\": \"DEVK900123\",\n  \"objects\": [\"R3TR PROG ZREPORT_MAIN\", \"R3TR TABL ZINVOICE_HDR\", \"R3TR FUGR ZBILLING_FG\", \"R3TR DTEL ZINVOICE_STATUS\"],\n  \"dependencies\": [\"R3TR TABL ZINVOICE_HDR\", \"R3TR DTEL ZINVOICE_STATUS\"]\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 219,
+      "notes": "The fix — check_transport.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+[
+  {
+    "objective": "Grow paid conversion of the loop-engineering course",
+    "key_results": [
+      {
+        "text": "Increase course landing page conversion rate",
+        "target": null,
+        "unit": "",
+        "deadline": "2026-09-30"
+      },
+      {
+        "text": "Reach 500 paying customers",
+        "target": 500,
+        "unit": "customers",
+        "deadline": "2026-09-30"
+      }
+    ]
+  },
+  {
+    "objective": "Reduce support burden from onboarding friction",
+    "key_results": [
+      {
+        "text": "Cut first-response time on onboarding tickets",
+        "target": 4,
+        "unit": "hours",
+        "deadline": "2026-08-15"
+      }
+    ]
+  }
+]

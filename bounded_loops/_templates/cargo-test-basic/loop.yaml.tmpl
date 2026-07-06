@@ -1,0 +1,22 @@
+name: {{LOOP_NAME}}
+description: >
+  A cargo-test-gated bounded loop, scaffolded via `bl new cargo-test-basic`.
+pattern: evaluator-optimizer
+role: [backend]
+rung: L2
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: command
+  # CommandGate's expected_fail_codes defaults to {1} and gate.kind=command
+  # does not forward extra gate.* keys to the constructor (composition.py),
+  # so a normal gate-fail MUST exit 1. `cargo test` exits 101 on any test
+  # failure (and on a compile error — cargo has no pytest-style separate
+  # exit code for that), so the `|| exit 1` normalizes cargo's 101 down to
+  # the 1 CommandGate expects. This deliberately treats "won't compile" the
+  # same as "compiles but a test fails" — both are a normal gate-fail here,
+  # not a GateError, matching cargo's own single-exit-code contract.
+  run: "cd seed && cargo test -q || exit 1"
+bounds: bounds.yaml
+memory: STATE.md

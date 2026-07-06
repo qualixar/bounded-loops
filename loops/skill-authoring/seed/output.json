@@ -1,0 +1,5 @@
+{
+  "name": "My Cool Skill",
+  "description": "does stuff",
+  "allowed_tools": ["Read", "Grep"]
+}

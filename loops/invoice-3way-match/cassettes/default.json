@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "invoice-3way-match",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/invoice.json to correct the WIDGET-B quantity from the over-billed 65 to the true received quantity of 50, matching goods_receipt.json. All lines then match the PO on price and the goods receipt on quantity, so pytest exits 0 on lap 1.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran pytest -q: test_every_invoice_line_matches_goods_receipt_quantity failed for WIDGET-B (invoice quantity=65, goods_receipt quantity_received=50). Correcting invoice.json's WIDGET-B quantity to 50. Not touching purchase_order.json, goods_receipt.json, or the test.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/invoice.json",
+          "content": "{\n  \"invoice_number\": \"INV-3001\",\n  \"po_number\": \"PO-1001\",\n  \"lines\": [\n    {\"sku\": \"WIDGET-A\", \"unit_price\": 12.50, \"quantity\": 100},\n    {\"sku\": \"WIDGET-B\", \"unit_price\": 7.25, \"quantity\": 50},\n    {\"sku\": \"WIDGET-C\", \"unit_price\": 30.00, \"quantity\": 20}\n  ]\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 241,
+      "notes": "The fix — pytest -q now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

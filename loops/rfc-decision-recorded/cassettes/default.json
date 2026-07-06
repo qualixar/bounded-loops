@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "rfc-decision-recorded",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/rfc.md to add the missing Decision and Consequences sections, consistent with the Status (Accepted) and the three options already laid out in Context. check_rfc.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_rfc.py: 2 sections missing — Decision and Consequences. The Status is already 'Accepted' and Context lists three options (keep shell script, static site generator, fold into Next.js portal). Adding a Decision section choosing the static site generator option and a Consequences section stating the real tradeoffs. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/rfc.md",
+          "content": "# RFC-014: Move newsletter build to a static site generator\n\n## Status\n\nAccepted\n\n## Context\n\nThe newsletter is currently hand-assembled via a shell script that\nconcatenates HTML fragments. Each issue takes 20+ minutes to build and the\nmarker-based templating (`build-html.sh`) is fragile — a renamed section\nheading silently breaks the build with no error, which has caused at least\ntwo late-night re-sends.\n\nWe evaluated three options: keep the shell script and add tests, move to a\nstatic site generator (Eleventy/Astro), or move the whole newsletter into\nthe existing Next.js portal codebase.\n\n## Decision\n\nMove the newsletter build to a static site generator (Astro), separate from\nboth the shell script and the Next.js portal. Astro's content-collections\ngive us schema-validated frontmatter (so a renamed field fails the build\nloudly instead of silently), and keeping it out of the portal avoids\ncoupling the newsletter's release cadence to the portal's deploy pipeline.\n\n## Consequences\n\n- The existing `build-html.sh` marker-based templating is retired; issues\n  8-10 need a one-time migration to Astro content files.\n- Build time drops from 20+ minutes to under a minute, and a broken\n  heading/marker now fails the build instead of silently shipping.\n- The newsletter gets its own deploy target, so a portal deploy can no\n  longer accidentally break newsletter issue rendering.\n- Adds one more deploy target to maintain (Astro site alongside the\n  portal), which is an acceptable tradeoff given the fragility it removes.\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 341,
+      "notes": "The fix — check_rfc.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

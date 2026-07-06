@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "test-presence-per-module",
+  "created": "2026-07-06",
+  "description": "Lap 1 writes seed/tests/test_b.py, a real minimal test importing multiply from src/b.py and asserting on its actual behavior, filling the only gap the checker flags. check_test_presence.py exits 0 on lap 1. Demonstrates the loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_test_presence.py: 1 module missing a test file — 'src/b.py' has no 'tests/test_b.py', so multiply() has zero verified coverage. Writing a real test that imports multiply and asserts on its actual behavior. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/tests/test_b.py",
+          "content": "\"\"\"test_b.py — a text fixture of test code (not collected by pytest; it\nlives under loops/test-presence-per-module/seed/tests/ and is read by the\nchecker as file-presence metadata, never executed).\"\"\"\nimport sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parent.parent))\n\nfrom src.b import multiply\n\n\ndef test_multiply():\n    assert multiply(3, 4) == 12\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 195,
+      "notes": "The fix — check_test_presence.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

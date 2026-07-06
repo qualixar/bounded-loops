@@ -1,0 +1,34 @@
+{
+  "name": "bounded-loops",
+  "version": "0.1.0",
+  "description": "npx launcher for bounded-loops — runnable, bounded AI-agent loops. The engine is a Python 3.11+ package; this wrapper detects Python, installs it on first run, and runs it.",
+  "bin": {
+    "bounded-loops": "bin/bounded-loops.js"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "keywords": [
+    "ai-agents",
+    "agent-loops",
+    "loop-engineering",
+    "bounded-loops",
+    "ai-reliability",
+    "gate",
+    "mcp"
+  ],
+  "homepage": "https://github.com/qualixar/bounded-loops#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qualixar/bounded-loops.git"
+  },
+  "bugs": {
+    "url": "https://github.com/qualixar/bounded-loops/issues"
+  },
+  "license": "Apache-2.0",
+  "author": "Varun Pratap Bhardwaj",
+  "engines": {
+    "node": ">=18"
+  }
+}

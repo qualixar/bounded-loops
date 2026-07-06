@@ -1,0 +1,25 @@
+# loops/invoice-3way-match/loop.yaml
+name: invoice-3way-match
+description: >
+  Drive an agent until an invoice's every line matches its purchase order
+  (unit price) and its goods receipt (quantity) — the classic accounts-payable
+  three-way match. Ships a real invoice.json with one line quantity that
+  disagrees with the goods receipt (65 billed vs 50 received). The agent must
+  fix the INVOICE, never the PO/GR ground truth or the test.
+pattern: evaluator-optimizer
+role:
+  - finance
+rung: L2
+spec: PROMPT.md
+# The gate's verification anchor. The engine refuses any runner write to a
+# path matching this glob, so a cassette cannot neuter the test to fake a
+# green gate.
+forbid:
+  - "seed/test_*.py"
+runner:
+  default: stub
+gate:
+  kind: pytest
+  run: "pytest -q"
+bounds: bounds.yaml
+memory: STATE.md

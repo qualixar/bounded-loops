@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CatalogEntry",
+  "description": "Minimal required-fields contract for a retail catalog entry.",
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Product title."
+    },
+    "price": {
+      "type": "number",
+      "description": "Product price."
+    },
+    "image": {
+      "type": "string",
+      "description": "URL of the product image."
+    },
+    "description": {
+      "type": "string",
+      "description": "Product description."
+    }
+  },
+  "required": ["title", "price", "image", "description"],
+  "additionalProperties": false
+}

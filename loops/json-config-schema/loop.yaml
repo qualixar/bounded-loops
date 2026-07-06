@@ -1,0 +1,20 @@
+# loops/json-config-schema/loop.yaml
+name: json-config-schema
+description: >
+  Drive an agent until a service's JSON runtime config conforms to its
+  contract. Demonstrates the JsonSchemaGate end to end: real gate FAIL on a
+  broken output.json (port as a string instead of an integer, log_level
+  missing entirely), then real gate PASS after the agent corrects it against
+  schema.json.
+pattern: evaluator-optimizer
+role:
+  - backend
+  - api
+rung: L1
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: jsonschema
+bounds: bounds.yaml
+memory: STATE.md

@@ -1,0 +1,27 @@
+# loops/okr-measurable/loop.yaml
+name: okr-measurable
+description: >
+  Drive an agent until every key result in an OKR document is genuinely
+  measurable. The gate is `seed/check_okrs.py` — a tiny, dependency-free,
+  pure-standard-library checker shipped WITH the loop, so it runs anywhere
+  Python does: no network, no external tool, no key. Ships a real okrs.json
+  where one key result ("increase conversion rate") has no numeric target
+  and no unit — the exact vague-OKR shape that makes quarter-end grading
+  impossible. The document is the target: the agent must fix the KEY RESULT,
+  never edit the checker to force a pass.
+pattern: evaluator-optimizer
+role:
+  - business
+rung: L1
+spec: PROMPT.md
+# The gate's LOGIC is the checker; the agent fixes the document, it must
+# never rewrite the checker to fake a green gate.
+forbid:
+  - "seed/check_okrs.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_okrs.py seed/okrs.json"
+bounds: bounds.yaml
+memory: STATE.md

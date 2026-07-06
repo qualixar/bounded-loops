@@ -1,0 +1,16 @@
+// seed/example.test.js — gate anchor for {{LOOP_NAME}} (DO NOT EDIT)
+const { add } = require('./example');
+
+describe('add', () => {
+  test('positive', () => {
+    expect(add(2, 3)).toBe(5);
+  });
+
+  test('negative', () => {
+    expect(add(-1, -1)).toBe(-2);
+  });
+
+  test('zero', () => {
+    expect(add(0, 0)).toBe(0);
+  });
+});

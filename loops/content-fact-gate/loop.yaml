@@ -1,0 +1,22 @@
+# loops/content-fact-gate/loop.yaml
+name: content-fact-gate
+description: >
+  Drive an agent until markdown-link-check reports every citation link alive.
+  A `command` gate wraps the real npm tool `markdown-link-check` to catch
+  dead/hallucinated citation links in content before publish — the same
+  "verify links resolve before shipping" discipline this repo's other loops
+  demonstrate for failing tests (bug-fix-red-green) and vulnerable
+  dependencies (osv-scanner-example), applied to written content.
+pattern: evaluator-optimizer
+role:
+  - content
+  - writing
+rung: L2
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "npx --yes markdown-link-check seed/article.md"
+bounds: bounds.yaml
+memory: STATE.md

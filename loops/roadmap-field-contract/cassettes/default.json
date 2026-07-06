@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "roadmap-field-contract",
+  "created": "2026-07-06",
+  "description": "Lap 1 writes a corrected output.json: adds the missing owner field and fixes quarter from the invalid 'Q5' to the valid enum value 'Q3'. JsonSchemaGate validates cleanly on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read schema.json: title/owner/quarter/status are all required, additionalProperties is false, quarter must be one of Q1/Q2/Q3/Q4. Read output.json: owner is missing entirely and quarter is 'Q5', which is not in the enum. Adding owner and fixing quarter to 'Q3'.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "output.json",
+          "content": "{\n  \"title\": \"Ship Loop Engineering course checkout\",\n  \"owner\": \"Varun Pratap Bhardwaj\",\n  \"quarter\": \"Q3\",\n  \"status\": \"in_progress\"\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 219,
+      "notes": "The fix — output.json now validates against schema.json. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "reading-level-gate",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/post.md, splitting the two extremely long run-on sentences into several shorter sentences apiece while preserving every idea from the original. Average words-per-sentence drops from 43.8 to 16.5, so check_readability.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_readability.py: average words/sentence is 43.8, exceeds the 25 limit (5 sentences, 219 words). The two long paragraphs each contain one massive run-on sentence stacking several independent clauses. Splitting each run-on into 4-5 shorter sentences at natural clause boundaries, keeping every idea, deleting nothing. Not touching the checker.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/post.md",
+          "content": "# Why Bounded Loops Beat One-Shot Prompts\n\nBounded loops work.\n\nWhen a team first adopts an agent-driven workflow, they often assume a single well-crafted prompt will reliably produce a finished, contract-conforming artifact on the very first try. It is only after watching that single-shot output fail a real gate again and again in production that they realize the missing ingredient was never a better prompt. What they actually needed was a bounded, repeatable loop. That loop keeps handing the same real verifier the agent's latest attempt until it genuinely passes. It is capped by iteration count, wallclock time, and token budget, so it can never run away unattended and unaccountable forever.\n\nThe fix is simple: wrap the agent in a loop with a real gate.\n\nOnce that gate is in place, the agent gets to try again, and again, and again. Each time, it incorporates the concrete, specific, line-numbered feedback from the previous failing run rather than starting cold from the original ambiguous prompt. That is exactly why evaluator-optimizer loops so reliably outperform any single unchecked pass on tasks with a crisp, checkable definition of done. That definition of done might live in a JSON Schema contract, a command-line linter, or a small pure-standard-library script. Each of those checks one property that actually matters to ship safely.\n\nThat is the whole idea.\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 287,
+      "notes": "The fix — check_readability.py now exits 0 (16.5 avg). bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

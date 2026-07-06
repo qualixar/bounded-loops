@@ -1,0 +1,13 @@
+# loops/no-hardcoded-sleep/bounds.yaml
+max_iterations: 10
+no_progress_window: 3
+max_tokens: null
+max_wallclock_s: 60
+sandbox: true
+quarantine_inputs: true
+schema: null
+trace: true
+# L1 keyless demo: replacing a sleep with a poll loop is a mechanical,
+# low-risk fix that can run unattended. Flip to true when wiring a real
+# runner in CI.
+require_approval: false

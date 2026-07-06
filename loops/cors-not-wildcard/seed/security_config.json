@@ -1,0 +1,7 @@
+{
+  "cors": {
+    "allow_origins": ["https://app.example.com", "*"],
+    "allow_credentials": true,
+    "allow_methods": ["GET", "POST", "PUT", "DELETE"]
+  }
+}

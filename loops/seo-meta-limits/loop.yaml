@@ -1,0 +1,26 @@
+# loops/seo-meta-limits/loop.yaml
+name: seo-meta-limits
+description: >
+  Drive an agent until a page's SEO title and description metadata both
+  fit within the character limits search engines actually truncate at.
+  The gate is `seed/check_meta.py` — a tiny, dependency-free,
+  pure-standard-library checker shipped WITH the loop, so it runs anywhere
+  Python does: no network, no external tool. Ships `meta.json` with a
+  74-character title (limit 60) and a 190-character description (limit
+  160) — both overflow and would be truncated with an ellipsis in real
+  search results. The agent must trim both while keeping the meaning,
+  never edit the checker to raise the limits.
+pattern: evaluator-optimizer
+role:
+  - content
+rung: L1
+spec: PROMPT.md
+forbid:
+  - "seed/check_meta.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_meta.py seed/meta.json"
+bounds: bounds.yaml
+memory: STATE.md

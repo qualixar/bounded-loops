@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "material-master-completeness",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/material.json to fill in the empty division field for this FERT material. check_material.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_material.py: 1 required field missing for material_type='FERT' — division is empty. Filling in a plausible sales division code. Not touching the checker or changing material_type.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/material.json",
+          "content": "{\n  \"material_type\": \"FERT\",\n  \"base_uom\": \"EA\",\n  \"description\": \"Finished Widget Assembly Type-C\",\n  \"division\": \"10\"\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 208,
+      "notes": "The fix — check_material.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

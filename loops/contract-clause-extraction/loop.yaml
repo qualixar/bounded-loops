@@ -1,0 +1,20 @@
+# loops/contract-clause-extraction/loop.yaml
+name: contract-clause-extraction
+description: >
+  Drive an agent until extracted contract clauses conform to a
+  required-clauses schema. Demonstrates the JsonSchemaGate in a
+  LEGAL-industry setting: real gate FAIL on a broken output.json (a missing
+  required clause + a clause value in the wrong shape), then real gate PASS
+  after the agent corrects it against schema.json.
+pattern: evaluator-optimizer
+role:
+  - legal
+  - compliance
+rung: L2
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: jsonschema
+bounds: bounds.yaml
+memory: STATE.md

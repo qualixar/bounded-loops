@@ -1,0 +1,25 @@
+# loops/reading-level-gate/loop.yaml
+name: reading-level-gate
+description: >
+  Drive an agent until a post's average words-per-sentence drops to a
+  readable level. The gate is `seed/check_readability.py` — a tiny,
+  dependency-free, pure-standard-library checker shipped WITH the loop, so
+  it runs anywhere Python does: no network, no external tool. Ships
+  `post.md` with two very long run-on sentences that push the average
+  words-per-sentence over 25. The agent must split the run-ons into
+  shorter sentences without deleting any content, never edit the checker
+  to raise the threshold.
+pattern: evaluator-optimizer
+role:
+  - content
+rung: L1
+spec: PROMPT.md
+forbid:
+  - "seed/check_readability.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check_readability.py seed/post.md"
+bounds: bounds.yaml
+memory: STATE.md

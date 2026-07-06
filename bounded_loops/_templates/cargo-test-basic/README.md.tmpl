@@ -1,0 +1,36 @@
+# {{LOOP_NAME}}
+
+Scaffolded via `bl new cargo-test-basic`. A cargo-test-gated bounded loop: an
+agent edits `seed/src/lib.rs` until `cargo test -q` (run from `seed/`) passes,
+or the loop halts at `bounds.yaml`'s `max_iterations`.
+
+## Files
+
+- `loop.yaml` — the manifest (name, gate, runner, bounds).
+- `bounds.yaml` — safety bounds (max iterations, no-progress window, etc).
+- `PROMPT.md` — the task spec given to the agent. Edit this first.
+- `STATE.md` — cross-lap memory, populated automatically.
+- `seed/` — the workspace the agent edits: a minimal Cargo crate
+  (`Cargo.toml` + `src/lib.rs`) with a deliberate bug and its own
+  `#[cfg(test)]` unit tests (don't edit the tests, only `src/lib.rs`).
+- `cassettes/default.json` — a keyless, deterministic stub-agent recording
+  used by `bl run` (via `runner.default: stub` in `loop.yaml`).
+- `run.sh` / `wreck.sh` — standalone bash versions of the loop that need no
+  engine at all: `run.sh` is gated, `wreck.sh` deliberately removes the gate
+  to show why gating matters.
+
+## Quickstart
+
+```bash
+cd {{LOOP_NAME}}
+bl run .                 # via the bounded-loops engine (keyless stub runner)
+./run.sh                 # or standalone, no engine required
+```
+
+Replace `PROMPT.md`, `seed/`, and `cassettes/default.json` with your own
+task once you're ready to move past the starter example.
+
+## Requirements
+
+Rust/Cargo (`cargo --version`). The seed crate has zero external
+dependencies, so `cargo test` never needs network access.

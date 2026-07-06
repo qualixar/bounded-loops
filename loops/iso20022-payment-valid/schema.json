@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Pain001CreditTransfer",
+  "description": "Simplified ISO 20022 pain.001 credit-transfer instruction contract.",
+  "type": "object",
+  "properties": {
+    "msgId": {
+      "type": "string",
+      "description": "Unique message identifier."
+    },
+    "amount": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Credit transfer amount; must be strictly positive."
+    },
+    "currency": {
+      "type": "string",
+      "enum": ["EUR", "USD", "GBP"],
+      "description": "ISO 4217 currency code for the transfer."
+    },
+    "debtorIban": {
+      "type": "string",
+      "description": "IBAN of the debtor (payer) account."
+    },
+    "creditorIban": {
+      "type": "string",
+      "description": "IBAN of the creditor (payee) account."
+    }
+  },
+  "required": ["msgId", "amount", "currency", "debtorIban", "creditorIban"],
+  "additionalProperties": false
+}

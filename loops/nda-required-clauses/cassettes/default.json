@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "nda-required-clauses",
+  "created": "2026-07-06",
+  "description": "Lap 1 rewrites seed/nda.md to add the two missing required clauses: Governing Law and Return of Materials. All other clauses (Confidentiality, Term, Permitted Disclosures) are left untouched, so check_clauses.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Ran check_clauses.py: 2 required clauses missing — Governing Law and Return of Materials. Adding a Governing Law section naming the governing jurisdiction, and a Return of Materials section requiring return or destruction of Confidential Information at the end of the relationship. Not touching the checker or any existing clause.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/nda.md",
+          "content": "# Mutual Non-Disclosure Agreement\n\nThis Mutual Non-Disclosure Agreement (\"Agreement\") is entered into by and\nbetween the parties identified in the signature block below.\n\n## Confidentiality\n\nEach party agrees to hold the other party's Confidential Information in\nstrict confidence and to use it solely for the purpose of evaluating a\npotential business relationship between the parties.\n\n## Term\n\nThis Agreement shall remain in effect for a period of two (2) years from\nthe Effective Date, unless earlier terminated by mutual written consent of\nthe parties.\n\n## Governing Law\n\nThis Agreement shall be governed by and construed in accordance with the\nlaws of the State of Delaware, without regard to its conflict of laws\nprinciples. Any dispute arising under this Agreement shall be brought\nexclusively in the state or federal courts located in Delaware.\n\n## Return of Materials\n\nUpon the earlier of the termination of this Agreement or the written\nrequest of the disclosing party, the receiving party shall promptly\nreturn or destroy all documents, materials, and other tangible\nembodiments of Confidential Information, together with all copies\nthereof, and shall certify such return or destruction in writing if\nrequested.\n\n## Permitted Disclosures\n\nA party may disclose Confidential Information to its employees, officers,\nand advisors who have a need to know such information, provided that such\npersons are bound by confidentiality obligations no less protective than\nthose in this Agreement.\n\n## Miscellaneous\n\nThis Agreement constitutes the entire understanding between the parties\nwith respect to its subject matter and supersedes all prior discussions.\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 241,
+      "notes": "The fix — check_clauses.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

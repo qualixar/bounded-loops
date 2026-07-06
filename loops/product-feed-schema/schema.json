@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ProductFeedItem",
+  "description": "Google-Merchant-style product feed item contract.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Merchant-assigned unique product identifier."
+    },
+    "title": {
+      "type": "string",
+      "description": "Product title."
+    },
+    "description": {
+      "type": "string",
+      "description": "Product description."
+    },
+    "price": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Product price, must be strictly positive."
+    },
+    "currency": {
+      "type": "string",
+      "enum": ["USD", "EUR", "GBP"],
+      "description": "ISO currency code for the price."
+    },
+    "availability": {
+      "type": "string",
+      "enum": ["in_stock", "out_of_stock", "preorder"],
+      "description": "Current stock availability."
+    },
+    "image_link": {
+      "type": "string",
+      "format": "uri",
+      "description": "URI of the primary product image."
+    }
+  },
+  "required": ["id", "title", "description", "price", "currency", "availability", "image_link"],
+  "additionalProperties": false
+}

@@ -1,0 +1,19 @@
+# loops/product-feed-schema/loop.yaml
+name: product-feed-schema
+description: >
+  Drive an agent until a Google-Merchant-style product feed item conforms to
+  its contract. Demonstrates the JsonSchemaGate end to end: real
+  gate FAIL on a broken output.json (image_link missing entirely + price
+  shipped as a string instead of a number), then real gate PASS after the
+  agent corrects both defects against schema.json.
+pattern: evaluator-optimizer
+role:
+  - retail
+rung: L1
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: jsonschema
+bounds: bounds.yaml
+memory: STATE.md

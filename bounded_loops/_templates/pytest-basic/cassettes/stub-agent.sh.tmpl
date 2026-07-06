@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# cassettes/stub-agent.sh — used only by the standalone run.sh/wreck.sh
+# scripts (NOT by `bl run`, which uses cassettes/default.json directly via
+# the stub runner adapter). Writes the fixed example.py to the CURRENT
+# directory (cwd = seed/ — run.sh/wreck.sh both `cd "$SEED_DIR"` before
+# invoking $AGENT_CLI), matching lap 1 of default.json, so the standalone
+# scripts have a keyless "agent" to drive against without any API key.
+set -euo pipefail
+
+cat > example.py <<'PY'
+def add(a: int, b: int) -> int:
+    """Add two integers."""
+    return a + b
+PY
+
+echo "stub-agent: wrote example.py"

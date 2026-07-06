@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AppConfig",
+  "description": "Configuration contract for a service's runtime config.",
+  "type": "object",
+  "properties": {
+    "service": {
+      "type": "string",
+      "description": "Name of the service this config belongs to."
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "description": "TCP port the service listens on."
+    },
+    "log_level": {
+      "type": "string",
+      "enum": ["debug", "info", "warn", "error"],
+      "description": "Minimum severity level to log."
+    }
+  },
+  "required": ["service", "port", "log_level"],
+  "additionalProperties": false
+}

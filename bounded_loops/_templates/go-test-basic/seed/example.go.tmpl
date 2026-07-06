@@ -1,0 +1,17 @@
+// seed/example.go — starter target for {{LOOP_NAME}}
+//
+// Replace this with the real code your loop should operate on. As shipped,
+// Add has a deliberate bug (see seed/example_test.go) so the scaffolded
+// loop has something concrete to fix on the very first lap.
+//
+// Package name is a fixed "example", NOT {{LOOP_NAME}} — a loop's
+// destination directory name may contain hyphens (e.g. "my-new-loop"),
+// which is a legal go.mod MODULE path segment but not a legal Go PACKAGE
+// identifier. go.mod.tmpl embeds {{LOOP_NAME}} in the module path instead,
+// where hyphens are fine.
+package example
+
+// Add adds two integers. BUG: currently always returns 0.
+func Add(a int, b int) int {
+	return 0
+}

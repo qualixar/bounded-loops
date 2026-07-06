@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "loop": "contract-clause-extraction",
+  "created": "2026-07-06",
+  "description": "Lap 1 writes a corrected output.json: adds the missing confidentiality clause object and fixes governing_law from a bare string to the required {present, text} shape. JsonSchemaGate validates cleanly on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys, in a legal-industry setting.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "Read schema.json: clauses requires termination/indemnification/governing_law/confidentiality, each an object with present (boolean) and text (string), additionalProperties false throughout. Read output.json: confidentiality is missing entirely from clauses, and governing_law is a bare string 'Delaware' instead of a {present, text} object. Adding confidentiality and fixing governing_law.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "output.json",
+          "content": "{\n  \"contract_title\": \"Master Services Agreement\",\n  \"parties\": [\"Acme Corp\", \"Globex LLC\"],\n  \"clauses\": {\n    \"termination\": {\n      \"present\": true,\n      \"text\": \"Either party may terminate this Agreement upon 30 days written notice.\"\n    },\n    \"indemnification\": {\n      \"present\": true,\n      \"text\": \"Each party shall indemnify the other against third-party claims arising from breach of this Agreement.\"\n    },\n    \"governing_law\": {\n      \"present\": true,\n      \"text\": \"This Agreement shall be governed by the laws of the State of Delaware.\"\n    },\n    \"confidentiality\": {\n      \"present\": true,\n      \"text\": \"Each party shall maintain the confidentiality of the other party's proprietary information for a period of five years.\"\n    }\n  }\n}\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 245,
+      "notes": "The fix — output.json now validates against schema.json. bl run reaches DONE on lap 1, keyless."
+    },
+    {
+      "lap": "*",
+      "agent_output": "Fix already applied; no further changes needed.",
+      "actions": [{"type": "noop"}],
+      "agent_claimed_done": true,
+      "changed": false,
+      "tokens": 0,
+      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+    }
+  ]
+}

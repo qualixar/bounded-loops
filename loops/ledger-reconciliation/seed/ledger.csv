@@ -1,0 +1,7 @@
+id,description,debit,credit,category
+1,Opening capital contribution,,10000.00,equity
+2,Client invoice - Acme Corp consulting,,3500.00,revenue
+3,Office rent - July,1200.00,,expense
+4,Cloud hosting - AWS,250.00,,expense
+5,Contractor payment - design work,1080.00,,
+6,Cash drawdown to checking account,10250.00,,asset
