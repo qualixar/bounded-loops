@@ -16,7 +16,7 @@ a concrete adapter in.
 no framework, stdlib imports only. `models.py` defines the frozen
 dataclasses that flow through the whole system — `Spec`, `Bounds`,
 `Verdict`, `RunResult`, `LoopContext`, `LedgerEntry`, `Outcome` — plus the
-`Rung` (L1/L2/L3) and `Status` (DONE/HALT/PAUSE/KILLED) enums. `rules.py`
+`Rung` (L1/L2/L3) and `Status` (DONE/HALT/PAUSE/KILLED/ERROR) enums. `rules.py`
 holds the three pure predicates the engine calls: `stop_condition_met`,
 `no_progress`, `rung_requires_approval`. `errors.py` defines the exception
 taxonomy (`ManifestError`, `RunnerError`, `GateError`,
@@ -40,8 +40,10 @@ only; it never imports a concrete adapter class.
 
 **Adapters** (`bounded_loops/adapters/`) are the concrete implementations:
 `adapters/runners/` (stub, shell, python_callable, claude-code, codex,
-antigravity, plus the `AnchorGuardRunner` decorator), `adapters/gates/`
-(command, pytest, jsonschema, osv, checkov), and `adapters/io/` (file-based
+antigravity, docker, worktree, plus the `AnchorGuardRunner` decorator),
+`adapters/gates/` (command, pytest, jsonschema, composite, osv, checkov, and
+the typed external gates: gitleaks, semgrep, trivy, promptfoo,
+great_expectations, axe), and `adapters/io/` (file-based
 ledger and memory, OTel/no-op tracer, the token/wallclock budget meter, the
 env-var kill switch, CLI/auto approval, the UTC clock). Every adapter
 implements exactly one port and imports nothing from `application/` beyond

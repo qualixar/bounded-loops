@@ -10,10 +10,9 @@ role/task it makes sense for, a new loop under `loops/` is a welcome PR.
 
 1. Scaffold from the closest existing template:
    ```bash
-   bl new --list
-   bl new my-loop --template pytest-basic   # or jest-basic, go-test-basic,
-                                             # cargo-test-basic, rspec-basic,
-                                             # junit-basic
+   bl new --list                            # pytest-basic, jest-basic, go-test-basic,
+                                            # cargo-test-basic, rspec-basic, junit-basic
+   bl new pytest-basic loops/my-loop        # positional: <template> <destination>
    ```
    If none of the language templates fit (e.g. you're wiring a new gate
    kind, not a new test runner), copy the closest existing `loops/*`
