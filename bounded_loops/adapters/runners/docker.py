@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shlex
 import shutil
+import os
 import subprocess
 from pathlib import Path
 
@@ -27,9 +28,12 @@ class DockerRunner:
             "docker", "run", "--rm", "-i",
             "-v", f"{ctx.workspace.resolve()}:/workspace",
             "-w", "/workspace",
-            self.image,
-            *command,
         ]
+        uid = getattr(os, "getuid", lambda: None)()
+        gid = getattr(os, "getgid", lambda: None)()
+        if uid is not None and gid is not None:
+            argv.extend(["--user", f"{uid}:{gid}"])
+        argv.extend([self.image, *command])
         try:
             proc = subprocess.run(
                 argv, input=prompt, cwd=str(ctx.workspace), shell=False,

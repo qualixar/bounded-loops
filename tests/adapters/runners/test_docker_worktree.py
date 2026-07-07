@@ -31,16 +31,24 @@ def test_docker_runner_requires_docker(tmp_path):
 
 
 def test_docker_runner_invokes_docker(tmp_path):
+    seen_argv = None
+
     def fake_run(argv, **kwargs):
+        nonlocal seen_argv
         if argv[:2] == ["git", "status"]:
             return _proc(0)
         assert argv[0] == "docker"
+        seen_argv = argv
         return _proc(0, "ok")
 
     with patch("bounded_loops.adapters.runners.docker.shutil.which", return_value="/usr/bin/docker"), \
+         patch("bounded_loops.adapters.runners.docker.os.getuid", return_value=1234), \
+         patch("bounded_loops.adapters.runners.docker.os.getgid", return_value=5678), \
          patch("bounded_loops.adapters.runners.docker.subprocess.run", side_effect=fake_run):
         result = DockerRunner(agent_cmd="true").run_once(_spec(), _ctx(tmp_path))
     assert result.log == "ok"
+    assert seen_argv is not None
+    assert seen_argv[seen_argv.index("--user") + 1] == "1234:5678"
 
 
 def test_worktree_runner_requires_git(tmp_path):
