@@ -1,28 +1,22 @@
-# loops/runbook-completeness/loop.yaml
 name: runbook-completeness
-description: >
-  Drive an agent until an operations runbook contains every section an
-  on-call engineer needs during an incident. The gate is
-  `seed/check_runbook.py` — a tiny, dependency-free, pure-standard-library
-  checker shipped WITH the loop, so it runs anywhere Python does: no
-  network, no key. Ships a real runbook.md that stops at Diagnosis, missing
-  the two sections an engineer needs most under pressure: Rollback (how to
-  undo a bad mitigation) and Escalation (who to page next). The agent must
-  fix the RUNBOOK, never edit the checker to force a pass.
-pattern: evaluator-optimizer
+description: "Drive an agent until an operations runbook contains every section an\
+  \ on-call engineer needs during an incident. The gate is `seed/check_runbook.py`\
+  \ \u2014 a tiny, dependency-free, pure-standard-library checker shipped WITH the\
+  \ loop, so it runs anywhere Python does: no network, no key. Ships a real runbook.md\
+  \ that stops at Diagnosis, missing the two sections an engineer needs most under\
+  \ pressure: Rollback (how to undo a bad mitigation) and Escalation (who to page\
+  \ next). The agent must fix the RUNBOOK, never edit the checker to force a pass.\n"
+pattern: routing
 role:
-  - operations
+- operations
 rung: L1
 spec: PROMPT.md
-# The gate's verification anchor. The engine refuses any runner write to a
-# path matching this glob, so the agent (or a community cassette) cannot
-# neuter the checker to fake a green gate.
 forbid:
-  - "seed/check_runbook.py"
+- seed/check_runbook.py
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_runbook.py seed/runbook.md"
+  run: python3 seed/check_runbook.py seed/runbook.md
 bounds: bounds.yaml
 memory: STATE.md

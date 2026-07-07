@@ -1,24 +1,21 @@
-# loops/alt-text-present/loop.yaml
 name: alt-text-present
-description: >
-  Drive an agent until every markdown image in a post has non-empty alt
-  text. The gate is `seed/check_alt.py` — a tiny, dependency-free,
-  pure-standard-library checker shipped WITH the loop, so it runs anywhere
-  Python does: no network, no external tool. Ships `post.md` with two
-  images that have empty `![]()` alt text — a well-documented accessibility
-  and SEO failure. The agent must add real descriptive alt text, never edit
-  the checker to skip the check.
-pattern: evaluator-optimizer
+description: "Drive an agent until every markdown image in a post has non-empty alt\
+  \ text. The gate is `seed/check_alt.py` \u2014 a tiny, dependency-free, pure-standard-library\
+  \ checker shipped WITH the loop, so it runs anywhere Python does: no network, no\
+  \ external tool. Ships `post.md` with two images that have empty `![]()` alt text\
+  \ \u2014 a well-documented accessibility and SEO failure. The agent must add real\
+  \ descriptive alt text, never edit the checker to skip the check.\n"
+pattern: parallelization
 role:
-  - content
+- content
 rung: L1
 spec: PROMPT.md
 forbid:
-  - "seed/check_alt.py"
+- seed/check_alt.py
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_alt.py seed/post.md"
+  run: python3 seed/check_alt.py seed/post.md
 bounds: bounds.yaml
 memory: STATE.md

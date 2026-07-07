@@ -10,7 +10,7 @@ package.
 
 ## What happens
 
-`output.json` ships broken against `schema.json`'s roadmap-item contract:
+`seed/output.json` ships broken against `schema.json`'s roadmap-item contract:
 the required `owner` field is missing entirely, and `quarter` is set to
 `"Q5"`, which is not in the schema's `Q1`/`Q2`/`Q3`/`Q4` enum. The loop runs
 an agent against `PROMPT.md`, checks `output.json` against `schema.json` via
@@ -27,7 +27,7 @@ pip install jsonschema
 
 ```bash
 cd loops/roadmap-field-contract
-python3 -c "import jsonschema, json; jsonschema.validate(json.load(open('output.json')), json.load(open('schema.json')))"
+python3 -c "import jsonschema, json; jsonschema.validate(json.load(open('seed/output.json')), json.load(open('schema.json')))"
 ```
 
 Real captured output (genuinely raised, not invented):
@@ -51,7 +51,7 @@ On instance:
 The exact same broken instance also fails the `quarter` enum constraint
 (`"Q5"` is not `Q1`/`Q2`/`Q3`/`Q4`) — `jsonschema.validate` reports the
 first violation it hits (`required` here) and stops; both defects are
-present in `output.json`.
+present in `seed/output.json`.
 
 ## Run it with the engine
 
@@ -82,7 +82,7 @@ Lap 1's cassette adds the missing `owner` field and corrects `quarter` from
 ## Lift it into your own repo
 
 1. Copy this folder.
-2. Replace `schema.json` with your own contract, and `output.json` with a
+2. Replace `schema.json` with your own contract, and `seed/output.json` with a
    real (or deliberately broken, for demo purposes) instance of it.
 3. Edit `PROMPT.md` to describe your goal.
 4. Run `bl run loops/<your-copy> --yes` to prove it works.

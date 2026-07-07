@@ -11,6 +11,7 @@ _FINISH        = "gen_ai.response.finish_reasons"
 _BL_LAP        = "bounded_loops.lap"
 _BL_TRACE_ID   = "bounded_loops.trace_id"
 _BL_VERDICT    = "bounded_loops.verdict"
+_BL_SENSITIVE  = "bounded_loops.trace.include_sensitive_data"
 
 
 class OtelTracer:
@@ -71,4 +72,5 @@ class OtelTracer:
             sp.set_attribute(_BL_LAP,        ctx.lap)
             sp.set_attribute(_BL_TRACE_ID,   ctx.trace_id)
             sp.set_attribute(_BL_VERDICT,    "pass" if verdict.passed else "fail")
+            sp.set_attribute(_BL_SENSITIVE,  False)
         # Span ends (and is exported) on context manager exit.

@@ -28,6 +28,14 @@ consistency. Letting it "fix" the failure by loosening the tolerance or
 removing the inverse-pair check would fake a green gate. The engine
 refuses any write to `seed/check_fx.py`.
 
+## Make it real
+
+Copy this loop into the repo that owns your rate-table export or pricing test
+fixtures. Replace `seed/rates.json` with your feed shape and extend
+`seed/check_fx.py` with the tolerance and currency-pair rules your treasury or
+pricing team approves. In production, use `bounds.production.yaml` so a passing
+gate routes to a human or downstream release approval before the rates are used.
+
 ## Which Anthropic pattern
 
 `evaluator-optimizer` — the gate (`check_fx.py`) is the evaluator; the

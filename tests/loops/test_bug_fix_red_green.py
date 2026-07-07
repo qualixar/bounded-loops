@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -34,7 +35,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOOP_DIR = REPO_ROOT / "loops" / "bug-fix-red-green"
-BL = str(REPO_ROOT / ".venv" / "bin" / "bl")
+BL = [sys.executable, "-m", "bounded_loops.cli"]
 
 BUGGY_SLUGIFY = '''# seed/slugify.py  — BUGGY (the target the agent must fix)
 # Python 3.11+
@@ -207,7 +208,7 @@ def test_fixed_slugify_passes_gate(seed_dir_with_fixed_slug):
 
 def test_bl_run_exits_zero_with_ledger(loop_dir, tmp_workspace):
     result = subprocess.run(
-        [BL, "run", str(loop_dir), "--yes"],
+        [*BL, "run", str(loop_dir), "--yes"],
         capture_output=True,
         text=True,
         timeout=30,
@@ -226,7 +227,7 @@ def test_bl_run_exits_zero_with_ledger(loop_dir, tmp_workspace):
 
 def test_bl_lint_passes(loop_dir):
     result = subprocess.run(
-        [BL, "lint", str(loop_dir)], capture_output=True, text=True
+        [*BL, "lint", str(loop_dir)], capture_output=True, text=True
     )
     assert result.returncode == 0
 

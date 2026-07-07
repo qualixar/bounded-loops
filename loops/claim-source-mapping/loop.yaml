@@ -1,30 +1,25 @@
-# loops/claim-source-mapping/loop.yaml
 name: claim-source-mapping
-description: >
-  Drive an agent until every inline citation marker `[S#]` in a research
-  article resolves to a real source id in a trusted source list. The gate is
-  `seed/check_claims.py` — a tiny, dependency-free, pure-standard-library
-  checker shipped WITH the loop, so it runs anywhere Python does: no network,
-  no external tool, no key. Ships a real article.md that cites a mis-numbered
-  source (`[S3]`, which does not exist — the real supporting source is `[S2]`)
-  — the exact "claim-source drift" shape common in AI-assisted research
-  writing. The source list is ground truth: the agent must fix the ARTICLE,
-  never edit the source list or the checker to force a pass.
-pattern: evaluator-optimizer
+description: "Drive an agent until every inline citation marker `[S#]` in a research\
+  \ article resolves to a real source id in a trusted source list. The gate is `seed/check_claims.py`\
+  \ \u2014 a tiny, dependency-free, pure-standard-library checker shipped WITH the\
+  \ loop, so it runs anywhere Python does: no network, no external tool, no key. Ships\
+  \ a real article.md that cites a mis-numbered source (`[S3]`, which does not exist\
+  \ \u2014 the real supporting source is `[S2]`) \u2014 the exact \"claim-source drift\"\
+  \ shape common in AI-assisted research writing. The source list is ground truth:\
+  \ the agent must fix the ARTICLE, never edit the source list or the checker to force\
+  \ a pass.\n"
+pattern: routing
 role:
-  - research
+- research
 rung: L1
 spec: PROMPT.md
-# The gate's LOGIC is the checker, and its GROUND TRUTH is the source list.
-# The agent fixes the document; it must never rewrite either to fake a
-# green gate.
 forbid:
-  - "seed/check_claims.py"
-  - "seed/sources.json"
+- seed/check_claims.py
+- seed/sources.json
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_claims.py seed/article.md seed/sources.json"
+  run: python3 seed/check_claims.py seed/article.md seed/sources.json
 bounds: bounds.yaml
 memory: STATE.md

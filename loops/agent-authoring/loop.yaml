@@ -1,14 +1,14 @@
-# loops/agent-authoring/loop.yaml
 name: agent-authoring
-description: >
-  Drive an agent until an authored sub-agent config conforms to a required
-  shape. Demonstrates the JsonSchemaGate validating that a freshly
-  authored sub-agent's config (name, description, tools, model) matches a
-  fixed JSON Schema before it is allowed to be registered.
-pattern: evaluator-optimizer
+description: 'Drive an agent until an authored sub-agent config conforms to a required
+  shape. Demonstrates the JsonSchemaGate validating that a freshly authored sub-agent''s
+  config (name, description, tools, model) matches a fixed JSON Schema before it is
+  allowed to be registered.
+
+  '
+pattern: routing
 role:
-  - agent-development
-  - tooling
+- agent-development
+- tooling
 rung: L2
 spec: PROMPT.md
 runner:

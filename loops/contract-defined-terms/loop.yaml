@@ -1,29 +1,24 @@
-# loops/contract-defined-terms/loop.yaml
 name: contract-defined-terms
-description: >
-  Drive an agent until every bolded defined term used in a contract's body
-  is actually defined in its "## Definitions" section. The gate is
-  `seed/check_defined.py` — a tiny, dependency-free, pure-standard-library
-  checker shipped WITH the loop, so it runs anywhere Python does: no
-  network, no legal API, no key. Ships a real contract.md whose body bolds
-  "**Effective Date**" three times but whose Definitions section never
-  defines it — a common drafting defect where a defined-term style is
-  reused without keeping the definitions list in sync, leaving the term's
-  meaning implicit. The agent must ADD the missing definition; it must
-  never unbold the usages or edit the checker to force a pass.
-pattern: evaluator-optimizer
+description: "Drive an agent until every bolded defined term used in a contract's\
+  \ body is actually defined in its \"## Definitions\" section. The gate is `seed/check_defined.py`\
+  \ \u2014 a tiny, dependency-free, pure-standard-library checker shipped WITH the\
+  \ loop, so it runs anywhere Python does: no network, no legal API, no key. Ships\
+  \ a real contract.md whose body bolds \"**Effective Date**\" three times but whose\
+  \ Definitions section never defines it \u2014 a common drafting defect where a defined-term\
+  \ style is reused without keeping the definitions list in sync, leaving the term's\
+  \ meaning implicit. The agent must ADD the missing definition; it must never unbold\
+  \ the usages or edit the checker to force a pass.\n"
+pattern: prompt-chaining
 role:
-  - legal
+- legal
 rung: L2
 spec: PROMPT.md
-# The gate's LOGIC is the checker. The agent fixes the document; it must
-# never rewrite the checker to fake a green gate.
 forbid:
-  - "seed/check_defined.py"
+- seed/check_defined.py
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_defined.py seed/contract.md"
+  run: python3 seed/check_defined.py seed/contract.md
 bounds: bounds.yaml
 memory: STATE.md

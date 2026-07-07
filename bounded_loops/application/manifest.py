@@ -50,8 +50,8 @@ KEYLESS_RUNNERS = {"stub", "shell", "python_callable"}   # python_callable needs
 QUALIXAR_GATE_KINDS = {"agentassert", "agentassay", "skillfortify", "attestar"}
 
 VALID_GATE_KINDS = {
-    "command", "pytest", "axe", "osv", "checkov",   # "checkov" added
-    "promptfoo", "great_expectations", "jsonschema",
+    "command", "pytest", "composite", "axe", "osv", "checkov",
+    "gitleaks", "semgrep", "trivy", "promptfoo", "great_expectations", "jsonschema",
 } | QUALIXAR_GATE_KINDS
 
 VALID_RUNGS = {"L1", "L2", "L3"}
@@ -188,6 +188,8 @@ def load(loop_dir: Path) -> LoopManifest:
     gate_run = gate_block.get("run")  # str | None (required for kind=command)
     if gate_kind == "command" and gate_run is None:
         raise ManifestError("gate.run is required when gate.kind=command")
+    if gate_kind == "composite":
+        _validate_composite_gate(gate_block)
     # gate_config merges "run" + every other gate.* key into ONE dict —
     # this is what composition.py passes as **kwargs to non-command gates.
     gate_config = {k: v for k, v in gate_block.items() if k != "kind"}
@@ -299,6 +301,30 @@ def _load_bounds(bounds_path: Path) -> Bounds:
 def _require(d: dict, key: str, path: Path) -> None:
     if key not in d:
         raise ManifestError(f"loop.yaml missing required key {key!r} ({path})")
+
+
+def _validate_composite_gate(gate_block: dict) -> None:
+    mode = gate_block.get("mode", "all")
+    if mode != "all":
+        raise ManifestError("gate.kind=composite supports only mode: all in v1")
+    gates = gate_block.get("gates")
+    if not isinstance(gates, list) or not gates:
+        raise ManifestError("gate.kind=composite requires a non-empty gates list")
+    for index, child in enumerate(gates):
+        if not isinstance(child, dict):
+            raise ManifestError(f"gate.gates[{index}] must be an object")
+        child_kind = child.get("kind")
+        if child_kind == "composite":
+            raise ManifestError("nested composite gates are not supported in v1")
+        if child_kind not in VALID_GATE_KINDS:
+            raise ManifestError(f"gate.gates[{index}].kind {child_kind!r} is not recognized")
+        if child_kind in QUALIXAR_GATE_KINDS:
+            raise ManifestError(
+                f"gate.gates[{index}].kind {child_kind!r} is a Qualixar product gate "
+                "and is FORBIDDEN as a manifest default."
+            )
+        if child_kind == "command" and child.get("run") is None:
+            raise ManifestError(f"gate.gates[{index}].run is required when kind=command")
 
 
 def _load_env_passthrough(runner_block: dict) -> tuple[str, ...]:

@@ -14,6 +14,7 @@ github.com/microsoft/agent-framework. Current version at verification time:
 1.10.0.
 """
 from pathlib import Path
+import inspect
 
 
 def run_turn(prompt: str, workspace: str) -> dict:
@@ -34,11 +35,11 @@ def run_turn(prompt: str, workspace: str) -> dict:
         target.write_text(fixed)
         return "fixed seed/app.py"
 
-    # Constructing Agent with no client argument proves the real
-    # agent-framework import/class surface without requiring an API key at
-    # construction time; a real deployment passes client=OpenAIChatClient()
-    # (or another supported chat client) and calls `await agent.run(prompt)`.
-    agent = Agent(instructions=prompt)
+    # The current Agent Framework API requires a chat client at construction
+    # time. This offline demo deliberately avoids a live LLM client, so it
+    # verifies the import/class surface and leaves real Agent construction to
+    # production glue that can pass client=OpenAIChatClient() or equivalent.
+    agent_repr = f"{Agent.__module__}.{Agent.__name__}{inspect.signature(Agent)}"
 
     log = fix_bug()
 
@@ -57,5 +58,5 @@ def run_turn(prompt: str, workspace: str) -> dict:
         "tokens": 0,   # This demo never calls a real LLM (see note above);
                        # a real `await agent.run(prompt)` call would populate
                        # this from Agent Framework's own usage metadata.
-        "log": f"Agent Framework run_turn: {log} (agent={agent!r})",
+        "log": f"Agent Framework run_turn: {log} (agent_class={agent_repr})",
     }

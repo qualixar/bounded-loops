@@ -1,28 +1,23 @@
-# loops/rfc-decision-recorded/loop.yaml
 name: rfc-decision-recorded
-description: >
-  Drive an agent until an RFC document actually records a decision, not
-  just a problem statement. The gate is `seed/check_rfc.py` — a tiny,
-  dependency-free, pure-standard-library checker shipped WITH the loop, so
-  it runs anywhere Python does: no network, no external tool, no key. Ships
-  a real rfc.md marked "Accepted" that lays out Context and three options
-  but never states which option was chosen or what it costs — the exact gap
-  that makes an "Accepted" RFC useless six months later when nobody
-  remembers what was actually decided. The document is the target: the
-  agent must fix the RFC, never edit the checker to force a pass.
-pattern: evaluator-optimizer
+description: "Drive an agent until an RFC document actually records a decision, not\
+  \ just a problem statement. The gate is `seed/check_rfc.py` \u2014 a tiny, dependency-free,\
+  \ pure-standard-library checker shipped WITH the loop, so it runs anywhere Python\
+  \ does: no network, no external tool, no key. Ships a real rfc.md marked \"Accepted\"\
+  \ that lays out Context and three options but never states which option was chosen\
+  \ or what it costs \u2014 the exact gap that makes an \"Accepted\" RFC useless six\
+  \ months later when nobody remembers what was actually decided. The document is\
+  \ the target: the agent must fix the RFC, never edit the checker to force a pass.\n"
+pattern: routing
 role:
-  - business
+- business
 rung: L1
 spec: PROMPT.md
-# The gate's LOGIC is the checker; the agent fixes the document, it must
-# never rewrite the checker to fake a green gate.
 forbid:
-  - "seed/check_rfc.py"
+- seed/check_rfc.py
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_rfc.py seed/rfc.md"
+  run: python3 seed/check_rfc.py seed/rfc.md
 bounds: bounds.yaml
 memory: STATE.md

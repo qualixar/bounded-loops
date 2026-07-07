@@ -87,13 +87,13 @@ Real captured output:
 
 ```
 $ bl lint loops/contract-clause-extraction
-[PASS] /Users/varunpratapbhardwaj/Documents/work/varun-world/Agentic_official/bounded-loops/loops/contract-clause-extraction
+[PASS] .../bounded-loops/loops/contract-clause-extraction
 
 $ bl run loops/contract-clause-extraction --yes
 [bounded-loops] About to run loop 'contract-clause-extraction':
   runner : stub
   gate   : <jsonschema gate>
-✓ [DONE] gate-passed (laps: 1)  ledger: /Users/varunpratapbhardwaj/Documents/work/varun-world/Agentic_official/bounded-loops/loops/contract-clause-extraction/.ledger.jsonl
+✓ [DONE] gate-passed (laps: 1)  ledger: .../bounded-loops/loops/contract-clause-extraction/.ledger.jsonl
 ```
 
 Lap 1's cassette adds the missing `confidentiality` clause object and

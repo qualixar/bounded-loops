@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "bounded-loops": {
+      "type": "stdio",
+      "command": "bounded-loops-mcp",
+      "args": []
+    }
+  }
+}

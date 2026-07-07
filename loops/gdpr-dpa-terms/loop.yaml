@@ -1,30 +1,25 @@
-# loops/gdpr-dpa-terms/loop.yaml
 name: gdpr-dpa-terms
-description: >
-  Drive an agent until a Data Processing Agreement contains every mandatory
-  term required by GDPR Article 28(3): subject matter, duration, nature and
-  purpose, type of personal data, obligations of the controller,
-  sub-processor terms, confidentiality, security measures, and audit
-  rights. The gate is `seed/check_dpa.py` — a tiny, dependency-free,
-  pure-standard-library checker shipped WITH the loop, so it runs anywhere
-  Python does: no network, no legal API, no key. Ships a real dpa.md that
-  is missing the sub-processor and audit terms — a common compliance gap
-  when a DPA is drafted from a partial template and never checked against
-  the full Art.28(3) list. The agent must ADD the missing sections; it
-  must never delete existing content or edit the checker to force a pass.
-pattern: evaluator-optimizer
+description: "Drive an agent until a Data Processing Agreement contains every mandatory\
+  \ term required by GDPR Article 28(3): subject matter, duration, nature and purpose,\
+  \ type of personal data, obligations of the controller, sub-processor terms, confidentiality,\
+  \ security measures, and audit rights. The gate is `seed/check_dpa.py` \u2014 a\
+  \ tiny, dependency-free, pure-standard-library checker shipped WITH the loop, so\
+  \ it runs anywhere Python does: no network, no legal API, no key. Ships a real dpa.md\
+  \ that is missing the sub-processor and audit terms \u2014 a common compliance gap\
+  \ when a DPA is drafted from a partial template and never checked against the full\
+  \ Art.28(3) list. The agent must ADD the missing sections; it must never delete\
+  \ existing content or edit the checker to force a pass.\n"
+pattern: routing
 role:
-  - legal
+- legal
 rung: L2
 spec: PROMPT.md
-# The gate's LOGIC is the checker. The agent fixes the document; it must
-# never rewrite the checker to fake a green gate.
 forbid:
-  - "seed/check_dpa.py"
+- seed/check_dpa.py
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_dpa.py seed/dpa.md"
+  run: python3 seed/check_dpa.py seed/dpa.md
 bounds: bounds.yaml
 memory: STATE.md

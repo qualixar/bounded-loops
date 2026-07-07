@@ -1,24 +1,22 @@
 name: jwt-alg-not-none
-description: >
-  Drive an agent until `seed/auth_config.json` never sets the JWT signing
-  algorithm to `none`. The gate is `seed/check_jwt.py` — a tiny,
-  dependency-free, pure-standard-library checker shipped WITH the loop (no
-  network, no external tool): it fails if `jwt.algorithm` is
-  none/empty/None (case-insensitive) — the classic "alg: none" JWT bypass
-  that lets an attacker forge an unsigned token and have it accepted. Ships
-  a real auth_config.json with `algorithm: "none"`. The agent must fix the
-  CONFIG, never the checker.
-pattern: evaluator-optimizer
+description: "Drive an agent until `seed/auth_config.json` never sets the JWT signing\
+  \ algorithm to `none`. The gate is `seed/check_jwt.py` \u2014 a tiny, dependency-free,\
+  \ pure-standard-library checker shipped WITH the loop (no network, no external tool):\
+  \ it fails if `jwt.algorithm` is none/empty/None (case-insensitive) \u2014 the classic\
+  \ \"alg: none\" JWT bypass that lets an attacker forge an unsigned token and have\
+  \ it accepted. Ships a real auth_config.json with `algorithm: \"none\"`. The agent\
+  \ must fix the CONFIG, never the checker.\n"
+pattern: augmented-llm
 role:
-  - security
+- security
 rung: L1
 spec: PROMPT.md
 forbid:
-  - "seed/check_jwt.py"
+- seed/check_jwt.py
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_jwt.py seed/auth_config.json"
+  run: python3 seed/check_jwt.py seed/auth_config.json
 bounds: bounds.yaml
 memory: STATE.md

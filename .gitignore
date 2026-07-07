@@ -6,6 +6,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .ledger.jsonl
+.bounded-loops/
 dist/
 build/
 node_modules/
@@ -20,3 +21,6 @@ htmlcov/
 
 # runtime memory log (bl run) — template STATE.md stays tracked
 *.runtime
+
+# internal engineering audit — tracked in a separate private repo, never public
+audit/

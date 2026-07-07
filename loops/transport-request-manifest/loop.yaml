@@ -1,29 +1,24 @@
-# loops/transport-request-manifest/loop.yaml
 name: transport-request-manifest
-description: >
-  Drive an agent until a SAP change-and-transport-system (CTS) transport
-  request manifest has no dangling dependencies: every id in `dependencies`
-  must also appear in `objects`. The gate is `seed/check_transport.py` — a
-  tiny, dependency-free, pure-standard-library checker shipped WITH the loop,
-  so it runs anywhere Python does: no network, no SAP transport-management
-  system (STMS) connection, no key. Ships a real transport.json with one
-  dependency (a data element) missing from its objects list — the exact
-  failure mode that breaks a transport import into a downstream system. The
-  agent must fix the MANIFEST, never the checker.
-pattern: evaluator-optimizer
+description: "Drive an agent until a SAP change-and-transport-system (CTS) transport\
+  \ request manifest has no dangling dependencies: every id in `dependencies` must\
+  \ also appear in `objects`. The gate is `seed/check_transport.py` \u2014 a tiny,\
+  \ dependency-free, pure-standard-library checker shipped WITH the loop, so it runs\
+  \ anywhere Python does: no network, no SAP transport-management system (STMS) connection,\
+  \ no key. Ships a real transport.json with one dependency (a data element) missing\
+  \ from its objects list \u2014 the exact failure mode that breaks a transport import\
+  \ into a downstream system. The agent must fix the MANIFEST, never the checker.\n"
+pattern: prompt-chaining
 role:
-  - enterprise
-  - erp
+- enterprise
+- erp
 rung: L2
 spec: PROMPT.md
-# The gate's LOGIC is the checker. The agent fixes the manifest; it must
-# never rewrite the checker to fake a green gate.
 forbid:
-  - "seed/check_transport.py"
+- seed/check_transport.py
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_transport.py seed/transport.json"
+  run: python3 seed/check_transport.py seed/transport.json
 bounds: bounds.yaml
 memory: STATE.md

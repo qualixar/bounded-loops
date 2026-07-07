@@ -29,6 +29,9 @@ except ImportError as _exc:  # pragma: no cover - only hit when the extra is abs
     ) from _exc
 
 from bounded_loops.application.manifest import load as manifest_load
+from bounded_loops.application.introspection import list_gates, show_loop
+from bounded_loops.application.loop_audit import audit_loops
+from bounded_loops.application.run_store import list_runs, write_run_metadata
 from bounded_loops.cli import _find_repo_root
 from bounded_loops.composition import _approval_required, wire
 from bounded_loops.domain.errors import BoundedLoopsError, ManifestError
@@ -66,6 +69,8 @@ def _run_signature(
     runner: str | None,
     gate_override: str | None,
     max_iterations: int | None,
+    run_id: str | None = None,
+    resume: bool = False,
 ) -> str:
     """The FULL executable identity a confirm=True call must match — the gate
     command, the runner KIND, the iteration cap, AND the runner's agent_cmd +
@@ -94,7 +99,9 @@ def _run_signature(
         f"agent_cmd={_resolve_agent_cmd(manifest)}\x1f"
         f"cassette={manifest.cassette or ''}\x1f"
         f"content={_content_hash(manifest.loop_dir)}\x1f"
-        f"max_iterations={max_iterations}"
+        f"max_iterations={max_iterations}\x1f"
+        f"run_id={run_id or ''}\x1f"
+        f"resume={resume}"
     )
 
 
@@ -176,12 +183,102 @@ def bl_lint(loop_dirs: list[str]) -> dict:
 
 
 @mcp.tool()
+def bl_show(loop_dir: str) -> dict:
+    """Show a loop's manifest, runner, gate, bounds, dependencies, risk tags,
+    production bounds path, and content hash before execution."""
+    path = Path(loop_dir).resolve()
+    if not path.is_dir():
+        return {"status": "error", "error_type": "ManifestError",
+                "message": f"'{path}' is not a directory or does not exist."}
+    try:
+        return {"status": "ok", "loop": show_loop(path)}
+    except ManifestError as e:
+        return {"status": "error", "error_type": "ManifestError", "message": str(e)}
+
+
+@mcp.tool()
+def bl_gates() -> dict:
+    """List gate kinds and local dependency availability."""
+    return {"gates": list_gates()}
+
+
+@mcp.tool()
+def bl_audit_loops(dirs: list[str] | None = None) -> dict:
+    """Audit loop examples for copy-paste production readiness."""
+    paths = [Path(d).resolve() for d in (dirs or [str(Path.cwd())])]
+    results = [result for path in paths for result in audit_loops(path)]
+    return {
+        "results": [result.__dict__ for result in results],
+        "all_passed": all(result.passed for result in results),
+    }
+
+
+@mcp.resource("bounded-loops://catalog", mime_type="text/markdown")
+def resource_catalog() -> str:
+    """Return the loop recipe catalog as MCP context."""
+    return _repo_root_or_cwd().joinpath("catalog", "README.md").read_text(encoding="utf-8")
+
+
+@mcp.resource("bounded-loops://loop/{name}/manifest", mime_type="application/json")
+def resource_loop_manifest(name: str) -> str:
+    """Return a loop's manifest as JSON context."""
+    loop_dir = _repo_root_or_cwd() / "loops" / name
+    return __import__("json").dumps(show_loop(loop_dir))
+
+
+@mcp.resource("bounded-loops://loop/{name}/prompt", mime_type="text/markdown")
+def resource_loop_prompt(name: str) -> str:
+    """Return a loop's PROMPT.md as MCP context."""
+    loop_dir = _repo_root_or_cwd() / "loops" / name
+    return (loop_dir / "PROMPT.md").read_text(encoding="utf-8")
+
+
+@mcp.prompt(name="run_loop", description="Inspect, lint, preview, and run a bounded loop safely.")
+def prompt_run_loop(loop_dir: str) -> str:
+    return (
+        "Use bounded-loops safely. First call bl_show for the loop, then bl_gates, "
+        "then bl_lint. Call bl_run with confirm=false and show the preview. Only "
+        "after approval, call bl_run with confirm=true using the same arguments. "
+        f"Loop directory: {loop_dir}"
+    )
+
+
+@mcp.prompt(name="write_loop", description="Create a production-grade bounded loop.")
+def prompt_write_loop(loop_name: str, gate_kind: str = "pytest") -> str:
+    return (
+        "Create a production-grade bounded loop with loop.yaml, bounds.yaml, "
+        "PROMPT.md, README.md, seed/, a real mechanical gate, forbid protection "
+        "for verification anchors, and production adaptation guidance. Validate "
+        "with bl_lint, bl_run, and bl_audit_loops. "
+        f"Loop name: {loop_name}. Gate kind: {gate_kind}."
+    )
+
+
+@mcp.prompt(name="audit_loop", description="Audit a bounded loop for copy-paste production readiness.")
+def prompt_audit_loop(loop_dir: str) -> str:
+    return (
+        "Audit this bounded loop for production readiness. Use bl_show, bl_lint, "
+        "bl_audit_loops, and inspect README/PROMPT/seed/gate/bounds. Report hard "
+        f"failures before warnings. Loop directory: {loop_dir}"
+    )
+
+
+def _repo_root_or_cwd() -> Path:
+    try:
+        return _find_repo_root(Path.cwd())
+    except ManifestError:
+        return Path.cwd()
+
+
+@mcp.tool()
 def bl_run(
     loop_dir: str,
     confirm: bool,
     runner: str | None = None,
     gate_override: str | None = None,
     max_iterations: int | None = None,
+    run_id: str | None = None,
+    resume: bool = False,
 ) -> dict:
     """
     Run a bounded loop via the engine (manifest.load + composition.wire +
@@ -219,6 +316,8 @@ def bl_run(
         runner: optional override for manifest.runner_kind.
         gate_override: optional shell command replacing the loop's gate.
         max_iterations: optional override for bounds.max_iterations.
+        run_id: optional persistent run id for resumable workspace and ledger.
+        resume: continue an existing persistent run selected by run_id.
 
     Returns (confirm=False):
         {"status": "not_confirmed", "preview": {"loop": str, "runner": str,
@@ -251,7 +350,7 @@ def bl_run(
 
     path_key = str(path)
     gate_preview = _resolve_gate_preview(manifest, gate_override)
-    run_sig = _run_signature(manifest, runner, gate_override, max_iterations)
+    run_sig = _run_signature(manifest, runner, gate_override, max_iterations, run_id, resume)
     preview = {
         "loop": manifest.name,
         "runner": runner or manifest.runner_kind,
@@ -299,6 +398,8 @@ def bl_run(
             manifest, runner_override=runner,
             gate_cmd_override=gate_override,
             max_iterations_override=max_iterations,
+            run_id=run_id,
+            resume=resume,
         )
     except ManifestError as e:
         return {"status": "error", "error_type": "ManifestError", "message": str(e)}
@@ -311,12 +412,31 @@ def bl_run(
         return {"status": "error", "error_type": "unexpected",
                 "message": f"{type(e).__name__}: {e}"}
 
+    if run_id is not None:
+        write_run_metadata(
+            loop_dir=manifest.loop_dir,
+            run_id=run_id,
+            outcome=outcome,
+            workspace=use_case._workspace,
+        )
+
     return {
         "status": outcome.status.value,
         "reason": outcome.reason,
         "laps": outcome.laps,
         "ledger_path": str(outcome.ledger_path),
+        "run_id": run_id,
     }
+
+
+@mcp.tool()
+def bl_runs(loop_dir: str) -> dict:
+    """List persisted run metadata for a loop directory."""
+    path = Path(loop_dir).resolve()
+    if not path.is_dir():
+        return {"status": "error", "error_type": "ManifestError",
+                "message": f"'{path}' is not a directory or does not exist."}
+    return {"status": "ok", "runs": list_runs(path)}
 
 
 def main() -> None:

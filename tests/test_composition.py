@@ -58,6 +58,16 @@ def make_manifest(
     )
 
 
+def write_noop_cassette(loop_dir: Path) -> None:
+    (loop_dir / "cassettes").mkdir()
+    (loop_dir / "cassettes" / "default.json").write_text(
+        '{"version":1,"loop":"test-loop","created":"2026-07-07","description":"t",'
+        '"interactions":[{"lap":1,"agent_output":"done","actions":[{"type":"noop"}],'
+        '"agent_claimed_done":true,"changed":false,"tokens":0}]}',
+        encoding="utf-8",
+    )
+
+
 # ── Test: valid manifest wires a runnable use case ────────────────────────────
 
 class TestWireValidManifest:
@@ -161,14 +171,50 @@ class TestWireValidManifest:
         via --runner override, never a manifest default."""
         assert set(comp.RUNNER_REGISTRY) == {
             "stub", "shell", "python_callable",
-            "claude-code", "codex", "antigravity",
+            "claude-code", "codex", "antigravity", "docker", "worktree",
         }
+
+    def test_docker_runner_wires_via_override(self, tmp_path):
+        (tmp_path / "seed").mkdir()
+        manifest = make_manifest(runner_kind="stub", loop_dir=tmp_path)
+        manifest.raw["runner"] = {"default": "stub", "image": "python:3.11-slim", "agent_cmd": "true"}
+        with patch("bounded_loops.composition.DockerRunner") as MockDocker:
+            MockDocker.return_value = MagicMock()
+            comp.wire(manifest, runner_override="docker")
+            MockDocker.assert_called_once_with(image="python:3.11-slim", agent_cmd="true")
+
+    def test_worktree_runner_wires_via_override(self, tmp_path):
+        (tmp_path / "seed").mkdir()
+        manifest = make_manifest(runner_kind="stub", loop_dir=tmp_path)
+        manifest.raw["runner"] = {"default": "stub", "agent_cmd": "true"}
+        with patch("bounded_loops.composition.WorktreeRunner") as MockWorktree:
+            MockWorktree.return_value = MagicMock()
+            comp.wire(manifest, runner_override="worktree")
+            MockWorktree.assert_called_once_with(agent_cmd="true")
 
     def test_gate_registry_v1_scope(self):
         """GATE_REGISTRY covers command/pytest unconditionally; P2 gates
         (axe/osv/promptfoo/great_expectations) join only once their adapters
         exist — selecting one before then raises ManifestError, not a crash."""
-        assert {"command", "pytest"}.issubset(set(comp.GATE_REGISTRY))
+        assert {"command", "pytest", "composite"}.issubset(set(comp.GATE_REGISTRY))
+
+    def test_composite_gate_wires_child_gates(self, tmp_path):
+        (tmp_path / "seed").mkdir()
+        manifest = make_manifest(
+            gate_kind="composite",
+            gate_config={
+                "mode": "all",
+                "gates": [
+                    {"kind": "command", "run": "true"},
+                    {"kind": "pytest"},
+                ],
+            },
+            loop_dir=tmp_path,
+        )
+        with patch("bounded_loops.composition.StubRunner") as MockStub:
+            MockStub.return_value = MagicMock()
+            use_case = comp.wire(manifest)
+        assert use_case._deps.gate.__class__.__name__ == "CompositeGate"
 
     def test_approval_l1_rung_auto_approval(self, tmp_path):
         """L1 rung + require_approval=None → AutoApproval (never prompts)."""
@@ -259,6 +305,46 @@ class TestWireValidManifest:
             use_case = comp.wire(manifest)
         assert use_case._workspace != tmp_path
         assert use_case._workspace.exists()
+        assert (use_case._workspace / comp._SCRATCH_MARKER).exists()
+
+    def test_run_cleans_scratch_workspace_by_default(self, tmp_path):
+        """Production hardening: a normal run removes the scratch workspace
+        after a terminal outcome so unattended loops do not leak temp dirs."""
+        (tmp_path / "seed").mkdir()
+        write_noop_cassette(tmp_path)
+        manifest = make_manifest(gate_kind="command", gate_config={"run": "true"}, loop_dir=tmp_path)
+        use_case = comp.wire(manifest)
+        workspace = use_case._workspace
+        outcome = use_case.run()
+        assert outcome.status.value == "DONE"
+        assert not workspace.exists()
+
+    def test_keep_workspace_preserves_scratch_workspace(self, tmp_path):
+        """--keep-workspace/debug mode preserves the scratch workspace."""
+        (tmp_path / "seed").mkdir()
+        write_noop_cassette(tmp_path)
+        manifest = make_manifest(gate_kind="command", gate_config={"run": "true"}, loop_dir=tmp_path)
+        use_case = comp.wire(manifest, keep_workspace=True)
+        workspace = use_case._workspace
+        outcome = use_case.run()
+        assert outcome.status.value == "DONE"
+        assert workspace.exists()
+
+    def test_run_id_uses_persistent_workspace_and_ledger(self, tmp_path):
+        (tmp_path / "seed").mkdir()
+        write_noop_cassette(tmp_path)
+        manifest = make_manifest(gate_kind="command", gate_config={"run": "true"}, loop_dir=tmp_path)
+        use_case = comp.wire(manifest, run_id="r1")
+        assert ".bounded-loops" in use_case._workspace.parts
+        assert use_case._workspace.exists()
+        assert use_case._deps.ledger.path().name == "ledger.jsonl"
+
+    def test_resume_requires_existing_persistent_workspace(self, tmp_path):
+        (tmp_path / "seed").mkdir()
+        write_noop_cassette(tmp_path)
+        manifest = make_manifest(gate_kind="command", gate_config={"run": "true"}, loop_dir=tmp_path)
+        with pytest.raises(ManifestError, match="no persistent workspace"):
+            comp.wire(manifest, run_id="r1", resume=True)
 
     def test_workspace_rejects_symlink_in_seed(self, tmp_path):
         """Security: a symlink inside seed/ must be refused, not copied."""

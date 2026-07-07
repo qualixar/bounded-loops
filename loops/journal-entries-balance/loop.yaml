@@ -1,23 +1,21 @@
-# loops/journal-entries-balance/loop.yaml
 name: journal-entries-balance
-description: >
-  Drive an agent until every entry in a double-entry journal balances —
-  sum(debit) == sum(credit) per entry. The gate is `seed/check_balance.py`,
-  a tiny, dependency-free, pure-standard-library checker shipped WITH the
-  loop. Ships a real journal.json where one entry (a rent payment) has
-  debits of 200 against credits of 250 — a classic unbalanced-posting
-  defect. The agent must fix the JOURNAL, never the checker.
-pattern: evaluator-optimizer
+description: "Drive an agent until every entry in a double-entry journal balances\
+  \ \u2014 sum(debit) == sum(credit) per entry. The gate is `seed/check_balance.py`,\
+  \ a tiny, dependency-free, pure-standard-library checker shipped WITH the loop.\
+  \ Ships a real journal.json where one entry (a rent payment) has debits of 200 against\
+  \ credits of 250 \u2014 a classic unbalanced-posting defect. The agent must fix\
+  \ the JOURNAL, never the checker.\n"
+pattern: orchestrator-workers
 role:
-  - finance
+- finance
 rung: L2
 spec: PROMPT.md
 forbid:
-  - "seed/check_balance.py"
+- seed/check_balance.py
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_balance.py seed/journal.json"
+  run: python3 seed/check_balance.py seed/journal.json
 bounds: bounds.yaml
 memory: STATE.md

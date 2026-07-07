@@ -1,28 +1,23 @@
-# loops/meeting-action-items/loop.yaml
 name: meeting-action-items
-description: >
-  Drive an agent until every action item in meeting minutes names an owner
-  and a due date. The gate is `seed/check_actions.py` — a tiny,
-  dependency-free, pure-standard-library checker shipped WITH the loop, so
-  it runs anywhere Python does: no network, no external tool, no key. Ships
-  real minutes.md with three action items, one of which ("fix the Paddle
-  pricing page copy") has no `@owner` and no due date — the exact gap that
-  turns an action item into a todo nobody is accountable for. The document
-  is the target: the agent must fix the MINUTES, never edit the checker to
-  force a pass.
-pattern: evaluator-optimizer
+description: "Drive an agent until every action item in meeting minutes names an owner\
+  \ and a due date. The gate is `seed/check_actions.py` \u2014 a tiny, dependency-free,\
+  \ pure-standard-library checker shipped WITH the loop, so it runs anywhere Python\
+  \ does: no network, no external tool, no key. Ships real minutes.md with three action\
+  \ items, one of which (\"fix the Paddle pricing page copy\") has no `@owner` and\
+  \ no due date \u2014 the exact gap that turns an action item into a todo nobody\
+  \ is accountable for. The document is the target: the agent must fix the MINUTES,\
+  \ never edit the checker to force a pass.\n"
+pattern: prompt-chaining
 role:
-  - business
+- business
 rung: L1
 spec: PROMPT.md
-# The gate's LOGIC is the checker; the agent fixes the document, it must
-# never rewrite the checker to fake a green gate.
 forbid:
-  - "seed/check_actions.py"
+- seed/check_actions.py
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_actions.py seed/minutes.md"
+  run: python3 seed/check_actions.py seed/minutes.md
 bounds: bounds.yaml
 memory: STATE.md

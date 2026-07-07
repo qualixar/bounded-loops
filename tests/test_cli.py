@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from bounded_loops.cli import main
+from bounded_loops.application.loop_audit import LoopAuditResult
 from bounded_loops.domain.models import Status, Outcome
 from bounded_loops.domain.errors import ManifestError
 
@@ -178,6 +179,9 @@ class TestBLRunFlagPassthrough:
             runner_override="codex",
             gate_cmd_override=None,
             max_iterations_override=None,
+            keep_workspace=False,
+            run_id=None,
+            resume=False,
         )
 
     def test_runner_flag_accepts_python_callable(self, tmp_path):
@@ -197,6 +201,9 @@ class TestBLRunFlagPassthrough:
             runner_override="python_callable",
             gate_cmd_override=None,
             max_iterations_override=None,
+            keep_workspace=False,
+            run_id=None,
+            resume=False,
         )
 
     def test_runner_flag_accepts_antigravity(self, tmp_path):
@@ -216,6 +223,9 @@ class TestBLRunFlagPassthrough:
             runner_override="antigravity",
             gate_cmd_override=None,
             max_iterations_override=None,
+            keep_workspace=False,
+            run_id=None,
+            resume=False,
         )
 
     def test_cli_runner_choices_include_all_new_kinds(self, capsys):
@@ -224,7 +234,7 @@ class TestBLRunFlagPassthrough:
         with pytest.raises(SystemExit):
             main(["run", "--help"])
         captured = capsys.readouterr()
-        for kind in ["stub", "shell", "claude-code", "codex", "python_callable", "antigravity"]:
+        for kind in ["stub", "shell", "claude-code", "codex", "python_callable", "antigravity", "docker", "worktree"]:
             assert kind in captured.out
 
     def test_gate_override_passed_to_wire(self, tmp_path):
@@ -242,6 +252,9 @@ class TestBLRunFlagPassthrough:
             runner_override=None,
             gate_cmd_override="npm test",
             max_iterations_override=None,
+            keep_workspace=False,
+            run_id=None,
+            resume=False,
         )
 
     def test_max_iterations_passed_to_wire(self, tmp_path):
@@ -261,7 +274,35 @@ class TestBLRunFlagPassthrough:
             runner_override=None,
             gate_cmd_override=None,
             max_iterations_override=1,
+            keep_workspace=False,
+            run_id=None,
+            resume=False,
         )
+
+    def test_run_id_and_resume_passed_to_wire(self, tmp_path):
+        outcome = _make_outcome(Status.DONE)
+        (tmp_path / "loop.yaml").write_text("name: t\n")
+        fake_manifest = MagicMock()
+        fake_manifest.loop_dir = tmp_path
+        fake_use_case = MagicMock()
+        fake_use_case.run.return_value = outcome
+        fake_use_case._workspace = tmp_path / "workspace"
+        with patch("bounded_loops.cli.manifest_load", return_value=fake_manifest), \
+             patch("bounded_loops.cli._confirm_trust", return_value=True), \
+             patch("bounded_loops.cli.write_run_metadata") as mock_metadata, \
+             patch("bounded_loops.cli.wire", return_value=fake_use_case) as mock_wire:
+            code = main(["run", str(tmp_path), "--run-id", "r1", "--resume"])
+        assert code == 0
+        mock_wire.assert_called_once_with(
+            fake_manifest,
+            runner_override=None,
+            gate_cmd_override=None,
+            max_iterations_override=None,
+            keep_workspace=False,
+            run_id="r1",
+            resume=True,
+        )
+        mock_metadata.assert_called_once()
 
 
 # ── bl lint exit codes ─────────────────────────────────────────────────────────
@@ -285,6 +326,64 @@ class TestBLLint:
                    side_effect=ManifestError("runner.default must be stub or shell")):
             code = main(["lint", str(loop_a)])
         assert code == 1
+
+
+class TestBLAuditLoops:
+    def test_audit_loops_json_output(self, tmp_path, capsys):
+        loop_dir = tmp_path / "loop-a"
+        loop_dir.mkdir()
+        with patch("bounded_loops.cli.audit_loops") as mock_audit:
+            mock_audit.return_value = [LoopAuditResult(
+                path=str(loop_dir), name="loop-a", passed=True,
+            )]
+            code = main(["audit-loops", str(tmp_path), "--json"])
+        assert code == 0
+        assert "loop-a" in capsys.readouterr().out
+
+    def test_audit_loops_accepts_multiple_dirs(self, tmp_path):
+        first = tmp_path / "a"
+        second = tmp_path / "b"
+        first.mkdir()
+        second.mkdir()
+        with patch("bounded_loops.cli.audit_loops") as mock_audit:
+            mock_audit.return_value = []
+            code = main(["audit-loops", str(first), str(second)])
+        assert code == 0
+        assert mock_audit.call_count == 2
+
+
+class TestBLShowAndGates:
+    def test_show_json_output(self, tmp_path, capsys):
+        with patch("bounded_loops.cli.show_loop", return_value={
+            "name": "loop-a",
+            "path": str(tmp_path),
+            "role": ["testing"],
+            "pattern": "evaluator-optimizer",
+            "rung": "L1",
+            "runner": {"kind": "stub"},
+            "gate": {"kind": "pytest"},
+            "approval_required": False,
+            "production_bounds": None,
+            "risk": [],
+            "content_hash": "abc",
+        }):
+            code = main(["show", str(tmp_path), "--json"])
+        assert code == 0
+        assert json.loads(capsys.readouterr().out)["name"] == "loop-a"
+
+    def test_gates_json_output(self, capsys):
+        with patch("bounded_loops.cli.list_gates", return_value=[{
+            "kind": "command", "available": True, "description": "x", "dependencies": [],
+        }]):
+            code = main(["gates", "--json"])
+        assert code == 0
+        assert json.loads(capsys.readouterr().out)["gates"][0]["kind"] == "command"
+
+    def test_runs_json_output(self, tmp_path, capsys):
+        with patch("bounded_loops.cli.list_runs", return_value=[{"run_id": "r1", "status": "DONE"}]):
+            code = main(["runs", str(tmp_path), "--json"])
+        assert code == 0
+        assert json.loads(capsys.readouterr().out)["runs"][0]["run_id"] == "r1"
 
     def test_lint_nonexistent_dir_exits_1(self, tmp_path):
         """Nonexistent loop-dir → recorded as failure → exit 1."""

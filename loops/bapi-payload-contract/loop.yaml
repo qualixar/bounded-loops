@@ -1,16 +1,13 @@
-# loops/bapi-payload-contract/loop.yaml
 name: bapi-payload-contract
-description: >
-  Drive an agent until a BAPI_MATERIAL_SAVEDATA-style JSON payload conforms
-  to its contract. Demonstrates the JsonSchemaGate end to end: real
-  gate FAIL on a broken output.json (HEADDATA missing MATL_TYPE), then real
-  gate PASS after the agent corrects it against schema.json. Keyless: no
-  network, no SAP RFC/BAPI connection, no key — the gate is pure JSON Schema
-  validation.
-pattern: evaluator-optimizer
+description: "Drive an agent until a BAPI_MATERIAL_SAVEDATA-style JSON payload conforms\
+  \ to its contract. Demonstrates the JsonSchemaGate end to end: real gate FAIL on\
+  \ a broken output.json (HEADDATA missing MATL_TYPE), then real gate PASS after the\
+  \ agent corrects it against schema.json. Keyless: no network, no SAP RFC/BAPI connection,\
+  \ no key \u2014 the gate is pure JSON Schema validation.\n"
+pattern: prompt-chaining
 role:
-  - enterprise
-  - erp
+- enterprise
+- erp
 rung: L2
 spec: PROMPT.md
 runner:

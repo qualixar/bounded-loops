@@ -1,0 +1,4 @@
+{
+  "service": "billing-api",
+  "port": "8080"
+}

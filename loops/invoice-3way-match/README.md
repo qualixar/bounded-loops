@@ -27,6 +27,15 @@ ground truth. Letting it "fix" the failure by editing the PO, the goods
 receipt, or the test itself would fake a green gate — the engine refuses any
 write to `seed/test_*.py`.
 
+## Make it real
+
+Copy this loop into an AP, procurement, or ERP integration repo. Replace the
+three JSON seed files with exports from your invoice, purchase-order, and goods
+receipt systems, then extend `seed/test_three_way_match.py` with your tolerance,
+tax, freight, and unit-of-measure rules. In production, use
+`bounds.production.yaml` so a passing three-way match means ready for AP review
+or workflow approval, not automatic payment.
+
 ## Which Anthropic pattern
 
 `evaluator-optimizer` — the gate (pytest) is the evaluator; the agent-turn is

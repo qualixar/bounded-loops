@@ -106,12 +106,14 @@ def _workspace_changed(workspace: Path) -> bool:
     """Mirrored from shell.py, not imported."""
     try:
         result = subprocess.run(
-            ["git", "diff", "--quiet"],
+            ["git", "status", "--porcelain"],
             cwd=str(workspace),
             capture_output=True,
             timeout=10,
         )
-        return result.returncode != 0
+        if result.returncode != 0:
+            return True
+        return bool(result.stdout.strip())
     except (subprocess.SubprocessError, FileNotFoundError):
         return True
 

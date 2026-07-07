@@ -41,7 +41,7 @@ class TestRung:
 class TestStatus:
     def test_all_four_members(self):
         values = {s.value for s in Status}
-        assert values == {"DONE", "HALT", "PAUSE", "KILLED"}
+        assert values == {"DONE", "HALT", "PAUSE", "KILLED", "ERROR"}
 
     def test_is_str_subclass(self):
         assert Status.DONE == "DONE"
@@ -336,7 +336,7 @@ class TestLedgerEntry:
         # unknown value at type-check time; this test documents the
         # closed set for runtime readers (Literal does not raise at
         # construction in plain CPython, only under a type checker).
-        allowed = {"continue", "done", "halt", "pause", "killed"}
+        allowed = {"continue", "done", "halt", "pause", "killed", "error"}
         e = self._make(decision="done")
         assert e.decision in allowed
 
@@ -347,6 +347,10 @@ class TestLedgerEntry:
     def test_decision_killed(self):
         e = self._make(decision="killed")
         assert e.decision == "killed"
+
+    def test_decision_error(self):
+        e = self._make(decision="error")
+        assert e.decision == "error"
 
     def test_budget_spent_structure(self):
         e = self._make(budget_spent={"laps": 3, "tokens": 4200, "wallclock_s": 18})

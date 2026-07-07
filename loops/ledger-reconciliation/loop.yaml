@@ -1,24 +1,19 @@
-# loops/ledger-reconciliation/loop.yaml
 name: ledger-reconciliation
-description: >
-  Drive an agent until a double-entry ledger reconciles: debits equal
-  credits AND every transaction is categorized. A finance-industry loop —
-  proves bounded-loops spans industries, not just software.
-pattern: evaluator-optimizer
+description: "Drive an agent until a double-entry ledger reconciles: debits equal\
+  \ credits AND every transaction is categorized. A finance-industry loop \u2014 proves\
+  \ bounded-loops spans industries, not just software.\n"
+pattern: orchestrator-workers
 role:
-  - finance
-  - accounting
+- finance
+- accounting
 rung: L2
 spec: PROMPT.md
-# The gate's verification anchor — the agent fixes ledger.csv, it must never
-# rewrite the test to pass (anchor integrity, enforced for
-# every runner by the engine).
 forbid:
-  - "seed/test_*.py"
+- seed/test_*.py
 runner:
   default: stub
 gate:
   kind: pytest
-  run: "pytest -q"
+  run: pytest -q
 bounds: bounds.yaml
 memory: STATE.md

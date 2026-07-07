@@ -81,13 +81,13 @@ Real captured output:
 
 ```
 $ bl lint loops/clinical-note-completeness
-[PASS] /Users/varunpratapbhardwaj/Documents/work/varun-world/Agentic_official/bounded-loops/loops/clinical-note-completeness
+[PASS] .../bounded-loops/loops/clinical-note-completeness
 
 $ bl run loops/clinical-note-completeness --yes
 [bounded-loops] About to run loop 'clinical-note-completeness':
   runner : stub
   gate   : <jsonschema gate>
-✓ [DONE] gate-passed (laps: 1)  ledger: /Users/varunpratapbhardwaj/Documents/work/varun-world/Agentic_official/bounded-loops/loops/clinical-note-completeness/.ledger.jsonl
+✓ [DONE] gate-passed (laps: 1)  ledger: .../bounded-loops/loops/clinical-note-completeness/.ledger.jsonl
 ```
 
 Lap 1's cassette adds the missing `plan` section (a treatment plan

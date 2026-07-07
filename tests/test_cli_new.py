@@ -7,10 +7,14 @@ to monkeypatch `_templates_root` (to prove the empty-templates and
 dot-tmpl-in-a-directory-name properties) call `bounded_loops.cli.main()`
 in-process instead, since monkeypatch cannot reach into a subprocess.
 """
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 from bounded_loops.cli import main
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_new_list_prints_available_templates():
@@ -64,6 +68,7 @@ def test_new_works_from_a_cwd_that_is_not_the_bounded_loops_source_repo(tmp_path
     result = subprocess.run(
         [sys.executable, "-m", "bounded_loops.cli", "new", "pytest-basic", str(dest), "--name", "generated-loop"],
         capture_output=True, text=True,
+        env={**os.environ, "PYTHONPATH": f"{REPO_ROOT}{os.pathsep}{os.environ.get('PYTHONPATH', '')}"},
     )
     assert result.returncode == 0
     assert (dest / "loop.yaml").exists()

@@ -70,13 +70,13 @@ Real captured output:
 
 ```
 $ bl lint loops/data-contract
-[PASS] /Users/varunpratapbhardwaj/Documents/work/varun-world/Agentic_official/bounded-loops/loops/data-contract
+[PASS] .../bounded-loops/loops/data-contract
 
 $ bl run loops/data-contract --yes
 [bounded-loops] About to run loop 'data-contract':
   runner : stub
   gate   : <jsonschema gate>
-✓ [DONE] gate-passed (laps: 1)  ledger: /Users/varunpratapbhardwaj/Documents/work/varun-world/Agentic_official/bounded-loops/loops/data-contract/.ledger.jsonl
+✓ [DONE] gate-passed (laps: 1)  ledger: .../bounded-loops/loops/data-contract/.ledger.jsonl
 ```
 
 Lap 1's cassette adds the missing `created_at` timestamp and corrects

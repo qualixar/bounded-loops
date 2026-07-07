@@ -1,29 +1,23 @@
-# loops/price-margin-floor/loop.yaml
 name: price-margin-floor
-description: >
-  Drive an agent until every SKU in a retail catalog is priced at or above
-  its minimum-margin policy floor. The gate is `seed/check_margin.py` — a
-  tiny, dependency-free, pure-standard-library checker shipped WITH the
-  loop, so it runs anywhere Python does: no network, no pricing API, no key.
-  Ships a real catalog.json where one SKU (SKU-200) is priced below the
-  15% margin floor defined in policy.json. The policy is ground truth: the
-  agent must fix the CATALOG, never edit the policy or the checker to force
-  a pass.
-pattern: evaluator-optimizer
+description: "Drive an agent until every SKU in a retail catalog is priced at or above\
+  \ its minimum-margin policy floor. The gate is `seed/check_margin.py` \u2014 a tiny,\
+  \ dependency-free, pure-standard-library checker shipped WITH the loop, so it runs\
+  \ anywhere Python does: no network, no pricing API, no key. Ships a real catalog.json\
+  \ where one SKU (SKU-200) is priced below the 15% margin floor defined in policy.json.\
+  \ The policy is ground truth: the agent must fix the CATALOG, never edit the policy\
+  \ or the checker to force a pass.\n"
+pattern: augmented-llm
 role:
-  - retail
+- retail
 rung: L2
 spec: PROMPT.md
-# The gate's LOGIC is the checker, and its POLICY is policy.json. The agent
-# fixes the catalog; it must never rewrite either to fake a green gate.
-# The engine refuses any runner write matching these globs (anchor integrity).
 forbid:
-  - "seed/check_margin.py"
-  - "seed/policy.json"
+- seed/check_margin.py
+- seed/policy.json
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_margin.py seed/catalog.json seed/policy.json"
+  run: python3 seed/check_margin.py seed/catalog.json seed/policy.json
 bounds: bounds.yaml
 memory: STATE.md

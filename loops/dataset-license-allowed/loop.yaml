@@ -1,30 +1,26 @@
-# loops/dataset-license-allowed/loop.yaml
 name: dataset-license-allowed
-description: >
-  Drive an agent until every dataset in a training manifest carries a license
-  that is in a trusted allowlist. The gate is `seed/check_licenses.py` — a
-  tiny, dependency-free, pure-standard-library checker shipped WITH the loop,
-  so it runs anywhere Python does: no network, no external tool, no key.
-  Ships a real datasets.json where one dataset (SynthConvQA) is licensed
-  GPL-3.0, a copyleft license not in allowlist.json (MIT, Apache-2.0,
-  CC-BY-4.0) — the exact "disallowed-license data smuggled into a training
-  set" failure common in dataset compliance audits. The allowlist is ground
-  truth: the agent must fix the MANIFEST (by dropping the disallowed
-  dataset), never edit the allowlist or the checker to force a pass.
-pattern: evaluator-optimizer
+description: "Drive an agent until every dataset in a training manifest carries a\
+  \ license that is in a trusted allowlist. The gate is `seed/check_licenses.py` \u2014\
+  \ a tiny, dependency-free, pure-standard-library checker shipped WITH the loop,\
+  \ so it runs anywhere Python does: no network, no external tool, no key. Ships a\
+  \ real datasets.json where one dataset (SynthConvQA) is licensed GPL-3.0, a copyleft\
+  \ license not in allowlist.json (MIT, Apache-2.0, CC-BY-4.0) \u2014 the exact \"\
+  disallowed-license data smuggled into a training set\" failure common in dataset\
+  \ compliance audits. The allowlist is ground truth: the agent must fix the MANIFEST\
+  \ (by dropping the disallowed dataset), never edit the allowlist or the checker\
+  \ to force a pass.\n"
+pattern: routing
 role:
-  - research
+- research
 rung: L1
 spec: PROMPT.md
-# The gate's LOGIC is the checker, and its GROUND TRUTH is the allowlist. The
-# agent fixes the manifest; it must never rewrite either to fake a green gate.
 forbid:
-  - "seed/check_licenses.py"
-  - "seed/allowlist.json"
+- seed/check_licenses.py
+- seed/allowlist.json
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_licenses.py seed/datasets.json seed/allowlist.json"
+  run: python3 seed/check_licenses.py seed/datasets.json seed/allowlist.json
 bounds: bounds.yaml
 memory: STATE.md

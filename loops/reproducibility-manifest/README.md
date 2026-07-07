@@ -65,13 +65,13 @@ Real captured output:
 
 ```
 $ bl lint loops/reproducibility-manifest
-[PASS] /Users/varunpratapbhardwaj/Documents/work/varun-world/Agentic_official/bounded-loops/loops/reproducibility-manifest
+[PASS] .../bounded-loops/loops/reproducibility-manifest
 
 $ bl run loops/reproducibility-manifest --yes
 [bounded-loops] About to run loop 'reproducibility-manifest':
   runner : stub
   gate   : <jsonschema gate>
-✓ [DONE] gate-passed (laps: 1)  ledger: /Users/varunpratapbhardwaj/Documents/work/varun-world/Agentic_official/bounded-loops/loops/reproducibility-manifest/.ledger.jsonl
+✓ [DONE] gate-passed (laps: 1)  ledger: .../bounded-loops/loops/reproducibility-manifest/.ledger.jsonl
 ```
 
 Lap 1's cassette adds the missing `data_hash` (a real-format 64-char hex

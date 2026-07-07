@@ -94,6 +94,12 @@ IANA reference page for the "alive" link, to keep the demo as reliable as
 a network-calling gate can be — but it is not offline-hermetic the way the
 other loops' gates are.
 
+Production mitigation: run this gate from CI or a controlled network where DNS
+and outbound HTTPS behavior are predictable, pin the link-checker version in
+your project, and keep the article itself as the only mutable artifact. For
+offline release gates, replace live URL checks with a checked-in citation index
+or an internal content API export and gate against that deterministic source.
+
 ## Lift it into your own repo
 
 1. Copy this folder.

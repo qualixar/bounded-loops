@@ -1,28 +1,24 @@
-# loops/openapi-schema-valid/loop.yaml
 name: openapi-schema-valid
-description: >
-  Drive an agent until an OpenAPI 3 document satisfies the structural minimum
-  every downstream tool (codegen, docs, gateways) assumes: a top-level
-  `openapi` version, `info.title`/`info.version`, and every operation under
-  `paths` declaring a non-empty `responses` object. The gate is
-  `seed/check_openapi.py` — a tiny, dependency-free, pure-standard-library
-  checker shipped WITH the loop: no network, no OpenAPI validator library, no
-  key. Ships a real `openapi.json` where the `POST /widgets` operation has no
-  `responses` at all — an undocumented contract with no defined outcome.
-pattern: evaluator-optimizer
+description: "Drive an agent until an OpenAPI 3 document satisfies the structural\
+  \ minimum every downstream tool (codegen, docs, gateways) assumes: a top-level `openapi`\
+  \ version, `info.title`/`info.version`, and every operation under `paths` declaring\
+  \ a non-empty `responses` object. The gate is `seed/check_openapi.py` \u2014 a tiny,\
+  \ dependency-free, pure-standard-library checker shipped WITH the loop: no network,\
+  \ no OpenAPI validator library, no key. Ships a real `openapi.json` where the `POST\
+  \ /widgets` operation has no `responses` at all \u2014 an undocumented contract\
+  \ with no defined outcome.\n"
+pattern: orchestrator-workers
 role:
-  - backend
-  - api
+- backend
+- api
 rung: L1
 spec: PROMPT.md
-# The gate's LOGIC is the checker; the agent fixes the DOCUMENT, never the
-# checker, to force a pass.
 forbid:
-  - "seed/check_openapi.py"
+- seed/check_openapi.py
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_openapi.py seed/openapi.json"
+  run: python3 seed/check_openapi.py seed/openapi.json
 bounds: bounds.yaml
 memory: STATE.md

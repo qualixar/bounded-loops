@@ -76,7 +76,7 @@ makes both assertions pass, confirmed against the same test file.
 Real captured output:
 ```
 $ .venv/bin/bl lint loops/ledger-reconciliation
-[PASS] /Users/.../bounded-loops/loops/ledger-reconciliation
+[PASS] .../bounded-loops/loops/ledger-reconciliation
 
 $ .venv/bin/bl run loops/ledger-reconciliation --yes
 [bounded-loops] About to run loop 'ledger-reconciliation':

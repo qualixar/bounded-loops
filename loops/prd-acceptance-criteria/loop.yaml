@@ -1,27 +1,23 @@
-# loops/prd-acceptance-criteria/loop.yaml
 name: prd-acceptance-criteria
-description: >
-  Drive an agent until every user story in a PRD has real, testable
-  acceptance criteria. The gate is `seed/check_prd.py` — a tiny,
-  dependency-free, pure-standard-library checker shipped WITH the loop, so
-  it runs anywhere Python does: no network, no external tool, no key. Ships
-  a real prd.md with three stories, one of which ("receipt emailed") has no
-  Acceptance Criteria subsection at all — the exact gap that lets a story
-  ship with no way for QA to verify it's actually done. The document is the
-  target: the agent must fix the PRD, never edit the checker to force a pass.
-pattern: evaluator-optimizer
+description: "Drive an agent until every user story in a PRD has real, testable acceptance\
+  \ criteria. The gate is `seed/check_prd.py` \u2014 a tiny, dependency-free, pure-standard-library\
+  \ checker shipped WITH the loop, so it runs anywhere Python does: no network, no\
+  \ external tool, no key. Ships a real prd.md with three stories, one of which (\"\
+  receipt emailed\") has no Acceptance Criteria subsection at all \u2014 the exact\
+  \ gap that lets a story ship with no way for QA to verify it's actually done. The\
+  \ document is the target: the agent must fix the PRD, never edit the checker to\
+  \ force a pass.\n"
+pattern: prompt-chaining
 role:
-  - business
+- business
 rung: L1
 spec: PROMPT.md
-# The gate's LOGIC is the checker; the agent fixes the document, it must
-# never rewrite the checker to fake a green gate.
 forbid:
-  - "seed/check_prd.py"
+- seed/check_prd.py
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_prd.py seed/prd.md"
+  run: python3 seed/check_prd.py seed/prd.md
 bounds: bounds.yaml
 memory: STATE.md

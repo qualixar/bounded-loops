@@ -66,6 +66,24 @@ def test_load_command_gate_with_run_passes(tmp_path):
     assert manifest.gate_config["run"] == "make test"
 
 
+def test_load_composite_gate_passes(tmp_path):
+    lm = {
+        **MINIMAL_VALID,
+        "gate": {
+            "kind": "composite",
+            "mode": "all",
+            "gates": [
+                {"kind": "command", "run": "true"},
+                {"kind": "pytest"},
+            ],
+        },
+    }
+    loop_dir = write_loop(tmp_path, lm)
+    manifest = load(loop_dir)
+    assert manifest.gate_kind == "composite"
+    assert len(manifest.gate_config["gates"]) == 2
+
+
 def test_runner_cassette_override_parsed(tmp_path):
     lm = {**MINIMAL_VALID, "runner": {"default": "stub", "cassette": "cassettes/custom.json"}}
     loop_dir = write_loop(tmp_path, lm)
@@ -336,6 +354,20 @@ def test_command_gate_without_run_raises(tmp_path):
     lm = {**MINIMAL_VALID, "gate": {"kind": "command"}}
     loop_dir = write_loop(tmp_path, lm)
     with pytest.raises(ManifestError, match="gate.run is required"):
+        load(loop_dir)
+
+
+def test_composite_gate_requires_non_empty_gates(tmp_path):
+    lm = {**MINIMAL_VALID, "gate": {"kind": "composite", "gates": []}}
+    loop_dir = write_loop(tmp_path, lm)
+    with pytest.raises(ManifestError, match="non-empty gates"):
+        load(loop_dir)
+
+
+def test_composite_gate_child_command_requires_run(tmp_path):
+    lm = {**MINIMAL_VALID, "gate": {"kind": "composite", "gates": [{"kind": "command"}]}}
+    loop_dir = write_loop(tmp_path, lm)
+    with pytest.raises(ManifestError, match="run is required"):
         load(loop_dir)
 
 

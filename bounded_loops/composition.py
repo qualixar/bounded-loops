@@ -36,6 +36,7 @@ from bounded_loops.application.ports import (
     RunnerPort,
     TracerPort,
 )
+from bounded_loops.application.run_store import run_ledger, run_workspace, validate_run_id
 from bounded_loops.application.run_loop import RunLoopDeps, RunLoopUseCase
 from bounded_loops.application.manifest import LoopManifest
 
@@ -50,6 +51,8 @@ from bounded_loops.adapters.runners.python_callable import PythonCallableRunner
 from bounded_loops.adapters.runners.claude_code import ClaudeCodeRunner
 from bounded_loops.adapters.runners.codex import CodexRunner
 from bounded_loops.adapters.runners.antigravity import AntigravityRunner
+from bounded_loops.adapters.runners.docker import DockerRunner
+from bounded_loops.adapters.runners.worktree import WorktreeRunner
 from bounded_loops.adapters.runners.anchor_guard import AnchorGuardRunner
 
 # Concrete gate adapters — v1 scope is command/pytest/jsonschema
@@ -58,6 +61,12 @@ from bounded_loops.adapters.runners.anchor_guard import AnchorGuardRunner
 from bounded_loops.adapters.gates.command import CommandGate
 from bounded_loops.adapters.gates.pytest import PytestGate
 from bounded_loops.adapters.gates.jsonschema import JsonSchemaGate
+from bounded_loops.adapters.gates.composite import CompositeGate
+from bounded_loops.adapters.gates.gitleaks import GitleaksGate
+from bounded_loops.adapters.gates.semgrep import SemgrepGate
+from bounded_loops.adapters.gates.trivy import TrivyGate
+from bounded_loops.adapters.gates.promptfoo import PromptfooGate
+from bounded_loops.adapters.gates.great_expectations import GreatExpectationsGate
 
 # I/O adapters
 from bounded_loops.adapters.io.file_memory import FileMemory
@@ -69,7 +78,7 @@ from bounded_loops.adapters.io.kill_switch import EnvKillSwitch  # NOT FileKillS
 from bounded_loops.adapters.io.approval import CliApproval, AutoApproval
 from bounded_loops.adapters.io.clock import UtcClock
 
-# P2 gates (axe/osv/promptfoo/great_expectations) — genuinely not yet
+# P2 gates (axe) — genuinely not yet
 # authored. Lazy/guarded import, mirroring the qualixar block below.
 # composition.wire() raises ManifestError("gate kind not yet implemented")
 # for these until then — honest, not a silent stub. Note:
@@ -81,8 +90,6 @@ for _mod, _cls_name, _key in [
     ("axe", "AxeGate", "axe"),
     ("osv", "OsvGate", "osv"),
     ("checkov", "CheckovGate", "checkov"),   # added —  
-    ("promptfoo", "PromptfooGate", "promptfoo"),
-    ("great_expectations", "GreatExpectationsGate", "great_expectations"),
 ]:
     try:
         _module = __import__(f"bounded_loops.adapters.gates.{_mod}", fromlist=[_cls_name])
@@ -129,6 +136,8 @@ RUNNER_REGISTRY: dict[str, type] = {
     "claude-code": ClaudeCodeRunner,
     "codex": CodexRunner,
     "antigravity": AntigravityRunner,
+    "docker": DockerRunner,
+    "worktree": WorktreeRunner,
 }
 
 # ── Env-passthrough operator-level allowlist ──────────────────
@@ -137,6 +146,7 @@ RUNNER_REGISTRY: dict[str, type] = {
 # env_passthrough entry is ever passed through, regardless of what any
 # loop.yaml requests.
 _ENV_PASSTHROUGH_OPERATOR_ALLOWLIST_VAR = "BOUNDED_LOOPS_ENV_PASSTHROUGH_ALLOW"
+_SCRATCH_MARKER = ".bounded-loops-scratch"
 
 # Universal gate registry: command/pytest/jsonschema unconditionally (v1
 # scope, all three real), merged with whichever P2 gates have landed and
@@ -145,6 +155,12 @@ GATE_REGISTRY: dict[str, type] = {
     "command": CommandGate,
     "pytest": PytestGate,
     "jsonschema": JsonSchemaGate,
+    "composite": CompositeGate,
+    "gitleaks": GitleaksGate,
+    "semgrep": SemgrepGate,
+    "trivy": TrivyGate,
+    "promptfoo": PromptfooGate,
+    "great_expectations": GreatExpectationsGate,
     **_P2_GATE_REGISTRY,
     **_QUALIXAR_GATE_REGISTRY,
 }
@@ -158,6 +174,9 @@ def wire(
     runner_override: str | None = None,
     gate_cmd_override: str | None = None,
     max_iterations_override: int | None = None,
+    keep_workspace: bool = False,
+    run_id: str | None = None,
+    resume: bool = False,
 ) -> RunLoopUseCase:
     """
     Given a loaded+validated LoopManifest, instantiate and wire all concrete
@@ -253,9 +272,16 @@ def wire(
     # across repeated runs, and — as a security measure — refuses
     # to copy any symlink (a malicious loop's seed/ could otherwise contain
     # one that escapes the scratch dir on write).
-    workspace: Path = _make_scratch_workspace(
-        manifest.loop_dir, quarantine_inputs=bounds.quarantine_inputs
-    )
+    if run_id is not None:
+        workspace = _make_persistent_run_workspace(
+            manifest.loop_dir, run_id,
+            quarantine_inputs=bounds.quarantine_inputs,
+            resume=resume,
+        )
+    else:
+        workspace = _make_scratch_workspace(
+            manifest.loop_dir, quarantine_inputs=bounds.quarantine_inputs
+        )
 
     # ── 4b. Workspace-integrity guard ─────
     # Wrap the chosen runner so that AFTER EVERY runner turn, the engine
@@ -284,7 +310,8 @@ def wire(
     # and STATE.md honest even against an adversarial or buggy agent.
     clock: ClockPort = UtcClock()
     memory: MemoryPort = FileMemory(manifest.loop_dir / manifest.memory_path, clock=clock)
-    ledger: LedgerPort = FileLedger(manifest.loop_dir / ".ledger.jsonl")
+    ledger_path = run_ledger(manifest.loop_dir, run_id) if run_id else manifest.loop_dir / ".ledger.jsonl"
+    ledger: LedgerPort = FileLedger(ledger_path)
 
     tracer: TracerPort = (
         # NOTE: the  pseudocode passes loop_name= here, but the real,
@@ -320,6 +347,7 @@ def wire(
             approval=approval, clock=clock,
         ),
         env_passthrough=resolved_env_passthrough,
+        cleanup_workspace=(not keep_workspace and run_id is None),
     )
 
 
@@ -349,6 +377,14 @@ def _runner_kwargs(runner_key: str, manifest: LoopManifest,
             "approve_policy": _resolve_antigravity_approve_policy(manifest),
             "extra_env": resolved_env_passthrough,
         }
+    if runner_key == "docker":
+        runner_block = manifest.raw.get("runner", {})
+        return {
+            "image": runner_block.get("image", "python:3.11-slim"),
+            "agent_cmd": runner_block.get("agent_cmd", "true"),
+        }
+    if runner_key == "worktree":
+        return {"agent_cmd": manifest.raw.get("runner", {}).get("agent_cmd", "true")}
     return {}
 
 
@@ -412,6 +448,10 @@ def _instantiate_runner(runner_key: str, manifest: LoopManifest,
         return CodexRunner(**kwargs)
     if runner_key == "antigravity":
         return AntigravityRunner(**kwargs)
+    if runner_key == "docker":
+        return DockerRunner(**kwargs)
+    if runner_key == "worktree":
+        return WorktreeRunner(**kwargs)
     raise ManifestError(f"Internal error: no instantiation rule for runner '{runner_key}'")
 
 
@@ -541,10 +581,47 @@ def _make_scratch_workspace(loop_dir: Path, quarantine_inputs: bool = True) -> P
             seed_dir, scratch / "seed", symlinks=False, dirs_exist_ok=True,
             ignore=(_quarantine_ignore if quarantine_inputs else None),
         )
+    (scratch / _SCRATCH_MARKER).write_text("bounded-loops scratch workspace\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=str(scratch), capture_output=True)
     subprocess.run(["git", "add", "-A"], cwd=str(scratch), capture_output=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(scratch), capture_output=True)
     return scratch
+
+
+def _make_persistent_run_workspace(
+    loop_dir: Path,
+    run_id: str,
+    quarantine_inputs: bool = True,
+    resume: bool = False,
+) -> Path:
+    validate_run_id(run_id)
+    workspace = run_workspace(loop_dir, run_id)
+    if resume:
+        if not workspace.is_dir():
+            raise ManifestError(
+                f"run_id {run_id!r} has no persistent workspace to resume: {workspace}"
+            )
+        return workspace
+    if workspace.exists():
+        raise ManifestError(
+            f"run_id {run_id!r} already exists. Use --resume to continue it or choose a new run id."
+        )
+    workspace.parent.mkdir(parents=True, exist_ok=True)
+    seed_dir = loop_dir / "seed"
+    if seed_dir.is_symlink():
+        raise ManifestError(f"{loop_dir}/seed is itself a symlink — refused.")
+    for p in seed_dir.rglob("*"):
+        if p.is_symlink():
+            raise ManifestError(f"{loop_dir}/seed contains a symlink ({p}) — refused.")
+    shutil.copytree(
+        seed_dir, workspace / "seed", symlinks=False, dirs_exist_ok=False,
+        ignore=(_quarantine_ignore if quarantine_inputs else None),
+    )
+    (workspace / _SCRATCH_MARKER).write_text("bounded-loops persistent run workspace\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=str(workspace), capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=str(workspace), capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(workspace), capture_output=True)
+    return workspace
 
 
 # ── Private helpers ──────────────────────────────────────────────────────────
@@ -595,6 +672,14 @@ def _instantiate_gate(gate_key: str, manifest: LoopManifest) -> GatePort:
     timeout_s = manifest.bounds.max_wallclock_s   # wired from bounds, per   resolution
     gate_extra = {k: v for k, v in manifest.gate_config.items() if k != "run"}
 
+    if gate_key == "composite":
+        mode = manifest.gate_config.get("mode", "all")
+        child_gates = [
+            _instantiate_gate_from_config(child, manifest)
+            for child in manifest.gate_config.get("gates", [])
+        ]
+        return CompositeGate(child_gates, mode=mode)
+
     if gate_key == "command":
         gate_run = manifest.gate_config.get("run")
         if not gate_run:
@@ -626,12 +711,77 @@ def _instantiate_gate(gate_key: str, manifest: LoopManifest) -> GatePort:
         checkov_cls = _P2_GATE_REGISTRY["checkov"]
         return checkov_cls(timeout_s=timeout_s)  # type: ignore[arg-type,no-any-return]
 
+    if gate_key == "gitleaks":
+        return GitleaksGate(timeout_s=timeout_s)  # type: ignore[arg-type]
+
+    if gate_key == "semgrep":
+        return SemgrepGate(
+            config=str(manifest.gate_config.get("config", "auto")),
+            timeout_s=timeout_s,  # type: ignore[arg-type]
+        )
+
+    if gate_key == "trivy":
+        return TrivyGate(
+            severity=str(manifest.gate_config.get("severity", "HIGH,CRITICAL")),
+            timeout_s=timeout_s,  # type: ignore[arg-type]
+        )
+
+    if gate_key == "promptfoo":
+        return PromptfooGate(timeout_s=timeout_s)  # type: ignore[arg-type]
+
+    if gate_key == "great_expectations":
+        checkpoint = manifest.gate_config.get("checkpoint")
+        return GreatExpectationsGate(
+            checkpoint=str(checkpoint) if checkpoint else None,
+            timeout_s=timeout_s,  # type: ignore[arg-type]
+        )
+
     if gate_key in _P2_GATE_REGISTRY or gate_key in _QUALIXAR_GATE_REGISTRY:
         cls = GATE_REGISTRY[gate_key]
         return cls(**gate_extra)
 
     # Should never reach here — GATE_REGISTRY is the authoritative set.
     raise ManifestError(f"Internal error: no instantiation rule for gate '{gate_key}'")
+
+
+def _instantiate_gate_from_config(gate_config: dict, manifest: LoopManifest) -> GatePort:
+    child_kind = gate_config.get("kind")
+    if child_kind == "command":
+        gate_run = gate_config.get("run")
+        if not gate_run:
+            raise ManifestError("composite child gate kind=command requires run")
+        return CommandGate(cmd=gate_run, timeout_s=manifest.bounds.max_wallclock_s)  # type: ignore[arg-type]
+    if child_kind == "pytest":
+        return PytestGate(timeout_s=manifest.bounds.max_wallclock_s)  # type: ignore[arg-type]
+    if child_kind == "jsonschema":
+        schema_path = gate_config.get("schema") or manifest.bounds.schema
+        if not schema_path:
+            raise ManifestError("composite child gate kind=jsonschema requires schema")
+        return JsonSchemaGate(schema_path=manifest.loop_dir / schema_path)
+    if child_kind == "gitleaks":
+        return GitleaksGate(timeout_s=manifest.bounds.max_wallclock_s)  # type: ignore[arg-type]
+    if child_kind == "semgrep":
+        return SemgrepGate(
+            config=str(gate_config.get("config", "auto")),
+            timeout_s=manifest.bounds.max_wallclock_s,  # type: ignore[arg-type]
+        )
+    if child_kind == "trivy":
+        return TrivyGate(
+            severity=str(gate_config.get("severity", "HIGH,CRITICAL")),
+            timeout_s=manifest.bounds.max_wallclock_s,  # type: ignore[arg-type]
+        )
+    if child_kind == "promptfoo":
+        return PromptfooGate(timeout_s=manifest.bounds.max_wallclock_s)  # type: ignore[arg-type]
+    if child_kind == "great_expectations":
+        checkpoint = gate_config.get("checkpoint")
+        return GreatExpectationsGate(
+            checkpoint=str(checkpoint) if checkpoint else None,
+            timeout_s=manifest.bounds.max_wallclock_s,  # type: ignore[arg-type]
+        )
+    raise ManifestError(
+        f"composite child gate kind {child_kind!r} is not implemented in v1 "
+        "(supported: command, pytest, jsonschema)"
+    )
 
 
 def _approval_required(rung: Rung, bounds: Bounds) -> bool:

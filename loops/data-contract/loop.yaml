@@ -1,19 +1,25 @@
-# loops/data-contract/loop.yaml
 name: data-contract
-description: >
-  Drive an agent until a JSON API response conforms to its contract.
-  Demonstrates the JsonSchemaGate end to end: real gate FAIL on a
-  broken output.json (missing required field + invalid enum value), then
-  real gate PASS after the agent corrects it against schema.json.
+description: 'Drive an agent until a JSON API response conforms to its contract. Demonstrates
+  the JsonSchemaGate end to end: real gate FAIL on a broken output.json (missing required
+  field + invalid enum value), then real gate PASS after the agent corrects it against
+  schema.json.
+
+  '
 pattern: evaluator-optimizer
 role:
-  - backend
-  - api
+- backend
+- api
 rung: L2
 spec: PROMPT.md
 runner:
   default: stub
 gate:
-  kind: jsonschema
+  kind: composite
+  mode: all
+  gates:
+  - kind: command
+    run: python3 -m json.tool output.json
+  - kind: jsonschema
+    schema: schema.json
 bounds: bounds.yaml
 memory: STATE.md

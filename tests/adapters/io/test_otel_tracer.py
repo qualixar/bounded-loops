@@ -2,7 +2,7 @@ import pytest
 
 # These tests require opentelemetry-sdk installed.
 # If not installed they are SKIPPED (not FAILED) — the repo must stay keyless/depless.
-otel = pytest.importorskip("opentelemetry", reason="opentelemetry-sdk not installed")
+otel = pytest.importorskip("opentelemetry.sdk", reason="opentelemetry-sdk not installed")
 
 from pathlib import Path
 from bounded_loops.adapters.io.otel_tracer import OtelTracer
@@ -50,6 +50,7 @@ def test_span_attributes_on_pass():
     assert attrs["gen_ai.response.finish_reasons"] == ("gate_pass",)
     assert attrs["bounded_loops.lap"] == 3
     assert attrs["bounded_loops.verdict"] == "pass"
+    assert attrs["bounded_loops.trace.include_sensitive_data"] is False
 
 def test_span_attributes_on_fail():
     ot, exporter = _make_tracer_with_exporter()

@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from bounded_loops import mcp_server
+from bounded_loops.application.loop_audit import LoopAuditResult
 from bounded_loops.domain.models import Status, Outcome, Rung
 from bounded_loops.domain.errors import ManifestError
 
@@ -78,6 +79,56 @@ def test_bl_lint_missing_dir_folds_into_failure_list(tmp_path):
     result = mcp_server.bl_lint([str(tmp_path / "does-not-exist")])
     assert result["all_passed"] is False
     assert "not a directory" in result["results"][0]["errors"][0]
+
+
+def test_bl_show_returns_loop_info(tmp_path):
+    with patch("bounded_loops.mcp_server.show_loop", return_value={"name": "loop-a"}):
+        result = mcp_server.bl_show(str(tmp_path))
+    assert result["status"] == "ok"
+    assert result["loop"]["name"] == "loop-a"
+
+
+def test_bl_gates_returns_gate_list():
+    with patch("bounded_loops.mcp_server.list_gates", return_value=[{"kind": "command"}]):
+        result = mcp_server.bl_gates()
+    assert result["gates"][0]["kind"] == "command"
+
+
+def test_bl_audit_loops_returns_results(tmp_path):
+    fake_result = LoopAuditResult(path=str(tmp_path), name="loop-a", passed=True)
+    with patch("bounded_loops.mcp_server.audit_loops", return_value=[fake_result]):
+        result = mcp_server.bl_audit_loops([str(tmp_path)])
+    assert result["all_passed"] is True
+    assert result["results"][0]["name"] == "loop-a"
+
+
+def test_bl_runs_returns_metadata(tmp_path):
+    with patch("bounded_loops.mcp_server.list_runs", return_value=[{"run_id": "r1"}]):
+        result = mcp_server.bl_runs(str(tmp_path))
+    assert result["status"] == "ok"
+    assert result["runs"][0]["run_id"] == "r1"
+
+
+def test_prompt_run_loop_mentions_preview():
+    text = mcp_server.prompt_run_loop("loops/x")
+    assert "confirm=false" in text
+    assert "confirm=true" in text
+
+
+def test_prompt_write_loop_mentions_required_files():
+    text = mcp_server.prompt_write_loop("loop-a")
+    assert "loop.yaml" in text
+    assert "bounds.yaml" in text
+
+
+def test_resource_loop_prompt_reads_prompt(tmp_path, monkeypatch):
+    root = tmp_path
+    loop = root / "loops" / "x"
+    loop.mkdir(parents=True)
+    (root / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (loop / "PROMPT.md").write_text("Do the thing", encoding="utf-8")
+    monkeypatch.chdir(root)
+    assert mcp_server.resource_loop_prompt("x") == "Do the thing"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -182,6 +233,19 @@ def test_bl_run_confirm_cannot_swap_max_iterations_after_preview(tmp_path):
     mock_wire.assert_not_called()
 
 
+def test_bl_run_confirm_cannot_swap_run_id_after_preview(tmp_path):
+    """Preview/confirm signature binds run_id and resume mode too."""
+    (tmp_path / "loop.yaml").write_text("name: t\n")
+    fake_manifest = _make_runnable_manifest()
+    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest):
+        mcp_server.bl_run(str(tmp_path), confirm=False, run_id="r1")
+    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
+         patch("bounded_loops.mcp_server.wire") as mock_wire:
+        result = mcp_server.bl_run(str(tmp_path), confirm=True, run_id="r2")
+    assert result["status"] == "not_confirmed"
+    mock_wire.assert_not_called()
+
+
 # ── bl_run: confirm=True WITH a matching prior preview — the real happy path ──
 
 def test_bl_run_confirm_true_matching_preview_done_path(tmp_path):
@@ -199,6 +263,26 @@ def test_bl_run_confirm_true_matching_preview_done_path(tmp_path):
         result = mcp_server.bl_run(str(tmp_path), confirm=True)
     assert result["status"] == "DONE"
     assert result["laps"] == 1
+
+
+def test_bl_run_with_run_id_writes_metadata(tmp_path):
+    (tmp_path / "loop.yaml").write_text("name: t\n")
+    fake_manifest = _make_runnable_manifest()
+    fake_manifest.loop_dir = tmp_path
+    fake_use_case = MagicMock()
+    fake_use_case._workspace = tmp_path / "workspace"
+    fake_use_case.run.return_value = Outcome(
+        status=Status.DONE, reason="gate-passed", laps=1,
+        ledger_path=tmp_path / ".bounded-loops" / "runs" / "r1" / "ledger.jsonl",
+    )
+    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
+         patch("bounded_loops.mcp_server.wire", return_value=fake_use_case), \
+         patch("bounded_loops.mcp_server.write_run_metadata") as mock_metadata:
+        mcp_server.bl_run(str(tmp_path), confirm=False, run_id="r1")
+        result = mcp_server.bl_run(str(tmp_path), confirm=True, run_id="r1")
+    assert result["status"] == "DONE"
+    assert result["run_id"] == "r1"
+    mock_metadata.assert_called_once()
 
 
 def test_bl_run_confirm_true_matching_preview_records_trust(tmp_path):

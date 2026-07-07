@@ -29,6 +29,15 @@ Letting it "fix" the failure by raising the meals cap, adding
 a green gate. The engine refuses any write to `seed/check_expenses.py` or
 `seed/policy.json`.
 
+## Make it real
+
+Copy this loop into your finance or AP repo, replace `seed/expenses.json` with
+the export shape your expense system produces, and replace `seed/policy.json`
+with your approved policy caps and categories. Keep `seed/check_expenses.py` or
+your equivalent policy checker protected with `forbid:`. In production, use the
+included `bounds.production.yaml` so a passing gate means ready for AP review,
+not automatic reimbursement.
+
 ## Which Anthropic pattern
 
 `evaluator-optimizer` — the gate (`check_expenses.py`) is the evaluator;

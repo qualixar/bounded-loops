@@ -51,7 +51,7 @@ def _build_subprocess_env(ctx_env: dict[str, str]) -> dict[str, str]:
 
 
 def _workspace_changed(workspace: Path) -> bool:
-    # Conservative: run `git diff --quiet` if workspace is a git repo;
+    # Conservative: run `git status --porcelain` if workspace is a git repo;
     # else return True (assuming the agent changed something — the gate
     # will determine correctness).
     # NOTE: composition.py git-inits the scratch workspace at
@@ -59,13 +59,14 @@ def _workspace_changed(workspace: Path) -> bool:
     # case, not just a permanent fallback.
     try:
         result = subprocess.run(
-            ["git", "diff", "--quiet"],
+            ["git", "status", "--porcelain"],
             cwd=str(workspace),
             capture_output=True,
             timeout=10,
         )
-        # exit 1 = dirty (changed); exit 0 = clean (no change)
-        return result.returncode != 0
+        if result.returncode != 0:
+            return True
+        return bool(result.stdout.strip())
     except (subprocess.SubprocessError, FileNotFoundError):
         # Not a git repo or git not installed — assume changed (safe
         # default). This silently disables no-progress detection when it

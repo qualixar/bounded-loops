@@ -1,7 +1,17 @@
 ## bounded-loops
 
 This project uses bounded-loops for gated agent tasks. If a `loop.yaml`
-exists in a directory you're working in, prefer running it via the
-bounded-loops Skill/MCP tools over ad-hoc shell commands — the gate is
-the ground truth for whether a task is actually done, not your own
-assessment.
+exists in a directory you're working in, prefer bounded-loops MCP tools or
+`python3 -m bounded_loops.cli` over ad-hoc shell commands.
+
+Core rule: the gate is the ground truth. Never report success from your own
+assessment or from `agent_claimed_done`.
+
+Use this flow:
+
+1. `bl_lint` or `python3 -m bounded_loops.cli lint <loop-dir>`.
+2. `bl_run(confirm=false)` to preview runner and gate.
+3. `bl_run(confirm=true)` only with the same arguments.
+4. Report exact status: `DONE`, `HALT`, `PAUSE`, `KILLED`, or `ERROR`.
+
+For loop quality checks, run `python3 -m bounded_loops.cli audit-loops`.

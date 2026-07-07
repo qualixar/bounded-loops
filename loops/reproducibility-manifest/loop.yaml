@@ -1,14 +1,13 @@
-# loops/reproducibility-manifest/loop.yaml
 name: reproducibility-manifest
-description: >
-  Drive an agent until a research run's reproducibility manifest conforms to
-  its contract. Demonstrates the JsonSchemaGate end to end: real
-  gate FAIL on a broken output.json (missing data_hash + seed given as a
-  string instead of an integer), then real gate PASS after the agent
-  corrects it against schema.json.
-pattern: evaluator-optimizer
+description: 'Drive an agent until a research run''s reproducibility manifest conforms
+  to its contract. Demonstrates the JsonSchemaGate end to end: real gate FAIL on a
+  broken output.json (missing data_hash + seed given as a string instead of an integer),
+  then real gate PASS after the agent corrects it against schema.json.
+
+  '
+pattern: prompt-chaining
 role:
-  - research
+- research
 rung: L1
 spec: PROMPT.md
 runner:

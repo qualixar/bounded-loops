@@ -6,6 +6,7 @@ Uses only Fake ports — zero real I/O.
 from pathlib import Path
 
 from bounded_loops.application.run_loop import RunLoopUseCase, RunLoopDeps
+from bounded_loops.domain.errors import GateError, RunnerError
 from bounded_loops.domain.models import (
     Spec, Bounds, Verdict, RunResult, Status, Rung,
 )
@@ -317,6 +318,45 @@ def test_killswitch_checked_before_runner():
 
     uc.run()
     assert run_count[0] == 0   # runner never called when killswitch fires first
+
+
+# ══════════════════════════════════════════════════════════
+# PATH 5: ERROR — runner/gate execution failed
+# ══════════════════════════════════════════════════════════
+
+def test_error_when_runner_raises_runner_error():
+    class BrokenRunner:
+        def run_once(self, spec, ctx):
+            raise RunnerError("agent binary missing")
+
+    ledger = FakeLedger()
+    uc = _use_case(deps=_deps(runner=BrokenRunner(), ledger=ledger))
+
+    outcome = uc.run()
+
+    assert outcome.status == Status.ERROR
+    assert "runner error" in outcome.reason
+    assert ledger._entries[-1].decision == "error"
+    assert ledger._entries[-1].verdict.evidence["component"] == "runner"
+
+
+def test_error_when_gate_raises_gate_error():
+    class BrokenGate:
+        def check(self, ctx):
+            raise GateError("pytest not found")
+
+    ledger = FakeLedger()
+    runner = FakeRunner(RunResult(changed=True, agent_claimed_done=False, tokens=5))
+    budget = FakeBudget()
+    uc = _use_case(deps=_deps(runner=runner, gate=BrokenGate(), budget=budget, ledger=ledger))
+
+    outcome = uc.run()
+
+    assert outcome.status == Status.ERROR
+    assert "gate error" in outcome.reason
+    assert ledger._entries[-1].decision == "error"
+    assert ledger._entries[-1].budget_spent["tokens"] == 5
+    assert ledger._entries[-1].verdict.evidence["component"] == "gate"
 
 
 # ══════════════════════════════════════════════════════════

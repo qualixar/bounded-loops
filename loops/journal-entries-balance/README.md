@@ -26,6 +26,15 @@ invariant. Letting it "fix" the failure by loosening the checker's
 tolerance or removing the check would fake a green gate. The engine
 refuses any write to `seed/check_balance.py`.
 
+## Make it real
+
+Copy this loop into the repo or data pipeline that prepares journal entries
+before posting. Replace `seed/journal.json` with your journal-entry export shape
+and extend `seed/check_balance.py` with your account, currency, rounding, and
+entity-specific posting rules. In production, use `bounds.production.yaml` so a
+passing gate means ready for accounting review or posting approval, not automatic
+posting to the ledger.
+
 ## Which Anthropic pattern
 
 `evaluator-optimizer` — the gate (`check_balance.py`) is the evaluator; the

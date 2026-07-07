@@ -49,11 +49,13 @@ class Status(str, Enum):
       HALT   — a safety bound was tripped (budget/cap/no-progress).
       PAUSE  — gate passed but approval is required and not yet granted.
       KILLED — external kill switch tripped between laps.
+      ERROR  — runner/gate execution failed before a verdict could complete.
     """
     DONE   = "DONE"
     HALT   = "HALT"
     PAUSE  = "PAUSE"
     KILLED = "KILLED"
+    ERROR  = "ERROR"
 
 
 # ---------------------------------------------------------------------------
@@ -284,11 +286,12 @@ class LedgerEntry:
                                       Outcome.reason, NOT encoded in decision)
                         "pause"     → approval required, not yet granted
                         "killed"    → kill switch tripped
+                        "error"     → runner/gate execution failed
       budget_spent  — point-in-time snapshot of consumed budget, e.g.:
                         {"laps": 3, "tokens": 4200, "wallclock_s": 18}
 
     RESOLVED: `decision` is typed `Literal["continue", "done", "halt",
-    "pause", "killed"]`, not a bare `str` and NOT `"halt:<reason>"` — the
+    "pause", "killed", "error"]`, not a bare `str` and NOT `"halt:<reason>"` — the
     colon-suffix pattern used in an earlier draft is dropped. The halt
     reason (e.g. "no-progress", "max_iterations reached") is carried
     exclusively in `Outcome.reason`; `LedgerEntry.decision` never encodes it.
@@ -306,7 +309,7 @@ class LedgerEntry:
     lap:          int
     ts:           str      # ISO-8601, injected via ClockPort — never datetime.now()
     verdict:      Verdict
-    decision:     Literal["continue", "done", "halt", "pause", "killed"]
+    decision:     Literal["continue", "done", "halt", "pause", "killed", "error"]
     budget_spent: dict
 
 

@@ -19,6 +19,7 @@ Application layer imports domain + ports ONLY — no concrete adapters.
 from __future__ import annotations
 
 import uuid
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -35,6 +36,7 @@ from bounded_loops.application.ports import (
     RunnerPort,
     TracerPort,
 )
+from bounded_loops.domain.errors import GateError, RunnerError
 from bounded_loops.domain.models import (
     Bounds,
     LedgerEntry,
@@ -47,7 +49,8 @@ from bounded_loops.domain.models import (
 )
 from bounded_loops.domain.rules import rung_requires_approval, stop_condition_met
 
-Decision = Literal["continue", "done", "halt", "pause", "killed"]
+Decision = Literal["continue", "done", "halt", "pause", "killed", "error"]
+_SCRATCH_MARKER = ".bounded-loops-scratch"
 
 
 @dataclass
@@ -100,6 +103,16 @@ def _snap(deps: RunLoopDeps, lap: int) -> dict:
     return snap
 
 
+def _error_verdict(component: str, exc: Exception) -> Verdict:
+    error_type = type(exc).__name__
+    detail = f"{component} error: {error_type}: {exc}"
+    return Verdict(
+        passed=False,
+        detail=detail,
+        evidence={"component": component, "error_type": error_type},
+    )
+
+
 class RunLoopUseCase:
     """
     Execute the bounded loop for a single Spec/Bounds/Rung combination.
@@ -117,6 +130,7 @@ class RunLoopUseCase:
         workspace: Path,
         deps: RunLoopDeps,
         env_passthrough: dict[str, str] | None = None,
+        cleanup_workspace: bool = True,
     ) -> None:
         self._spec = spec
         self._bounds = bounds
@@ -125,8 +139,15 @@ class RunLoopUseCase:
         self._deps = deps
         self._enforcer = BoundsEnforcer()  # owns no-progress history
         self._env_passthrough = env_passthrough or {}
+        self._cleanup_workspace_on_finish = cleanup_workspace
 
     def run(self) -> Outcome:
+        try:
+            return self._run()
+        finally:
+            self._cleanup_workspace()
+
+    def _run(self) -> Outcome:
         d = self._deps
         spec, bounds, rung = self._spec, self._bounds, self._rung
 
@@ -169,7 +190,13 @@ class RunLoopUseCase:
                 return Outcome(Status.HALT, why, lap, d.ledger.path())
 
             # ── 3. Run the agent (one turn) ──
-            result = d.runner.run_once(spec, ctx)
+            try:
+                result = d.runner.run_once(spec, ctx)
+            except RunnerError as exc:
+                verdict = _error_verdict("runner", exc)
+                entry = _make_entry(lap, "error", verdict, _snap(d, lap), d.clock)
+                d.ledger.record(entry)
+                return Outcome(Status.ERROR, verdict.detail, lap, d.ledger.path())
 
             # ── 4. Accumulate token spend AFTER runner returns ──
             d.budget.spend(result.tokens)
@@ -178,7 +205,13 @@ class RunLoopUseCase:
             self._enforcer.record_lap(result)
 
             # ── 6. Check gate INDEPENDENTLY — agent_claimed_done is NOT READ HERE ──
-            verdict = d.gate.check(ctx)
+            try:
+                verdict = d.gate.check(ctx)
+            except GateError as exc:
+                verdict = _error_verdict("gate", exc)
+                entry = _make_entry(lap, "error", verdict, _snap(d, lap), d.clock)
+                d.ledger.record(entry)
+                return Outcome(Status.ERROR, verdict.detail, lap, d.ledger.path())
 
             # ── 7. Emit tracer span ──
             d.tracer.span(ctx, result, verdict)
@@ -210,3 +243,10 @@ class RunLoopUseCase:
             entry = _make_entry(lap, "continue", verdict, _snap(d, lap), d.clock)
             d.ledger.record(entry)
             # Loop back to top
+
+    def _cleanup_workspace(self) -> None:
+        if not self._cleanup_workspace_on_finish:
+            return
+        marker = self._workspace / _SCRATCH_MARKER
+        if self._workspace.name.startswith("bounded-loops-") and marker.exists():
+            shutil.rmtree(self._workspace, ignore_errors=True)

@@ -1,0 +1,14 @@
+# loops/clinical-note-completeness/bounds.yaml
+max_iterations: 10
+no_progress_window: 3
+max_tokens: null
+max_wallclock_s: 60
+sandbox: true
+quarantine_inputs: true
+schema: schema.json
+trace: true
+# rung is L3 (clinical-documentation) — a real deployment of this loop
+# should set require_approval: true so a clinician signs off on the note
+# before it is accepted. Set false here ONLY so the keyless demo can run
+# end-to-end without an interactive approval prompt.
+require_approval: true

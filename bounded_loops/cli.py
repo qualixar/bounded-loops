@@ -24,6 +24,9 @@ import sys
 from pathlib import Path
 
 from bounded_loops.application.manifest import LoopManifest, load as manifest_load
+from bounded_loops.application.loop_audit import audit_loops
+from bounded_loops.application.introspection import list_gates, show_loop
+from bounded_loops.application.run_store import list_runs, write_run_metadata
 from bounded_loops.composition import wire
 from bounded_loops.domain.errors import BoundedLoopsError, ManifestError
 from bounded_loops.domain.models import Outcome, Status
@@ -96,7 +99,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--runner",
-        choices=["stub", "shell", "claude-code", "codex", "python_callable", "antigravity"],
+        choices=["stub", "shell", "claude-code", "codex", "python_callable", "antigravity", "docker", "worktree"],
         default=None,
         help=(
             "Override the runner specified in loop.yaml. "
@@ -132,6 +135,21 @@ def _build_parser() -> argparse.ArgumentParser:
             "Skip the trust-confirmation prompt and run immediately. "
             "Required in non-interactive contexts (CI) — see security note below."
         ),
+    )
+    run_parser.add_argument(
+        "--keep-workspace",
+        action="store_true",
+        help="Keep the scratch workspace after the run for debugging.",
+    )
+    run_parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Persist workspace, ledger, and metadata under .bounded-loops/runs/<run-id>.",
+    )
+    run_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume an existing persistent run workspace selected by --run-id.",
     )
     run_parser.set_defaults(func=_cmd_run)
 
@@ -176,6 +194,33 @@ def _build_parser() -> argparse.ArgumentParser:
     # NOTE: no --json here either — same  resolution as `bl lint` above.
     list_parser.set_defaults(func=_cmd_list)
 
+    # ── bl show ──────────────────────────────────────────────────────────────
+    show_parser = subparsers.add_parser(
+        "show",
+        help="Show loop runner, gate, bounds, risk, and dependencies.",
+        description="Inspect a loop before running it.",
+    )
+    show_parser.add_argument("loop_dir", metavar="loop-dir", type=Path)
+    show_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+    show_parser.set_defaults(func=_cmd_show)
+
+    # ── bl gates ─────────────────────────────────────────────────────────────
+    gates_parser = subparsers.add_parser(
+        "gates",
+        help="List gate capabilities and local dependency availability.",
+    )
+    gates_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+    gates_parser.set_defaults(func=_cmd_gates)
+
+    # ── bl runs ──────────────────────────────────────────────────────────────
+    runs_parser = subparsers.add_parser(
+        "runs",
+        help="List persisted runs for a loop directory.",
+    )
+    runs_parser.add_argument("loop_dir", metavar="loop-dir", type=Path)
+    runs_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+    runs_parser.set_defaults(func=_cmd_runs)
+
     # ── bl trust ──────────────────────────────────────────────────────────────
     trust_parser = subparsers.add_parser(
         "trust",
@@ -214,6 +259,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--list", action="store_true", help="List available templates and exit."
     )
     new_parser.set_defaults(func=_cmd_new)
+
+    # ── bl audit-loops ───────────────────────────────────────────────────────
+    audit_parser = subparsers.add_parser(
+        "audit-loops",
+        help="Audit loop examples for copy-paste production readiness.",
+        description=(
+            "Checks loop manifests, required files, README portability, approval "
+            "posture, cassettes, and common copy-paste-readiness issues."
+        ),
+    )
+    audit_parser.add_argument(
+        "dirs", nargs="*", type=Path, default=[Path(".")],
+        help="Repo roots, loops parents, or loop directories (default: cwd).",
+    )
+    audit_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+    audit_parser.set_defaults(func=_cmd_audit_loops)
 
     return parser
 
@@ -259,6 +320,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
             runner_override=args.runner,
             gate_cmd_override=args.gate_override,
             max_iterations_override=args.max_iterations,
+            keep_workspace=args.keep_workspace,
+            run_id=args.run_id,
+            resume=args.resume,
         )
     except ManifestError as e:
         _err(f"bl run: wiring error — {e}")
@@ -275,7 +339,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     _print_outcome(outcome, as_json=args.json)
 
-    return 0 if outcome.status == Status.DONE else 1
+    if args.run_id is not None:
+        write_run_metadata(
+            loop_dir=manifest.loop_dir,
+            run_id=args.run_id,
+            outcome=outcome,
+            workspace=use_case._workspace,
+        )
+
+    if outcome.status == Status.DONE:
+        return 0
+    if outcome.status == Status.ERROR:
+        return 3
+    return 1
 
 
 def _confirm_trust(manifest: LoopManifest, skip_prompt: bool) -> bool:
@@ -474,6 +550,53 @@ def _cmd_trust(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_show(args: argparse.Namespace) -> int:
+    try:
+        data = show_loop(args.loop_dir)
+    except ManifestError as e:
+        _err(f"bl show: manifest error — {e}")
+        return 2
+    if args.json:
+        print(json.dumps(data))
+    else:
+        _print_show(data)
+    return 0
+
+
+def _cmd_gates(args: argparse.Namespace) -> int:
+    gates = list_gates()
+    if args.json:
+        print(json.dumps({"gates": gates}))
+    else:
+        for gate in gates:
+            status = "available" if gate["available"] else "missing"
+            deps = ", ".join(gate["dependencies"]) if gate["dependencies"] else "none"
+            print(f"{gate['kind']:<20} {status:<10} deps={deps}  {gate['description']}")
+    return 0
+
+
+def _cmd_runs(args: argparse.Namespace) -> int:
+    loop_dir = args.loop_dir.resolve()
+    if not loop_dir.is_dir():
+        _err(f"bl runs: '{loop_dir}' is not a directory or does not exist.")
+        return 2
+    runs = list_runs(loop_dir)
+    if args.json:
+        print(json.dumps({"runs": runs}))
+    else:
+        if not runs:
+            print("No persisted runs found.")
+        for run in runs:
+            if "error" in run:
+                print(f"{run.get('run_id', '?')}: ERROR {run['error']}")
+            else:
+                print(
+                    f"{run['run_id']}: {run['status']} laps={run['laps']} "
+                    f"ledger={run['ledger_path']}"
+                )
+    return 0
+
+
 # ── bl new ─────────────────────────────────────────────────────────────────────
 
 def _templates_root() -> importlib.resources.abc.Traversable:
@@ -585,6 +708,22 @@ def _copy_template(template_dir: Path, dest: Path, loop_name: str) -> None:
         dest_file.write_text(content.replace("{{LOOP_NAME}}", loop_name), encoding="utf-8")
 
 
+def _cmd_audit_loops(args: argparse.Namespace) -> int:
+    results = [result for directory in args.dirs for result in audit_loops(directory)]
+    if args.json:
+        print(json.dumps({"results": [r.__dict__ for r in results]}))
+    else:
+        for result in results:
+            status = "PASS" if result.passed else "FAIL"
+            warn = f" warnings={len(result.warnings)}" if result.warnings else ""
+            print(f"[{status}] {result.name} {result.path}{warn}")
+            for error in result.errors:
+                print(f"  ERROR: {error}")
+            for warning in result.warnings:
+                print(f"  WARN: {warning}")
+    return 1 if any(not result.passed for result in results) else 0
+
+
 # ── Output formatters ─────────────────────────────────────────────────────────
 
 def _print_outcome(outcome: Outcome, *, as_json: bool) -> None:
@@ -631,6 +770,32 @@ def _print_list(loops: list[dict]) -> None:
             f"{lp['name']:<30} {role_str:<20} {lp['rung']:<6} "
             f"{lp['gate_kind']:<20}{err_suffix}"
         )
+
+
+def _print_show(data: dict) -> None:
+    print(f"name: {data['name']}")
+    print(f"path: {data['path']}")
+    print(f"pattern: {data['pattern']}")
+    print(f"role: {', '.join(data['role']) if data['role'] else '?'}")
+    print(f"rung: {data['rung']}")
+    print(f"runner: {data['runner']['kind']}")
+    print(f"gate: {_format_gate(data['gate'])}")
+    print(f"approval_required: {data['approval_required']}")
+    if data["production_bounds"]:
+        print(f"production_bounds: {data['production_bounds']}")
+    print(f"risk: {', '.join(data['risk']) if data['risk'] else 'none'}")
+    print(f"content_hash: {data['content_hash']}")
+
+
+def _format_gate(gate: dict) -> str:
+    if gate["kind"] == "composite":
+        children = ", ".join(_format_gate(child) for child in gate.get("children", []))
+        return f"composite({gate.get('mode', 'all')}: {children})"
+    if gate.get("run"):
+        return f"{gate['kind']} [{gate['run']}]"
+    if gate.get("schema"):
+        return f"{gate['kind']} [schema={gate['schema']}]"
+    return gate["kind"]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

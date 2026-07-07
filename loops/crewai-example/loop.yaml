@@ -1,11 +1,11 @@
-# loops/crewai-example/loop.yaml
 name: crewai-example
-description: >
-  Wires an existing CrewAI crew into bounded-loops. NOT a keyless demo —
-  requires `pip install crewai`. Shows the PythonCallableRunner contract
-  applied to a real production agent framework.
-pattern: evaluator-optimizer
-role: [backend, engineering]
+description: "Wires an existing CrewAI crew into bounded-loops. NOT a keyless demo\
+  \ \u2014 requires `pip install crewai`. Shows the PythonCallableRunner contract\
+  \ applied to a real production agent framework.\n"
+pattern: agents
+role:
+- backend
+- engineering
 rung: L1
 runner:
   default: python_callable
@@ -13,5 +13,5 @@ runner:
   function_name: run_turn
 gate:
   kind: pytest
-  run: "pytest -q"
+  run: pytest -q
 bounds: bounds.yaml

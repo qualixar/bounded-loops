@@ -1,24 +1,22 @@
 name: secret-scan-keyless
-description: >
-  Drive an agent until `seed/app_config.py` contains no hardcoded secrets.
-  The gate is `seed/check_secrets.py` — a tiny, dependency-free, pure-
-  standard-library scanner shipped WITH the loop (no gitleaks, no trivy, no
-  network): it flags AWS access key ids (AKIA[0-9A-Z]{16}), a private-key
-  PEM header, and password/api_key/secret string-literal assignments. Ships
-  a real app_config.py with a hardcoded AWS key and a hardcoded password.
-  The agent must fix the CONFIG (read secrets from the environment), never
-  the checker.
-pattern: evaluator-optimizer
+description: "Drive an agent until `seed/app_config.py` contains no hardcoded secrets.\
+  \ The gate is `seed/check_secrets.py` \u2014 a tiny, dependency-free, pure- standard-library\
+  \ scanner shipped WITH the loop (no gitleaks, no trivy, no network): it flags AWS\
+  \ access key ids (AKIA[0-9A-Z]{16}), a private-key PEM header, and password/api_key/secret\
+  \ string-literal assignments. Ships a real app_config.py with a hardcoded AWS key\
+  \ and a hardcoded password. The agent must fix the CONFIG (read secrets from the\
+  \ environment), never the checker.\n"
+pattern: augmented-llm
 role:
-  - security
+- security
 rung: L1
 spec: PROMPT.md
 forbid:
-  - "seed/check_secrets.py"
+- seed/check_secrets.py
 runner:
   default: stub
 gate:
   kind: command
-  run: "python3 seed/check_secrets.py seed/app_config.py"
+  run: python3 seed/check_secrets.py seed/app_config.py
 bounds: bounds.yaml
 memory: STATE.md

@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BL = str(REPO_ROOT / ".venv" / "bin" / "bl")
+BL = [sys.executable, "-m", "bounded_loops.cli"]
 
 # Loops that run with zero external tools — must reach DONE every time.
 KEYLESS_LOOPS = [
@@ -45,7 +47,7 @@ def _loop_dir(name: str) -> Path:
 
 
 def _run_bl(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([BL, *args], capture_output=True, text=True, timeout=120)
+    return subprocess.run([*BL, *args], capture_output=True, text=True, timeout=120)
 
 
 @pytest.mark.parametrize("name", ALL_LOOPS)
@@ -61,6 +63,19 @@ def test_manifest_is_keyless_and_no_qualixar_gate(name):
     assert manifest["gate"]["kind"] not in {
         "agentassert", "agentassay", "skillfortify", "attestar"
     }
+
+
+def test_loop_catalog_represents_all_anthropic_patterns():
+    expected = {
+        "augmented-llm", "prompt-chaining", "routing", "parallelization",
+        "orchestrator-workers", "evaluator-optimizer", "agents",
+    }
+    patterns = Counter(
+        yaml.safe_load(path.read_text())["pattern"]
+        for path in (REPO_ROOT / "loops").glob("*/loop.yaml")
+    )
+    assert expected.issubset(set(patterns))
+    assert all(patterns[pattern] >= 1 for pattern in expected)
 
 
 @pytest.mark.parametrize("name", KEYLESS_LOOPS)

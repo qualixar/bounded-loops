@@ -5,7 +5,7 @@ from bounded_loops.adapters.io.file_ledger import FileLedger, _deserialise
 from bounded_loops.adapters.io.clock import UtcClock
 from bounded_loops.domain.models import LedgerEntry, Verdict
 
-_Decision = Literal["continue", "done", "halt", "pause", "killed"]
+_Decision = Literal["continue", "done", "halt", "pause", "killed", "error"]
 
 
 def _make_entry(lap: int, passed: bool, decision: _Decision) -> LedgerEntry:
