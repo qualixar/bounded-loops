@@ -42,6 +42,12 @@ packages = ["bounded_loops"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.ruff]
+# Loop `seed/` directories hold DELIBERATELY-broken fixtures (dead imports,
+# failing code) that a gate is meant to flag — linting them defeats their
+# purpose and would strip the very defects the loops demonstrate.
+extend-exclude = ["loops/*/seed", "loops/*/*/seed"]
+
 [tool.ruff.lint.per-file-ignores]
 # pytest.importorskip() must run before the guarded imports that follow it —
 # E402 is a false positive for this well-known optional-dependency test pattern.
