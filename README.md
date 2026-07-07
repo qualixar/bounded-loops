@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-3b82f6?style=for-the-badge" alt="License: Apache-2.0"/></a>
-  <img src="https://img.shields.io/badge/tests-619_passing-22c55e?style=for-the-badge" alt="619 tests passing"/>
+  <img src="https://img.shields.io/badge/tests-678_passing-22c55e?style=for-the-badge" alt="678 tests passing"/>
   <img src="https://img.shields.io/badge/runnable_loops-63-e2725b?style=for-the-badge" alt="63 runnable loops"/>
   <img src="https://img.shields.io/badge/setup-keyless_%C2%B7_offline-0a0a0a?style=for-the-badge" alt="keyless and offline"/>
   <img src="https://img.shields.io/badge/safety-9_bounds_%2B_kill_switch-ff6b35?style=for-the-badge" alt="nine bounds plus kill switch"/>
@@ -63,8 +63,23 @@ project, [open an issue](../../issues) — this space grows by building on each 
 ## Three ways to use it
 
 1. **As a CLI** — clone, `pip install -e .`, then `bl list` / `bl run loops/<name> --yes`. The raw engine; see [Quick start](#quick-start-keyless-30s) below.
-2. **As an MCP server** — the `bounded-loops-mcp` command exposes `bl_run` / `bl_lint` / `bl_list` to any MCP client (Claude Code, Cursor, Codex, Antigravity…).
-3. **As an agent plugin** — [`plugins/`](plugins/) ships a ready-to-install package for **Claude Code**, **Codex**, and **Antigravity**, each with a Skill, a `/bl-run` command, the MCP wiring, and a verify-on-stop hook. Inside your agent you get **gate-verified "done" instead of the agent claiming done**. See [MCP server and IDE plugins](#mcp-server-and-ide-plugins).
+2. **As an MCP server** — the `bounded-loops-mcp` command exposes `bl_run` / `bl_lint` / `bl_list` / `bl_show` / `bl_gates` / `bl_audit_loops` / `bl_runs` as tools, plus catalog/manifest/prompt **resources** and `run_loop` / `write_loop` / `audit_loop` **prompts**, to any MCP client (Claude Code, Cursor, Codex, Antigravity…).
+3. **As an agent plugin** — [`plugins/`](plugins/) ships a ready-to-install package for **Claude Code**, **Codex**, and **Antigravity**, each with a Skill, a `/bl-run` command, the MCP wiring, and a verify-on-stop hook — plus **VS Code / GitHub Copilot** files (`.vscode/mcp.json`, `.github/` instructions and prompts) so the largest editor surface can use it too. Inside your agent you get **gate-verified "done" instead of the agent claiming done**. See [MCP server and IDE plugins](#mcp-server-and-ide-plugins).
+
+## New in 0.2.0
+
+The engine grew from a runnable reference into a harness you can lean on in CI:
+
+- **Composite gates** — a loop can now require *several* independent checks to pass together (`gate.kind: composite`, `mode: all`), so a real "done" can mean schema-valid **and** domain-checked, not one gate.
+- **Typed external gates** — first-class adapters for `gitleaks`, `semgrep`, `trivy`, `promptfoo`, `great_expectations`, and `axe` that parse structured tool output, not just exit codes. `bl gates` lists every gate kind and whether its tool is installed locally.
+- **A first-class `ERROR` outcome** — a runner or gate that crashes is now an auditable terminal state with a ledger entry, never an unstructured failure. Every run ends in a recorded status.
+- **Stronger sandbox runners** — opt-in `docker` and `worktree` runners alongside the keyless `stub`, for isolated real-agent runs.
+- **Resumable runs** — `bl run <loop> --run-id <id>` persists a workspace + per-run ledger (indexed in SQLite); `--resume` continues it, and `bl runs <loop>` lists prior runs.
+- **Inspect before you run** — `bl show <loop>` prints the runner, gate, bounds, approval posture, content hash, and risk tags; `bl audit-loops` checks copy-paste readiness across the whole catalog.
+- **Seven agentic patterns** — the catalog now spans all seven (`prompt-chaining`, `routing`, `parallelization`, `orchestrator-workers`, `evaluator-optimizer`, `augmented-llm`, `agents`), not one.
+- **Editor adoption + CI** — VS Code / GitHub Copilot files (`.vscode/mcp.json`, `.github/` instructions and prompts), an `AGENTS.md`, and a CI matrix on Python 3.11–3.13.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ## Repository layout
 
@@ -73,17 +88,18 @@ bounded-loops/
 ├── bounded_loops/      the engine (Python package)
 │   ├── domain/           pure rules + data types, no I/O — the ports (the seam) live here
 │   ├── application/      the loop algorithm (run_loop.py) + bounds enforcer + manifest loader
-│   ├── adapters/         concrete runners (stub, shell, claude-code, codex, …) and
-│   │                     gates (command, pytest, jsonschema, osv, checkov)
+│   ├── adapters/         concrete runners (stub, shell, claude-code, codex, docker,
+│   │                     worktree, …) and gates (command, pytest, jsonschema,
+│   │                     composite, osv, checkov, gitleaks, semgrep, trivy, …)
 │   ├── composition.py    the ONLY file that wires adapters onto the engine (composition root)
-│   ├── cli.py            the `bl` command
-│   ├── mcp_server.py     the `bounded-loops-mcp` server (bl_run / bl_lint / bl_list)
+│   ├── cli.py            the `bl` command (run · lint · list · show · gates · runs · new · audit-loops)
+│   ├── mcp_server.py     the `bounded-loops-mcp` server (tools + resources + prompts)
 │   └── hooks/            the verify-on-stop hook
 ├── loops/              the 67 runnable loop folders — the library (each = seed + gate + cassette)
 ├── catalog/            the recipe catalog — a browsable menu of loop ideas across industries
 ├── docs/               how the engine works — ARCHITECTURE, NINE-BOUNDS, WRITING-A-LOOP (SVG diagrams)
 ├── plugins/            install packages for Claude Code / Codex / Antigravity (skills, commands, hooks)
-├── tests/              the 619 tests
+├── tests/              the 678 tests
 └── README.md · CONTRIBUTING.md · LICENSE · pyproject.toml
 ```
 
@@ -170,6 +186,8 @@ Runners (what proposes a change each lap):
 | `claude-code` | `claude -p --output-format json --bare`; parses real `total_cost_usd` + `usage` tokens | the `claude` CLI **and `ANTHROPIC_API_KEY`/`apiKeyHelper`** — `--bare` never reads OAuth/keychain (confirmed against the real binary) |
 | `codex` | `codex exec --json`, sandbox mode derived from rung | the `codex` CLI (JSON schema not yet smoke-tested against a real binary — see Known limitations) |
 | `antigravity` | `agy -p`, approval policy derived from rung | the `agy` CLI |
+| `docker` | Runs the agent turn inside a container for stronger isolation | the `docker` CLI + an image |
+| `worktree` | Runs the agent turn in an isolated git worktree, sharing history but not the working tree | a git repo |
 
 Gates (what decides if a lap is done):
 
@@ -180,10 +198,13 @@ Gates (what decides if a lap is done):
 | `jsonschema` | `workspace/output.json` against a JSON Schema (path from `bounds.schema`) | nothing beyond the core deps (keyless) |
 | `osv` | `osv-scanner` reports zero known vulnerabilities (fails **closed** on an empty/garbage report) | [`osv-scanner`](https://github.com/google/osv-scanner) binary **+ network** (fetches the OSV.dev advisory DB) |
 | `checkov` | `checkov` reports zero failed IaC checks (fails **closed** on uninterpretable output) | [`checkov`](https://www.checkov.io/) |
+| `composite` | Runs several child gates and passes only if **all** pass (`mode: all`); records a per-child verdict in the ledger | whatever its child gates need |
+| `gitleaks` · `semgrep` · `trivy` · `promptfoo` · `great_expectations` · `axe` | Typed adapters that parse each tool's **structured output** (not just its exit code) into a gate verdict | the respective tool on PATH |
 
-Additional gate adapters are pluggable via the composition root; the default
-install ships only the universal, keyless-first set above — no gate in any
-shipped loop's default manifest requires a paid product.
+`bl gates` prints every gate kind and whether its tool is installed locally.
+Additional gate adapters are pluggable via the composition root; the keyless-first
+set (`command` / `pytest` / `jsonschema` / `composite`) needs nothing beyond the
+core deps — no gate in any shipped loop's default manifest requires a paid product.
 
 ## Runnable loops (67 folders, across a dozen industries)
 
@@ -277,7 +298,7 @@ Engineering** initiative. If it's useful in your work, please cite it — GitHub
   title     = {bounded-loops: runnable, bounded AI-agent loops},
   year      = {2026},
   publisher = {Qualixar},
-  version   = {0.1.0},
+  version   = {0.2.0},
   url       = {https://github.com/qualixar/bounded-loops}
 }
 ```
