@@ -23,7 +23,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,mcp]"
       - name: Run full suite
-        run: pytest -q
+        run: pytest -q --ignore=tests/release
       - name: Audit loop catalog
         run: python -m bounded_loops.cli audit-loops --json
 
@@ -73,7 +73,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "stable"
-      - uses: aquasecurity/setup-trivy@v0.2.0
+      - uses: aquasecurity/setup-trivy@v0.3.1
       - name: Install package and gitleaks
         run: |
           python -m pip install --upgrade pip
