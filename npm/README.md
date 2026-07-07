@@ -8,8 +8,9 @@ The engine itself is a **Python 3.11+** package. This wrapper lets you run it wi
 one command:
 
 ```bash
-npx bounded-loops list
-npx bounded-loops run loops/bug-fix-red-green --yes
+npx bounded-loops new --list
+npx bounded-loops new pytest-basic my-loop
+npx bounded-loops run my-loop --yes
 ```
 
 On first run it detects Python 3.11+, installs the `bounded-loops` Python package
@@ -20,10 +21,14 @@ Prefer the native install if you already have Python:
 
 ```bash
 pip install bounded-loops
-bl list
+bl new --list
+bl new pytest-basic my-loop
+bl run my-loop --yes
 ```
 
-Full documentation, the 63 runnable loops, the nine bounds, and the architecture
+Full documentation, the 67 loop folders, the nine bounds, and the architecture
 docs live in the [main repository](https://github.com/qualixar/bounded-loops).
+Clone the repository when you want `bl list` to browse the full shipped loop
+catalog.
 
 Apache-2.0.

@@ -16,6 +16,8 @@ flow sequence across three predicates) but calls `no_progress` only with
 the frozen 2-arg form, accumulating `changed` flags into a plain
 `list[bool]` the way the spec's own worked example demonstrates.
 """
+from typing import Any
+
 from bounded_loops.domain.models import (
     Rung, Bounds, Spec, Verdict, RunResult,
 )
@@ -30,8 +32,8 @@ from bounded_loops.domain.rules import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_spec(**kwargs) -> Spec:
-    defaults = dict(
+def make_spec(**kwargs: Any) -> Spec:
+    defaults: dict[str, Any] = dict(
         name="test-loop",
         goal="Do something.",
         steps=("Step 1.",),
@@ -41,8 +43,8 @@ def make_spec(**kwargs) -> Spec:
     return Spec(**defaults)
 
 
-def make_bounds(**kwargs) -> Bounds:
-    defaults = dict(max_iterations=5)
+def make_bounds(**kwargs: Any) -> Bounds:
+    defaults: dict[str, Any] = dict(max_iterations=5)
     defaults.update(kwargs)
     return Bounds(**defaults)
 

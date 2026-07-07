@@ -6,12 +6,12 @@
 
 <p align="center"><strong>Loop engineering you can actually run — every safety bound enforced in engine code, not described in a checklist.</strong></p>
 
-<p align="center"><em>63 runnable AI-agent loops across a dozen industries — keyless, offline, and gate-verified.<br/>The runnable engine layer for the loop-engineering practice that Karpathy, Steinberger, Cherny, Osmani, and Berman defined.</em></p>
+<p align="center"><em>67 runnable AI-agent loop folders across a dozen industries — 63 keyless, offline, and gate-verified out of the box.<br/>The runnable engine layer for the loop-engineering practice that Karpathy, Steinberger, Cherny, Osmani, and Berman defined.</em></p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-3b82f6?style=for-the-badge" alt="License: Apache-2.0"/></a>
   <img src="https://img.shields.io/badge/tests-678_passing-22c55e?style=for-the-badge" alt="678 tests passing"/>
-  <img src="https://img.shields.io/badge/runnable_loops-63-e2725b?style=for-the-badge" alt="63 runnable loops"/>
+  <img src="https://img.shields.io/badge/loop_folders-67-e2725b?style=for-the-badge" alt="67 loop folders"/>
   <img src="https://img.shields.io/badge/setup-keyless_%C2%B7_offline-0a0a0a?style=for-the-badge" alt="keyless and offline"/>
   <img src="https://img.shields.io/badge/safety-9_bounds_%2B_kill_switch-ff6b35?style=for-the-badge" alt="nine bounds plus kill switch"/>
 </p>
@@ -29,7 +29,7 @@ a kill switch** until the gate passes or a bound trips.
 > "Loop engineering" is a practice the community named in 2026 — *"stop prompting
 > your agent; design the loop that prompts it."* This repo doesn't claim the term;
 > it ships the part others describe but don't run: the **runnable, enforced
-> implementation** — **63 runnable loop folders across a dozen industries**, plus a
+> implementation** — **67 runnable loop folders across a dozen industries**, plus a
 > wider [catalog of loop recipes](catalog/README.md). Full credits below.
 
 ## Inspired by the loop-engineering community — we build on it, not against it
@@ -112,27 +112,35 @@ The engine is a **Python 3.11+** package. Install it whichever way fits your sta
 **pip — native, recommended**
 ```bash
 pip install bounded-loops            # from PyPI
-bl list
+bl new --list
+bl new pytest-basic my-loop
+bl run my-loop --yes
 ```
 ```bash
-# …or from source, today:
+# To browse and run the full source catalog:
 git clone https://github.com/qualixar/bounded-loops
 cd bounded-loops && pip install -e .
+bl list
+bl run loops/bug-fix-red-green --yes
 ```
 
 **npx — Node convenience wrapper** (still needs Python 3.11+ on your PATH)
 ```bash
-npx bounded-loops list
-npx bounded-loops run loops/bug-fix-red-green --yes
+npx bounded-loops new --list
+npx bounded-loops new pytest-basic my-loop
+npx bounded-loops run my-loop --yes
 ```
 The npm package is a **thin launcher**: on first run it finds Python 3.11+,
 installs the engine, then hands off to the real CLI. It does not reimplement the
-tool in Node — Python is the engine, npm is just a convenient front door.
+tool in Node — Python is the engine, npm is just a convenient front door. The
+full runnable loop catalog lives in the source repository; clone the repo when
+you want `bl list` to show every shipped loop folder.
 
 ## Quick start (keyless, ~30s)
 
 ```bash
-pip install -e .
+git clone https://github.com/qualixar/bounded-loops
+cd bounded-loops && pip install -e .
 bl run loops/bug-fix-red-green --yes    # keyless stub runner + real pytest gate
 ```
 ```
@@ -298,7 +306,7 @@ Engineering** initiative. If it's useful in your work, please cite it — GitHub
   title     = {bounded-loops: runnable, bounded AI-agent loops},
   year      = {2026},
   publisher = {Qualixar},
-  version   = {0.2.0},
+  version   = {0.2.1},
   url       = {https://github.com/qualixar/bounded-loops}
 }
 ```

@@ -178,13 +178,13 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── bl list ───────────────────────────────────────────────────────────────
     list_parser = subparsers.add_parser(
         "list",
-        help="Discover and list loops (in a given dir, or under the cwd).",
+        help="Discover and list loops in your current project or source checkout.",
         description=(
             "Lists name, role, rung, and gate.kind for each discovered loop. "
             "With no argument, searches ./loops/*/loop.yaml, ./*/loop.yaml, and "
-            "the nearest bounded-loops repo root. Pass a directory to list the "
-            "loops under it — the way a pip-installed user points bl at their "
-            "own loops folder."
+            "the nearest bounded-loops source checkout. Pass a directory to list "
+            "the loops under it. For a pip or npx install with no local loops yet, "
+            "start with `bl new --list`."
         ),
     )
     list_parser.add_argument(
@@ -758,6 +758,11 @@ def _print_list(loops: list[dict]) -> None:
     """Print discovered loops to stdout."""
     if not loops:
         print("No loops found.")
+        print(
+            "Create one with `bl new --list` and `bl new <template> <dir>`, "
+            "or run `git clone https://github.com/qualixar/bounded-loops` "
+            "to browse the full loop catalog."
+        )
         return
     # Column-aligned table: name | role | rung | gate_kind
     header = f"{'NAME':<30} {'ROLE':<20} {'RUNG':<6} {'GATE':<20}"

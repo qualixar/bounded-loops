@@ -459,11 +459,15 @@ class TestBLShowAndGates:
 # ── bl list ────────────────────────────────────────────────────────────────────
 
 class TestBLList:
-    def test_list_exits_0_when_no_repo_root_found(self, tmp_path, monkeypatch):
-        """bl list run outside any bounded-loops repo → 0, reports nothing found."""
+    def test_list_exits_0_when_no_repo_root_found(self, tmp_path, capsys, monkeypatch):
+        """bl list run outside any bounded-loops repo gives installed-user guidance."""
         monkeypatch.chdir(tmp_path)
         code = main(["list"])
         assert code == 0
+        out = capsys.readouterr().out
+        assert "No loops found." in out
+        assert "bl new --list" in out
+        assert "git clone https://github.com/qualixar/bounded-loops" in out
 
     def test_list_finds_loop_under_loops_subfolder(self, tmp_path, capsys, monkeypatch):
         """Discovery walks UP for pyproject.toml then

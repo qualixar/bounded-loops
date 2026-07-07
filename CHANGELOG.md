@@ -3,6 +3,21 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] — 2026-07-08
+
+Patch release for the public install experience.
+
+### Changed
+- Clarified PyPI and npm install docs: installed users start with `bl new --list`
+  and scaffold a local loop; source checkouts use `bl list` for the full catalog.
+- Updated public loop-count wording to distinguish 67 loop folders from the 63
+  keyless, zero-setup loops.
+
+### Fixed
+- `bl list` outside a source checkout now gives actionable scaffold/clone
+  guidance instead of a dead-end `No loops found.` message.
+- Clean dev type-checking now passes for the full source and test tree.
+
 ## [0.2.0] — 2026-07-07
 
 Production-hardening release. The engine moves from a runnable reference library
