@@ -1,0 +1,20 @@
+name: convergence-demo
+description: >
+  Demonstrate a bounded evaluator-optimizer loop across three genuine gate
+  verdicts: a wrong fix, a partial fix, and a correct fix. The same loop can
+  be capped at two iterations to prove that a bound stops unfinished work.
+pattern: evaluator-optimizer
+role:
+  - engineering
+  - reliability
+rung: L1
+spec: PROMPT.md
+forbid:
+  - "seed/test_*.py"
+runner:
+  default: stub
+gate:
+  kind: pytest
+  run: "pytest -q"
+bounds: bounds.yaml
+memory: STATE.md

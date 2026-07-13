@@ -1,0 +1,9 @@
+max_iterations: 3
+no_progress_window: 3
+max_tokens: 5000
+max_wallclock_s: 60
+sandbox: true
+quarantine_inputs: true
+schema: null
+trace: true
+require_approval: false
