@@ -92,3 +92,18 @@ def test_clean_room_release_gate_is_wired_into_ci() -> None:
     assert script.is_file()
     assert "clean-room" in workflow
     assert "verify_clean_room.py" in workflow
+
+
+def test_real_codex_example_is_a_machine_readable_receipt() -> None:
+    example = REPO_ROOT / "docs" / "real-run-example"
+    ledger_lines = (example / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
+    transcript_lines = (
+        (example / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+    )
+    ledger = [json.loads(line) for line in ledger_lines]
+    transcript = [json.loads(line) for line in transcript_lines]
+
+    assert ledger[-1]["decision"] == "done"
+    assert ledger[-1]["verdict"]["passed"] is True
+    assert ledger[-1]["budget_spent"]["tokens"] > 0
+    assert any(event.get("type") == "turn.completed" for event in transcript)

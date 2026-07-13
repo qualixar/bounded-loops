@@ -310,7 +310,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         _err(f"bl run: manifest error — {e}")
         return 2
 
-    if args.gate_override is None and not _confirm_trust(manifest, args.yes):
+    if args.gate_override is None and not _confirm_trust(
+        manifest,
+        args.yes,
+        runner_override=args.runner,
+    ):
         _err("bl run: not confirmed. Pass --yes to skip this prompt (e.g. in CI).")
         return 2
 
@@ -354,7 +358,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 1
 
 
-def _confirm_trust(manifest: LoopManifest, skip_prompt: bool) -> bool:
+def _confirm_trust(
+    manifest: LoopManifest,
+    skip_prompt: bool,
+    *,
+    runner_override: str | None = None,
+) -> bool:
     """
     Security fix: a
     loop.yaml's gate.run (or runner.agent_cmd for shell) is arbitrary shell
@@ -373,8 +382,9 @@ def _confirm_trust(manifest: LoopManifest, skip_prompt: bool) -> bool:
     it must never record trust on its own.
     """
     gate_cmd = manifest.gate_config.get("run", f"<{manifest.gate_kind} gate>")
+    effective_runner = runner_override or manifest.runner_kind
     print(f"[bounded-loops] About to run loop '{manifest.name}':")
-    print(f"  runner : {manifest.runner_kind}")
+    print(f"  runner : {effective_runner}")
     print(f"  gate   : {gate_cmd}")
     if skip_prompt:
         return True   # --yes: CI bypass, NOT a human review — no trust recorded
@@ -743,6 +753,16 @@ def _print_outcome(outcome: Outcome, *, as_json: bool) -> None:
             f"{symbol} [{outcome.status.value}] {outcome.reason} "
             f"(laps: {outcome.laps})  ledger: {outcome.ledger_path}"
         )
+        if outcome.status.value == "DONE":
+            lap_word = "lap" if outcome.laps == 1 else "laps"
+            print(
+                "Gate verified: the independent acceptance gate passed "
+                f"after {outcome.laps} {lap_word}."
+            )
+            print(
+                "Next: inspect the ledger above; use --keep-workspace "
+                "when you need to debug the resulting files."
+            )
 
 
 def _print_lint_results(results: list[dict]) -> None:

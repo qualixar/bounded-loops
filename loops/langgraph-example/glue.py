@@ -8,9 +8,14 @@ from pathlib import Path
 
 
 def run_turn(prompt: str, workspace: str) -> dict:
-    from langgraph.graph import StateGraph, END   # lazy import — only this
-                                                     # example loop needs it,
-                                                     # never bounded_loops itself
+    try:
+        from langgraph.graph import StateGraph, END   # lazy import — only this
+                                                         # example loop needs it,
+                                                         # never bounded_loops itself
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "this loop needs langgraph — pip install langgraph"
+        ) from exc
 
     # A trivial single-node graph standing in for "your existing graph."
     # Real usage: replace this with your own compiled graph; the only

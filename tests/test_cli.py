@@ -521,6 +521,23 @@ class TestBLList:
 # ── bl run trust confirmation (security fix) ──────────────────────
 
 class TestTrustConfirmation:
+    def test_preview_prints_effective_runner_override(self, tmp_path, capsys):
+        outcome = _make_outcome(Status.DONE)
+        (tmp_path / "loop.yaml").write_text("name: t\n")
+        fake_manifest = MagicMock()
+        fake_manifest.name = "t"
+        fake_manifest.runner_kind = "stub"
+        fake_manifest.gate_kind = "command"
+        fake_manifest.gate_config = {"run": "true"}
+        fake_use_case = MagicMock()
+        fake_use_case.run.return_value = outcome
+        with patch("bounded_loops.cli.manifest_load", return_value=fake_manifest), \
+             patch("bounded_loops.cli.wire", return_value=fake_use_case):
+            code = main(["run", str(tmp_path), "--runner", "codex", "--yes"])
+
+        assert code == 0
+        assert "runner : codex" in capsys.readouterr().out
+
     def test_yes_flag_skips_prompt(self, tmp_path):
         outcome = _make_outcome(Status.DONE)
         (tmp_path / "loop.yaml").write_text("name: t\n")

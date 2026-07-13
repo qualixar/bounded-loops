@@ -1,0 +1,31 @@
+{
+  "name": "bounded-loops",
+  "version": "0.3.0",
+  "description": "Run agent loops with independent gates, explicit bounds, and auditable receipts.",
+  "author": {
+    "name": "Varun Pratap Bhardwaj",
+    "email": "varun.pratap.bhardwaj@gmail.com",
+    "url": "https://github.com/qualixar"
+  },
+  "homepage": "https://github.com/qualixar/bounded-loops",
+  "repository": "https://github.com/qualixar/bounded-loops",
+  "license": "Apache-2.0",
+  "keywords": ["agents", "reliability", "gates", "loops"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "bounded-loops",
+    "shortDescription": "Gate-verified agent loops for Codex",
+    "longDescription": "Create, inspect, and run bounded agent loops whose completion is decided by an independent gate and recorded in an audit ledger.",
+    "developerName": "Varun Pratap Bhardwaj",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/qualixar/bounded-loops",
+    "defaultPrompt": [
+      "Run this task as a bounded loop.",
+      "Audit this loop manifest and its bounds.",
+      "Show me the receipt for the latest run."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

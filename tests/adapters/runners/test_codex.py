@@ -68,15 +68,13 @@ def test_run_once_ignores_valid_json_non_dict_line_without_crashing(tmp_path):
     assert result.agent_claimed_done is False
 
 
-def test_run_once_turn_failed_is_surfaced_in_log(tmp_path):
-    """turn.failed is recorded in the log (not the advisory agent_claimed_done
-    field, which is always False now)."""
+def test_run_once_turn_failed_is_a_runner_error(tmp_path):
+    """A failed Codex turn must become the engine's auditable ERROR outcome."""
     jsonl = '{"type": "turn.started"}\n{"type": "turn.failed"}\n'
     with patch("subprocess.run", return_value=_fake_proc(stdout=jsonl)):
         runner = CodexRunner()
-        result = runner.run_once(_spec(), _ctx(tmp_path))
-    assert result.agent_claimed_done is False
-    assert "turn.failed" in result.log
+        with pytest.raises(RunnerError, match="turn.failed"):
+            runner.run_once(_spec(), _ctx(tmp_path))
 
 
 def test_run_once_ignores_malformed_jsonl_lines(tmp_path):
@@ -118,7 +116,15 @@ def test_run_once_builds_argv_with_sandbox_mode(tmp_path):
     # call is always the agent invocation itself.
     args, kwargs = mock_run.call_args_list[0]
     argv = args[0]
-    assert argv == ["codex", "exec", "--json", "--sandbox", "workspace-write", "-"]
+    assert argv == [
+        "codex",
+        "exec",
+        "--json",
+        "--sandbox",
+        "workspace-write",
+        "--skip-git-repo-check",
+        "-",
+    ]
     assert kwargs["shell"] is False
 
 

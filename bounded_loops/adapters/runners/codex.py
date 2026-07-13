@@ -1,5 +1,6 @@
 """
-CodexRunner — invokes `codex exec --json --sandbox <mode> -`, parsing the
+CodexRunner — invokes `codex exec --json --sandbox <mode>
+--skip-git-repo-check -`, parsing the
 JSONL event stream for turn.completed/turn.failed.
 
 fix: `--sandbox` mode is DERIVED from the loop's own Bounds.sandbox
@@ -69,8 +70,8 @@ def _workspace_changed(workspace: Path) -> bool:
 
 class CodexRunner:
     """
-    Invokes `codex exec --json --sandbox <mode> -`, parsing the JSONL event
-    stream for turn.completed/turn.failed.
+    Invokes Codex in the engine's isolated (non-Git) scratch workspace and
+    parses the JSONL event stream for turn.completed/turn.failed.
     """
 
     def __init__(self, agent_cmd: str = "codex", timeout_s: int = 300,
@@ -84,7 +85,14 @@ class CodexRunner:
 
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
         prompt_text = _build_prompt(spec, ctx)
-        argv = shlex.split(self.agent_cmd) + ["exec", "--json", "--sandbox", self.sandbox_mode, "-"]
+        argv = shlex.split(self.agent_cmd) + [
+            "exec",
+            "--json",
+            "--sandbox",
+            self.sandbox_mode,
+            "--skip-git-repo-check",
+            "-",
+        ]
         env = _build_subprocess_env({**ctx.env, **self.extra_env})
         try:
             proc = subprocess.run(
@@ -97,7 +105,8 @@ class CodexRunner:
             raise RunnerError(f"CodexRunner: could not launch {self.agent_cmd!r}: {exc}") from exc
 
         changed = _workspace_changed(ctx.workspace)
-        turn_failed = False
+        turn_failed_message: str | None = None
+        tokens = 0
         for line in proc.stdout.splitlines():
             try:
                 event = json.loads(line)
@@ -109,10 +118,31 @@ class CodexRunner:
                 # and crash the engine loop. Mirror the isinstance-at-every-
                 # level discipline of osv.py/checkov.py.
                 continue
-            if event.get("type") == "turn.failed":
-                turn_failed = True
+            event_type = event.get("type")
+            if event_type == "turn.failed":
+                error = event.get("error")
+                if isinstance(error, dict) and isinstance(error.get("message"), str):
+                    turn_failed_message = error["message"]
+                else:
+                    turn_failed_message = "turn.failed event observed"
+            elif event_type == "turn.completed":
+                usage = event.get("usage")
+                if isinstance(usage, dict):
+                    input_tokens = usage.get("input_tokens", 0)
+                    output_tokens = usage.get("output_tokens", 0)
+                    if not isinstance(input_tokens, int) or isinstance(input_tokens, bool):
+                        input_tokens = 0
+                    if not isinstance(output_tokens, int) or isinstance(output_tokens, bool):
+                        output_tokens = 0
+                    tokens = max(0, input_tokens) + max(0, output_tokens)
 
         _write_agent_output(ctx.workspace, proc.stdout)
+
+        if turn_failed_message is not None:
+            raise RunnerError(f"CodexRunner: {turn_failed_message}")
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "no diagnostic output").strip()
+            raise RunnerError(f"CodexRunner: exit {proc.returncode}: {detail[-1000:]}")
 
         # Hardening: agent_claimed_done is ALWAYS False here, matching
         # ClaudeCodeRunner and AntigravityRunner. The engine's frozen invariant
@@ -122,7 +152,5 @@ class CodexRunner:
         # ("Codex's turn protocol completed") that read like a real self-claim.
         # turn.failed is surfaced in the log instead, where it belongs.
         log = proc.stdout[-2000:]
-        if turn_failed:
-            log = "[codex] turn.failed event observed\n" + log
         return RunResult(changed=changed, agent_claimed_done=False,
-                          tokens=0, log=log)
+                          tokens=tokens, log=log)
