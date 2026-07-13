@@ -4,6 +4,7 @@ import pytest
 
 from bounded_loops.application.run_store import (
     list_runs,
+    read_run_receipt,
     run_db,
     run_dir,
     run_ledger,
@@ -60,3 +61,31 @@ def test_write_run_metadata_updates_existing_sqlite_row(tmp_path):
     assert len(runs) == 1
     assert runs[0]["status"] == "DONE"
     assert runs[0]["laps"] == 2
+
+
+def test_read_run_receipt_parses_metadata_and_ledger(tmp_path):
+    directory = run_dir(tmp_path, "r1")
+    directory.mkdir(parents=True)
+    (directory / "metadata.json").write_text(
+        '{"run_id":"r1","status":"DONE","reason":"gate-passed"}\n',
+        encoding="utf-8",
+    )
+    (directory / "ledger.jsonl").write_text(
+        '{"lap":1,"verdict":{"passed":true},"decision":"done"}\n',
+        encoding="utf-8",
+    )
+
+    receipt = read_run_receipt(tmp_path, "r1")
+
+    assert receipt["metadata"]["status"] == "DONE"
+    assert receipt["entries"][0]["lap"] == 1
+
+
+def test_read_run_receipt_rejects_unreadable_jsonl(tmp_path):
+    directory = run_dir(tmp_path, "r1")
+    directory.mkdir(parents=True)
+    (directory / "metadata.json").write_text('{"run_id":"r1"}\n', encoding="utf-8")
+    (directory / "ledger.jsonl").write_text("not-json\n", encoding="utf-8")
+
+    with pytest.raises(ManifestError, match="ledger"):
+        read_run_receipt(tmp_path, "r1")

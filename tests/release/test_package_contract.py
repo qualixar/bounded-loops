@@ -6,6 +6,8 @@ import json
 import tomllib
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -107,3 +109,35 @@ def test_real_codex_example_is_a_machine_readable_receipt() -> None:
     assert ledger[-1]["verdict"]["passed"] is True
     assert ledger[-1]["budget_spent"]["tokens"] > 0
     assert any(event.get("type") == "turn.completed" for event in transcript)
+
+
+def test_release_metadata_uses_the_canonical_catalog_count_and_version() -> None:
+    loop_dirs = sorted((REPO_ROOT / "loops").glob("*/loop.yaml"))
+    framework_loops = {
+        "langgraph-example",
+        "crewai-example",
+        "autogen-example",
+        "adk-example",
+    }
+    citation = yaml.safe_load((REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8"))
+    npm = json.loads((REPO_ROOT / "npm" / "package.json").read_text(encoding="utf-8"))
+
+    assert len(loop_dirs) == 68
+    assert len(loop_dirs) - len(framework_loops) == 64
+    assert citation["version"] == "0.3.0"
+    assert "68 loop folders" in citation["abstract"]
+    assert npm["version"] == "0.3.0"
+    assert "68 loop folders" in npm["description"]
+    assert "64 keyless" in npm["description"]
+
+
+def test_public_docs_have_no_orphan_course_section_references() -> None:
+    offenders: list[str] = []
+    for root in (REPO_ROOT / "loops", REPO_ROOT / "docs"):
+        for path in root.rglob("*"):
+            if path.suffix not in {".md", ".sh", ".yaml"} or not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8")
+            if "§" in text or "the course" in text.lower():
+                offenders.append(str(path.relative_to(REPO_ROOT)))
+    assert offenders == []
