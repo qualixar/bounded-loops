@@ -1,6 +1,6 @@
 {
   "name": "bounded-loops",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "npx launcher for bounded-loops: 68 loop folders, 64 keyless, with independent gates and nine enforced bounds. Requires Python 3.11+.",
   "bin": {
     "bounded-loops": "bin/bounded-loops.js"

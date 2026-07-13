@@ -41,7 +41,7 @@ def test_codex_marketplace_install_in_isolated_home(tmp_path: Path) -> None:
         check=True,
     )
     payload = json.loads(installed.stdout)
-    assert payload["version"] == "0.3.0"
+    assert payload["version"] == "0.3.1"
     installed_path = Path(payload["installedPath"])
     assert (installed_path / ".codex-plugin" / "plugin.json").is_file()
     assert (installed_path / ".mcp.json").is_file()

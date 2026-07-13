@@ -32,6 +32,7 @@ from bounded_loops.application.run_store import (
     read_run_receipt,
     write_run_metadata,
 )
+from bounded_loops import __version__
 from bounded_loops.composition import wire
 from bounded_loops.domain.errors import BoundedLoopsError, ManifestError
 from bounded_loops.domain.models import Outcome, Status
@@ -83,6 +84,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "bounded-loops engine: run and inspect AI agent loops "
             "with nine safety bounds."
         ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
 
     subparsers = parser.add_subparsers(dest="cmd", metavar="SUBCOMMAND")
