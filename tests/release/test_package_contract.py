@@ -48,6 +48,13 @@ def test_readme_puts_verified_quick_start_above_the_fold() -> None:
     assert "tests-678_passing" not in readme
 
 
+def test_root_readme_contains_no_machine_terminal_transcript() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "Last login:" not in readme
+    assert "/Users/" not in readme
+    assert "Codex CLI 0.144.3 installed successfully" not in readme
+
+
 def test_hero_demo_is_committed_and_regenerable() -> None:
     assert (REPO_ROOT / "assets" / "demo.gif").is_file()
     assert (REPO_ROOT / "assets" / "demo.tape").is_file()
