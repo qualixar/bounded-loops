@@ -122,8 +122,31 @@ def test_run_once_builds_argv_with_sandbox_mode(tmp_path):
     assert kwargs["shell"] is False
 
 
-def test_run_once_tokens_always_zero(tmp_path):
-    with patch("subprocess.run", return_value=_fake_proc(stdout='{"type": "turn.completed"}')):
+def test_run_once_parses_live_turn_completed_usage(tmp_path):
+    jsonl = (
+        '{"type":"turn.completed","usage":'
+        '{"input_tokens":120,"cached_input_tokens":40,"output_tokens":30,'
+        '"reasoning_output_tokens":12}}\n'
+    )
+    with patch("subprocess.run", return_value=_fake_proc(stdout=jsonl)):
         runner = CodexRunner()
         result = runner.run_once(_spec(), _ctx(tmp_path))
-    assert result.tokens == 0
+    assert result.tokens == 150
+
+
+def test_run_once_turn_failed_raises_runner_error(tmp_path):
+    jsonl = '{"type":"turn.failed","error":{"message":"model unavailable"}}\n'
+    with patch("subprocess.run", return_value=_fake_proc(returncode=1, stdout=jsonl)):
+        runner = CodexRunner()
+        with pytest.raises(RunnerError, match="model unavailable"):
+            runner.run_once(_spec(), _ctx(tmp_path))
+
+
+def test_run_once_nonzero_exit_without_failure_event_raises_runner_error(tmp_path):
+    with patch(
+        "subprocess.run",
+        return_value=_fake_proc(returncode=2, stdout="", stderr="bad option"),
+    ):
+        runner = CodexRunner()
+        with pytest.raises(RunnerError, match="exit 2.*bad option"):
+            runner.run_once(_spec(), _ctx(tmp_path))
