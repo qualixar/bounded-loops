@@ -26,7 +26,7 @@ bl new pytest-basic my-loop
 bl run my-loop --yes
 ```
 
-Full documentation, the 67 loop folders, the nine bounds, and the architecture
+Full documentation, the 68 loop folders (64 keyless), the nine bounds, and the architecture
 docs live in the [main repository](https://github.com/qualixar/bounded-loops).
 Clone the repository when you want `bl list` to browse the full shipped loop
 catalog.

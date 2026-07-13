@@ -25,8 +25,10 @@ a real case. The loop is DONE only when the checker exits 0.
 bl run loops/citation-existence-check --yes   # stub runner + real command gate
 ```
 
-You'll see the ungated document fail the checker, the recorded fix correct
-Miranda's page and drop the fabricated Thompson cite, then the gate pass.
+You'll see lap 1 correct Miranda's page while leaving the fabricated Thompson
+cite. The agent claims done, but the gate fails. Lap 2 removes Thompson and the
+same gate passes. The two-lap receipt shows why agent self-reporting is not an
+acceptance criterion.
 
 ## Why the reporter and checker are `forbid:`-protected
 

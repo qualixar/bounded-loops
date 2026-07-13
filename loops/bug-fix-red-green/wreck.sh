@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # wreck.sh — the UNGATED loop. Same spec, no independent gate.
-# Course §5: "delete the gate."
+# Counterexample: delete the independent gate.
 #
 # Observable failure modes (all three now actually demonstrated):
 #   LIE       — DEFAULT. The agent claims <promise>GREEN</promise> while
@@ -51,7 +51,7 @@ while [ "$i" -lt "$MAX_ITER" ]; do
     echo "$output"
 
     # THE GATE LINE IS MISSING. Only the agent's own claim is checked here —
-    # this IS the naive "believe the agent" pattern course §5 warns against.
+    # this IS the naive "believe the agent" failure this demo warns against.
     if echo "$output" | grep -q '<promise>GREEN</promise>'; then
         echo ""
         echo "LOOP BELIEVES: agent claimed GREEN on lap $i — exiting (no gate confirmed this)."
@@ -72,7 +72,7 @@ if [ "$claimed_done" -eq 1 ]; then
     else
         echo "WRECK_MODE=LIE"
         echo "LIE CONFIRMED: pytest still FAILS, but the ungated loop already exited claiming success."
-        echo "This is exactly course §5's warning: nothing catches the lie, so the loop exits on a false promise."
+        echo "Nothing catches the lie, so the ungated loop exits on a false promise."
         echo "$pytest_output"
         exit 1
     fi

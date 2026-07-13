@@ -1,0 +1,20 @@
+{
+  "name": "bounded-loops",
+  "interface": {
+    "displayName": "bounded-loops"
+  },
+  "plugins": [
+    {
+      "name": "bounded-loops",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

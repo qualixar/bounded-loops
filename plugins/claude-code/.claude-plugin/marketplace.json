@@ -1,5 +1,6 @@
 {
   "name": "bounded-loops",
+  "description": "Native bounded-loops skill, command, and MCP wiring for Claude Code.",
   "owner": {
     "name": "Varun Pratap Bhardwaj",
     "email": "varun.pratap.bhardwaj@gmail.com"
@@ -9,7 +10,7 @@
       "name": "bounded-loops",
       "source": "./",
       "description": "Run, lint, and list bounded AI-agent loops via the bounded-loops engine — a gate-verified, nine-bound-safe alternative to trusting an agent's own claim of DONE.",
-      "version": "0.1.0"
+      "version": "0.3.0"
     }
   ]
 }

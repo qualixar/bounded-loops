@@ -25,9 +25,14 @@ from pathlib import Path
 
 
 def run_turn(prompt: str, workspace: str) -> dict:
-    from google.adk.agents import LoopAgent   # lazy import — only this
-                                                # example loop needs it,
-                                                # never bounded_loops itself
+    try:
+        from google.adk.agents import LoopAgent   # lazy import — only this
+                                                    # example loop needs it,
+                                                    # never bounded_loops itself
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "this loop needs google-adk — pip install google-adk"
+        ) from exc
 
     target = Path(workspace) / "seed" / "app.py"
 

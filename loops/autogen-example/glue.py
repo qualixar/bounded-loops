@@ -18,9 +18,14 @@ import inspect
 
 
 def run_turn(prompt: str, workspace: str) -> dict:
-    from agent_framework import Agent   # lazy import — only this example
-                                          # loop needs it, never bounded_loops
-                                          # itself
+    try:
+        from agent_framework import Agent   # lazy import — only this example
+                                              # loop needs it, never bounded_loops
+                                              # itself
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "this loop needs agent-framework — pip install agent-framework"
+        ) from exc
 
     target = Path(workspace) / "seed" / "app.py"
 

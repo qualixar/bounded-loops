@@ -2,11 +2,26 @@
   "version": 1,
   "loop": "citation-existence-check",
   "created": "2026-07-06",
-  "description": "Lap 1 rewrites seed/brief.md to fix the two bad citations: corrects Miranda v. Arizona from the fabricated 384 U.S. 999 to the real 384 U.S. 436, and removes the wholly fabricated Thompson v. Halden, 599 U.S. 1201 authority entirely. The remaining citations (Gideon, Mapp, Miranda-corrected, Brown) all resolve in known_reporter.json, so check_citations.py exits 0 on lap 1. Demonstrates the canonical loop reaching DONE with zero API keys and zero external tools.",
+  "description": "Lap 1 corrects Miranda's page but leaves the fabricated Thompson authority, so the independent gate still fails. Lap 2 removes Thompson and the gate passes. This makes convergence visible with zero API keys and zero external tools.",
   "interactions": [
     {
       "lap": 1,
-      "agent_output": "Ran check_citations.py: 2 citations not found in the reporter — '384 U.S. 999' (Miranda is real but the page is wrong; the reporter has 384 U.S. 436) and '599 U.S. 1201' (Thompson v. Halden does not exist in the reporter at all). Correcting Miranda's page and removing the fabricated Thompson authority. Not touching the reporter or the checker.",
+      "agent_output": "Correcting Miranda's page from 999 to 436. I believe the remaining authorities are valid.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/brief.md",
+          "content": "# Brief in Support of Motion to Suppress\n\nPlaintiff respectfully submits the following authorities in support of the motion.\n\nThe right to appointed counsel is fundamental to a fair trial. See Gideon v.\nWainwright, 372 U.S. 335 (1963).\n\nEvidence obtained through an unlawful search must be excluded from trial. See\nMapp v. Ohio, 367 U.S. 643 (1961).\n\nA suspect subjected to custodial interrogation must first be warned of the right\nto remain silent. See Miranda v. Arizona, 384 U.S. 436 (1966).\n\nThe Court has since recognized a broader constitutional privacy interest in this\ncontext. See Thompson v. Halden, 599 U.S. 1201 (2021).\n\nSegregation in public education violates the Equal Protection Clause. See Brown\nv. Board of Education, 347 U.S. 483 (1954).\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 268,
+      "notes": "The agent claims done, but the gate catches the remaining fabricated authority and forces another lap."
+    },
+    {
+      "lap": 2,
+      "agent_output": "The gate still rejects 599 U.S. 1201. Thompson v. Halden is fabricated, so I am removing that authority without changing the reporter or checker.",
       "actions": [
         {
           "type": "write_file",
@@ -16,17 +31,17 @@
       ],
       "agent_claimed_done": true,
       "changed": true,
-      "tokens": 268,
-      "notes": "The fix — check_citations.py now exits 0. bl run reaches DONE on lap 1, keyless, no external tool."
+      "tokens": 146,
+      "notes": "The second correction makes the independent citation gate pass."
     },
     {
       "lap": "*",
-      "agent_output": "Fix already applied; no further changes needed.",
+      "agent_output": "The gate has passed; no further changes are needed.",
       "actions": [{"type": "noop"}],
       "agent_claimed_done": true,
       "changed": false,
       "tokens": 0,
-      "notes": "Fallback for any lap beyond 1 — should not be reached in the happy path."
+      "notes": "Fallback for unexpected extra laps."
     }
   ]
 }

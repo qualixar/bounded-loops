@@ -1,0 +1,1 @@
+{"lap":1,"ts":"2026-07-13T17:42:04.306538Z","verdict":{"passed":true,"detail":"gate passed (exit 0)","evidence":{"cmd":"python3 seed/check_citations.py seed/brief.md seed/known_reporter.json","code":0,"tail":"check_citations: every citation resolves to a real case in the reporter\n"}},"decision":"done","budget_spent":{"laps":1,"tokens":228149,"wallclock_s":68.93}}
