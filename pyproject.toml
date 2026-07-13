@@ -1,7 +1,7 @@
 [project]
 name = "bounded-loops"
 version = "0.3.0"
-description = "Runnable, CLI-agent-portable reference library of bounded AI-agent loops."
+description = "68 bounded agent-loop folders, 64 keyless, with independent gates and auditable receipts."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }

@@ -3,7 +3,7 @@ name: bug-fix-red-green
 description: >
   Drive an agent until a failing pytest passes.
   The canonical Loop Engineering example: "keep working until the test is green."
-  Reproduces the course running example (COURSE §4–§6) as a repo artifact.
+  Provides a self-contained red-green loop as a runnable repository artifact.
 pattern: evaluator-optimizer
 role:
   - backend

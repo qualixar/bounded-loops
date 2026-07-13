@@ -34,7 +34,8 @@ bl run loops/langgraph-example --yes
 
 Expected:
 ```
-status: DONE  laps: 1  ledger: loops/langgraph-example/.ledger.jsonl
+✓ [DONE] gate-passed (laps: 1)  ledger: .../loops/langgraph-example/.ledger.jsonl
+Gate verified: the independent acceptance gate passed after 1 lap.
 ```
 
 ## `bl lint` works without LangGraph installed

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run.sh — standalone bounded loop for bug-fix-red-green
-# Reproduces the course §4 bash runner. NO engine required.
+# Standalone bounded bash runner. NO engine required.
 #
 # Usage:
 #   ./run.sh                          # uses stub agent (prints fixed slugify.py)

@@ -73,9 +73,21 @@ def verify(repo_root: Path) -> None:
                 )
 
         _run([str(bl), "new", "pytest-basic", str(scaffold)], cwd=scratch, env=clean_env)
+        _run([str(bl), "lint", str(scaffold)], cwd=scratch, env=clean_env)
         output = _run([str(bl), "run", str(scaffold), "--yes"], cwd=scratch, env=clean_env)
         if "[DONE]" not in output:
             raise RuntimeError("wheel-installed `bl new` scaffold did not converge")
+
+        _run(
+            [str(python), "-m", "pip", "install", f"{wheel}[mcp]"],
+            cwd=scratch,
+            env=clean_env,
+        )
+        _run(
+            [str(python), str(repo_root / "scripts" / "smoke_mcp_server.py")],
+            cwd=scratch,
+            env=clean_env,
+        )
 
         print("Clean-room verification passed.")
 

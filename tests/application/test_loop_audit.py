@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import yaml
 
-from bounded_loops.application.loop_audit import audit_loop, audit_loops, discover_loop_dirs
+from bounded_loops.application.loop_audit import (
+    audit_contribution,
+    audit_loop,
+    audit_loops,
+    discover_loop_dirs,
+)
 
 
 def _write_loop(tmp_path, *, readme="## Make it real\n", gate=None, bounds=None):
@@ -69,3 +74,45 @@ def test_l2_demo_loop_with_production_bounds_has_no_approval_warning(tmp_path):
     result = audit_loop(loop_dir)
 
     assert not any("approval" in warning for warning in result.warnings)
+
+
+def _write_contribution(tmp_path, *, gate=None, forbid=True):
+    loop_dir = _write_loop(
+        tmp_path,
+        readme=(
+            "## Make it real\n\n"
+            "The unfixed seed must fail. After the fix, the gate must pass.\n\n"
+            "Expected: `\u2713 [DONE] Gate verified on lap 1`\n"
+        ),
+        gate=gate,
+    )
+    raw = yaml.safe_load((loop_dir / "loop.yaml").read_text(encoding="utf-8"))
+    if forbid:
+        raw["forbid"] = ["seed/test_*.py"]
+    (loop_dir / "loop.yaml").write_text(yaml.dump(raw), encoding="utf-8")
+    return loop_dir
+
+
+def test_audit_contribution_accepts_real_gate_anchor_and_expected_output(tmp_path):
+    loop_dir = _write_contribution(tmp_path)
+
+    assert audit_contribution(loop_dir) == []
+
+
+def test_audit_contribution_rejects_missing_verification_anchor(tmp_path):
+    loop_dir = _write_contribution(tmp_path, forbid=False)
+
+    errors = audit_contribution(loop_dir)
+
+    assert "contribution requires a forbid guard for verification anchors" in errors
+
+
+def test_audit_contribution_rejects_noop_command_gate(tmp_path):
+    loop_dir = _write_contribution(
+        tmp_path,
+        gate={"kind": "command", "run": "echo ok"},
+    )
+
+    errors = audit_contribution(loop_dir)
+
+    assert "contribution gate must verify a real acceptance condition" in errors

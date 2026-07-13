@@ -148,6 +148,7 @@ claim rendered-DOM coverage; use axe or Lighthouse against a live page for that.
 ```bash
 bl new --list
 bl new pytest-basic my-loop
+bl doctor
 bl lint my-loop
 bl run my-loop --yes
 ```
@@ -162,7 +163,9 @@ Install the MCP extra, then the native Codex plugin:
 
 ```bash
 pip install "bounded-loops[mcp]"
-codex plugin marketplace add qualixar/bounded-loops
+git clone https://github.com/qualixar/bounded-loops
+cd bounded-loops
+codex plugin marketplace add .
 codex plugin add bounded-loops@bounded-loops
 ```
 

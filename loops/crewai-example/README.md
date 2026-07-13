@@ -35,7 +35,8 @@ bl run loops/crewai-example --yes
 
 Expected:
 ```
-status: DONE  laps: 1  ledger: loops/crewai-example/.ledger.jsonl
+✓ [DONE] gate-passed (laps: 1)  ledger: .../loops/crewai-example/.ledger.jsonl
+Gate verified: the independent acceptance gate passed after 1 lap.
 ```
 
 ## `bl lint` works without CrewAI installed

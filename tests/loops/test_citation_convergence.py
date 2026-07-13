@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ LOOP_DIR = REPO_ROOT / "loops" / "citation-existence-check"
 
 
 @pytest.fixture(autouse=True)
-def _clean_ledger() -> None:
+def _clean_ledger() -> Iterator[None]:
     ledger = LOOP_DIR / ".ledger.jsonl"
     if ledger.exists():
         ledger.unlink()

@@ -89,3 +89,26 @@ def test_read_run_receipt_rejects_unreadable_jsonl(tmp_path):
 
     with pytest.raises(ManifestError, match="ledger"):
         read_run_receipt(tmp_path, "r1")
+
+
+def test_read_run_receipt_rejects_run_directory_symlink_escape(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    runs = tmp_path / ".bounded-loops" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "r1").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ManifestError, match="outside"):
+        read_run_receipt(tmp_path, "r1")
+
+
+def test_read_run_receipt_rejects_symlinked_receipt_file(tmp_path):
+    directory = run_dir(tmp_path, "r1")
+    directory.mkdir(parents=True)
+    target = tmp_path / "outside-metadata.json"
+    target.write_text('{"run_id":"r1"}\n', encoding="utf-8")
+    (directory / "metadata.json").symlink_to(target)
+    (directory / "ledger.jsonl").write_text("", encoding="utf-8")
+
+    with pytest.raises(ManifestError, match="symlink"):
+        read_run_receipt(tmp_path, "r1")

@@ -32,6 +32,18 @@ skills and memory available on the verification machine, so the raw stream
 contains unrelated local paths and context. The excerpt removes those events;
 it does not alter the completion usage or gate result.
 
+Inspect the persisted receipt without reading JSONL directly:
+
+```bash
+bl runs loops/citation-existence-check --show codex-0.3.0-verified
+```
+
+```text
+Run codex-0.3.0-verified: DONE (gate-passed)
+Lap 1: PASS  decision=done  tokens=228149  wallclock=68.93s
+  gate passed (exit 0)
+```
+
 The deterministic cassette takes two laps on purpose so users can see a failed
 verdict before convergence. The real Codex agent fixed both findings in its
 first lap. Both paths still terminate only after the same independent gate

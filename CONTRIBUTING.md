@@ -37,8 +37,9 @@ role/task it makes sense for, a new loop under `loops/` is a welcome PR.
 
 4. Run the checks before opening a PR:
    ```bash
-   bl lint loops/my-loop            # manifest + bounds validate
-   bl run loops/my-loop --yes       # reaches status: DONE
+   bl doctor                        # core harness + optional tool availability
+   bl lint loops/my-loop --contrib  # manifest + catalog contribution bar
+   bl run loops/my-loop --yes       # reaches ✓ [DONE]
    pytest -q                        # existing suite still green
    mypy bounded_loops               # if you touched any Python
    ruff check .

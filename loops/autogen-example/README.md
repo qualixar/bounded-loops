@@ -51,7 +51,8 @@ bl run loops/autogen-example --yes
 
 Expected:
 ```
-status: DONE  laps: 1  ledger: loops/autogen-example/.ledger.jsonl
+✓ [DONE] gate-passed (laps: 1)  ledger: .../loops/autogen-example/.ledger.jsonl
+Gate verified: the independent acceptance gate passed after 1 lap.
 ```
 
 ## `bl lint` works without Agent Framework installed

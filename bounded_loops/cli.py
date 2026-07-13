@@ -1,5 +1,5 @@
 """
-bl CLI — run|lint|list subcommands.
+bl CLI — run, inspect, diagnose, scaffold, and audit bounded loops.
 
 Implementation: argparse (stdlib), zero extra deps.
 Entry point: bounded_loops.cli:main (registered as [project.scripts] bl).
@@ -24,9 +24,14 @@ import sys
 from pathlib import Path
 
 from bounded_loops.application.manifest import LoopManifest, load as manifest_load
-from bounded_loops.application.loop_audit import audit_loops
+from bounded_loops.application.doctor import diagnose_environment
+from bounded_loops.application.loop_audit import audit_contribution, audit_loops
 from bounded_loops.application.introspection import list_gates, show_loop
-from bounded_loops.application.run_store import list_runs, write_run_metadata
+from bounded_loops.application.run_store import (
+    list_runs,
+    read_run_receipt,
+    write_run_metadata,
+)
 from bounded_loops.composition import wire
 from bounded_loops.domain.errors import BoundedLoopsError, ManifestError
 from bounded_loops.domain.models import Outcome, Status
@@ -75,7 +80,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bl",
         description=(
-            "bounded-loops engine: run|lint|list AI agent loops "
+            "bounded-loops engine: run and inspect AI agent loops "
             "with nine safety bounds."
         ),
     )
@@ -159,8 +164,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Validate loop manifests and bounds.",
         description=(
             "Validates loop.yaml + bounds.yaml for each <loop-dir>. "
-            "Checks: keyless runner default, no Qualixar gate as default, "
-            "all required keys present. Exit 0 iff all pass."
+            "Checks required keys, supported adapters, bounds, and cross-field "
+            "constraints. Exit 0 iff all pass."
         ),
     )
     lint_parser.add_argument(
@@ -170,9 +175,14 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="+",
         help="One or more loop folder paths to lint.",
     )
-    # NOTE: no --json here. RESOLVED at :
-    # --json is frozen to `bl run` ONLY, keeping the CLI surface minimal per
-    # . The original draft added --json here too; removed.
+    lint_parser.add_argument(
+        "--contrib",
+        action="store_true",
+        help=(
+            "Apply the stricter catalog contribution bar: protected anchors, "
+            "a real gate, and README evidence that failure becomes DONE."
+        ),
+    )
     lint_parser.set_defaults(func=_cmd_lint)
 
     # ── bl list ───────────────────────────────────────────────────────────────
@@ -212,6 +222,14 @@ def _build_parser() -> argparse.ArgumentParser:
     gates_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
     gates_parser.set_defaults(func=_cmd_gates)
 
+    # ── bl doctor ────────────────────────────────────────────
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Check Python, pytest, runners, and optional gate tools.",
+    )
+    doctor_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+    doctor_parser.set_defaults(func=_cmd_doctor)
+
     # ── bl runs ──────────────────────────────────────────────────────────────
     runs_parser = subparsers.add_parser(
         "runs",
@@ -219,6 +237,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     runs_parser.add_argument("loop_dir", metavar="loop-dir", type=Path)
     runs_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+    runs_parser.add_argument(
+        "--show",
+        metavar="RUN_ID",
+        help="Pretty-print the per-lap receipt for one persisted run.",
+    )
     runs_parser.set_defaults(func=_cmd_runs)
 
     # ── bl trust ──────────────────────────────────────────────────────────────
@@ -428,7 +451,10 @@ def _cmd_lint(args: argparse.Namespace) -> int:
 
         try:
             manifest_load(loop_dir)
-            entry["passed"] = True
+            if args.contrib:
+                entry["errors"].extend(audit_contribution(loop_dir))
+            entry["passed"] = not entry["errors"]
+            any_failure = any_failure or not entry["passed"]
         except ManifestError as e:
             entry["errors"].append(str(e))
             any_failure = True
@@ -585,11 +611,43 @@ def _cmd_gates(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    report = diagnose_environment()
+    if args.json:
+        print(json.dumps(report))
+        return 0 if report["ok"] else 1
+
+    print(f"{'CHECK':<28} {'STATUS':<9} DETAIL")
+    print("-" * 78)
+    checks = [report["python"], report["pytest"], *report["runners"]]
+    for item in checks:
+        status = "OK" if item["available"] else "MISSING"
+        print(f"{item['name']:<28} {status:<9} {item['detail']}")
+    for gate in report["gates"]:
+        status = "OK" if gate["available"] else "MISSING"
+        dependencies = ", ".join(gate["dependencies"]) or "built in"
+        print(f"{'gate:' + gate['kind']:<28} {status:<9} {dependencies}")
+    print("Core harness ready." if report["ok"] else "Core harness is not ready.")
+    return 0 if report["ok"] else 1
+
+
 def _cmd_runs(args: argparse.Namespace) -> int:
     loop_dir = args.loop_dir.resolve()
     if not loop_dir.is_dir():
         _err(f"bl runs: '{loop_dir}' is not a directory or does not exist.")
         return 2
+    if args.show:
+        try:
+            receipt = read_run_receipt(loop_dir, args.show)
+        except ManifestError as exc:
+            _err(f"bl runs: {exc}")
+            return 2
+        if args.json:
+            print(json.dumps({"run": receipt}))
+        else:
+            _print_run_receipt(receipt)
+        return 0
+
     runs = list_runs(loop_dir)
     if args.json:
         print(json.dumps({"runs": runs}))
@@ -605,6 +663,31 @@ def _cmd_runs(args: argparse.Namespace) -> int:
                     f"ledger={run['ledger_path']}"
                 )
     return 0
+
+
+def _print_run_receipt(receipt: dict) -> None:
+    metadata = receipt["metadata"]
+    run_id = metadata.get("run_id", "?")
+    status = metadata.get("status", "UNKNOWN")
+    reason = metadata.get("reason", "unknown")
+    print(f"Run {run_id}: {status} ({reason})")
+    print(f"Workspace: {metadata.get('workspace', 'unknown')}")
+    print(f"Ledger: {metadata.get('ledger_path', 'unknown')}")
+    print()
+    for entry in receipt["entries"]:
+        verdict = entry.get("verdict", {})
+        passed = verdict.get("passed") is True
+        state = "PASS" if passed else "FAIL"
+        budget = entry.get("budget_spent", {})
+        print(
+            f"Lap {entry.get('lap', '?')}: {state}  "
+            f"decision={entry.get('decision', '?')}  "
+            f"tokens={budget.get('tokens', '?')}  "
+            f"wallclock={budget.get('wallclock_s', '?')}s"
+        )
+        detail = verdict.get("detail")
+        if detail:
+            print(f"  {detail}")
 
 
 # ── bl new ─────────────────────────────────────────────────────────────────────

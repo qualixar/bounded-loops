@@ -1,5 +1,6 @@
 {
   "name": "bounded-loops",
+  "description": "Native bounded-loops skill, command, and MCP wiring for Claude Code.",
   "owner": {
     "name": "Varun Pratap Bhardwaj",
     "email": "varun.pratap.bhardwaj@gmail.com"
