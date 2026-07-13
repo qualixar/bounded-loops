@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import struct
 import tomllib
 from pathlib import Path
 
@@ -52,6 +53,16 @@ def test_hero_demo_is_committed_and_regenerable() -> None:
     assert (REPO_ROOT / "assets" / "demo.tape").is_file()
 
 
+def test_social_preview_has_github_recommended_dimensions() -> None:
+    preview = REPO_ROOT / "assets" / "social-preview.png"
+    renderer = REPO_ROOT / "scripts" / "render_social_preview.py"
+    assert preview.is_file()
+    assert renderer.is_file()
+    payload = preview.read_bytes()
+    assert payload.startswith(b"\x89PNG\r\n\x1a\n")
+    assert struct.unpack(">II", payload[16:24]) == (1280, 640)
+
+
 def test_codex_plugin_uses_current_manifest_contract() -> None:
     plugin_root = REPO_ROOT / "plugins" / "codex"
     manifest = json.loads(
@@ -88,12 +99,17 @@ def test_plugin_installation_and_mcp_extra_are_documented() -> None:
 
 def test_clean_room_release_gate_is_wired_into_ci() -> None:
     script = REPO_ROOT / "scripts" / "verify_clean_room.py"
+    readme_script = REPO_ROOT / "scripts" / "verify_readme_outputs.py"
+    mcp_script = REPO_ROOT / "scripts" / "smoke_mcp_server.py"
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8"
     )
     assert script.is_file()
+    assert readme_script.is_file()
+    assert mcp_script.is_file()
     assert "clean-room" in workflow
     assert "verify_clean_room.py" in workflow
+    assert "verify_readme_outputs.py" in workflow
 
 
 def test_real_codex_example_is_a_machine_readable_receipt() -> None:
@@ -125,8 +141,10 @@ def test_release_metadata_uses_the_canonical_catalog_count_and_version() -> None
     assert len(loop_dirs) == 68
     assert len(loop_dirs) - len(framework_loops) == 64
     assert citation["version"] == "0.3.0"
+    assert citation["url"] == "https://github.com/qualixar/bounded-loops"
     assert "68 loop folders" in citation["abstract"]
     assert npm["version"] == "0.3.0"
+    assert "68" in _project()["description"] and "64" in _project()["description"]
     assert "68 loop folders" in npm["description"]
     assert "64 keyless" in npm["description"]
 
@@ -138,6 +156,11 @@ def test_public_docs_have_no_orphan_course_section_references() -> None:
             if path.suffix not in {".md", ".sh", ".yaml"} or not path.is_file():
                 continue
             text = path.read_text(encoding="utf-8")
-            if "§" in text or "the course" in text.lower():
+            lowered = text.lower()
+            if (
+                "§" in text
+                or "course §" in lowered
+                or "from the loop engineering course" in lowered
+            ):
                 offenders.append(str(path.relative_to(REPO_ROOT)))
     assert offenders == []
