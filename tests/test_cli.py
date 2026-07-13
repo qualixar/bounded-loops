@@ -9,7 +9,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from bounded_loops.cli import main
+from bounded_loops.cli import _print_outcome, main
 from bounded_loops.application.loop_audit import LoopAuditResult
 from bounded_loops.domain.models import Status, Outcome
 from bounded_loops.domain.errors import ManifestError
@@ -52,6 +52,14 @@ def _patch_run(tmp_path, outcome: Outcome):
 # ── bl run exit codes ──────────────────────────────────────────────────────────
 
 class TestBLRunExitCodes:
+    def test_done_output_explains_verified_result_and_next_step(self, capsys):
+        _print_outcome(_make_outcome(Status.DONE, laps=3), as_json=False)
+
+        output = capsys.readouterr().out
+        assert "Gate verified:" in output
+        assert "3 laps" in output
+        assert "Next:" in output
+
     def test_run_done_exits_0(self, tmp_path):
         """bl run → DONE → exit 0."""
         outcome = _make_outcome(Status.DONE)
@@ -353,6 +361,16 @@ class TestBLAuditLoops:
 
 
 class TestBLShowAndGates:
+    def test_doctor_json_reports_core_and_optional_capabilities(self, capsys):
+        code = main(["doctor", "--json"])
+
+        assert code == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["python"]["available"] is True
+        assert data["pytest"]["available"] is True
+        assert {item["name"] for item in data["runners"]} >= {"stub", "codex"}
+        assert data["gates"]
+
     def test_show_json_output(self, tmp_path, capsys):
         with patch("bounded_loops.cli.show_loop", return_value={
             "name": "loop-a",
@@ -384,6 +402,57 @@ class TestBLShowAndGates:
             code = main(["runs", str(tmp_path), "--json"])
         assert code == 0
         assert json.loads(capsys.readouterr().out)["runs"][0]["run_id"] == "r1"
+
+    def test_runs_show_pretty_prints_per_lap_receipt(self, tmp_path, capsys):
+        run_dir = tmp_path / ".bounded-loops" / "runs" / "r1"
+        run_dir.mkdir(parents=True)
+        (run_dir / "metadata.json").write_text(
+            json.dumps({
+                "run_id": "r1",
+                "status": "DONE",
+                "reason": "gate-passed",
+                "laps": 2,
+                "workspace": str(run_dir / "workspace"),
+                "ledger_path": str(run_dir / "ledger.jsonl"),
+            }),
+            encoding="utf-8",
+        )
+        entries = [
+            {
+                "lap": 1,
+                "verdict": {"passed": False, "detail": "1 failed"},
+                "decision": "continue",
+                "budget_spent": {"laps": 1, "tokens": 20, "wallclock_s": 1.5},
+            },
+            {
+                "lap": 2,
+                "verdict": {"passed": True, "detail": "2 passed"},
+                "decision": "done",
+                "budget_spent": {"laps": 2, "tokens": 35, "wallclock_s": 2.75},
+            },
+        ]
+        (run_dir / "ledger.jsonl").write_text(
+            "".join(json.dumps(entry) + "\n" for entry in entries),
+            encoding="utf-8",
+        )
+
+        code = main(["runs", str(tmp_path), "--show", "r1"])
+
+        output = capsys.readouterr().out
+        assert code == 0
+        assert "Run r1: DONE" in output
+        assert "Lap 1" in output and "FAIL" in output and "continue" in output
+        assert "Lap 2" in output and "PASS" in output and "done" in output
+        assert "tokens=35" in output and "wallclock=2.75s" in output
+
+    def test_lint_contrib_accepts_reference_loop(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        code = main([
+            "lint",
+            str(repo_root / "loops" / "convergence-demo"),
+            "--contrib",
+        ])
+        assert code == 0
 
     def test_lint_nonexistent_dir_exits_1(self, tmp_path):
         """Nonexistent loop-dir → recorded as failure → exit 1."""
@@ -513,6 +582,23 @@ class TestBLList:
 # ── bl run trust confirmation (security fix) ──────────────────────
 
 class TestTrustConfirmation:
+    def test_preview_prints_effective_runner_override(self, tmp_path, capsys):
+        outcome = _make_outcome(Status.DONE)
+        (tmp_path / "loop.yaml").write_text("name: t\n")
+        fake_manifest = MagicMock()
+        fake_manifest.name = "t"
+        fake_manifest.runner_kind = "stub"
+        fake_manifest.gate_kind = "command"
+        fake_manifest.gate_config = {"run": "true"}
+        fake_use_case = MagicMock()
+        fake_use_case.run.return_value = outcome
+        with patch("bounded_loops.cli.manifest_load", return_value=fake_manifest), \
+             patch("bounded_loops.cli.wire", return_value=fake_use_case):
+            code = main(["run", str(tmp_path), "--runner", "codex", "--yes"])
+
+        assert code == 0
+        assert "runner : codex" in capsys.readouterr().out
+
     def test_yes_flag_skips_prompt(self, tmp_path):
         outcome = _make_outcome(Status.DONE)
         (tmp_path / "loop.yaml").write_text("name: t\n")

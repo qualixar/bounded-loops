@@ -1,9 +1,12 @@
 {
   "name": "bounded-loops",
-  "version": "0.2.1",
-  "description": "npx launcher for bounded-loops — runnable, bounded AI-agent loops. The engine is a Python 3.11+ package; this wrapper detects Python, installs it on first run, and runs it.",
+  "version": "0.3.0",
+  "description": "npx launcher for bounded-loops: 68 loop folders, 64 keyless, with independent gates and nine enforced bounds. Requires Python 3.11+.",
   "bin": {
     "bounded-loops": "bin/bounded-loops.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
   },
   "files": [
     "bin/",

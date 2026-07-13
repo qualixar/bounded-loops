@@ -3,6 +3,44 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-07-13
+
+Minor release for the verified install, convergence, and agent-integration
+experience.
+
+### Added
+
+- A three-lap `convergence-demo` plus a max-iteration trip variant, both
+  keyless and covered by ledger assertions.
+- Native Codex and Claude Code plugin manifests, a repository Codex
+  marketplace, tested installation instructions, and an MCP stdio smoke test.
+- A real Codex-backed citation run receipt with a machine-readable ledger and
+  redacted transcript excerpt.
+- `bl doctor`, `bl runs <loop> --show <run-id>`, and `bl lint --contrib`.
+- Clean-room CI across macOS and Ubuntu on Python 3.11–3.13, built from the
+  wheel and exercising the README, scaffolding, and MCP server.
+- Reproducible terminal GIF and 1280×640 GitHub social-preview assets.
+
+### Changed
+
+- `pytest` is now a core dependency because shipped pytest gates invoke it.
+- Codex runner failures now become auditable engine errors, live token usage is
+  recorded, and non-Git scratch workspaces use Codex's explicit skip-check flag.
+- The citation example now takes two deterministic laps; framework examples
+  fail with exact dependency-install guidance.
+- README and release metadata now use the canonical count: 68 loop folders, 64
+  keyless out of the box. The README puts the verified quick start first and
+  uses the real CI badge.
+- The npm launcher pins the Python engine to the same version as the npm
+  package, preventing silent cross-ecosystem version drift.
+
+### Fixed
+
+- Clean wheel installs can execute shipped pytest gates.
+- Runner overrides are shown accurately in the pre-run trust preview.
+- Stale CLI output examples and orphaned private-course section references were
+  removed.
+
 ## [0.2.1] — 2026-07-08
 
 Patch release for the public install experience.

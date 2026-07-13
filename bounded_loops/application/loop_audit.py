@@ -71,6 +71,31 @@ def audit_loops(root: Path) -> list[LoopAuditResult]:
     return [audit_loop(loop_dir) for loop_dir in discover_loop_dirs(root)]
 
 
+def audit_contribution(loop_dir: Path) -> list[str]:
+    """Apply the stricter catalog contribution bar to one candidate loop."""
+    result = audit_loop(loop_dir)
+    errors = list(result.errors)
+    try:
+        manifest = manifest_load(loop_dir)
+    except ManifestError:
+        return errors
+
+    if not manifest.spec.forbid:
+        errors.append("contribution requires a forbid guard for verification anchors")
+    gate_run = str(manifest.gate_config.get("run", "")).strip().lower()
+    if manifest.gate_kind == "command" and gate_run in {"true", ":", "echo ok"}:
+        errors.append("contribution gate must verify a real acceptance condition")
+
+    readme_path = loop_dir / "README.md"
+    if readme_path.is_file():
+        readme = readme_path.read_text(encoding="utf-8").lower()
+        if "expected" not in readme or "[done]" not in readme:
+            errors.append("README must include actual expected [DONE] output")
+        if "fail" not in readme or "pass" not in readme:
+            errors.append("README must show that the unfixed seed fails and the fix passes")
+    return errors
+
+
 def _audit_manifest(manifest: LoopManifest, warnings: list[str], errors: list[str]) -> None:
     if manifest.runner_kind == "stub" and not (manifest.loop_dir / (manifest.cassette or "cassettes/default.json")).is_file():
         errors.append("stub runner requires cassettes/default.json or runner.cassette")

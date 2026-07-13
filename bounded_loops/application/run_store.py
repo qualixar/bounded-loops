@@ -98,6 +98,55 @@ def list_runs(loop_dir: Path) -> list[dict]:
     return results
 
 
+def read_run_receipt(loop_dir: Path, run_id: str) -> dict:
+    """Read one persisted run without allowing run-id or symlink escapes."""
+    directory = run_dir(loop_dir, run_id)
+    runs_root = (loop_dir.resolve() / ".bounded-loops" / "runs").resolve()
+    resolved_directory = directory.resolve()
+    if not resolved_directory.is_relative_to(runs_root):
+        raise ManifestError("run directory resolves outside .bounded-loops/runs")
+    if not resolved_directory.is_dir():
+        raise ManifestError(f"run '{run_id}' does not exist")
+
+    metadata_path = resolved_directory / "metadata.json"
+    ledger_path = resolved_directory / "ledger.jsonl"
+    if metadata_path.is_symlink() or ledger_path.is_symlink():
+        raise ManifestError("run receipt files must not be symlinks")
+
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ManifestError(f"run '{run_id}' metadata is missing") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ManifestError(f"run '{run_id}' metadata is unreadable") from exc
+    if not isinstance(metadata, dict):
+        raise ManifestError(f"run '{run_id}' metadata must be a JSON object")
+
+    try:
+        raw_lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError as exc:
+        raise ManifestError(f"run '{run_id}' ledger is missing") from exc
+    except OSError as exc:
+        raise ManifestError(f"run '{run_id}' ledger is unreadable") from exc
+
+    entries: list[dict] = []
+    for line_number, line in enumerate(raw_lines, 1):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ManifestError(
+                f"run '{run_id}' ledger has invalid JSON on line {line_number}"
+            ) from exc
+        if not isinstance(entry, dict):
+            raise ManifestError(
+                f"run '{run_id}' ledger line {line_number} must be a JSON object"
+            )
+        entries.append(entry)
+    return {"metadata": metadata, "entries": entries}
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)

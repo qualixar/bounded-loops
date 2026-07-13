@@ -8,9 +8,14 @@ from pathlib import Path
 
 
 def run_turn(prompt: str, workspace: str) -> dict:
-    from crewai import Agent, Crew, Process, Task   # lazy import — only this
-                                                       # example loop needs it,
-                                                       # never bounded_loops itself
+    try:
+        from crewai import Agent, Crew, Process, Task   # lazy import — only this
+                                                           # example loop needs it,
+                                                           # never bounded_loops itself
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "this loop needs crewai — pip install crewai"
+        ) from exc
 
     target = Path(workspace) / "seed" / "app.py"
 

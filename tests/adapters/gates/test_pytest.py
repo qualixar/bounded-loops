@@ -9,6 +9,8 @@ It imports ONLY CommandGate from command.py — no shared constant.
 from __future__ import annotations
 
 import pytest
+import shlex
+import sys
 
 from bounded_loops.adapters.gates.pytest import PytestGate
 from bounded_loops.domain.errors import GateError
@@ -25,14 +27,21 @@ def _ctx(workspace) -> LoopContext:
     )
 
 
-def test_pytest_gate_default_cmd_is_pytest_q():
+def test_pytest_gate_default_cmd_uses_current_interpreter():
     gate = PytestGate()
-    assert gate.cmd == "pytest -q"
+    assert shlex.split(gate.cmd) == [sys.executable, "-m", "pytest", "-q"]
 
 
 def test_pytest_gate_extra_args_appended():
     gate = PytestGate(extra_args="tests/unit/ -x")
-    assert gate.cmd == "pytest -q tests/unit/ -x"
+    assert shlex.split(gate.cmd) == [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "tests/unit/",
+        "-x",
+    ]
 
 
 def test_pytest_gate_expected_fail_codes_is_one():
@@ -50,6 +59,7 @@ def test_pytest_gate_exit0_passes(tmp_path):
 
     assert isinstance(result, Verdict)
     assert result.passed is True
+    assert result.evidence["invocation"] == "current-python-module"
 
 
 def test_pytest_gate_exit1_fails_not_exception(tmp_path):

@@ -60,7 +60,8 @@ bl run loops/adk-example --yes
 
 Expected:
 ```
-status: DONE  laps: 1  ledger: loops/adk-example/.ledger.jsonl
+✓ [DONE] gate-passed (laps: 1)  ledger: .../loops/adk-example/.ledger.jsonl
+Gate verified: the independent acceptance gate passed after 1 lap.
 ```
 
 ## `bl lint` works without ADK installed

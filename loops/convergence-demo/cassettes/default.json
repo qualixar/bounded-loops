@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "loop": "convergence-demo",
+  "created": "2026-07-13",
+  "description": "Three deterministic turns expose two gate failures, convergence, and a max-iteration stop.",
+  "interactions": [
+    {
+      "lap": 1,
+      "agent_output": "The negative case fails. I will add a lower clamp, but this does not yet handle the upper boundary or rounding.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/score.py",
+          "content": "def normalize_score(value: float) -> int:\n    \"\"\"Return a rounded score constrained to the inclusive range 0..100.\"\"\"\n    return max(0, int(value))\n"
+        }
+      ],
+      "agent_claimed_done": false,
+      "changed": true,
+      "tokens": 120
+    },
+    {
+      "lap": 2,
+      "agent_output": "The upper-bound test still fails. I will clamp both ends; the rounding case remains unresolved.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/score.py",
+          "content": "def normalize_score(value: float) -> int:\n    \"\"\"Return a rounded score constrained to the inclusive range 0..100.\"\"\"\n    return min(100, max(0, int(value)))\n"
+        }
+      ],
+      "agent_claimed_done": false,
+      "changed": true,
+      "tokens": 118
+    },
+    {
+      "lap": 3,
+      "agent_output": "Only the rounding case fails. Round first, then clamp the integer result.",
+      "actions": [
+        {
+          "type": "write_file",
+          "path": "seed/score.py",
+          "content": "def normalize_score(value: float) -> int:\n    \"\"\"Return a rounded score constrained to the inclusive range 0..100.\"\"\"\n    return min(100, max(0, round(value)))\n"
+        }
+      ],
+      "agent_claimed_done": true,
+      "changed": true,
+      "tokens": 96
+    }
+  ]
+}

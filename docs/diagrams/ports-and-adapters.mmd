@@ -14,7 +14,7 @@ flowchart TB
 
     subgraph Adapters["Adapters (concrete implementations)"]
         Runners["adapters/runners/\nstub · shell · python_callable\nclaude-code · codex · antigravity\nAnchorGuardRunner (decorator)"]
-        Gates["adapters/gates/\ncommand · pytest · jsonschema\nosv · checkov"]
+        Gates["adapters/gates/\ncommand · pytest · jsonschema · composite\ntyped security, data, browser gates"]
         IO["adapters/io/\nFileLedger · FileMemory\nOtelTracer/NoopTracer · BudgetMeter\nEnvKillSwitch · CliApproval/AutoApproval\nUtcClock"]
     end
 
@@ -37,5 +37,5 @@ flowchart TB
     Composition -->|builds| RunLoop
     Composition --> Manifest
 
-    CLI["cli.py (bl run / lint / list / new)"] --> Composition
-    MCP["mcp_server.py (bl_run / bl_lint / bl_list)"] --> Composition
+    CLI["cli.py (run · lint · doctor · runs · new)"] --> Composition
+    MCP["mcp_server.py (tools · resources · prompts)"] --> Composition

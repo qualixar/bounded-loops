@@ -3,7 +3,8 @@
 **Pattern:** evaluator-optimizer · **Role:** backend, engineering · **Rung:** L2 · **Gate:** pytest
 
 The canonical bounded-loop example: drive an agent until a failing test passes.
-This is the "keep working until the test is green" loop from the Loop Engineering course, §4–§6.
+This is the smallest self-contained "keep working until the test is green"
+example: an agent proposes a fix and pytest alone decides when it is done.
 It is also the template every other loop folder in this repo mirrors.
 
 ## What happens
@@ -49,7 +50,8 @@ bl run loops/bug-fix-red-green
 
 Expected:
 ```
-status: DONE  laps: 1  ledger: loops/bug-fix-red-green/.ledger.jsonl
+✓ [DONE] gate-passed (laps: 1)  ledger: .../loops/bug-fix-red-green/.ledger.jsonl
+Gate verified: the independent acceptance gate passed after 1 lap.
 ```
 
 ## Watch it wreck

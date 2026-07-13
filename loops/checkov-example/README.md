@@ -47,7 +47,8 @@ bl run loops/checkov-example --yes
 
 Expected:
 ```
-status: DONE  laps: 1  ledger: loops/checkov-example/.ledger.jsonl
+✓ [DONE] gate-passed (laps: 1)  ledger: .../loops/checkov-example/.ledger.jsonl
+Gate verified: the independent acceptance gate passed after 1 lap.
 ```
 
 Lap 1's cassette restricts the security group to a single HTTPS ingress

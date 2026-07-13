@@ -43,7 +43,8 @@ bl run loops/osv-scanner-example --yes
 
 Expected:
 ```
-status: DONE  laps: 1  ledger: loops/osv-scanner-example/.ledger.jsonl
+✓ [DONE] gate-passed (laps: 1)  ledger: .../loops/osv-scanner-example/.ledger.jsonl
+Gate verified: the independent acceptance gate passed after 1 lap.
 ```
 
 Lap 1's cassette bumps the `minimatch` pin from `3.0.4` to `3.1.4` (the real

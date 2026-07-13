@@ -10,6 +10,7 @@
 // Node — Python 3.11+ must be available on your PATH.
 
 const { spawnSync } = require('child_process');
+const { version: npmVersion } = require('../package.json');
 
 const args = process.argv.slice(2);
 
@@ -40,21 +41,30 @@ if (!python) {
   process.exit(1);
 }
 
-// Already installed? Run it.
-const installed = spawnSync(python, ['-c', 'import bounded_loops'], { stdio: 'ignore' });
-if (installed.status === 0) {
+// Run only when the Python engine exactly matches this npm release. Merely
+// importing bounded_loops is insufficient: an older global install would make
+// `npx bounded-loops@0.3.0` silently execute 0.2.x.
+const installed = spawnSync(
+  python,
+  [
+    '-c',
+    'from importlib.metadata import version; print(version("bounded-loops"))',
+  ],
+  { encoding: 'utf8' }
+);
+if (installed.status === 0 && installed.stdout.trim() === npmVersion) {
   runCli(python);
 }
 
-// First run: bootstrap the Python engine via pip, then run.
-console.error('bounded-loops: installing the Python engine (first run)…');
+// First run or version mismatch: install the exact matching Python engine.
+console.error(`bounded-loops: installing Python engine ${npmVersion}…`);
 const install = spawnSync(
   python,
-  ['-m', 'pip', 'install', '--quiet', 'bounded-loops'],
+  ['-m', 'pip', 'install', '--quiet', `bounded-loops==${npmVersion}`],
   { stdio: 'inherit' }
 );
 if (install.status !== 0) {
-  console.error('Auto-install failed. Install it manually: pip install bounded-loops');
+  console.error(`Auto-install failed. Install it manually: pip install bounded-loops==${npmVersion}`);
   process.exit(1);
 }
 runCli(python);

@@ -79,7 +79,8 @@ bl run loops/a11y --yes
 
 Expected:
 ```
-status: DONE  laps: 1  ledger: loops/a11y/.ledger.jsonl
+✓ [DONE] gate-passed (laps: 1)  ledger: .../loops/a11y/.ledger.jsonl
+Gate verified: the independent acceptance gate passed after 1 lap.
 ```
 
 Lap 1's cassette rewrites `seed/index.html` to fix all three violations —

@@ -68,15 +68,13 @@ def test_run_once_ignores_valid_json_non_dict_line_without_crashing(tmp_path):
     assert result.agent_claimed_done is False
 
 
-def test_run_once_turn_failed_is_surfaced_in_log(tmp_path):
-    """turn.failed is recorded in the log (not the advisory agent_claimed_done
-    field, which is always False now)."""
+def test_run_once_turn_failed_is_a_runner_error(tmp_path):
+    """A failed Codex turn must become the engine's auditable ERROR outcome."""
     jsonl = '{"type": "turn.started"}\n{"type": "turn.failed"}\n'
     with patch("subprocess.run", return_value=_fake_proc(stdout=jsonl)):
         runner = CodexRunner()
-        result = runner.run_once(_spec(), _ctx(tmp_path))
-    assert result.agent_claimed_done is False
-    assert "turn.failed" in result.log
+        with pytest.raises(RunnerError, match="turn.failed"):
+            runner.run_once(_spec(), _ctx(tmp_path))
 
 
 def test_run_once_ignores_malformed_jsonl_lines(tmp_path):
@@ -118,12 +116,43 @@ def test_run_once_builds_argv_with_sandbox_mode(tmp_path):
     # call is always the agent invocation itself.
     args, kwargs = mock_run.call_args_list[0]
     argv = args[0]
-    assert argv == ["codex", "exec", "--json", "--sandbox", "workspace-write", "-"]
+    assert argv == [
+        "codex",
+        "exec",
+        "--json",
+        "--sandbox",
+        "workspace-write",
+        "--skip-git-repo-check",
+        "-",
+    ]
     assert kwargs["shell"] is False
 
 
-def test_run_once_tokens_always_zero(tmp_path):
-    with patch("subprocess.run", return_value=_fake_proc(stdout='{"type": "turn.completed"}')):
+def test_run_once_parses_live_turn_completed_usage(tmp_path):
+    jsonl = (
+        '{"type":"turn.completed","usage":'
+        '{"input_tokens":120,"cached_input_tokens":40,"output_tokens":30,'
+        '"reasoning_output_tokens":12}}\n'
+    )
+    with patch("subprocess.run", return_value=_fake_proc(stdout=jsonl)):
         runner = CodexRunner()
         result = runner.run_once(_spec(), _ctx(tmp_path))
-    assert result.tokens == 0
+    assert result.tokens == 150
+
+
+def test_run_once_turn_failed_raises_runner_error(tmp_path):
+    jsonl = '{"type":"turn.failed","error":{"message":"model unavailable"}}\n'
+    with patch("subprocess.run", return_value=_fake_proc(returncode=1, stdout=jsonl)):
+        runner = CodexRunner()
+        with pytest.raises(RunnerError, match="model unavailable"):
+            runner.run_once(_spec(), _ctx(tmp_path))
+
+
+def test_run_once_nonzero_exit_without_failure_event_raises_runner_error(tmp_path):
+    with patch(
+        "subprocess.run",
+        return_value=_fake_proc(returncode=2, stdout="", stderr="bad option"),
+    ):
+        runner = CodexRunner()
+        with pytest.raises(RunnerError, match="exit 2.*bad option"):
+            runner.run_once(_spec(), _ctx(tmp_path))
