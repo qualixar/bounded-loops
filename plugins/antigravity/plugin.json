@@ -1,6 +1,6 @@
 {
   "name": "bounded-loops",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Run, lint, and list bounded AI-agent loops via the bounded-loops engine — a gate-verified, nine-bound-safe alternative to trusting an agent's own claim of DONE.",
   "author": {
     "name": "Varun Pratap Bhardwaj",
