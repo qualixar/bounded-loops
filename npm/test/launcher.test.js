@@ -39,6 +39,6 @@ test('npx launcher pins the Python engine to the npm package version', () => {
 
   assert.equal(result.status, 0, result.stderr);
   const calls = fs.readFileSync(log, 'utf8');
-  assert.match(calls, /pip install --quiet bounded-loops==0\.3\.0/);
+  assert.match(calls, /pip install --quiet bounded-loops==0\.3\.1/);
   assert.match(calls, /-m bounded_loops\.cli doctor/);
 });
