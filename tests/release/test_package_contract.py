@@ -23,8 +23,8 @@ def test_default_install_includes_pytest_for_shipped_pytest_gates() -> None:
     assert any(dependency.lower().startswith("pytest>=") for dependency in dependencies)
 
 
-def test_next_release_is_minor_because_it_adds_public_cli_features() -> None:
-    assert _project()["version"] == "0.3.0"
+def test_patch_release_contains_version_probe_fix() -> None:
+    assert _project()["version"] == "0.3.1"
 
 
 def test_pypi_project_urls_are_declared() -> None:
@@ -76,7 +76,7 @@ def test_codex_plugin_uses_current_manifest_contract() -> None:
         (plugin_root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
     assert manifest["name"] == "bounded-loops"
-    assert manifest["version"] == "0.3.0"
+    assert manifest["version"] == "0.3.1"
     assert manifest["skills"] == "./skills/"
     assert manifest["mcpServers"] == "./.mcp.json"
     assert not (plugin_root / "plugin.toml").exists()
@@ -93,7 +93,7 @@ def test_claude_plugin_has_a_package_manifest() -> None:
         ).read_text(encoding="utf-8")
     )
     assert manifest["name"] == "bounded-loops"
-    assert manifest["version"] == "0.3.0"
+    assert manifest["version"] == "0.3.1"
 
 
 def test_plugin_installation_and_mcp_extra_are_documented() -> None:
@@ -148,10 +148,10 @@ def test_release_metadata_uses_the_canonical_catalog_count_and_version() -> None
 
     assert len(loop_dirs) == 68
     assert len(loop_dirs) - len(framework_loops) == 64
-    assert citation["version"] == "0.3.0"
+    assert citation["version"] == "0.3.1"
     assert citation["url"] == "https://github.com/qualixar/bounded-loops"
     assert "68 loop folders" in citation["abstract"]
-    assert npm["version"] == "0.3.0"
+    assert npm["version"] == "0.3.1"
     assert "68" in _project()["description"] and "64" in _project()["description"]
     assert "68 loop folders" in npm["description"]
     assert "64 keyless" in npm["description"]

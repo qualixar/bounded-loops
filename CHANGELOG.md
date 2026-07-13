@@ -3,6 +3,13 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] — 2026-07-13
+
+### Fixed
+
+- Added the standard `bl --version` probe so Python and npm clean-install
+  verification can report the exact engine release.
+
 ## [0.3.0] — 2026-07-13
 
 Minor release for the verified install, convergence, and agent-integration

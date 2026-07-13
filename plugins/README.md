@@ -24,7 +24,7 @@ codex plugin add bounded-loops@bounded-loops
 
 Verified on 2026-07-13 with `codex-cli 0.144.3` in a fresh `CODEX_HOME`:
 the marketplace was added and `bounded-loops@bounded-loops` installed at
-version `0.3.0`, with its skill and `.mcp.json` present in the plugin cache.
+version `0.3.1`, with its skill and `.mcp.json` present in the plugin cache.
 
 Start a new Codex task after installation so Codex discovers the skill and MCP
 server. The package uses the current `.codex-plugin/plugin.json` contract; the
@@ -41,7 +41,7 @@ claude plugin install bounded-loops@bounded-loops
 
 Verified on 2026-07-13 with Claude Code 2.1.168 in a temporary config home:
 validation passed, the marketplace was added, and the plugin installed and
-reported `Version: 0.3.0` and `Status: enabled`.
+reported `Version: 0.3.1` and `Status: enabled`.
 
 The Claude package contains `.claude-plugin/plugin.json`, its marketplace
 entry, the shared MCP configuration, the bounded-loops skill, and the

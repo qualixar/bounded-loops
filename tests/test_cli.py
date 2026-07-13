@@ -15,6 +15,16 @@ from bounded_loops.domain.models import Status, Outcome
 from bounded_loops.domain.errors import ManifestError
 
 
+# ── top-level CLI contract ───────────────────────────────────────────────────
+
+def test_version_flag_reports_release_version(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--version"])
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == "bl 0.3.1"
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _make_outcome(status: Status, laps: int = 2, ledger: Path = Path("/tmp/.ledger.jsonl")):
