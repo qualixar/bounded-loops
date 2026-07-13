@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 
@@ -32,3 +33,62 @@ def test_pypi_project_urls_are_declared() -> None:
         "Changelog",
         "Issues",
     }
+
+
+def test_readme_puts_verified_quick_start_above_the_fold() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    lines = readme.splitlines()
+    first_install = next(i for i, line in enumerate(lines, 1) if "pip install" in line)
+    assert first_install <= 40
+    assert len(readme.split()) <= 2200
+    assert "actions/workflows/ci.yml/badge.svg" in readme
+    assert "tests-678_passing" not in readme
+
+
+def test_hero_demo_is_committed_and_regenerable() -> None:
+    assert (REPO_ROOT / "assets" / "demo.gif").is_file()
+    assert (REPO_ROOT / "assets" / "demo.tape").is_file()
+
+
+def test_codex_plugin_uses_current_manifest_contract() -> None:
+    plugin_root = REPO_ROOT / "plugins" / "codex"
+    manifest = json.loads(
+        (plugin_root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    assert manifest["name"] == "bounded-loops"
+    assert manifest["version"] == "0.3.0"
+    assert manifest["skills"] == "./skills/"
+    assert manifest["mcpServers"] == "./.mcp.json"
+    assert not (plugin_root / "plugin.toml").exists()
+
+
+def test_claude_plugin_has_a_package_manifest() -> None:
+    manifest = json.loads(
+        (
+            REPO_ROOT
+            / "plugins"
+            / "claude-code"
+            / ".claude-plugin"
+            / "plugin.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert manifest["name"] == "bounded-loops"
+    assert manifest["version"] == "0.3.0"
+
+
+def test_plugin_installation_and_mcp_extra_are_documented() -> None:
+    text = (REPO_ROOT / "plugins" / "README.md").read_text(encoding="utf-8")
+    assert 'pip install "bounded-loops[mcp]"' in text
+    assert "claude plugin" in text
+    assert "codex plugin" in text
+    assert "bounded-loops-mcp" in text
+
+
+def test_clean_room_release_gate_is_wired_into_ci() -> None:
+    script = REPO_ROOT / "scripts" / "verify_clean_room.py"
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    assert script.is_file()
+    assert "clean-room" in workflow
+    assert "verify_clean_room.py" in workflow

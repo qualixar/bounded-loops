@@ -9,7 +9,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from bounded_loops.cli import main
+from bounded_loops.cli import _print_outcome, main
 from bounded_loops.application.loop_audit import LoopAuditResult
 from bounded_loops.domain.models import Status, Outcome
 from bounded_loops.domain.errors import ManifestError
@@ -52,6 +52,14 @@ def _patch_run(tmp_path, outcome: Outcome):
 # ── bl run exit codes ──────────────────────────────────────────────────────────
 
 class TestBLRunExitCodes:
+    def test_done_output_explains_verified_result_and_next_step(self, capsys):
+        _print_outcome(_make_outcome(Status.DONE, laps=3), as_json=False)
+
+        output = capsys.readouterr().out
+        assert "Gate verified:" in output
+        assert "3 laps" in output
+        assert "Next:" in output
+
     def test_run_done_exits_0(self, tmp_path):
         """bl run → DONE → exit 0."""
         outcome = _make_outcome(Status.DONE)
