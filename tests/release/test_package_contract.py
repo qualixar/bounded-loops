@@ -115,6 +115,7 @@ def test_clean_room_release_gate_is_wired_into_ci() -> None:
     assert readme_script.is_file()
     assert mcp_script.is_file()
     assert "clean-room" in workflow
+    assert "python -m pip install build ." in workflow
     assert "verify_clean_room.py" in workflow
     assert "verify_readme_outputs.py" in workflow
 
