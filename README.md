@@ -72,7 +72,7 @@ gate, bounds, and optional recorded turns. On every lap:
 The agent's `agent_claimed_done` field is evidence only. It never controls
 termination.
 
-![Ports-and-adapters architecture](docs/diagrams/ports-and-adapters.svg)
+![Readable ports-and-adapters architecture with five boxed zones: entry points, composition root, application, pure domain, and concrete adapters](docs/diagrams/ports-and-adapters.png)
 
 The domain rules are standard-library-only. Concrete runners, gates, ledgers,
 memory, tracing, approval, and kill-switch implementations sit behind ports;
