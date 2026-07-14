@@ -100,9 +100,9 @@ short-circuiting the loop, because no code path branches on it.
 
 ## Ports-and-adapters diagram
 
-![Ports-and-adapters: the pure domain core, the application seam (ports), the concrete adapters around it, and composition.py — the only file that wires them together](diagrams/ports-and-adapters.svg)
+![Ports-and-adapters: five readable boxed zones show entry points, the composition root, application orchestration, the pure domain, and concrete adapters](diagrams/ports-and-adapters.png)
 
-> Editable source: [`diagrams/ports-and-adapters.mmd`](diagrams/ports-and-adapters.mmd) · regenerate with `mmdc -i diagrams/ports-and-adapters.mmd -o diagrams/ports-and-adapters.svg`
+> README PNG: [`diagrams/ports-and-adapters.png`](diagrams/ports-and-adapters.png) · regenerate with `python scripts/render_architecture_diagram.py`. Detailed editable source: [`diagrams/ports-and-adapters.mmd`](diagrams/ports-and-adapters.mmd) · regenerate the SVG with `mmdc -i diagrams/ports-and-adapters.mmd -o diagrams/ports-and-adapters.svg`.
 
 ## Loop-flow sequence diagram
 
