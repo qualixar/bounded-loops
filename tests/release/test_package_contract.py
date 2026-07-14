@@ -70,6 +70,20 @@ def test_social_preview_has_github_recommended_dimensions() -> None:
     assert struct.unpack(">II", payload[16:24]) == (1280, 640)
 
 
+def test_readme_architecture_diagram_is_a_large_regenerable_png() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    preview = REPO_ROOT / "docs" / "diagrams" / "ports-and-adapters.png"
+    renderer = REPO_ROOT / "scripts" / "render_architecture_diagram.py"
+
+    assert "docs/diagrams/ports-and-adapters.png" in readme
+    assert preview.is_file()
+    assert renderer.is_file()
+    payload = preview.read_bytes()
+    assert payload.startswith(b"\x89PNG\r\n\x1a\n")
+    width, height = struct.unpack(">II", payload[16:24])
+    assert (width, height) == (1800, 1600)
+
+
 def test_codex_plugin_uses_current_manifest_contract() -> None:
     plugin_root = REPO_ROOT / "plugins" / "codex"
     manifest = json.loads(
