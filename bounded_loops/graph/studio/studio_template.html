@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="referrer" content="no-referrer" />
+<title>Graph Studio — bounded-loops</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#161a22; --muted:#5b6472; --line:#e2e6ec;
+    --accent:#2f6df6; --accent-ink:#ffffff;
+    --ok:#1f9d55; --warn:#b7791f; --risk:#c0392b; --info:#2f6df6;
+    --chip:#eef1f6; --shadow:0 1px 2px rgba(20,26,34,.06),0 6px 20px rgba(20,26,34,.06);
+    --radius:12px; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#0f1216;--panel:#161b22;--ink:#e6e9ee;--muted:#9aa4b2;--line:#252c36;
+      --accent:#5b8cff;--chip:#1d232c;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 28px rgba(0,0,0,.35);}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.45;font-size:14px}
+  header{padding:16px 20px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:5}
+  .titlerow{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  h1{font-size:18px;margin:0;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12.5px;margin:2px 0 0}
+  .grow{flex:1}
+  .banner{margin-top:10px;padding:9px 12px;border:1px solid var(--line);border-left:3px solid var(--warn);
+    background:var(--chip);border-radius:8px;font-size:12.5px;color:var(--ink)}
+  .banner b{color:var(--warn)}
+  .modes{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .modes button{border:0;background:transparent;color:var(--muted);padding:6px 14px;cursor:pointer;font-size:12.5px}
+  .modes button[aria-pressed=true]{background:var(--accent);color:var(--accent-ink)}
+  main{display:grid;grid-template-columns:minmax(300px,1fr) minmax(360px,1.4fr) minmax(300px,1fr);gap:14px;padding:14px}
+  @media (max-width:1100px){main{grid-template-columns:1fr}}
+  .col{display:flex;flex-direction:column;gap:14px;min-width:0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0;padding:12px 14px;border-bottom:1px solid var(--line)}
+  .card .body{padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+  label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
+  input,select,textarea{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);
+    border-radius:8px;padding:8px 10px}
+  textarea{font-family:var(--mono);font-size:12px;min-height:90px;resize:vertical}
+  input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .row{display:flex;gap:8px}.row>*{flex:1}
+  button.btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:8px 12px;
+    cursor:pointer;font-size:13px}
+  button.btn:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+  button.ghost{background:transparent}
+  button.danger{color:var(--risk);border-color:var(--risk)}
+  .list{display:flex;flex-direction:column;gap:6px}
+  .item{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:var(--bg)}
+  .item:hover{border-color:var(--accent)}
+  .item .id{font-family:var(--mono);font-size:12.5px}
+  .item .k{font-size:11px;color:var(--muted)}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .chips{display:flex;gap:5px;flex-wrap:wrap}
+  .chip{font-size:11px;background:var(--chip);border:1px solid var(--line);border-radius:999px;padding:2px 8px;color:var(--muted)}
+  .checks{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .checks label{display:flex;align-items:center;gap:7px;color:var(--ink);font-size:12.5px;margin:0;cursor:pointer}
+  .checks input{width:auto}
+  .kv{display:flex;gap:6px;align-items:center}
+  .kv input{flex:1}
+  .hint{font-size:11.5px;color:var(--muted)}
+  .issue{display:flex;gap:8px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);font-size:12.5px}
+  .issue .tag{font-weight:600;flex:none;text-transform:uppercase;font-size:10.5px;letter-spacing:.05em;padding:2px 6px;border-radius:6px}
+  .issue.error .tag{color:var(--risk);border:1px solid var(--risk)}
+  .issue.warn .tag{color:var(--warn);border:1px solid var(--warn)}
+  .issue.info .tag{color:var(--info);border:1px solid var(--info)}
+  .issue.ok .tag{color:var(--ok);border:1px solid var(--ok)}
+  svg{width:100%;height:auto;display:block;background:var(--bg)}
+  .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);padding:0 14px 12px}
+  .legend .dot{display:inline-block;margin-right:4px;vertical-align:middle}
+  code{font-family:var(--mono);font-size:12px;background:var(--chip);padding:1px 5px;border-radius:5px}
+  .cli{font-family:var(--mono);font-size:12px;background:var(--chip);border:1px solid var(--line);border-radius:8px;padding:8px 10px;word-break:break-all}
+  .empty{color:var(--muted);font-size:12.5px;padding:8px 2px}
+  .seg{display:flex;flex-direction:column;gap:6px}
+  .foot{color:var(--muted);font-size:11.5px;text-align:center;padding:14px}
+</style>
+</head>
+<body>
+<header>
+  <div class="titlerow">
+    <div>
+      <h1>Graph Studio</h1>
+      <p class="sub">Design a fully customizable agent graph — for developers and content creators. No code required.</p>
+    </div>
+    <div class="grow"></div>
+    <div class="modes" role="group" aria-label="Editing mode">
+      <button id="mode-simple" aria-pressed="true">Simple</button>
+      <button id="mode-advanced" aria-pressed="false">Advanced</button>
+    </div>
+  </div>
+  <div class="banner">
+    <b>Preview validation.</b> This page checks your graph live and never touches the network. The authoritative check is
+    <code>bl graph lint graph.json</code>. Nodes that call external models or services (effect <code>external_write</code>, or a
+    <code>model:</code>/<code>publish</code> step) are authorable and validated here, but <b>run only once a connector is admitted</b>.
+  </div>
+</header>
+
+<main>
+  <!-- LEFT: graph meta + nodes + edges -->
+  <section class="col">
+    <div class="card" id="template-card">
+      <h2>Start from a template</h2>
+      <div class="body"><div class="list" id="template-list"></div></div>
+    </div>
+
+    <div class="card">
+      <h2>Graph</h2>
+      <div class="body">
+        <div><label for="g-id">Graph id (lowercase, a–z 0–9 -)</label><input id="g-id" spellcheck="false" /></div>
+        <div class="row">
+          <div><label for="g-ver">Version</label><input id="g-ver" spellcheck="false" placeholder="1.0.0" /></div>
+          <div><label for="g-dc">Data class</label><select id="g-dc"></select></div>
+          <div><label for="g-fm">Fail mode</label><select id="g-fm"></select></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Nodes</h2>
+      <div class="body">
+        <div class="list" id="node-list"></div>
+        <button class="btn primary" id="add-node">+ Add node</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Edges</h2>
+      <div class="body">
+        <div class="list" id="edge-list"></div>
+        <button class="btn" id="add-edge">+ Add edge</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- CENTER: editor + diagram -->
+  <section class="col">
+    <div class="card" id="editor-card" hidden>
+      <h2 id="editor-title">Edit node</h2>
+      <div class="body" id="editor-body"></div>
+    </div>
+
+    <div class="card">
+      <h2>Graph preview</h2>
+      <div class="body" style="padding:6px 6px 0"><div id="dag"></div></div>
+      <div class="legend" id="legend"></div>
+    </div>
+  </section>
+
+  <!-- RIGHT: validation + export -->
+  <section class="col">
+    <div class="card">
+      <h2>Validation (preview)</h2>
+      <div class="body"><div class="list" id="issues"></div></div>
+    </div>
+    <div class="card">
+      <h2>Export</h2>
+      <div class="body">
+        <div class="row">
+          <button class="btn primary" id="dl-json">Download JSON</button>
+          <button class="btn" id="copy-json">Copy JSON</button>
+        </div>
+        <div class="seg">
+          <span class="hint">Validate &amp; compile it with the CLI:</span>
+          <div class="cli">bl graph lint graph.json<br/>bl graph plan graph.json</div>
+        </div>
+        <details><summary class="hint">YAML preview</summary><textarea id="yaml-out" readonly></textarea></details>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Import</h2>
+      <div class="body">
+        <label for="import-json">Paste a graph JSON, then load</label>
+        <textarea id="import-json" spellcheck="false" placeholder='{"api_version":"bounded-loops.dev/graph/v1", ...}'></textarea>
+        <button class="btn" id="load-json">Load JSON</button>
+        <span class="hint" id="import-msg"></span>
+      </div>
+    </div>
+  </section>
+</main>
+<div class="foot">bounded-loops Graph Studio · offline · read-only to your machine · authoritative validation via <code>bl graph lint</code></div>
+
+<script id="studio-templates" type="application/json">[]</script>
+<script id="studio-seed" type="application/json">null</script>
+<script>
+"use strict";
+(function(){
+  // ---- contract (mirrors bounded_loops/graph/application/validate_graph.py) ----
+  var API="bounded-loops.dev/graph/v1";
+  var ID_RE=/^[a-z][a-z0-9_-]{0,62}$/, GID_RE=/^[a-z][a-z0-9-]{0,62}$/, VER_RE=/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
+  var ABS_RE=/^(?:\/|\\\\|[A-Za-z]:[\\/]|~[\\/])/;  // absolute/UNC/drive/home — rejected by validate_graph
+  var SECRET_WORDS=["api_key","credential","password","secret","token"];
+  var EFFECTS=[
+    {id:"read_only",label:"read only",risk:0},
+    {id:"workspace_write",label:"workspace write",risk:1},
+    {id:"external_write",label:"external write",risk:2,connector:true},
+    {id:"financial",label:"financial",risk:3,connector:true,approval:true},
+    {id:"irreversible",label:"irreversible",risk:3,connector:true,approval:true}
+  ];
+  var ISO=["workspace_only","process_restricted","container_restricted","customer_managed_worker"];
+  var ISO_RANK={workspace_only:0,process_restricted:1,container_restricted:2,customer_managed_worker:3};
+  var EFFECT_FLOOR={read_only:"workspace_only",workspace_write:"workspace_only",external_write:"container_restricted",financial:"container_restricted",irreversible:"container_restricted"};
+  var DATA_CLASS=["public","internal","confidential","restricted"];
+  var FAIL_MODE=["fail_closed","continue_declared"];
+  var ON_FAILURE=["","fail_graph","continue","repair","await_human"];
+  var JOIN_MODES=["all_selected","all_successful","any_successful"];
+  // kind -> {label, fields:[{key,label,ph,advanced}], simple}
+  var KINDS={
+    tool:{label:"Tool",simple:true,fields:[{key:"tool_ref",label:"Tool reference",ph:"local:my-tool or model:writer"}]},
+    research_source:{label:"Research source",simple:true,fields:[{key:"source_policy",label:"Source policy",ph:"web-allowlisted"}]},
+    research_claim:{label:"Research claim",simple:true,fields:[]},
+    audit:{label:"Audit",simple:true,fields:[{key:"audit_profile",label:"Audit profile",ph:"editorial-v1"}]},
+    approval:{label:"Approval",simple:true,fields:[{key:"required_role",label:"Required role",ph:"editor"}]},
+    publish:{label:"Publish",simple:true,fields:[{key:"publication_policy",label:"Publication policy",ph:"blog-cms"}]},
+    join:{label:"Join",simple:false,fields:[{key:"mode",label:"Join mode",select:JOIN_MODES}]},
+    router:{label:"Router",simple:false,fields:[{key:"routes",label:"Routes (JSON object)",ph:'{"default":"nodeA"}',json:true},{key:"default_route",label:"Default route (or blank)",ph:"nodeA"}]},
+    loop:{label:"Loop",simple:false,fields:[{key:"loop_package",label:"Loop package digest",ph:"sha256:<64 hex>"}]},
+    subgraph:{label:"Subgraph",simple:false,fields:[{key:"graph_package",label:"Graph package digest",ph:"sha256:<64 hex>"}]}
+  };
+  var RISK_COLOR=["var(--ok)","var(--info)","var(--warn)","var(--risk)"];
+
+  // ---- state ----
+  var S={mode:"simple",graph:blankGraph(),editing:null};
+  function blankGraph(){return{api_version:API,graph_id:"my-graph",version:"1.0.0",nodes:[],edges:[],connection_slots:[],policies:{data_class:"internal",fail_mode:"fail_closed"}};}
+  function clone(x){return JSON.parse(JSON.stringify(x));}
+  function readData(id){try{return JSON.parse(document.getElementById(id).textContent);}catch(e){return null;}}
+  var TEMPLATES=readData("studio-templates")||[];
+  var SEED=readData("studio-seed");
+
+  // ---- tiny DOM helpers (textContent only; there is NO innerHTML sink here) ----
+  var _BLOCK_PROP={innerHTML:1,outerHTML:1,insertAdjacentHTML:1,srcdoc:1};
+  function el(tag,props,kids){var n=document.createElement(tag);props=props||{};
+    for(var k in props){if(!Object.prototype.hasOwnProperty.call(props,k)||_BLOCK_PROP[k])continue;
+      if(k==="class")n.className=props[k];else if(k==="text")n.textContent=props[k];
+      else if(k.slice(0,2)==="on")n.addEventListener(k.slice(2),props[k]);
+      else if(k in n)try{n[k]=props[k];}catch(e){n.setAttribute(k,props[k]);} else n.setAttribute(k,props[k]);}
+    (kids||[]).forEach(function(c){if(c!=null)n.appendChild(typeof c==="string"?document.createTextNode(c):c);});
+    return n;}
+  function clear(n){while(n.firstChild)n.removeChild(n.firstChild);}
+  function opt(v,cur){return el("option",{value:v,text:v||"(none)",selected:v===cur});}
+
+  function nodeRisk(node){var r=0;(node.effects||[]).forEach(function(e){var m=EFFECTS.filter(function(x){return x.id===e;})[0];if(m&&m.risk>r)r=m.risk;});return r;}
+
+  // ---- render ----
+  function renderAll(){renderTemplates();renderMeta();renderNodes();renderEdges();renderDag();renderValidation();renderExport();}
+
+  function renderTemplates(){var host=document.getElementById("template-list");clear(host);
+    TEMPLATES.forEach(function(t){
+      var meta=el("div",{},[el("div",{class:"id",text:t.label||t.id}),
+        el("div",{class:"k",text:(t.persona||"")+(t.runnable_now?" · runs now":"")})]);
+      var it=el("div",{class:"item",title:t.description||"",onclick:function(){loadTemplate(t);}},
+        [el("span",{class:"dot",style:"background:"+(t.runnable_now?"var(--ok)":"var(--info)")}),meta]);
+      host.appendChild(it);
+    });
+    document.getElementById("template-card").hidden = S.mode!=="simple" || TEMPLATES.length===0;
+  }
+
+  function renderMeta(){
+    var g=S.graph;
+    val("g-id",g.graph_id);val("g-ver",g.version);
+    fillSelect("g-dc",DATA_CLASS,g.policies.data_class);
+    fillSelect("g-fm",FAIL_MODE,g.policies.fail_mode);
+  }
+  function val(id,v){var n=document.getElementById(id);if(document.activeElement!==n)n.value=v==null?"":v;}
+  function fillSelect(id,opts,cur){var n=document.getElementById(id);clear(n);opts.forEach(function(o){n.appendChild(opt(o,cur));});}
+
+  function renderNodes(){var host=document.getElementById("node-list");clear(host);
+    if(!S.graph.nodes.length){host.appendChild(el("div",{class:"empty",text:"No nodes yet. Add one, or start from a template."}));return;}
+    S.graph.nodes.forEach(function(n){
+      var chips=el("div",{class:"chips"},(n.effects||[]).map(function(e){return el("span",{class:"chip",text:e});}));
+      var body=el("div",{class:"grow"},[el("div",{class:"id",text:n.id}),
+        el("div",{class:"k",text:(KINDS[n.kind]?KINDS[n.kind].label:n.kind)+" · "+n.isolation}),chips]);
+      host.appendChild(el("div",{class:"item",onclick:function(){openEditor(n.id);}},
+        [el("span",{class:"dot",style:"background:"+RISK_COLOR[nodeRisk(n)]}),body]));
+    });
+  }
+
+  function renderEdges(){var host=document.getElementById("edge-list");clear(host);
+    if(!S.graph.edges.length){host.appendChild(el("div",{class:"empty",text:"No edges. Edges connect a node's output port to another node's input port of the same type."}));return;}
+    S.graph.edges.forEach(function(e,i){
+      var txt=e.from_node+"."+e.from_port+"  →  "+e.to_node+"."+e.to_port;
+      host.appendChild(el("div",{class:"item"},[
+        el("span",{class:"id grow",text:txt}),
+        el("button",{class:"btn ghost danger",text:"remove",onclick:function(ev){ev.stopPropagation();S.graph.edges.splice(i,1);renderAll();}})]));
+    });
+  }
+
+  // ---- node editor ----
+  function openEditor(id){
+    var node=id?clone(S.graph.nodes.filter(function(n){return n.id===id;})[0]):newNode();
+    S.editing={orig:id,node:node};
+    var card=document.getElementById("editor-card");card.hidden=false;
+    document.getElementById("editor-title").textContent=id?"Edit node · "+id:"Add node";
+    drawEditor();
+    card.scrollIntoView({behavior:"smooth",block:"nearest"});
+  }
+  function newNode(){return{id:"",kind:"tool",inputs:{},outputs:{result:"json"},budget:{max_attempts:1,max_wallclock_s:30},effects:["read_only"],isolation:"workspace_only",tool_ref:""};}
+
+  function drawEditor(){
+    var b=document.getElementById("editor-body");clear(b);
+    var nd=S.editing.node;
+    var kinds=Object.keys(KINDS).filter(function(k){return S.mode==="advanced"||KINDS[k].simple;});
+    // id + kind
+    var idIn=el("input",{value:nd.id,spellcheck:false,oninput:function(){nd.id=this.value;}});
+    var kindSel=el("select",{onchange:function(){switchKind(nd,this.value);drawEditor();}},kinds.map(function(k){return opt(k,nd.kind);}));
+    b.appendChild(row2(field("Node id (a–z 0–9 _ -)",idIn),field("Kind",kindSel)));
+    // kind-specific fields
+    (KINDS[nd.kind]?KINDS[nd.kind].fields:[]).forEach(function(f){
+      var inp;
+      if(f.select){inp=el("select",{onchange:function(){nd[f.key]=this.value;}},f.select.map(function(o){return opt(o,nd[f.key]);}));}
+      else{inp=el("input",{value:nd[f.key]==null?"":(f.json&&typeof nd[f.key]!=="string"?JSON.stringify(nd[f.key]):nd[f.key]),
+        placeholder:f.ph||"",spellcheck:false,oninput:function(){nd[f.key]=f.json?tryJson(this.value):this.value;}});}
+      b.appendChild(field(f.label,inp));
+    });
+    // effects
+    var checks=el("div",{class:"checks"},EFFECTS.map(function(e){
+      var cb=el("input",{type:"checkbox",checked:(nd.effects||[]).indexOf(e.id)>=0,onchange:function(){
+        var s=new Set(nd.effects||[]);this.checked?s.add(e.id):s.delete(e.id);nd.effects=Array.from(s);drawEditor();renderDag();}});
+      return el("label",{},[cb,e.label]);}));
+    b.appendChild(field("Effects (what this node is allowed to do)",checks));
+    // isolation + on_failure
+    var isoSel=el("select",{onchange:function(){nd.isolation=this.value;}},ISO.map(function(o){return opt(o,nd.isolation);}));
+    var kids=[field("Isolation",isoSel)];
+    if(S.mode==="advanced"){
+      var ofSel=el("select",{onchange:function(){nd.on_failure=this.value||undefined;}},ON_FAILURE.map(function(o){return opt(o,nd.on_failure||"");}));
+      kids.push(field("On failure",ofSel));
+    }
+    b.appendChild(row2.apply(null,kids));
+    // effect->isolation honesty hint
+    var floor=requiredIso(nd);
+    if(ISO_RANK[nd.isolation]<ISO_RANK[floor]) b.appendChild(el("div",{class:"hint",style:"color:var(--warn)",
+      text:"Heads up: these effects require at least "+floor+" isolation at run time; it will be raised to "+floor+"."}));
+    // ports
+    b.appendChild(portEditor("Inputs",nd.inputs,nd));
+    b.appendChild(portEditor("Outputs",nd.outputs,nd));
+    // budget (advanced: more)
+    var ba=el("input",{type:"number",min:1,max:1000,value:nd.budget.max_attempts,oninput:function(){nd.budget.max_attempts=+this.value;}});
+    var bw=el("input",{type:"number",min:1,max:86400,value:nd.budget.max_wallclock_s,oninput:function(){nd.budget.max_wallclock_s=+this.value;}});
+    b.appendChild(row2(field("Max attempts",ba),field("Max wall-clock (s)",bw)));
+    if(S.mode==="advanced"){
+      var slot=el("input",{value:nd.connection_slot||"",spellcheck:false,placeholder:"(optional) connection slot id",
+        oninput:function(){nd.connection_slot=this.value||undefined;}});
+      b.appendChild(field("Connection slot (advanced)",slot));
+    }
+    // actions
+    var save=el("button",{class:"btn primary",text:"Save node",onclick:saveNode});
+    var del=S.editing.orig?el("button",{class:"btn danger",text:"Delete",onclick:deleteNode}):null;
+    var cancel=el("button",{class:"btn ghost",text:"Cancel",onclick:closeEditor});
+    b.appendChild(el("div",{class:"row"},[save,del,cancel].filter(Boolean)));
+  }
+  function requiredIso(nd){var f="workspace_only";(nd.effects||[]).forEach(function(e){var c=EFFECT_FLOOR[e];if(c&&ISO_RANK[c]>ISO_RANK[f])f=c;});return f;}
+  function switchKind(nd,k){nd.kind=k;var keep=["id","inputs","outputs","budget","effects","isolation","on_failure","connection_slot"];
+    Object.keys(nd).forEach(function(key){if(keep.indexOf(key)<0)delete nd[key];});
+    (KINDS[k].fields||[]).forEach(function(f){if(!(f.key in nd))nd[f.key]=f.select?f.select[0]:"";});}
+  function field(labelText,inp){return el("div",{class:"seg"},[el("label",{text:labelText}),inp]);}
+  function row2(a,b){return el("div",{class:"row"},[a,b].filter(Boolean));}
+  function tryJson(s){try{return JSON.parse(s);}catch(e){return s;}}
+
+  function portEditor(title,map,nd){
+    var wrap=el("div",{class:"seg"},[el("label",{text:title+" (port name : type)"})]);
+    var rows=el("div",{class:"list"});
+    Object.keys(map).forEach(function(name){rows.appendChild(portRow(map,name,map[name],nd,title));});
+    var addBtn=el("button",{class:"btn ghost",text:"+ add "+title.toLowerCase().slice(0,-1),onclick:function(){
+      var base="port",i=1,nm=base;while(nm in map){nm=base+(++i);}map[nm]="text";drawEditor();}});
+    wrap.appendChild(rows);wrap.appendChild(addBtn);return wrap;
+  }
+  function portRow(map,name,type,nd,title){
+    var nameIn=el("input",{value:name,spellcheck:false,onchange:function(){var v=this.value;if(v!==name){map[v]=map[name];delete map[name];drawEditor();}}});
+    var typeIn=el("input",{value:type,spellcheck:false,onchange:function(){map[name]=this.value;}});
+    var rm=el("button",{class:"btn ghost danger",text:"×",title:"remove",onclick:function(){delete map[name];drawEditor();}});
+    return el("div",{class:"kv"},[nameIn,el("span",{text:":",class:"hint"}),typeIn,rm]);
+  }
+
+  function saveNode(){
+    var nd=S.editing.node;
+    if(!ID_RE.test(nd.id)){flash("Node id must match a–z start, then a–z 0–9 _ - (max 63).");return;}
+    var others=S.graph.nodes.filter(function(n){return n.id!==S.editing.orig;});
+    if(others.some(function(n){return n.id===nd.id;})){flash("Another node already has id “"+nd.id+"”.");return;}
+    var idx=S.graph.nodes.findIndex(function(n){return n.id===S.editing.orig;});
+    if(idx>=0){var old=S.graph.nodes[idx].id;S.graph.nodes[idx]=nd;if(old!==nd.id)renameInEdges(old,nd.id);}
+    else S.graph.nodes.push(nd);
+    closeEditor();renderAll();
+  }
+  function deleteNode(){var id=S.editing.orig;S.graph.nodes=S.graph.nodes.filter(function(n){return n.id!==id;});
+    S.graph.edges=S.graph.edges.filter(function(e){return e.from_node!==id&&e.to_node!==id;});closeEditor();renderAll();}
+  function renameInEdges(a,b){S.graph.edges.forEach(function(e){if(e.from_node===a)e.from_node=b;if(e.to_node===a)e.to_node=b;});}
+  function closeEditor(){S.editing=null;document.getElementById("editor-card").hidden=true;}
+  function flash(m){var msg=document.getElementById("import-msg");/*reuse for quick feedback*/alertInline(m);}
+  function alertInline(m){var b=document.getElementById("editor-body");var e=el("div",{class:"issue error"},[el("span",{class:"tag",text:"fix"}),el("span",{text:m})]);b.insertBefore(e,b.firstChild);setTimeout(function(){if(e.parentNode)e.parentNode.removeChild(e);},4000);}
+
+  // ---- edge add ----
+  function addEdgeFlow(){
+    if(S.graph.nodes.length<2){flashGlobal("Add at least two nodes first.");return;}
+    S.editing=null;document.getElementById("editor-card").hidden=false;
+    document.getElementById("editor-title").textContent="Add edge";
+    var b=document.getElementById("editor-body");clear(b);
+    var e={from_node:S.graph.nodes[0].id,from_port:"",to_node:S.graph.nodes[0].id,to_port:"",when:null};
+    function ports(nodeId,kind){var n=S.graph.nodes.filter(function(x){return x.id===nodeId;})[0]||{};return Object.keys((kind==="out"?n.outputs:n.inputs)||{});}
+    function sel(label,getNode,setNode,getPort,setPort,dir){
+      var nSel=el("select",{onchange:function(){setNode(this.value);pSel.replaceChildren.apply(pSel,ports(getNode(),dir).map(function(p){return opt(p,"");}));setPort(ports(getNode(),dir)[0]||"");}},
+        S.graph.nodes.map(function(n){return opt(n.id,getNode());}));
+      var pSel=el("select",{onchange:function(){setPort(this.value);}},ports(getNode(),dir).map(function(p){return opt(p,getPort());}));
+      setPort(ports(getNode(),dir)[0]||"");
+      return row2(field(label+" node",nSel),field(label+" "+(dir==="out"?"output":"input")+" port",pSel));
+    }
+    b.appendChild(sel("From",function(){return e.from_node;},function(v){e.from_node=v;},function(){return e.from_port;},function(v){e.from_port=v;},"out"));
+    b.appendChild(sel("To",function(){return e.to_node;},function(v){e.to_node=v;},function(){return e.to_port;},function(v){e.to_port=v;},"in"));
+    var save=el("button",{class:"btn primary",text:"Add edge",onclick:function(){
+      if(!e.from_port||!e.to_port){flashGlobal("Both ports are required (add ports to the nodes first).");return;}
+      S.graph.edges.push({from_node:e.from_node,from_port:e.from_port,to_node:e.to_node,to_port:e.to_port,when:null});closeEditor();renderAll();}});
+    b.appendChild(el("div",{class:"row"},[save,el("button",{class:"btn ghost",text:"Cancel",onclick:closeEditor})]));
+  }
+  function flashGlobal(m){var host=document.getElementById("issues");var e=el("div",{class:"issue warn"},[el("span",{class:"tag",text:"note"}),el("span",{text:m})]);host.insertBefore(e,host.firstChild);setTimeout(function(){if(e.parentNode)e.parentNode.removeChild(e);},4000);}
+
+  // ---- DAG layout + render ----
+  function layout(){
+    var nodes=S.graph.nodes,edges=S.graph.edges;
+    var indeg={},adj={};nodes.forEach(function(n){indeg[n.id]=0;adj[n.id]=[];});
+    edges.forEach(function(e){if(e.to_node in indeg)indeg[e.to_node]++;if(e.from_node in adj)adj[e.from_node].push(e.to_node);});
+    var layer={},q=[];nodes.forEach(function(n){if(indeg[n.id]===0){layer[n.id]=0;q.push(n.id);}});
+    var seen=0,work=Object.assign({},indeg);
+    while(q.length){var c=q.shift();seen++;(adj[c]||[]).forEach(function(t){layer[t]=Math.max(layer[t]||0,(layer[c]||0)+1);if(--work[t]===0)q.push(t);});}
+    var cycle=seen!==nodes.length;
+    nodes.forEach(function(n){if(layer[n.id]==null)layer[n.id]=0;});
+    var byLayer={};nodes.forEach(function(n){(byLayer[layer[n.id]]=byLayer[layer[n.id]]||[]).push(n.id);});
+    return{layer:layer,byLayer:byLayer,cycle:cycle};
+  }
+  function renderDag(){
+    var host=document.getElementById("dag");clear(host);
+    var nodes=S.graph.nodes;
+    if(!nodes.length){host.appendChild(el("div",{class:"empty",text:"Your graph will draw here as you add nodes and edges."}));return;}
+    var L=layout();
+    var COLW=190,ROWH=76,NW=150,NH=48,PADX=20,PADY=20;
+    var cols=Math.max.apply(null,Object.keys(L.byLayer).map(Number)).valueOf()+1;
+    var maxRows=Math.max.apply(null,Object.keys(L.byLayer).map(function(k){return L.byLayer[k].length;}));
+    var W=PADX*2+cols*COLW, H=PADY*2+Math.max(1,maxRows)*ROWH;
+    var pos={};Object.keys(L.byLayer).forEach(function(k){L.byLayer[k].forEach(function(id,i){
+      pos[id]={x:PADX+(+k)*COLW,y:PADY+i*ROWH};});});
+    var NS="http://www.w3.org/2000/svg";
+    var svg=document.createElementNS(NS,"svg");svg.setAttribute("viewBox","0 0 "+W+" "+H);svg.setAttribute("role","img");
+    svg.setAttribute("aria-label","Graph diagram with "+nodes.length+" nodes");
+    // edges
+    S.graph.edges.forEach(function(e){var a=pos[e.from_node],b=pos[e.to_node];if(!a||!b)return;
+      var x1=a.x+NW,y1=a.y+NH/2,x2=b.x,y2=b.y+NH/2,mx=(x1+x2)/2;
+      var p=document.createElementNS(NS,"path");
+      p.setAttribute("d","M"+x1+","+y1+" C"+mx+","+y1+" "+mx+","+y2+" "+x2+","+y2);
+      p.setAttribute("fill","none");p.setAttribute("stroke","var(--muted)");p.setAttribute("stroke-width","1.6");p.setAttribute("opacity",".7");
+      svg.appendChild(p);});
+    // nodes
+    nodes.forEach(function(n){var p=pos[n.id];if(!p)return;
+      var g=document.createElementNS(NS,"g");g.style.cursor="pointer";
+      g.addEventListener("click",function(){openEditor(n.id);});
+      var r=document.createElementNS(NS,"rect");r.setAttribute("x",p.x);r.setAttribute("y",p.y);r.setAttribute("rx","10");
+      r.setAttribute("width",NW);r.setAttribute("height",NH);r.setAttribute("fill","var(--panel)");
+      r.setAttribute("stroke",RISK_COLOR[nodeRisk(n)]);r.setAttribute("stroke-width","2");
+      var t1=document.createElementNS(NS,"text");t1.setAttribute("x",p.x+12);t1.setAttribute("y",p.y+20);
+      t1.setAttribute("fill","var(--ink)");t1.setAttribute("font-size","13");t1.setAttribute("font-family","var(--mono)");t1.textContent=n.id;
+      var t2=document.createElementNS(NS,"text");t2.setAttribute("x",p.x+12);t2.setAttribute("y",p.y+37);
+      t2.setAttribute("fill","var(--muted)");t2.setAttribute("font-size","11");t2.textContent=(KINDS[n.kind]?KINDS[n.kind].label:n.kind)+" · "+n.isolation.replace("_"," ");
+      g.appendChild(r);g.appendChild(t1);g.appendChild(t2);svg.appendChild(g);});
+    host.appendChild(svg);
+    var lg=document.getElementById("legend");clear(lg);
+    ["read only","workspace write","external write","irreversible"].forEach(function(t,i){
+      lg.appendChild(el("span",{},[el("span",{class:"dot",style:"background:"+RISK_COLOR[i]}),document.createTextNode(" "+t)]));});
+    if(L.cycle)lg.appendChild(el("span",{style:"color:var(--risk)",text:"⚠ cycle detected — graph must be acyclic"}));
+  }
+
+  // ---- validation (preview; authoritative = bl graph lint) ----
+  // Mirror validate_graph._reject_nonportable: recursively reject secret-shaped
+  // keys and absolute-path string values anywhere in the node.
+  function scanPortable(obj,nid,add){
+    if(obj&&typeof obj==="object"){
+      Object.keys(obj).forEach(function(k){
+        if(!Object.prototype.hasOwnProperty.call(obj,k))return;
+        var lk=String(k).toLowerCase();
+        SECRET_WORDS.forEach(function(w){if(lk.indexOf(w)>=0)add("error","Node “"+nid+"”: “"+k+"” looks secret-shaped; graphs must never carry secrets.");});
+        scanPortable(obj[k],nid,add);
+      });
+    }else if(typeof obj==="string"&&ABS_RE.test(obj)){
+      add("error","Node “"+nid+"”: “"+obj+"” looks like an absolute local path; graphs must stay portable.");
+    }
+  }
+  function validate(){
+    var g=S.graph,issues=[];
+    function add(l,m){issues.push({level:l,msg:m});}
+    if(!GID_RE.test(g.graph_id))add("error","Graph id must be lowercase a–z start, then a–z 0–9 - (max 63).");
+    if(!VER_RE.test(g.version))add("error","Version must be a pinned semantic version like 1.0.0.");
+    if(!g.nodes.length)add("error","A graph needs at least one node.");
+    var ids={};
+    g.nodes.forEach(function(n){
+      if(!ID_RE.test(n.id||""))add("error","Node “"+(n.id||"?")+"”: invalid id.");
+      if(ids[n.id])add("error","Duplicate node id “"+n.id+"”.");ids[n.id]=1;
+      if(!KINDS[n.kind])add("error","Node “"+n.id+"”: unknown kind “"+n.kind+"”.");
+      var bg=n.budget||{};
+      if(!(bg.max_attempts>=1&&bg.max_attempts<=1000))add("error","Node “"+n.id+"”: max attempts must be 1–1000.");
+      if(!(bg.max_wallclock_s>=1&&bg.max_wallclock_s<=86400))add("error","Node “"+n.id+"”: max wall-clock must be 1–86400 s.");
+      (KINDS[n.kind]?KINDS[n.kind].fields:[]).forEach(function(f){
+        var v=n[f.key];
+        if(f.key==="default_route")return;
+        if(v==null||v==="" ||(f.json&&typeof v==="object"&&!Object.keys(v).length))add("error","Node “"+n.id+"”: “"+f.label+"” is required.");
+        if((f.key==="loop_package"||f.key==="graph_package")&&typeof v==="string"&&!/^sha256:[0-9a-f]{64}$/.test(v))add("error","Node “"+n.id+"”: "+f.key+" must be sha256:<64 hex>.");
+      });
+      if(n.kind==="router"&&n.routes&&typeof n.routes==="object"){var hasDefault=(n.default_route&&n.default_route!=="")||("default" in n.routes);if(!hasDefault)add("error","Router “"+n.id+"”: needs a default route (a default_route or a routes.default).");}
+      if(!(n.effects||[]).length)add("error","Node “"+n.id+"”: choose at least one effect.");
+      var floor=requiredIso(n);
+      if(ISO_RANK[n.isolation]<ISO_RANK[floor])add("warn","Node “"+n.id+"”: effects require "+floor+" isolation; it will be raised at run time.");
+      (n.effects||[]).forEach(function(e){var m=EFFECTS.filter(function(x){return x.id===e;})[0];
+        if(m&&m.connector)add("info","Node “"+n.id+"” ("+e+") runs only once a connector is admitted (C1).");
+        if(m&&m.approval)add("info","Node “"+n.id+"” ("+e+") should be gated by an approval node before it runs.");});
+      scanPortable(n,n.id,add);
+      Object.keys(n.inputs||{}).concat(Object.keys(n.outputs||{})).forEach(function(p){if(!ID_RE.test(p))add("error","Node “"+n.id+"”: port name “"+p+"” must be a valid id (a–z start, then a–z 0–9 _ -).");});
+      (n.effects||[]).forEach(function(e){if(!EFFECTS.some(function(x){return x.id===e;}))add("error","Node “"+n.id+"”: unknown effect “"+e+"”.");});
+      if(ISO.indexOf(n.isolation)<0)add("error","Node “"+n.id+"”: unknown isolation “"+n.isolation+"”.");
+      if(n.kind==="join"&&!g.edges.some(function(e){return e.to_node===n.id;}))add("error","Join “"+n.id+"”: needs at least one incoming edge.");
+    });
+    g.edges.forEach(function(e){
+      var f=g.nodes.filter(function(n){return n.id===e.from_node;})[0],t=g.nodes.filter(function(n){return n.id===e.to_node;})[0];
+      if(!f||!t){add("error","Edge references an unknown node.");return;}
+      if(!(f.outputs&&e.from_port in f.outputs))add("error","Edge: “"+e.from_node+"” has no output port “"+e.from_port+"”.");
+      else if(!(t.inputs&&e.to_port in t.inputs))add("error","Edge: “"+e.to_node+"” has no input port “"+e.to_port+"”.");
+      else if(f.outputs[e.from_port]!==t.inputs[e.to_port])add("error","Edge "+e.from_node+"."+e.from_port+"→"+e.to_node+"."+e.to_port+": port types must match ("+f.outputs[e.from_port]+" ≠ "+t.inputs[e.to_port]+").");
+    });
+    if(layout().cycle)add("error","Graph has a cycle; authoring graphs must be acyclic.");
+    return issues;
+  }
+  function renderValidation(){
+    var host=document.getElementById("issues");clear(host);
+    var issues=validate();
+    var errs=issues.filter(function(i){return i.level==="error";}).length;
+    if(!errs)host.appendChild(el("div",{class:"issue ok"},[el("span",{class:"tag",text:"ready"}),el("span",{text:"No blocking problems in this preview. Confirm with bl graph lint."})]));
+    issues.slice(0,40).forEach(function(i){host.appendChild(el("div",{class:"issue "+i.level},[el("span",{class:"tag",text:i.level==="error"?"fix":i.level}),el("span",{text:i.msg})]));});
+  }
+
+  // ---- export / import ----
+  function toSpec(){var g=clone(S.graph);
+    g.nodes=g.nodes.map(function(n){var out={id:n.id,kind:n.kind,inputs:n.inputs||{},outputs:n.outputs||{},
+      budget:n.budget,effects:(n.effects||[]).slice().sort(),isolation:n.isolation};
+      (KINDS[n.kind]?KINDS[n.kind].fields:[]).forEach(function(f){if(n[f.key]!==undefined&&n[f.key]!=="")out[f.key]=n[f.key];});
+      if(n.connection_slot)out.connection_slot=n.connection_slot;
+      if(n.on_failure)out.on_failure=n.on_failure;
+      return out;});
+    return g;}
+  function renderExport(){document.getElementById("yaml-out").value=yamlify(toSpec());}
+  function download(name,text,mime){var b=new Blob([text],{type:mime});var u=URL.createObjectURL(b);
+    var a=el("a",{href:u,download:name});document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u);},1000);}
+  function yamlify(v,ind){ind=ind||0;var pad=new Array(ind+1).join("  ");
+    if(v===null||v===undefined)return "null";
+    if(typeof v==="number"||typeof v==="boolean")return String(v);
+    if(typeof v==="string")return '"'+v.replace(/\\/g,"\\\\").replace(/"/g,'\\"')+'"';
+    if(Array.isArray(v)){if(!v.length)return "[]";return v.map(function(x){
+      var s=yamlify(x,ind+1);return "\n"+pad+"- "+(isScalar(x)?s:s.replace(/^\n?/,""));}).join("");}
+    var keys=Object.keys(v);if(!keys.length)return "{}";
+    return keys.map(function(k){var s=yamlify(v[k],ind+1);return "\n"+pad+'"'+k+'": '+(isScalar(v[k])?s:s);}).join("");}
+  function isScalar(v){return v===null||["number","boolean","string"].indexOf(typeof v)>=0;}
+  function loadTemplate(t){S.graph=normalize(clone(t.spec));closeEditor();renderAll();}
+  function loadJSON(){
+    var txt=document.getElementById("import-json").value.trim();var msg=document.getElementById("import-msg");
+    if(!txt){msg.textContent="Paste a graph JSON above first.";return;}
+    var obj;try{obj=JSON.parse(txt);}catch(e){msg.textContent="Not valid JSON: "+e.message;return;}
+    if(!obj||typeof obj!=="object"||!Array.isArray(obj.nodes)){msg.textContent="That JSON is not an authoring graph (missing nodes).";return;}
+    S.graph=normalize(obj);msg.textContent="Loaded.";closeEditor();renderAll();
+  }
+  function normalize(g){g.api_version=API;g.edges=g.edges||[];g.connection_slots=g.connection_slots||[];
+    g.policies=g.policies||{data_class:"internal",fail_mode:"fail_closed"};
+    g.nodes=(g.nodes||[]).map(function(n){n.inputs=n.inputs||{};n.outputs=n.outputs||{};n.effects=n.effects||[];
+      n.budget=n.budget||{max_attempts:1,max_wallclock_s:30};n.isolation=n.isolation||"workspace_only";return n;});
+    return g;}
+
+  // ---- wire up ----
+  function bindMeta(){
+    document.getElementById("g-id").addEventListener("input",function(){S.graph.graph_id=this.value;renderValidation();});
+    document.getElementById("g-ver").addEventListener("input",function(){S.graph.version=this.value;renderValidation();});
+    document.getElementById("g-dc").addEventListener("change",function(){S.graph.policies.data_class=this.value;});
+    document.getElementById("g-fm").addEventListener("change",function(){S.graph.policies.fail_mode=this.value;});
+  }
+  function setMode(m){S.mode=m;document.getElementById("mode-simple").setAttribute("aria-pressed",m==="simple");
+    document.getElementById("mode-advanced").setAttribute("aria-pressed",m==="advanced");
+    if(S.editing)drawEditor();renderAll();}
+
+  document.getElementById("mode-simple").addEventListener("click",function(){setMode("simple");});
+  document.getElementById("mode-advanced").addEventListener("click",function(){setMode("advanced");});
+  document.getElementById("add-node").addEventListener("click",function(){openEditor(null);});
+  document.getElementById("add-edge").addEventListener("click",addEdgeFlow);
+  document.getElementById("dl-json").addEventListener("click",function(){download((S.graph.graph_id||"graph")+".json",JSON.stringify(toSpec(),null,2),"application/json");});
+  document.getElementById("copy-json").addEventListener("click",function(){var t=JSON.stringify(toSpec(),null,2);
+    if(navigator.clipboard)navigator.clipboard.writeText(t);flashGlobal("Graph JSON copied.");});
+  document.getElementById("load-json").addEventListener("click",loadJSON);
+
+  bindMeta();
+  if(SEED&&typeof SEED==="object")S.graph=normalize(SEED);
+  renderAll();
+})();
+</script>
+</body>
+</html>

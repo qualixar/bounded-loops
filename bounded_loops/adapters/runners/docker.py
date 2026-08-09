@@ -19,10 +19,17 @@ _MAX_AGENT_OUTPUT_BYTES = 64 * 1024
 
 
 class DockerRunner:
-    def __init__(self, image: str = "python:3.11-slim", agent_cmd: str = "true", timeout_s: int = 300) -> None:
+    def __init__(
+        self,
+        image: str = "python:3.11-slim",
+        agent_cmd: str = "true",
+        timeout_s: int = 300,
+        cpus: str = "1.0",
+    ) -> None:
         self.image = image
         self.agent_cmd = agent_cmd
         self.timeout_s = timeout_s
+        self.cpus = cpus
 
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
         if shutil.which("docker") is None:
@@ -39,6 +46,7 @@ class DockerRunner:
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges:true",
             "--pids-limit", "256",
+            "--cpus", self.cpus,
             "--memory", "1g",
             "--read-only",
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",

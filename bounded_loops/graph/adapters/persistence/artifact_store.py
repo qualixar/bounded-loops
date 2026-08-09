@@ -10,7 +10,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from typing import BinaryIO
+from typing import BinaryIO, Sequence
 
 from bounded_loops.graph.domain.artifacts import (
     ArtifactAccess,
@@ -35,39 +35,93 @@ class LocalArtifactStore:
         self._metadata.mkdir(parents=True, exist_ok=True)
 
     def put(self, stream: BinaryIO, policy: ArtifactPolicy) -> ArtifactRecord:
-        _validate_policy(policy)
-        digest, size, temporary = self._write_temporary(stream)
+        return self.put_many(((stream, policy),))[0]
+
+    def put_many(
+        self, items: Sequence[tuple[BinaryIO, ArtifactPolicy]],
+    ) -> tuple[ArtifactRecord, ...]:
+        """Stage, pre-validate, then commit — so a mid-batch failure leaves no
+        artifact metadata behind.
+
+        Staging catches byte-cap overruns; the pre-validation pass catches a
+        conflict that would otherwise surface only at commit time (for example a
+        cross-tenant digest collision on a later output). Any metadata this batch
+        does write is rolled back if a subsequent commit still fails, so
+        multi-output promotion is all-or-nothing rather than a committed prefix.
+        """
+        staged: list[tuple[str, int, Path, ArtifactPolicy]] = []
+        written: list[Path] = []
+        try:
+            for stream, policy in items:
+                _validate_policy(policy)
+                digest, size, temporary = self._write_temporary(stream)
+                staged.append((digest, size, temporary, policy))
+            for digest, size, _temporary, policy in staged:
+                self._preflight_commit(digest, size, policy)
+            records: list[ArtifactRecord] = []
+            try:
+                for digest, size, temporary, policy in staged:
+                    record, wrote_metadata = self._commit(digest, size, temporary, policy)
+                    if wrote_metadata:
+                        written.append(self._metadata_path(digest))
+                    records.append(record)
+            except BaseException:
+                for metadata_path in written:
+                    try:
+                        metadata_path.unlink()
+                    except OSError:
+                        pass
+                raise
+            return tuple(records)
+        finally:
+            for _digest, _size, temporary, _policy in staged:
+                if temporary.exists():
+                    temporary.unlink()
+
+    def _preflight_commit(self, digest: str, size: int, policy: ArtifactPolicy) -> None:
+        object_path = self._object_path(digest)
+        if object_path.exists() and not object_path.is_file():
+            raise GraphIntegrityError("artifact object path is not a regular file")
+        metadata_path = self._metadata_path(digest)
+        if metadata_path.exists():
+            existing = self._read_record(digest)
+            expected = ArtifactRef(digest, policy.organization_id, policy.project_id)
+            if existing.ref != expected or existing.size != size:
+                raise GraphIntegrityError("artifact digest conflicts with existing tenant metadata")
+
+    def _commit(self, digest: str, size: int, temporary: Path, policy: ArtifactPolicy) -> tuple[ArtifactRecord, bool]:
         object_path = self._object_path(digest)
         metadata_path = self._metadata_path(digest)
-        try:
-            if object_path.exists() and not object_path.is_file():
-                raise GraphIntegrityError("artifact object path is not a regular file")
-            if not object_path.exists():
-                os.replace(temporary, object_path)
-            record = ArtifactRecord(
-                ref=ArtifactRef(digest, policy.organization_id, policy.project_id),
-                digest=digest,
-                media_type=policy.media_type,
-                size=size,
-                producer_attempt=policy.producer_attempt,
-                sensitivity=policy.sensitivity,
-                retention_class=policy.retention_class,
-                state=ArtifactState.ACTIVE,
-                tombstone_reason=None,
-                expires_at=policy.expires_at,
-                legal_hold_allowed=policy.legal_hold_allowed,
-                legal_hold=False,
-            )
-            if metadata_path.exists():
-                existing = self._read_record(digest)
-                if existing.ref != record.ref or existing.size != record.size:
-                    raise GraphIntegrityError("artifact digest conflicts with existing tenant metadata")
-                return existing
-            _write_json(metadata_path, _record_dict(record))
-            return record
-        finally:
-            if temporary.exists():
-                temporary.unlink()
+        if object_path.exists() and not object_path.is_file():
+            raise GraphIntegrityError("artifact object path is not a regular file")
+        if not object_path.exists():
+            os.replace(temporary, object_path)
+        record = ArtifactRecord(
+            ref=ArtifactRef(digest, policy.organization_id, policy.project_id),
+            digest=digest,
+            media_type=policy.media_type,
+            size=size,
+            producer_attempt=policy.producer_attempt,
+            sensitivity=policy.sensitivity,
+            retention_class=policy.retention_class,
+            state=ArtifactState.ACTIVE,
+            tombstone_reason=None,
+            expires_at=policy.expires_at,
+            legal_hold_allowed=policy.legal_hold_allowed,
+            legal_hold=False,
+        )
+        if metadata_path.exists():
+            existing = self._read_record(digest)
+            if existing.ref != record.ref or existing.size != record.size:
+                raise GraphIntegrityError("artifact digest conflicts with existing tenant metadata")
+            return existing, False
+        if not _write_json_exclusive(metadata_path, _record_dict(record)):
+            # Lost a concurrent first-writer race for this digest; reconcile.
+            existing = self._read_record(digest)
+            if existing.ref != record.ref or existing.size != record.size:
+                raise GraphIntegrityError("artifact digest conflicts with existing tenant metadata")
+            return existing, False
+        return record, True
 
     def open(self, ref: ArtifactRef, access: ArtifactAccess) -> BytesIO:
         record = self._read_record(ref.digest)
@@ -228,6 +282,28 @@ def _write_json(path: Path, data: dict[str, object]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _write_json_exclusive(path: Path, data: dict[str, object]) -> bool:
+    """First-writer-wins JSON publish: create ``path`` by hard link so two
+    concurrent first commits for the same digest cannot silently overwrite one
+    another's attribution. Returns True if this call created the file."""
+    fd, name = tempfile.mkstemp(prefix=".metadata-", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+            return True
+        except FileExistsError:
+            return False
     finally:
         if temporary.exists():
             temporary.unlink()

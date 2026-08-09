@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Graph Arena — bounded-loops</title>
+<!--
+  Graph Arena — read-only receipt projection viewer for bounded-loops.
+  Self-contained: no network, no runtime dependency. Renders one ArenaProjection.
+  It observes receipts; it can never run, approve, cancel, or mutate a graph.
+  Data is injected between the arena-data markers; the block below is a
+  demonstration run so the file renders standalone.
+-->
+<style>
+  :root{
+    --bg:#f6f7f9; --surface:#ffffff; --surface-2:#fbfcfd; --ink:#0d1117; --ink-2:#4a5566;
+    --ink-3:#7b8698; --line:#e6e9ef; --line-2:#eef1f5; --brand:#4f46e5; --brand-ink:#ffffff;
+    --shadow:0 1px 2px rgba(16,24,40,.04),0 8px 24px -12px rgba(16,24,40,.18);
+    --shadow-lg:0 24px 60px -20px rgba(16,24,40,.35);
+    --radius:16px; --radius-sm:10px;
+    --waiting:#8a94a6; --waiting-bg:#eef1f5; --ready:#2563eb; --ready-bg:#e7effe;
+    --working:#b45309; --working-bg:#fdf1dc; --checking:#7c3aed; --checking-bg:#f0e9fe;
+    --passed:#047857; --passed-bg:#dcfaee; --blocked:#be123c; --blocked-bg:#fde7ec;
+    --font:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    --mono:'SF Mono',ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){:root[data-theme=auto]{
+    --bg:#0a0c10; --surface:#12151b; --surface-2:#161a22; --ink:#eef1f6; --ink-2:#aab3c2;
+    --ink-3:#6b7688; --line:#232833; --line-2:#1b2029; --brand:#7c74ff; --brand-ink:#0a0c10;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 12px 30px -16px rgba(0,0,0,.7);
+    --shadow-lg:0 30px 70px -24px rgba(0,0,0,.8);
+    --waiting:#8b94a6; --waiting-bg:#1b2029; --ready:#5b8bff; --ready-bg:#16233d;
+    --working:#e0a44a; --working-bg:#33260f; --checking:#a688ff; --checking-bg:#241a3d;
+    --passed:#34d9a0; --passed-bg:#0e2a22; --blocked:#ff6b88; --blocked-bg:#331420;
+  }}
+  :root[data-theme=dark]{
+    --bg:#0a0c10; --surface:#12151b; --surface-2:#161a22; --ink:#eef1f6; --ink-2:#aab3c2;
+    --ink-3:#6b7688; --line:#232833; --line-2:#1b2029; --brand:#7c74ff; --brand-ink:#0a0c10;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 12px 30px -16px rgba(0,0,0,.7);
+    --shadow-lg:0 30px 70px -24px rgba(0,0,0,.8);
+    --waiting:#8b94a6; --waiting-bg:#1b2029; --ready:#5b8bff; --ready-bg:#16233d;
+    --working:#e0a44a; --working-bg:#33260f; --checking:#a688ff; --checking-bg:#241a3d;
+    --passed:#34d9a0; --passed-bg:#0e2a22; --blocked:#ff6b88; --blocked-bg:#331420;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--font);-webkit-font-smoothing:antialiased;line-height:1.5;}
+  a{color:var(--brand)}
+  .wrap{max-width:1180px;margin:0 auto;padding:24px 24px 80px}
+  /* Header */
+  header.top{display:flex;align-items:center;gap:16px;padding:6px 2px 22px}
+  .logo{display:flex;align-items:center;gap:11px;font-weight:700;letter-spacing:-.02em;font-size:16px}
+  .logo .mk{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--brand),#9d7bff);display:grid;place-items:center;color:#fff;box-shadow:var(--shadow)}
+  .logo .mk svg{width:17px;height:17px}
+  .logo small{display:block;font-weight:500;color:var(--ink-3);font-size:11px;letter-spacing:.02em}
+  .spacer{flex:1}
+  .theme-btn{border:1px solid var(--line);background:var(--surface);color:var(--ink-2);border-radius:10px;width:38px;height:38px;display:grid;place-items:center;cursor:pointer;transition:.15s}
+  .theme-btn:hover{color:var(--ink);border-color:var(--ink-3)}
+  /* Hero */
+  .hero{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:26px 28px;display:grid;grid-template-columns:1.4fr 1fr;gap:26px;position:relative;overflow:hidden}
+  .hero::before{content:"";position:absolute;inset:0 auto 0 0;width:5px;background:var(--state-accent,var(--brand))}
+  .hero .run-id{font-size:12px;color:var(--ink-3);font-family:var(--mono);letter-spacing:.02em}
+  .hero h1{margin:6px 0 4px;font-size:30px;letter-spacing:-.03em;line-height:1.1}
+  .hero .sub{color:var(--ink-2);font-size:14.5px;max-width:46ch}
+  .status-line{display:flex;align-items:center;gap:11px;margin-top:14px}
+  .dot{width:11px;height:11px;border-radius:50%;background:var(--state-accent,var(--brand));box-shadow:0 0 0 4px color-mix(in srgb,var(--state-accent,var(--brand)) 18%,transparent)}
+  .dot.pulse{animation:pulse 1.8s ease-in-out infinite}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 3px color-mix(in srgb,var(--state-accent) 22%,transparent)}50%{box-shadow:0 0 0 9px color-mix(in srgb,var(--state-accent) 4%,transparent)}}
+  .status-word{font-weight:650;font-size:16px}
+  /* progress ring + meters */
+  .meters{display:flex;flex-direction:column;gap:14px;justify-content:center}
+  .ring-row{display:flex;align-items:center;gap:16px}
+  .ring{--p:0;width:96px;height:96px;flex:none;border-radius:50%;background:conic-gradient(var(--passed) calc(var(--p)*1%),var(--line-2) 0);display:grid;place-items:center;position:relative}
+  .ring::after{content:"";position:absolute;inset:9px;border-radius:50%;background:var(--surface)}
+  .ring b{position:relative;font-size:22px;font-weight:750;letter-spacing:-.02em}
+  .ring b small{display:block;font-size:10.5px;font-weight:600;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;margin-top:1px}
+  .integrity{font-size:12.5px;color:var(--ink-2)}
+  .integrity .k{color:var(--ink-3)}
+  .integrity code{font-family:var(--mono);font-size:11.5px;background:var(--surface-2);border:1px solid var(--line-2);border-radius:6px;padding:1px 6px}
+  /* badges */
+  .badges{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+  .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:5px 10px;border-radius:999px;border:1px solid var(--line)}
+  .badge svg{width:13px;height:13px}
+  .badge.warn{color:var(--working);background:var(--working-bg);border-color:transparent}
+  .badge.info{color:var(--ready);background:var(--ready-bg);border-color:transparent}
+  .badge.ok{color:var(--passed);background:var(--passed-bg);border-color:transparent}
+  /* section title */
+  .sec{display:flex;align-items:baseline;gap:10px;margin:34px 2px 16px}
+  .sec h2{font-size:15px;letter-spacing:-.01em;margin:0}
+  .sec p{margin:0;color:var(--ink-3);font-size:13px}
+  /* pipeline */
+  .board{position:relative;overflow-x:auto;padding:8px 2px 10px}
+  .waves{display:flex;gap:54px;min-width:min-content;position:relative;z-index:1}
+  .wave{display:flex;flex-direction:column;gap:18px;min-width:230px}
+  .wave-h{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);padding-left:2px}
+  svg.edges{position:absolute;inset:0;width:100%;height:100%;z-index:0;pointer-events:none;overflow:visible}
+  svg.edges path{fill:none;stroke:var(--line);stroke-width:2}
+  svg.edges path.done{stroke:color-mix(in srgb,var(--passed) 60%,var(--line))}
+  /* node card */
+  .node{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-sm);padding:14px 15px;box-shadow:var(--shadow);cursor:pointer;transition:transform .14s,box-shadow .14s,border-color .14s;outline:none}
+  .node:hover,.node:focus-visible{transform:translateY(-2px);box-shadow:var(--shadow-lg);border-color:var(--sc,var(--brand))}
+  .node::before{content:"";position:absolute;left:0;top:14px;bottom:14px;width:3px;border-radius:3px;background:var(--sc,var(--waiting))}
+  .node .nh{display:flex;align-items:center;gap:9px;margin-bottom:9px}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;padding:4px 9px;border-radius:999px;color:var(--sc);background:var(--scb)}
+  .chip .ic{width:13px;height:13px;display:grid;place-items:center}
+  .chip.pulse .ic{animation:spin 1.4s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .node .title{font-weight:650;font-size:15px;letter-spacing:-.01em;margin:2px 0 1px;word-break:break-word}
+  .node .kind{font-size:12px;color:var(--ink-3)}
+  .node .meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px}
+  .tag{font-size:11px;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--line-2);border-radius:7px;padding:3px 8px;display:inline-flex;align-items:center;gap:5px}
+  .tag svg{width:12px;height:12px;opacity:.8}
+  .verified{display:flex;align-items:center;gap:7px;margin-top:11px;padding:8px 10px;border-radius:9px;background:var(--passed-bg);color:var(--passed);font-size:12px;font-weight:600}
+  .verified svg{width:15px;height:15px;flex:none}
+  .attempt{position:absolute;top:12px;right:13px;font-size:11px;color:var(--ink-3);font-weight:600}
+  /* drawer */
+  .scrim{position:fixed;inset:0;background:rgba(9,12,18,.42);backdrop-filter:blur(2px);opacity:0;pointer-events:none;transition:.2s;z-index:40}
+  .scrim.open{opacity:1;pointer-events:auto}
+  .drawer{position:fixed;top:0;right:0;height:100%;width:min(440px,92vw);background:var(--surface);border-left:1px solid var(--line);box-shadow:var(--shadow-lg);transform:translateX(102%);transition:transform .26s cubic-bezier(.4,.9,.3,1);z-index:50;display:flex;flex-direction:column}
+  .drawer.open{transform:none}
+  .drawer .dh{padding:20px 22px 16px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;gap:12px}
+  .drawer .dh .x{margin-left:auto;border:1px solid var(--line);background:var(--surface);color:var(--ink-2);border-radius:9px;width:32px;height:32px;cursor:pointer;display:grid;place-items:center}
+  .drawer .db{padding:18px 22px;overflow:auto}
+  .field{margin-bottom:17px}
+  .field .l{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px}
+  .field .v{font-size:14px;color:var(--ink)}
+  .explain{font-size:12.5px;color:var(--ink-2);margin-top:3px}
+  .digest{font-family:var(--mono);font-size:12px;background:var(--surface-2);border:1px solid var(--line-2);border-radius:8px;padding:7px 10px;display:flex;align-items:center;gap:8px;margin-top:6px;word-break:break-all}
+  .digest button{margin-left:auto;flex:none;border:1px solid var(--line);background:var(--surface);color:var(--ink-2);border-radius:6px;font-size:11px;padding:3px 8px;cursor:pointer}
+  /* legend */
+  .legend{margin-top:40px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:22px 24px;box-shadow:var(--shadow)}
+  .legend h3{margin:0 0 4px;font-size:14px}
+  .legend .muted{color:var(--ink-3);font-size:12.5px;margin:0 0 16px}
+  .legend-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+  .lg{display:flex;gap:9px;align-items:flex-start;font-size:12.5px;color:var(--ink-2)}
+  .lg .sw{width:12px;height:12px;border-radius:4px;flex:none;margin-top:2px}
+  .invariant{margin-top:18px;padding:14px 16px;border-radius:12px;background:var(--passed-bg);display:flex;gap:11px;align-items:flex-start}
+  .invariant svg{width:19px;height:19px;color:var(--passed);flex:none;margin-top:1px}
+  .invariant b{color:var(--passed)}
+  .invariant p{margin:2px 0 0;font-size:12.5px;color:var(--ink-2)}
+  footer.ft{margin-top:30px;text-align:center;color:var(--ink-3);font-size:12px}
+  @media (max-width:720px){.hero{grid-template-columns:1fr}.hero h1{font-size:25px}}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="logo">
+      <span class="mk" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="5" cy="6" r="2.4" fill="currentColor"/><circle cx="5" cy="18" r="2.4" fill="currentColor"/><circle cx="19" cy="12" r="2.4" fill="currentColor"/><path d="M7 7l10 4M7 17l10-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+      <span>Graph Arena<small>bounded-loops · read-only receipts</small></span>
+    </div>
+    <div class="spacer"></div>
+    <button class="theme-btn" id="theme" title="Toggle theme" aria-label="Toggle light/dark theme">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.6 6.6 0 0 0 21 12.8Z" stroke-linejoin="round"/></svg>
+    </button>
+  </header>
+
+  <section class="hero" id="hero" aria-label="Run summary">
+    <div>
+      <div class="run-id" id="runid"></div>
+      <h1 id="statustitle"></h1>
+      <p class="sub" id="statussub"></p>
+      <div class="status-line"><span class="dot" id="statusdot"></span><span class="status-word" id="statusword"></span></div>
+      <div class="badges" id="badges"></div>
+    </div>
+    <div class="meters">
+      <div class="ring-row">
+        <div class="ring" id="ring"><b id="ringpct"></b></div>
+        <div>
+          <div style="font-weight:650;font-size:14px" id="progresstxt"></div>
+          <div style="color:var(--ink-3);font-size:12.5px;margin-top:2px">nodes through their independent gate</div>
+        </div>
+      </div>
+      <div class="integrity">
+        <span class="k">Tamper-evident chain</span> · <span id="receipts"></span> receipts · head <code id="head"></code>
+      </div>
+    </div>
+  </section>
+
+  <div class="sec"><h2>Execution pipeline</h2><p>Each stage runs only after the one before it passes an independent check. Click a stage for details.</p></div>
+  <div class="board"><svg class="edges" id="edges" aria-hidden="true"></svg><div class="waves" id="waves"></div></div>
+
+  <div class="legend">
+    <h3>How to read this</h3>
+    <p class="muted">A graph is a set of agent work-stages wired in order. This view is built only from signed run receipts — it never runs or changes anything.</p>
+    <div class="legend-grid" id="legend"></div>
+    <div class="invariant">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3l7 3v5c0 4.6-3 7.6-7 9-4-1.4-7-4.4-7-9V6l7-3Z" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div><b>Why you can trust a “Passed”.</b><p>A stage never grades its own work. It only turns green when a <em>separate</em> independent check confirms the required results exist — the core guarantee of bounded-loops.</p></div>
+    </div>
+  </div>
+  <footer class="ft" id="foot"></footer>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="dtitle" tabindex="-1">
+  <div class="dh">
+    <div><div class="run-id" id="dkind"></div><div style="font-weight:700;font-size:18px;letter-spacing:-.02em;margin-top:3px" id="dtitle"></div></div>
+    <button class="x" id="dclose" aria-label="Close details"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg></button>
+  </div>
+  <div class="db" id="dbody"></div>
+</aside>
+
+<script id="arena-data" type="application/json">
+{"organization_id":"acme","project_id":"checkout-service","run_id":"run-4823","graph_digest":"sha256:049c39bf2ca3d0d6eeb846b0000b25b4e0bfcd7393bee1164a4971f6f9262e33","plan_digest":"sha256:0eb7cef54715813b7662044a2d1eeb903f63fdd7cf433a1d77f1f842ea5bad41","policy_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","run_state":"RUNNING","receipt_sequence":14,"receipt_head_hash":"sha256:9f3c1d77a4be5520e1cae2b6f0a9c4d3e8b71f6250aa93c4471d0b8f2e6a1c55","demonstration":true,"verified":false,"levels":[["contract"],["red_tests"],["patch"],["audit"]],"edges":[["contract","red_tests"],["red_tests","patch"],["patch","audit"]],"nodes":[{"node_id":"contract","kind":"scope_contract","state":"SUCCEEDED","attempt":1,"required_effects":["read_only"],"isolation":"workspace_only","hard_deadline_ms":60000,"artifact_digests":["sha256:a1b2c3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f8091a2b3c4d5e6f7081"],"route":null,"transport":null},{"node_id":"red_tests","kind":"regression_suite","state":"SUCCEEDED","attempt":1,"required_effects":["workspace_write"],"isolation":"workspace_only","hard_deadline_ms":120000,"artifact_digests":["sha256:bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899aabb"],"route":null,"transport":null},{"node_id":"patch","kind":"code_patch","state":"RUNNING","attempt":2,"required_effects":["workspace_write"],"isolation":"process_restricted","hard_deadline_ms":300000,"artifact_digests":[],"route":["openai","codex","in",false,"sha256:cc00"],"transport":"local_cli"},{"node_id":"audit","kind":"independent_audit","state":"PENDING","attempt":0,"required_effects":["read_only"],"isolation":"container_restricted","hard_deadline_ms":180000,"artifact_digests":[],"route":["anthropic","claude","us",false,"sha256:dd00"],"transport":"local_cli"}]}
+</script>
+<script>
+(function(){
+  "use strict";
+  var D;
+  try{ D = JSON.parse(document.getElementById("arena-data").textContent); }
+  catch(e){ document.body.innerHTML = '<div class="wrap"><h1>Arena data could not be read.</h1></div>'; return; }
+
+  var STATE = {
+    PENDING:  {w:"Waiting",  c:"var(--waiting)", b:"var(--waiting-bg)", d:"Not started — waiting for earlier stages."},
+    READY:    {w:"Ready",    c:"var(--ready)",   b:"var(--ready-bg)",   d:"Cleared to start; inputs are satisfied."},
+    STARTING: {w:"Starting", c:"var(--ready)",   b:"var(--ready-bg)",   d:"Spinning up an isolated workspace."},
+    RUNNING:  {w:"Working",  c:"var(--working)", b:"var(--working-bg)", d:"The agent is doing the work now."},
+    GATING:   {w:"Checking", c:"var(--checking)",b:"var(--checking-bg)",d:"An independent check is verifying the result."},
+    AWAITING_APPROVAL:{w:"Needs approval",c:"var(--checking)",b:"var(--checking-bg)",d:"Waiting for a human decision."},
+    SUCCEEDED:{w:"Passed",   c:"var(--passed)",  b:"var(--passed-bg)",  d:"An independent check confirmed the result."},
+    FAILED:   {w:"Blocked",  c:"var(--blocked)", b:"var(--blocked-bg)", d:"The check did not pass; downstream stages are held."},
+    HALTED:   {w:"Halted",   c:"var(--blocked)", b:"var(--blocked-bg)", d:"Stopped by a budget or no-progress bound."},
+    CANCELLED:{w:"Cancelled",c:"var(--waiting)", b:"var(--waiting-bg)", d:"Cancelled before completion."},
+    SKIPPED:  {w:"Skipped",  c:"var(--waiting)", b:"var(--waiting-bg)", d:"Not needed on this branch."},
+    EXPIRED:  {w:"Expired",  c:"var(--blocked)", b:"var(--blocked-bg)", d:"Ran past its deadline."}
+  };
+  function st(s){ return STATE[s] || {w:s||"—",c:"var(--waiting)",b:"var(--waiting-bg)",d:""}; }
+  var EFFECT={read_only:"reads only",workspace_write:"writes files",external_write:"external writes",financial:"financial action",irreversible:"irreversible action"};
+  var ISO={workspace_only:"Isolated workspace copy",process_restricted:"Restricted process",container_restricted:"Locked-down container",customer_managed_worker:"Customer-managed worker"};
+  var ICON={
+    running:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 3a9 9 0 1 0 9 9" stroke-linecap="round"/></svg>',
+    passed:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M4 12.5l5 5 11-12" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    wait:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 2" stroke-linecap="round"/></svg>',
+    blocked:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="8.4"/><path d="M12 8v5M12 16.2v.1" stroke-linecap="round"/></svg>',
+    check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3l7 3v5c0 4.6-3 7.6-7 9-4-1.4-7-4.4-7-9V6l7-3Z" stroke-linejoin="round"/></svg>'
+  };
+  function stateIcon(s){ if(s==="RUNNING"||s==="STARTING")return ICON.running; if(s==="SUCCEEDED")return ICON.passed; if(s==="FAILED"||s==="HALTED"||s==="EXPIRED")return ICON.blocked; if(s==="GATING"||s==="AWAITING_APPROVAL")return ICON.check; return ICON.wait; }
+  function esc(x){ return String(x==null?"":x).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+  function shortHash(h){ if(!h)return"—"; h=String(h).replace(/^sha256:/,""); return "sha256:"+h.slice(0,10)+"…"+h.slice(-4); }
+
+  var nodesById={}; (D.nodes||[]).forEach(function(n){nodesById[n.node_id]=n;});
+  var total=(D.nodes||[]).length;
+  var passed=(D.nodes||[]).filter(function(n){return n.state==="SUCCEEDED";}).length;
+  var pct= total? Math.round(passed/total*100):0;
+  var demo = !!D.demonstration;
+  var strongTrust = (D.verified === true) && !demo;
+  var TRUST = {
+    badge: strongTrust ? "Independently verified" : (demo ? "Gate passed (demonstration)" : "Gate passed (unverified)"),
+    drawer: strongTrust
+      ? "An independent check confirmed this — the agent did not grade itself."
+      : (demo ? "A stand-in gate approved this — a demonstration, not a real independent check."
+              : "A separate gate recorded this as passed; this local view has not verified receipt signatures."),
+    statusExplain: strongTrust ? "An independent check confirmed the result."
+      : (demo ? "A stand-in gate approved this (demonstration)."
+              : "Recorded as passed by a separate gate (unverified local view)."),
+    sub: strongTrust ? "Every green stage was confirmed by an independent check, not by the agent itself."
+      : (demo ? "This is a demonstration — stages were approved by a stand-in gate, not a real independent check."
+              : "Local view — stage results come from receipts but are not verified here."),
+  };
+
+  // ---- hero ----
+  var runS=st(D.run_state);
+  var hero=document.getElementById("hero");
+  hero.style.setProperty("--state-accent",runS.c);
+  document.getElementById("runid").textContent=(D.organization_id||"—")+" / "+(D.project_id||"—")+" · run "+(D.run_id||"—");
+  var titleMap={SUCCEEDED:"Run complete",RUNNING:"Run in progress",FAILED:"Run blocked",PENDING:"Run queued",EMPTY:"No run yet"};
+  document.getElementById("statustitle").textContent=titleMap[D.run_state]||("Run "+runS.w);
+  document.getElementById("statussub").textContent="A pipeline of "+total+" agent stage"+(total===1?"":"s")+". "+TRUST.sub;
+  var sd=document.getElementById("statusdot"); sd.style.setProperty("--state-accent",runS.c); if(D.run_state==="RUNNING")sd.classList.add("pulse");
+  document.getElementById("statusword").textContent=runS.w;
+  document.getElementById("ring").style.setProperty("--p",pct);
+  document.getElementById("ringpct").innerHTML=pct+'<small>passed</small>';
+  document.getElementById("progresstxt").textContent=passed+" of "+total+" stages passed";
+  document.getElementById("receipts").textContent=(D.receipt_sequence!=null?D.receipt_sequence:"—");
+  document.getElementById("head").textContent=shortHash(D.receipt_head_hash);
+
+  var badges=document.getElementById("badges"); badges.innerHTML="";
+  function badge(cls,ic,txt){var s=document.createElement("span");s.className="badge "+cls;s.innerHTML=ic+"<span>"+esc(txt)+"</span>";badges.appendChild(s);}
+  if(D.demonstration) badge("warn",ICON.check,"Demonstration — no sandbox / not a real run");
+  if(D.verified===false) badge("info",'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16v.1" stroke-linecap="round"/></svg>',"Local view — not a signed attestation");
+  else if(D.verified===true) badge("ok",ICON.passed,"Verified receipts");
+  badge("info",'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12h8M8 16h5M8 8h8" stroke-linecap="round"/></svg>',"Read-only");
+
+  // ---- pipeline waves ----
+  var levels = (D.levels&&D.levels.length)? D.levels : [ (D.nodes||[]).map(function(n){return n.node_id;}) ];
+  var wavesEl=document.getElementById("waves"); wavesEl.innerHTML="";
+  levels.forEach(function(level,li){
+    var w=document.createElement("div"); w.className="wave";
+    var h=document.createElement("div"); h.className="wave-h"; h.textContent="Stage "+(li+1); w.appendChild(h);
+    level.forEach(function(id){ var n=nodesById[id]; if(n) w.appendChild(nodeCard(n)); });
+    wavesEl.appendChild(w);
+  });
+
+  function nodeCard(n){
+    var s=st(n.state);
+    var el=document.createElement("div"); el.className="node"; el.tabIndex=0; el.setAttribute("role","button");
+    el.setAttribute("aria-label",n.node_id+" — "+s.w); el.dataset.id=n.node_id;
+    el.style.setProperty("--sc",s.c); el.style.setProperty("--scb",s.b);
+    var pulse=(n.state==="RUNNING"||n.state==="STARTING")?" pulse":"";
+    var verified = n.state==="SUCCEEDED" ? '<div class="verified"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v5c0 4.6-3 7.6-7 9-4-1.4-7-4.4-7-9V6l7-3Z" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>'+esc(TRUST.badge)+'</span></div>' : "";
+    var effs=(n.required_effects||[]).map(function(e){return EFFECT[e]||e;}).join(" · ")||"—";
+    var arts=(n.artifact_digests||[]).length;
+    el.innerHTML =
+      (n.attempt>1?'<span class="attempt">try '+esc(String(n.attempt))+'</span>':"")+
+      '<div class="nh"><span class="chip'+pulse+'" style="--sc:'+s.c+';--scb:'+s.b+'"><span class="ic">'+stateIcon(n.state)+'</span>'+esc(s.w)+'</span></div>'+
+      '<div class="title">'+esc(friendly(n.node_id))+'</div>'+
+      '<div class="kind">'+esc(prettyKind(n.kind))+'</div>'+
+      '<div class="meta">'+
+        '<span class="tag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M8 7V5a4 4 0 0 1 8 0v2" /></svg>'+esc(ISO[n.isolation]||n.isolation)+'</span>'+
+        '<span class="tag">'+esc(effs)+'</span>'+
+        (arts?'<span class="tag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7l8-4 8 4-8 4-8-4Z"/><path d="M4 7v10l8 4 8-4V7" stroke-linejoin="round"/></svg>'+arts+' artifact'+(arts>1?"s":"")+'</span>':"")+
+      '</div>'+ verified;
+    el.addEventListener("click",function(){openDrawer(n);});
+    el.addEventListener("keydown",function(ev){if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();openDrawer(n);}});
+    return el;
+  }
+  function friendly(id){ return String(id).replace(/[_-]+/g," ").replace(/\b\w/g,function(c){return c.toUpperCase();}); }
+  function prettyKind(k){ return String(k||"").replace(/[_-]+/g," "); }
+
+  // ---- edges ----
+  function drawEdges(){
+    var svg=document.getElementById("edges"); var board=svg.parentNode; var br=board.getBoundingClientRect();
+    svg.setAttribute("viewBox","0 0 "+board.scrollWidth+" "+board.clientHeight);
+    svg.style.width=board.scrollWidth+"px"; svg.style.height=board.clientHeight+"px";
+    var p=""; (D.edges||[]).forEach(function(e){
+      var a=document.querySelector('.node[data-id="'+cssq(e[0])+'"]'); var b=document.querySelector('.node[data-id="'+cssq(e[1])+'"]');
+      if(!a||!b)return; var ar=a.getBoundingClientRect(),bx=b.getBoundingClientRect();
+      var x1=ar.right-br.left+board.scrollLeft, y1=ar.top-br.top+ar.height/2, x2=bx.left-br.left+board.scrollLeft, y2=bx.top-br.top+bx.height/2;
+      var mx=(x1+x2)/2; var cls=(nodesById[e[0]]&&nodesById[e[0]].state==="SUCCEEDED")?"done":"";
+      p+='<path class="'+cls+'" d="M'+x1+' '+y1+' C '+mx+' '+y1+' '+mx+' '+y2+' '+x2+' '+y2+'"/>';
+    });
+    svg.innerHTML=p;
+  }
+  function cssq(s){ return String(s).replace(/"/g,'\\"'); }
+
+  // ---- legend ----
+  var legend=document.getElementById("legend"); ["SUCCEEDED","RUNNING","GATING","READY","PENDING","FAILED"].forEach(function(k){
+    var s=st(k); var d=document.createElement("div"); d.className="lg";
+    d.innerHTML='<span class="sw" style="background:'+s.c+'"></span><span><b style="color:var(--ink)">'+s.w+'</b> — '+esc(s.d)+'</span>'; legend.appendChild(d);
+  });
+  document.getElementById("foot").textContent="Graph Arena · rendered from "+(D.receipt_sequence!=null?D.receipt_sequence:"?")+" receipts · this view cannot run, approve, or change the graph.";
+  if(!strongTrust){ var invP=document.querySelector(".invariant p"); if(invP) invP.textContent += (demo?" This run is a demonstration — no real independent check ran.":" This is a local view; receipts are shown but not verified here."); }
+
+  // ---- drawer ----
+  var drawer=document.getElementById("drawer"), scrim=document.getElementById("scrim"), lastFocus=null;
+  function field(l,v,ex){ return '<div class="field"><div class="l">'+esc(l)+'</div><div class="v">'+v+'</div>'+(ex?'<div class="explain">'+esc(ex)+'</div>':"")+'</div>'; }
+  function openDrawer(n){
+    var s=st(n.state); lastFocus=document.activeElement;
+    document.getElementById("dkind").textContent=prettyKind(n.kind);
+    document.getElementById("dtitle").textContent=friendly(n.node_id);
+    var route = n.route ? (n.route[0]+" · "+n.route[1]+" ("+n.route[2]+")"+(n.route[3]?" · fallback":"")) : null;
+    var body=
+      field("Status",'<span style="color:'+s.c+';font-weight:650">'+esc(s.w)+'</span>'+(n.attempt>1?' · attempt '+esc(String(n.attempt)):""),n.state==="SUCCEEDED"?TRUST.statusExplain:s.d)+
+      (n.state==="SUCCEEDED"?'<div class="verified" style="margin-bottom:17px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v5c0 4.6-3 7.6-7 9-4-1.4-7-4.4-7-9V6l7-3Z" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>'+esc(TRUST.drawer)+'</span></div>':"")+
+      field("What it may do",esc((n.required_effects||[]).map(function(e){return EFFECT[e]||e;}).join(" · ")||"—"),"The only actions this stage is authorized to take.")+
+      field("Isolation",esc(ISO[n.isolation]||n.isolation),"How strongly the stage is contained while it runs.")+
+      (route?field("Model route",esc(route)+(n.transport?' · '+esc(n.transport):""),"The provider/model this stage is bound to."):"")+
+      field("Deadline",(n.hard_deadline_ms?Math.round(n.hard_deadline_ms/1000)+" s":"—"),"Hard time limit before the stage is stopped.")+
+      artifactsBlock(n);
+    document.getElementById("dbody").innerHTML=body;
+    wireCopy();
+    scrim.classList.add("open"); drawer.classList.add("open"); drawer.focus();
+  }
+  function artifactsBlock(n){
+    var a=n.artifact_digests||[]; if(!a.length) return field("Artifacts","<span style='color:var(--ink-3)'>none yet</span>","Verified outputs this stage produced.");
+    var h=a.map(function(d){return '<div class="digest"><span>'+esc(shortHash(d))+'</span><button data-c="'+esc(d)+'">Copy</button></div>';}).join("");
+    return '<div class="field"><div class="l">Artifacts ('+a.length+')</div>'+h+'<div class="explain">Content-addressed outputs — the hash is the identity, so tampering is detectable.</div></div>';
+  }
+  function wireCopy(){ Array.prototype.forEach.call(document.querySelectorAll(".digest button"),function(b){ b.onclick=function(){ try{navigator.clipboard.writeText(b.getAttribute("data-c"));b.textContent="Copied";setTimeout(function(){b.textContent="Copy";},1200);}catch(e){} }; }); }
+  function closeDrawer(){ scrim.classList.remove("open"); drawer.classList.remove("open"); if(lastFocus)lastFocus.focus(); }
+  document.getElementById("dclose").onclick=closeDrawer; scrim.onclick=closeDrawer;
+  document.addEventListener("keydown",function(e){if(e.key==="Escape")closeDrawer();});
+
+  // ---- theme ----
+  var tb=document.getElementById("theme");
+  tb.onclick=function(){ var r=document.documentElement; var cur=r.getAttribute("data-theme"); var next= cur==="dark"?"light":(cur==="light"?"auto":"dark"); r.setAttribute("data-theme",next); setTimeout(drawEdges,30); };
+
+  requestAnimationFrame(drawEdges); window.addEventListener("resize",drawEdges);
+  document.getElementById("board")&&0;
+})();
+</script>
+</body>
+</html>

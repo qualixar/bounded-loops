@@ -13,7 +13,7 @@ from pathlib import Path
 import signal
 import subprocess
 import threading
-from typing import BinaryIO, Mapping, Sequence, cast
+from typing import BinaryIO, Callable, Mapping, Sequence, cast
 
 from bounded_loops.domain.models import TurnResult, TurnState
 
@@ -89,8 +89,13 @@ class ProcessTurn:
         redactions: Sequence[str] = (),
         input_text: str | None = None,
         terminate_grace_s: float = 0.25,
+        preexec_fn: Callable[[], None] | None = None,
     ) -> ProcessTurn:
-        """Start a turn in its own session so cancellation reaches descendants."""
+        """Start a turn in its own session so cancellation reaches descendants.
+
+        ``preexec_fn`` runs in the forked child before exec on POSIX (used to
+        apply per-process rlimits); it is ignored on non-POSIX platforms.
+        """
         if not argv:
             raise ValueError("argv must not be empty")
         if output_limit_bytes <= 0:
@@ -108,6 +113,7 @@ class ProcessTurn:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
+                preexec_fn=preexec_fn,
             )
         else:  # pragma: no cover - exercised on Windows workers
             process = subprocess.Popen(
