@@ -27,11 +27,25 @@ otel = [
     "opentelemetry-api>=1.27",
 ]
 dev = [
+    "build>=1.2",
     "mypy>=1.10",
-    "ruff>=0.5",
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "ruff>=0.5,<0.16",
     "types-PyYAML",
 ]
 mcp = [
+    "mcp>=1.27,<2",
+]
+
+[dependency-groups]
+dev = [
+    "build>=1.2",
+    "mypy>=1.10",
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "ruff>=0.5,<0.16",
+    "types-PyYAML",
     "mcp>=1.27,<2",
 ]
 
@@ -45,9 +59,17 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["bounded_loops"]
+artifacts = ["bounded_loops/graph/schemas/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m \"not network and not external_tool and not provider_smoke and not clean_install\""
+markers = [
+    "network: test may contact a network endpoint or invoke a tool that can do so",
+    "external_tool: test requires an optional dependency, binary, daemon, or externally managed runtime",
+    "provider_smoke: test contacts a real model or provider account and is always opt-in",
+    "clean_install: test builds or installs the package in a fresh environment and is always opt-in",
+]
 
 [tool.ruff]
 # Loop `seed/` directories hold DELIBERATELY-broken fixtures (dead imports,

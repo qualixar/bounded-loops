@@ -82,6 +82,27 @@ def test_unicode_evidence_survives_round_trip(tmp_path):
     assert recovered.verdict.detail == "文字化け test"
 
 
+def test_recorded_evidence_is_unchanged_after_source_mutates(tmp_path):
+    evidence = {"checks": [{"name": "pytest", "count": 1}]}
+    budget = {"tokens": {"per_lap": [100]}}
+    entry = LedgerEntry(
+        lap=1,
+        ts=UtcClock().now_iso(),
+        verdict=Verdict(passed=True, detail="ok", evidence=evidence),
+        decision="done",
+        budget_spent=budget,
+    )
+    ledger = FileLedger(tmp_path / "ledger.jsonl")
+    ledger.record(entry)
+
+    evidence["checks"][0]["count"] = 999
+    budget["tokens"]["per_lap"].append(999)
+
+    payload = json.loads(ledger.path().read_text().strip())
+    assert payload["verdict"]["evidence"] == {"checks": [{"name": "pytest", "count": 1}]}
+    assert payload["budget_spent"] == {"tokens": {"per_lap": [100]}}
+
+
 # --- path() -----------------------------------------------------------------
 
 def test_path_returns_the_ledger_file(tmp_path):

@@ -206,6 +206,16 @@ class TestVerdict:
         b = Verdict(passed=True, detail="different")
         assert a != b
 
+    def test_evidence_is_deeply_immutable_and_detached_from_source(self):
+        source = {"nested": {"items": ["original"]}}
+        verdict = Verdict(passed=True, detail="ok", evidence=source)
+
+        source["nested"]["items"].append("later")
+
+        assert verdict.evidence["nested"]["items"] == ("original",)
+        with pytest.raises(TypeError):
+            verdict.evidence["nested"]["new"] = "value"  # type: ignore[index]
+
 
 # ---- RunResult -----------------------------------------------------------
 
@@ -288,6 +298,16 @@ class TestLoopContext:
         ctx = self._make(workspace=Path("/some/dir"))
         assert isinstance(ctx.workspace, Path)
 
+    def test_env_is_deeply_immutable_and_detached_from_source(self):
+        source = {"provider": {"flags": ["safe"]}}
+        ctx = self._make(env=source)
+
+        source["provider"]["flags"].append("unsafe")
+
+        assert ctx.env["provider"]["flags"] == ("safe",)
+        with pytest.raises(TypeError):
+            ctx.env["provider"] = "changed"  # type: ignore[index]
+
 
 # ---- LedgerEntry ---------------------------------------------------------
 
@@ -356,6 +376,16 @@ class TestLedgerEntry:
         e = self._make(budget_spent={"laps": 3, "tokens": 4200, "wallclock_s": 18})
         assert e.budget_spent["laps"] == 3
         assert e.budget_spent["tokens"] == 4200
+
+    def test_budget_spent_is_deeply_immutable_and_detached_from_source(self):
+        source = {"tokens": {"by_model": [42]}}
+        entry = self._make(budget_spent=source)
+
+        source["tokens"]["by_model"].append(99)
+
+        assert entry.budget_spent["tokens"]["by_model"] == (42,)
+        with pytest.raises(TypeError):
+            entry.budget_spent["tokens"] = 100  # type: ignore[index]
 
 
 # ---- Outcome -------------------------------------------------------------

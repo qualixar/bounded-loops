@@ -31,7 +31,7 @@ except ImportError as _exc:  # pragma: no cover - only hit when the extra is abs
 from bounded_loops.application.manifest import load as manifest_load
 from bounded_loops.application.introspection import list_gates, show_loop
 from bounded_loops.application.loop_audit import audit_loops
-from bounded_loops.application.run_store import list_runs, write_run_metadata
+from bounded_loops.application.run_store import begin_run, list_runs, write_run_metadata
 from bounded_loops.cli import _find_repo_root
 from bounded_loops.composition import _approval_required, wire
 from bounded_loops.domain.errors import BoundedLoopsError, ManifestError
@@ -405,6 +405,13 @@ def bl_run(
         return {"status": "error", "error_type": "ManifestError", "message": str(e)}
 
     try:
+        if run_id is not None:
+            begin_run(
+                loop_dir=manifest.loop_dir,
+                run_id=run_id,
+                workspace=use_case._workspace,
+                ledger_path=use_case._deps.ledger.path(),
+            )
         outcome = use_case.run()
     except BoundedLoopsError as e:
         return {"status": "error", "error_type": "unexpected", "message": str(e)}

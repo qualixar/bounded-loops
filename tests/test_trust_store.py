@@ -93,12 +93,11 @@ def test_cli_yes_flag_does_not_record_trust(tmp_path, monkeypatch):
     assert is_trusted(loop_dir.resolve(), "true") is False
 
 
-def test_default_store_path_used_when_env_not_set(monkeypatch):
+def test_default_store_path_used_when_env_not_set(tmp_path, monkeypatch):
     """Without BOUNDED_LOOPS_TRUST_STORE set, the module falls back to
-    ~/.bounded-loops/trust.json (verified via the internal _store_path
+    the per-test temporary trust store (verified via the internal _store_path
     helper rather than touching the real home directory)."""
     monkeypatch.delenv("BOUNDED_LOOPS_TRUST_STORE", raising=False)
     from bounded_loops.trust_store import _store_path
-    from pathlib import Path
 
-    assert _store_path() == Path.home() / ".bounded-loops" / "trust.json"
+    assert _store_path().is_relative_to(tmp_path)

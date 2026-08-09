@@ -17,6 +17,8 @@ package __init__ also re-exports it; the module-level name
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
+from datetime import datetime, timezone
 import importlib.resources
 import json
 import re
@@ -28,9 +30,14 @@ from bounded_loops.application.doctor import diagnose_environment
 from bounded_loops.application.loop_audit import audit_contribution, audit_loops
 from bounded_loops.application.introspection import list_gates, show_loop
 from bounded_loops.application.run_store import (
+    begin_run,
     list_runs,
     read_run_receipt,
     write_run_metadata,
+)
+from bounded_loops.graph.application.runner_preflight import (
+    default_runner_profiles,
+    preflight_runners,
 )
 from bounded_loops import __version__
 from bounded_loops.composition import wire
@@ -236,6 +243,20 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
     doctor_parser.set_defaults(func=_cmd_doctor)
 
+    # ── bl preflight ─────────────────────────────────────────────────────────
+    preflight_parser = subparsers.add_parser(
+        "preflight",
+        help="Observe fixed runner version probes without authentication or routing.",
+    )
+    preflight_parser.add_argument(
+        "--profile",
+        choices=[profile.id for profile in default_runner_profiles()],
+        default=None,
+        help="Observe one known runner profile (default: inventory all profiles).",
+    )
+    preflight_parser.add_argument("--json", action="store_true", help="Emit the schema-v1 report as JSON.")
+    preflight_parser.set_defaults(func=_cmd_preflight)
+
     # ── bl runs ──────────────────────────────────────────────────────────────
     runs_parser = subparsers.add_parser(
         "runs",
@@ -362,6 +383,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 2
 
     try:
+        if args.run_id is not None:
+            begin_run(
+                loop_dir=manifest.loop_dir,
+                run_id=args.run_id,
+                workspace=use_case._workspace,
+                ledger_path=use_case._deps.ledger.path(),
+            )
         outcome = use_case.run()
     except BoundedLoopsError as e:
         _err(f"bl run: engine error — {e}")
@@ -615,6 +643,25 @@ def _cmd_gates(args: argparse.Namespace) -> int:
             deps = ", ".join(gate["dependencies"]) if gate["dependencies"] else "none"
             print(f"{gate['kind']:<20} {status:<10} deps={deps}  {gate['description']}")
     return 0
+
+
+def _cmd_preflight(args: argparse.Namespace) -> int:
+    """Observe known runner binaries without authenticating or routing them."""
+    report = preflight_runners(default_runner_profiles(), profile_id=args.profile)
+    payload = {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "runners": [asdict(runner) for runner in report.runners],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
+    else:
+        for runner in report.runners:
+            status = "observed" if runner.available and runner.version else "unavailable"
+            print(f"{runner.id:<20} {status:<12} admission={runner.admission} adapter={runner.adapter_status}")
+            if runner.failure_reason:
+                print(f"  {runner.failure_reason}")
+    return 1 if args.profile and not report.runners[0].available else 0
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:

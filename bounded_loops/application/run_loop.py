@@ -98,7 +98,7 @@ def _snap(deps: RunLoopDeps, lap: int) -> dict:
     No hasattr() fallback: a BudgetMeterPort implementor that omits snapshot()
     must fail loudly, not silently degrade the ledger entry.
     """
-    snap = deps.budget.snapshot()
+    snap = dict(deps.budget.snapshot())
     snap["laps"] = lap
     return snap
 
@@ -160,7 +160,7 @@ class RunLoopUseCase:
             trace_id=trace_id,
             env=self._env_passthrough,
         )
-        d.memory.load(ctx0)  # populate memory from STATE.md; result is advisory
+        memory_snapshot = d.memory.load(ctx0)
         lap = 0
 
         # ── OUTER LOOP ──
@@ -172,6 +172,7 @@ class RunLoopUseCase:
                 rung=rung,
                 trace_id=trace_id,
                 env=self._env_passthrough,
+                memory_snapshot=memory_snapshot,
             )
 
             # ── 1. Kill-switch check (highest priority) ──

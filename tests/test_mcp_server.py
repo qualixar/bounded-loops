@@ -275,13 +275,21 @@ def test_bl_run_with_run_id_writes_metadata(tmp_path):
         status=Status.DONE, reason="gate-passed", laps=1,
         ledger_path=tmp_path / ".bounded-loops" / "runs" / "r1" / "ledger.jsonl",
     )
+    fake_use_case._deps.ledger.path.return_value = fake_use_case.run.return_value.ledger_path
     with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
          patch("bounded_loops.mcp_server.wire", return_value=fake_use_case), \
+         patch("bounded_loops.mcp_server.begin_run") as mock_begin, \
          patch("bounded_loops.mcp_server.write_run_metadata") as mock_metadata:
         mcp_server.bl_run(str(tmp_path), confirm=False, run_id="r1")
         result = mcp_server.bl_run(str(tmp_path), confirm=True, run_id="r1")
     assert result["status"] == "DONE"
     assert result["run_id"] == "r1"
+    mock_begin.assert_called_once_with(
+        loop_dir=tmp_path,
+        run_id="r1",
+        workspace=fake_use_case._workspace,
+        ledger_path=fake_use_case.run.return_value.ledger_path,
+    )
     mock_metadata.assert_called_once()
 
 

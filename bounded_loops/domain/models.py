@@ -11,10 +11,28 @@ Rules:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal, Optional
+
+
+def _freeze_value(value: object) -> object:
+    """Detach and recursively freeze serializable domain metadata.
+
+    Frozen dataclasses protect attributes only. Evidence, execution environment,
+    and budget snapshots also cross runner and ledger boundaries, so retaining a
+    caller-owned mapping would let later mutation rewrite already-recorded facts.
+    """
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_value(child) for key, child in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_value(child) for child in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze_value(child) for child in value)
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +74,23 @@ class Status(str, Enum):
     PAUSE  = "PAUSE"
     KILLED = "KILLED"
     ERROR  = "ERROR"
+
+
+class TurnState(str, Enum):
+    """Controller-visible lifecycle state for one external runner turn."""
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    TIMED_OUT = "timed_out"
+    FAILED = "failed"
+
+
+class UsageState(str, Enum):
+    """Whether usage is trustworthy enough for a future budget policy."""
+
+    MEASURED = "measured"
+    UNKNOWN = "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +239,9 @@ class Verdict:
     detail:   str
     evidence: dict = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "evidence", _freeze_value(self.evidence))
+
 
 @dataclass(frozen=True)
 class RunResult:
@@ -231,6 +269,26 @@ class RunResult:
     agent_claimed_done: bool
     tokens:             int  = 0
     log:                str  = ""
+
+
+@dataclass(frozen=True)
+class TurnRequest:
+    """A V2 request to execute exactly one bounded loop turn."""
+
+    spec: Spec
+    context: LoopContext
+
+
+@dataclass(frozen=True)
+class TurnResult:
+    """Bounded, redacted terminal evidence emitted by a running turn."""
+
+    state: TurnState
+    returncode: int | None
+    stdout: str
+    stderr: str
+    output_truncated: bool
+    usage_state: UsageState = UsageState.UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -266,6 +324,10 @@ class LoopContext:
     rung:      Rung
     trace_id:  str
     env:       dict = field(default_factory=dict)
+    memory_snapshot: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "env", _freeze_value(self.env))
 
 
 @dataclass(frozen=True)
@@ -311,6 +373,9 @@ class LedgerEntry:
     verdict:      Verdict
     decision:     Literal["continue", "done", "halt", "pause", "killed", "error"]
     budget_spent: dict
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "budget_spent", _freeze_value(self.budget_spent))
 
 
 @dataclass(frozen=True)

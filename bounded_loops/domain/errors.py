@@ -47,6 +47,10 @@ class GateError(BoundedLoopsError):
     """
 
 
+class EvidenceError(BoundedLoopsError):
+    """Raised when controller evidence is corrupt, altered, or inconsistent."""
+
+
 class KillSwitchTripped(BoundedLoopsError):
     """
     Raised (or caught internally, depending on caller policy) when the

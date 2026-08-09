@@ -11,6 +11,8 @@ import sys
 import pytest
 from pathlib import Path
 
+from tests.loops._copied_loop import copy_loop
+
 LOOP_DIR = Path(__file__).parent.parent.parent / "loops" / "autogen-example"
 
 
@@ -43,13 +45,15 @@ def test_glue_module_path_resolves_to_a_real_file():
     assert (REPO_ROOT / (module_path.replace(".", "/") + ".py")).exists()
 
 
+@pytest.mark.external_tool
 def test_run_only_with_framework_installed(tmp_path):
     """The real end-to-end proof — SKIPPED, not failed, if agent_framework
     isn't installed. This is the test that actually proves the copy-paste
     payload works, for a CI runner that opts in with the framework
     installed."""
     pytest.importorskip("agent_framework")
-    result = subprocess.run([sys.executable, "-m", "bounded_loops.cli", "run", str(LOOP_DIR), "--yes"],
+    loop_dir = copy_loop(LOOP_DIR, tmp_path)
+    result = subprocess.run([sys.executable, "-m", "bounded_loops.cli", "run", str(loop_dir), "--yes"],
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0
     assert "DONE" in result.stdout

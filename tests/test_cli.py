@@ -15,6 +15,16 @@ from bounded_loops.domain.models import Status, Outcome
 from bounded_loops.domain.errors import ManifestError
 
 
+def test_preflight_json_reports_observation_without_claiming_admission(capsys):
+    code = main(["preflight", "--profile", "m4-external-review", "--json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["schema_version"] == 1
+    assert payload["runners"][0]["admission"] == "denied"
+    assert payload["runners"][0]["available"] is False
+
+
 # ── top-level CLI contract ───────────────────────────────────────────────────
 
 def test_version_flag_reports_release_version(capsys):
@@ -305,8 +315,10 @@ class TestBLRunFlagPassthrough:
         fake_use_case = MagicMock()
         fake_use_case.run.return_value = outcome
         fake_use_case._workspace = tmp_path / "workspace"
+        fake_use_case._deps.ledger.path.return_value = outcome.ledger_path
         with patch("bounded_loops.cli.manifest_load", return_value=fake_manifest), \
              patch("bounded_loops.cli._confirm_trust", return_value=True), \
+             patch("bounded_loops.cli.begin_run") as mock_begin, \
              patch("bounded_loops.cli.write_run_metadata") as mock_metadata, \
              patch("bounded_loops.cli.wire", return_value=fake_use_case) as mock_wire:
             code = main(["run", str(tmp_path), "--run-id", "r1", "--resume"])
@@ -319,6 +331,12 @@ class TestBLRunFlagPassthrough:
             keep_workspace=False,
             run_id="r1",
             resume=True,
+        )
+        mock_begin.assert_called_once_with(
+            loop_dir=tmp_path,
+            run_id="r1",
+            workspace=fake_use_case._workspace,
+            ledger_path=outcome.ledger_path,
         )
         mock_metadata.assert_called_once()
 

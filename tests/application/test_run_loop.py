@@ -5,6 +5,8 @@ Uses only Fake ports — zero real I/O.
 """
 from pathlib import Path
 
+import pytest
+
 from bounded_loops.application.run_loop import RunLoopUseCase, RunLoopDeps
 from bounded_loops.domain.errors import GateError, RunnerError
 from bounded_loops.domain.models import (
@@ -77,6 +79,25 @@ def test_done_on_first_lap_when_gate_passes():
     assert outcome.status == Status.DONE
     assert outcome.laps == 1
     assert outcome.reason == "gate-passed"
+
+
+def test_loaded_memory_snapshot_reaches_the_runner_context():
+    class SnapshotMemory(FakeMemory):
+        def load(self, ctx):
+            return "controller-approved memory"
+
+    class CapturingRunner:
+        seen_snapshot = ""
+
+        def run_once(self, spec, ctx):
+            self.seen_snapshot = ctx.memory_snapshot
+            return RunResult(changed=True, agent_claimed_done=False)
+
+    runner = CapturingRunner()
+    outcome = _use_case(deps=_deps(runner=runner, memory=SnapshotMemory())).run()
+
+    assert outcome.status is Status.DONE
+    assert runner.seen_snapshot == "controller-approved memory"
 
 
 def test_done_records_exactly_one_ledger_entry():
@@ -460,6 +481,28 @@ def test_tokens_accumulated_in_budget():
     uc.run()
     # spend called once per lap where runner executed (2 laps before DONE)
     assert budget.spent_calls == [42, 42]
+
+
+def test_budget_snapshot_is_not_mutated_when_lap_is_added():
+    class SharedSnapshotBudget(FakeBudget):
+        def __init__(self):
+            super().__init__()
+            self.snapshot_value = {"laps": 0, "tokens": 7, "nested": {"seen": []}}
+
+        def snapshot(self):
+            return self.snapshot_value
+
+    budget = SharedSnapshotBudget()
+    ledger = FakeLedger()
+    gate = FakeGate([Verdict(passed=True, detail="green")])
+    uc = _use_case(deps=_deps(gate=gate, budget=budget, ledger=ledger))
+
+    uc.run()
+
+    assert budget.snapshot_value == {"laps": 0, "tokens": 7, "nested": {"seen": []}}
+    assert ledger._entries[0].budget_spent["laps"] == 1
+    with pytest.raises(TypeError):
+        ledger._entries[0].budget_spent["nested"]["seen"] = ["rewritten"]  # type: ignore[index]
 
 
 def test_unique_trace_id_per_run():

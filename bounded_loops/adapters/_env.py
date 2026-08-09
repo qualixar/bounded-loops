@@ -23,6 +23,9 @@ import os
 # The six variables a subprocess genuinely needs. NEVER widen this without a
 # security review — every entry is a potential exfiltration channel.
 ENV_ALLOWLIST = frozenset({"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SHELL"})
+SENSITIVE_ENV_MARKERS = (
+    "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "API_KEY", "AUTH",
+)
 
 
 def _sanitize_path(path_value: str) -> str:
@@ -43,3 +46,12 @@ def build_subprocess_env(ctx_env: dict[str, str] | None = None) -> dict[str, str
     if ctx_env:
         return {**base, **ctx_env}
     return base
+
+
+def output_redactions(ctx_env: dict[str, str]) -> tuple[str, ...]:
+    """Values explicitly configured as secrets that must never reach logs."""
+    return tuple(
+        value
+        for name, value in ctx_env.items()
+        if value and any(marker in name.upper() for marker in SENSITIVE_ENV_MARKERS)
+    )

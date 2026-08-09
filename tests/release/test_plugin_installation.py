@@ -13,6 +13,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+pytestmark = pytest.mark.external_tool
+
 
 def test_codex_marketplace_install_in_isolated_home(tmp_path: Path) -> None:
     codex = shutil.which("codex")

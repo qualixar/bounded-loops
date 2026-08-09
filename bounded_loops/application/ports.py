@@ -23,6 +23,8 @@ from bounded_loops.domain.models import (
     LoopContext,
     RunResult,
     Spec,
+    TurnRequest,
+    TurnResult,
     Verdict,
 )
 
@@ -31,6 +33,22 @@ from bounded_loops.domain.models import (
 class RunnerPort(Protocol):
     """Execute ONE turn of the agent inside the workspace described by ctx."""
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult: ...
+
+
+@runtime_checkable
+class RunningTurnPort(Protocol):
+    """A controller-owned running turn; no adapter exposes its process."""
+
+    def poll(self) -> object: ...
+    def cancel(self, reason: str) -> None: ...
+    def wait(self, timeout_s: float | None = None) -> TurnResult: ...
+
+
+@runtime_checkable
+class RunnerPortV2(Protocol):
+    """Start one cancellable turn; the legacy RunnerPort remains supported."""
+
+    def start(self, request: TurnRequest) -> RunningTurnPort: ...
 
 
 @runtime_checkable

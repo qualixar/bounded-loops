@@ -120,6 +120,8 @@ def test_env_is_allowlisted_not_full_parent(tmp_path, monkeypatch):
     __import__("shutil").which("osv-scanner") is None,
     reason="osv-scanner not installed on this machine",
 )
+@pytest.mark.external_tool
+@pytest.mark.network
 def test_real_osv_scanner_on_a_clean_workspace(tmp_path):
     """Real, unmocked proof: a workspace with no manifest/
     lockfile hits the REAL exit code 128 (no packages found). The gate could

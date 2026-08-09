@@ -48,6 +48,7 @@ import os
 import queue
 
 from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env
+from bounded_loops.adapters.runners._prompt import with_memory_snapshot
 from bounded_loops.domain.errors import RunnerError
 from bounded_loops.domain.models import LoopContext, RunResult, Spec
 
@@ -66,7 +67,7 @@ def _build_prompt(spec: Spec, ctx: LoopContext) -> str:
     """
     prompt_file = ctx.workspace / "PROMPT.md"
     if prompt_file.exists():
-        return prompt_file.read_text(encoding="utf-8")
+        return with_memory_snapshot(prompt_file.read_text(encoding="utf-8"), ctx)
 
     lines = [
         f"# Goal\n{spec.goal}",
@@ -80,7 +81,7 @@ def _build_prompt(spec: Spec, ctx: LoopContext) -> str:
         lines.append("# Forbidden actions")
         for f in spec.forbid:
             lines.append(f"- {f}")
-    return "\n".join(lines)
+    return with_memory_snapshot("\n".join(lines), ctx)
 
 
 def _subprocess_target(module_path: str, function_name: str, prompt: str,
