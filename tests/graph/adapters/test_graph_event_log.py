@@ -122,3 +122,88 @@ def test_node_succeeded_rejects_isolation_without_provider(tmp_path):
     with pytest.raises(GraphIntegrityError, match="isolation"):
         store.append(head, _event("node.succeeded", "node-bad2", payload))
         store.replay_projection()
+
+
+# ── externalized gate verdict (F2 slice 3) ──────────────────────────────────────
+
+def _failed_payload(**extra: object) -> dict[str, object]:
+    return {"node_id": "probe", "state": "FAILED", "attempt": 1, "reason": "gate rejected", **extra}
+
+
+def test_node_succeeded_accepts_a_passed_gate_verdict(tmp_path):
+    store, head = _running_log(tmp_path)
+    payload = _succeeded_payload(verdict={"passed": True, "reason": "independent gate passed"})
+    store.append(head, _event("node.succeeded", "ok", payload))
+    assert store.replay_projection().state == "RUNNING"  # validates without raising
+
+
+def test_node_succeeded_accepts_a_verdict_with_an_evidence_digest(tmp_path):
+    store, head = _running_log(tmp_path)
+    payload = _succeeded_payload(
+        verdict={"passed": True, "reason": "audited", "evidence_digest": "sha256:" + "e" * 64}
+    )
+    store.append(head, _event("node.succeeded", "ok2", payload))
+    assert store.replay_projection().state == "RUNNING"
+
+
+def test_node_succeeded_rejects_a_verdict_that_contradicts_the_receipt(tmp_path):
+    """A node.succeeded may not carry a failed verdict — the externalized gate
+    decision must agree with the terminal state it rides on."""
+    store, head = _running_log(tmp_path)
+    payload = _succeeded_payload(verdict={"passed": False, "reason": "rejected"})
+    with pytest.raises(GraphIntegrityError, match="does not match the receipt"):
+        store.append(head, _event("node.succeeded", "bad", payload))
+        store.replay_projection()
+
+
+def test_node_failed_accepts_a_failed_gate_verdict(tmp_path):
+    store, head = _running_log(tmp_path)
+    payload = _failed_payload(verdict={"passed": False, "reason": "independent gate rejected output"})
+    store.append(head, _event("node.failed", "fail", payload))
+    assert store.replay_projection().state == "RUNNING"
+
+
+def test_node_failed_rejects_a_passed_verdict(tmp_path):
+    store, head = _running_log(tmp_path)
+    payload = _failed_payload(verdict={"passed": True, "reason": "passed"})
+    with pytest.raises(GraphIntegrityError, match="does not match the receipt"):
+        store.append(head, _event("node.failed", "badfail", payload))
+        store.replay_projection()
+
+
+def test_node_verdict_rejects_an_empty_reason(tmp_path):
+    store, head = _running_log(tmp_path)
+    payload = _succeeded_payload(verdict={"passed": True, "reason": ""})
+    with pytest.raises(GraphIntegrityError, match="verdict requires a non-empty reason"):
+        store.append(head, _event("node.succeeded", "emptyreason", payload))
+        store.replay_projection()
+
+
+def test_node_verdict_rejects_a_malformed_evidence_digest(tmp_path):
+    store, head = _running_log(tmp_path)
+    payload = _succeeded_payload(verdict={"passed": True, "reason": "ok", "evidence_digest": "not-a-digest"})
+    with pytest.raises(GraphIntegrityError, match="verdict evidence digest is invalid"):
+        store.append(head, _event("node.succeeded", "baddigest", payload))
+        store.replay_projection()
+
+
+def test_append_rejects_a_malformed_node_event_without_persisting_it(tmp_path):
+    """A malformed receipt must never become durable: append fails closed BEFORE the
+    write, so the log can never be a writable-but-unprojectable wedge."""
+    store, head = _running_log(tmp_path)
+    before = (tmp_path / "events.jsonl").read_text(encoding="utf-8")
+    bad = _succeeded_payload(verdict={"passed": False, "reason": "contradiction"})
+    with pytest.raises(GraphIntegrityError, match="does not match the receipt"):
+        store.append(head, _event("node.succeeded", "bad", bad))
+    assert (tmp_path / "events.jsonl").read_text(encoding="utf-8") == before  # not persisted
+    assert store.replay_projection().state == "RUNNING"  # log stays projectable
+
+
+def test_node_succeeded_rejects_a_non_hex_artifact_digest(tmp_path):
+    store, head = _running_log(tmp_path)
+    payload = {
+        "node_id": "probe", "state": "SUCCEEDED", "attempt": 1,
+        "artifact_digests": ["sha256:" + "z" * 64],
+    }
+    with pytest.raises(GraphIntegrityError, match="artifact digests"):
+        store.append(head, _event("node.succeeded", "nonhex", payload))

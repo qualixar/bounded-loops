@@ -74,6 +74,12 @@ class GraphEventLog:
             previous_hash=stored.previous_hash,
             event_hash=_hash(stored),
         )
+        # Validate the node-event payload BEFORE persisting: the append-only log must
+        # never durably hold a receipt that a later projection would reject (a
+        # malformed verdict/isolation would otherwise wedge the stream — writable but
+        # unprojectable). Fail closed here, before the write.
+        if stored.event.event_type in _NODE_EVENTS:
+            _validate_node_event(stored.event.event_type, stored.event.payload)
         self._append(_canonical(stored, include_hash=True))
         return stored
 
@@ -99,6 +105,11 @@ class GraphEventLog:
                 raise GraphIntegrityError(f"event hash mismatch at sequence {number}")
             if stored.event.idempotency_key in keys:
                 raise GraphIntegrityError(f"duplicate idempotency key at sequence {number}")
+            # Validate node-event payloads on READ too, so a hand-forged (but
+            # correctly re-hash-chained) log cannot slip a malformed receipt past a
+            # consumer that reads the raw stream rather than the projection.
+            if stored.event.event_type in _NODE_EVENTS:
+                _validate_node_event(stored.event.event_type, stored.event.payload)
             events.append(stored)
             keys.add(stored.event.idempotency_key)
             previous = stored.event_hash
@@ -167,7 +178,12 @@ def _validate_node_event(event_type: str, payload: Mapping[str, object]) -> None
         required.add("artifact_digests")
     elif event_type == "node.failed":
         required.add("reason")
-    allowed = required | ({"route", "transport", "isolation"} if event_type == "node.succeeded" else set())
+    if event_type == "node.succeeded":
+        allowed = required | {"route", "transport", "isolation", "verdict"}
+    elif event_type == "node.failed":
+        allowed = required | {"verdict"}
+    else:
+        allowed = required
     if not required <= set(payload) <= allowed:
         raise GraphIntegrityError(f"{event_type} payload has an invalid shape")
     if not isinstance(payload["node_id"], str) or not payload["node_id"]:
@@ -186,12 +202,24 @@ def _validate_node_event(event_type: str, payload: Mapping[str, object]) -> None
             raise GraphIntegrityError("node.succeeded transport identity is invalid")
         if "isolation" in payload:
             _validate_isolation(payload["isolation"])
+        if "verdict" in payload:
+            _validate_verdict(payload["verdict"], True)
     if event_type == "node.failed" and (not isinstance(payload["reason"], str) or not payload["reason"]):
         raise GraphIntegrityError("node.failed requires a non-empty reason")
+    if event_type == "node.failed" and "verdict" in payload:
+        _validate_verdict(payload["verdict"], False)
+
+
+_HEX_CHARS = frozenset("0123456789abcdef")
 
 
 def _is_digest(value: object) -> bool:
-    return isinstance(value, str) and value.startswith("sha256:") and len(value) == 71
+    return (
+        isinstance(value, str)
+        and value.startswith("sha256:")
+        and len(value) == 71
+        and all(character in _HEX_CHARS for character in value[7:])
+    )
 
 
 def _validate_route(value: object) -> None:
@@ -227,6 +255,22 @@ def _validate_isolation(value: object) -> None:
     for status in controls.values():
         if status not in _CONTROL_STATUSES:
             raise GraphIntegrityError("node.succeeded isolation control value is invalid")
+
+
+def _validate_verdict(value: object, expected_passed: bool) -> None:
+    """The externalized independent-gate verdict: the gate's boolean decision and a
+    non-empty reason, optionally bound to a content-addressed evidence digest. The
+    decision MUST agree with the receipt it rides on — a node.succeeded may carry only
+    a passed verdict and a node.failed only a failed one — so a receipt can never
+    record a gate verdict that contradicts the node's terminal state."""
+    if not isinstance(value, Mapping) or not ({"passed", "reason"} <= set(value) <= {"passed", "reason", "evidence_digest"}):
+        raise GraphIntegrityError("node verdict has an invalid shape")
+    if not isinstance(value["passed"], bool) or value["passed"] != expected_passed:
+        raise GraphIntegrityError("node verdict decision does not match the receipt")
+    if not isinstance(value["reason"], str) or not value["reason"]:
+        raise GraphIntegrityError("node verdict requires a non-empty reason")
+    if "evidence_digest" in value and not _is_digest(value["evidence_digest"]):
+        raise GraphIntegrityError("node verdict evidence digest is invalid")
 
 
 def _validate_identity(identity: GraphRunIdentity) -> None:

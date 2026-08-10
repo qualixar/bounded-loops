@@ -1,12 +1,15 @@
-"""F2 slice 2 — the human-approval bridge into the run controller.
+"""F2 slice 2 — the approval-node human-in-the-loop interrupt and its bridge.
 
-Proves the resolver's fail-closed, run-scoped contract AND the genuine path: a
-decision validated + committed through ``approvals.approve`` lets a paused run
-continue on ``resume()``.
+Covers the controller's behavior at a kind=approval node (pause, resume-approve,
+resume-reject, idempotent re-pause, fail-closed on a missing/raising resolver or a
+forged worker path) AND the genuine bridge: a decision validated + committed
+through ``approvals.approve`` lets a paused run continue on ``resume()``. The
+resolver's fail-closed, run-scoped contract is proved here too.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import pytest
@@ -20,6 +23,7 @@ from bounded_loops.graph.application.approvals import (
     approve,
     request_digest,
 )
+from bounded_loops.graph.application.arena_projection import latest_node_states
 from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
 from bounded_loops.graph.application.run_graph import (
     ApprovalOutcome,
@@ -30,7 +34,7 @@ from bounded_loops.graph.application.validate_graph import validate_authoring_gr
 from bounded_loops.graph.domain.approvals import ApprovalDecision, ApprovalRequest
 from bounded_loops.graph.domain.authoring import Effect
 from bounded_loops.graph.domain.errors import GraphIntegrityError
-from bounded_loops.graph.domain.events import GraphRunIdentity
+from bounded_loops.graph.domain.events import GraphRunIdentity, UnsignedGraphEvent
 
 
 def _d(character: str) -> str:
@@ -219,3 +223,177 @@ def test_a_committed_human_approval_lets_the_paused_run_resume_to_success(tmp_pa
     assert [event.event.event_type for event in resumed.event_log.replay()][-2:] == [
         "node.succeeded", "run.succeeded",
     ]
+
+
+# ── controller behavior at an approval node (pause / resume / fail-closed) ──────
+
+@dataclass
+class _FixedApprovalResolver:
+    """Always returns one outcome — tests controller handling independently of how
+    a decision is recorded."""
+
+    outcome: ApprovalOutcome
+
+    def resolve(self, *, identity, node, attempt) -> ApprovalOutcome:
+        return self.outcome
+
+
+class _RaisingApprovalResolver:
+    def resolve(self, *, identity, node, attempt) -> ApprovalOutcome:
+        raise RuntimeError("approval store is unavailable")
+
+
+def _raw_append(store, head, event_type, key, payload):
+    """Append one arbitrary, correctly hash-chained event — the tamperer's tool."""
+    return store.append(
+        head,
+        UnsignedGraphEvent(
+            event_id=f"event-{key}", idempotency_key=key, event_type=event_type,
+            timestamp="2026-08-08T00:00:00Z", actor="controller", payload=payload,
+        ),
+    ).event_hash
+
+
+def test_run_pauses_at_an_approval_node_awaiting_a_human_decision(tmp_path):
+    plan = _approval_plan()
+    controller = _controller(
+        plan, GraphEventLog(tmp_path / "events.jsonl", _identity(plan)), RecordedApprovalResolver(),
+    )
+
+    projection = controller.run()
+
+    # Not terminal: paused, durably, awaiting a human.
+    assert projection.state == "RUNNING"
+    types = [event.event.event_type for event in controller.event_log.replay()]
+    assert types == ["run.created", "run.started", "node.ready", "node.awaiting_approval"]
+    assert "run.succeeded" not in types and "run.failed" not in types
+
+
+def test_resume_completes_the_run_once_the_approval_is_granted(tmp_path):
+    plan = _approval_plan()
+    identity = _identity(plan)
+    _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), RecordedApprovalResolver()).run()
+
+    resumed = _controller(
+        plan, GraphEventLog(tmp_path / "events.jsonl", identity),
+        _FixedApprovalResolver(ApprovalOutcome.APPROVED),
+    )
+    projection = resumed.resume()
+
+    assert projection.state == "SUCCEEDED"
+    assert [event.event.event_type for event in resumed.event_log.replay()] == [
+        "run.created", "run.started", "node.ready", "node.awaiting_approval",
+        "node.succeeded", "run.succeeded",
+    ]
+
+
+def test_resume_fails_closed_after_a_recorded_rejection(tmp_path):
+    plan = _approval_plan()
+    identity = _identity(plan)
+    resolver = RecordedApprovalResolver()
+    _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), resolver).run()
+
+    resolver.record_rejection(identity=identity, node_id="approve", attempt=1)
+    resumed = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), resolver)
+    projection = resumed.resume()
+
+    assert projection.state == "FAILED"
+    events = resumed.event_log.replay()
+    assert [event.event.event_type for event in events] == [
+        "run.created", "run.started", "node.ready", "node.awaiting_approval",
+        "node.failed", "run.failed",
+    ]
+    assert events[-2].event.payload["reason"] == "human approval was rejected"
+
+
+def test_resume_without_a_decision_stays_paused_and_appends_no_duplicate_events(tmp_path):
+    plan = _approval_plan()
+    identity = _identity(plan)
+    resolver = RecordedApprovalResolver()
+    _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), resolver).run()
+
+    resumed = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), resolver)
+    projection = resumed.resume()
+
+    assert projection.state == "RUNNING"
+    # Idempotent re-pause: the re-driven prefix re-appends as head-safe no-ops.
+    assert [event.event.event_type for event in resumed.event_log.replay()] == [
+        "run.created", "run.started", "node.ready", "node.awaiting_approval",
+    ]
+
+
+def test_an_approval_node_without_a_resolver_fails_closed(tmp_path):
+    plan = _approval_plan()
+    controller = GraphRunController(
+        plan=plan, event_log=GraphEventLog(tmp_path / "events.jsonl", _identity(plan)),
+        worker=_Unused(), gate=_Unused(), artifact_verifier=_Unused(),
+        execution_policy=_Unused(), execution_enforcer=_Unused(),
+        timestamp=lambda: "2026-08-08T00:00:00Z",  # no approval_resolver
+    )
+
+    projection = controller.run()
+
+    assert projection.state == "FAILED"
+    events = controller.event_log.replay()
+    # Records the human gate BEFORE failing, so the receipt stays projectable.
+    assert [event.event.event_type for event in events] == [
+        "run.created", "run.started", "node.ready", "node.awaiting_approval",
+        "node.failed", "run.failed",
+    ]
+    assert events[-2].event.payload["reason"] == "approval node reached without an approval resolver"
+    assert latest_node_states(plan, events)["approve"]["state"] == "FAILED"
+
+
+def test_run_fails_closed_when_the_approval_resolver_raises(tmp_path):
+    plan = _approval_plan()
+    controller = _controller(
+        plan, GraphEventLog(tmp_path / "events.jsonl", _identity(plan)), _RaisingApprovalResolver(),
+    )
+
+    projection = controller.run()
+
+    # A resolver error must not escape uncaught, and must not advance: fail closed.
+    assert projection.state == "FAILED"
+    events = controller.event_log.replay()
+    assert [event.event.event_type for event in events] == [
+        "run.created", "run.started", "node.ready", "node.awaiting_approval",
+        "node.failed", "run.failed",
+    ]
+    assert events[-2].event.payload["reason"] == "approval resolver evaluation failed"
+    assert latest_node_states(plan, events)["approve"]["state"] == "FAILED"
+
+
+def test_a_preapproved_node_succeeds_without_pausing_and_stays_projectable(tmp_path):
+    plan = _approval_plan()
+    controller = _controller(
+        plan, GraphEventLog(tmp_path / "events.jsonl", _identity(plan)),
+        _FixedApprovalResolver(ApprovalOutcome.APPROVED),
+    )
+
+    projection = controller.run()
+
+    # Even with the decision already present (no pause), the node records the human
+    # gate first, so the terminal is AWAITING_APPROVAL -> SUCCEEDED and it projects.
+    assert projection.state == "SUCCEEDED"
+    events = controller.event_log.replay()
+    assert [event.event.event_type for event in events] == [
+        "run.created", "run.started", "node.ready", "node.awaiting_approval",
+        "node.succeeded", "run.succeeded",
+    ]
+    assert latest_node_states(plan, events)["approve"]["state"] == "SUCCEEDED"
+
+
+def test_resume_rejects_an_approval_node_forced_through_the_worker_path(tmp_path):
+    # An approval node is a human gate: it must never run a worker. A forged log that
+    # drives it READY -> STARTING (the worker path to a no-human SUCCEEDED) is rejected.
+    plan = _approval_plan()
+    identity = _identity(plan)
+    store = GraphEventLog(tmp_path / "events.jsonl", identity)
+    head = _raw_append(store, "0" * 64, "run.created", "run-1:run.created", {"state": "PENDING"})
+    head = _raw_append(store, head, "run.started", "run-1:run.started", {"state": "RUNNING"})
+    head = _raw_append(store, head, "node.ready", "approve:READY", {"node_id": "approve", "state": "READY", "attempt": 1})
+    _raw_append(store, head, "node.starting", "approve:STARTING", {"node_id": "approve", "state": "STARTING", "attempt": 1})
+
+    resumed = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), RecordedApprovalResolver())
+    with pytest.raises(GraphIntegrityError, match="bypassing the human gate"):
+        resumed.resume()

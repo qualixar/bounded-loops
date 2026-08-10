@@ -45,10 +45,16 @@ class WorkerResult:
 
 @dataclass(frozen=True)
 class GateVerdict:
-    """The result of a gate evaluated outside the producer interface."""
+    """The result of a gate evaluated outside the producer interface.
+
+    ``evidence_digest`` optionally binds the gate's full evaluation record (a
+    content-addressed artifact) so the verdict externalized into the receipt is
+    tamper-evident, not merely a human-readable reason.
+    """
 
     passed: bool
     reason: str
+    evidence_digest: str | None = None
 
 
 class NodeWorkerPort(Protocol):
@@ -277,6 +283,8 @@ class GraphRunController:
                     return self._fail_node(states, node_id, "independent gate evaluation failed")
                 if not isinstance(verdict, GateVerdict):
                     return self._fail_node(states, node_id, "independent gate returned an invalid verdict")
+                if not self._verdict_is_wellformed(verdict):
+                    return self._fail_node(states, node_id, "independent gate returned an invalid verdict")
                 if verdict.passed:
                     states[node_id] = NodeState.SUCCEEDED
                     self._append_node(
@@ -284,12 +292,16 @@ class GraphRunController:
                         "node.succeeded",
                         NodeState.SUCCEEDED,
                         artifact_digests=list(result.output_artifact_digests),
+                        verdict=self._verdict_body(verdict),
                         **({"route": self._route_payload(expected_route)} if expected_route else {}),
                         **({"transport": expected_transport} if expected_transport else {}),
                         **self._isolation_payload(result),
                     )
                     continue
-                return self._fail_node(states, node_id, "independent gate rejected output")
+                return self._fail_node(
+                    states, node_id, "independent gate rejected output",
+                    verdict=self._verdict_body(verdict),
+                )
 
     def _resolve_approval(
         self, states: dict[str, NodeState], node_id: str, node: PlannedNode,
@@ -387,11 +399,45 @@ class GraphRunController:
             "policy_digest": route.policy_digest,
         }
 
+    @staticmethod
+    def _verdict_is_wellformed(verdict: GateVerdict) -> bool:
+        """A gate that returns an empty reason or a non-digest evidence reference is
+        malformed; the controller fails the node closed here rather than let a bad
+        verdict reach (and be rejected by) the durable log as an uncaught error."""
+        if not isinstance(verdict.passed, bool):
+            return False
+        if not isinstance(verdict.reason, str) or not verdict.reason:
+            return False
+        digest = verdict.evidence_digest
+        if digest is not None and not (
+            isinstance(digest, str)
+            and digest.startswith("sha256:")
+            and len(digest) == 71
+            and all(character in "0123456789abcdef" for character in digest[7:])
+        ):
+            return False
+        return True
+
+    @staticmethod
+    def _verdict_body(verdict: GateVerdict) -> dict[str, object]:
+        """The externalized independent-gate verdict for the durable receipt.
+
+        Records the gate's boolean decision and reason (and, when the gate supplies
+        one, a content-addressed evidence digest) so a node's terminal state is
+        gate-attested in the log, never inferred from the producer.
+        """
+        body: dict[str, object] = {"passed": verdict.passed, "reason": verdict.reason}
+        if verdict.evidence_digest is not None:
+            body["evidence_digest"] = verdict.evidence_digest
+        return body
+
     def _fail_node(
         self, states: dict[str, NodeState], node_id: str, reason: str,
+        *, verdict: dict[str, object] | None = None,
     ) -> GraphRunProjection:
         states[node_id] = NodeState.FAILED
-        self._append_node(node_id, "node.failed", NodeState.FAILED, reason=reason)
+        extra = {"verdict": verdict} if verdict is not None else {}
+        self._append_node(node_id, "node.failed", NodeState.FAILED, reason=reason, **extra)
         self._append("run.failed", "run.failed", {"state": "FAILED"})
         return self.event_log.replay_projection()
 
