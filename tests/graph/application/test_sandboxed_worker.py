@@ -26,6 +26,7 @@ from bounded_loops.graph.application.sandboxed_worker import (
 )
 from bounded_loops.graph.domain.artifacts import ArtifactAccess, ArtifactRef
 from bounded_loops.graph.domain.authoring import Effect, IsolationLevel
+from bounded_loops.graph.adapters.enforcement.provider import Control
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 
 _ORG, _PROJ = "org-1", "proj-1"
@@ -124,6 +125,16 @@ def test_live_sandbox_denies_network_and_isolates_home(tmp_path):
     # HOME must be the per-node isolated home, never the operator's real HOME.
     assert payload["home"] and "/work/run-1/probe-" in payload["home"]
     assert worker.mechanism_for("probe") in {"seatbelt", "bubblewrap"}
+    # E3 receipt: the honest provider id + per-dimension controls are published.
+    assert worker.provider_for("probe") == "native"
+    controls = worker.controls_for("probe")
+    assert controls is not None
+    assert controls.net is Control.ENFORCED and controls.fs_write is Control.ENFORCED
+    assert controls.kernel is Control.NOT_ENFORCED  # native Seatbelt shares the host kernel
+    assert result.isolation_provider_id == "native"
+    assert result.enforced_controls is not None
+    assert result.enforced_controls["net"] == "enforced"
+    assert result.enforced_controls["kernel"] == "not_enforced"
 
 
 @_needs_native

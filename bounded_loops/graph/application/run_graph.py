@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Callable, Mapping, Protocol
 
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
 from bounded_loops.graph.application.execution_policy import (
@@ -21,11 +21,19 @@ from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
 @dataclass(frozen=True)
 class WorkerResult:
-    """Declared immutable artifacts produced by one worker attempt."""
+    """Declared immutable artifacts produced by one worker attempt.
+
+    ``isolation_provider_id`` and ``enforced_controls`` are the honest per-node
+    isolation receipt — which provider ran the node and the per-dimension controls
+    it actually enforced ({net, fs_write, fs_read, pid, user, kernel, egress}).
+    They are optional so a gate or a legacy worker may return only digests.
+    """
 
     output_artifact_digests: tuple[str, ...]
     observed_route: ResolvedRoute | None = None
     observed_transport: str | None = None
+    isolation_provider_id: str | None = None
+    enforced_controls: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -169,6 +177,7 @@ class GraphRunController:
                         artifact_digests=list(result.output_artifact_digests),
                         **({"route": self._route_payload(expected_route)} if expected_route else {}),
                         **({"transport": expected_transport} if expected_transport else {}),
+                        **self._isolation_payload(result),
                     )
                     continue
                 return self._fail_node(states, node_id, "independent gate rejected output")
@@ -202,6 +211,22 @@ class GraphRunController:
     def _validate_observed_transport(expected: str | None, observed: str | None) -> None:
         if expected != observed:
             raise GraphIntegrityError("worker transport does not match immutable execution plan")
+
+    @staticmethod
+    def _isolation_payload(result: WorkerResult) -> dict[str, object]:
+        """The per-node isolation receipt for the durable ``node.succeeded`` event.
+
+        Empty when the worker did not report one (e.g. a legacy worker), so the
+        event schema stays backward compatible.
+        """
+        if not result.isolation_provider_id or result.enforced_controls is None:
+            return {}
+        return {
+            "isolation": {
+                "provider_id": result.isolation_provider_id,
+                "controls": {str(dim): str(status) for dim, status in dict(result.enforced_controls).items()},
+            }
+        }
 
     @staticmethod
     def _route_payload(route: ResolvedRoute) -> dict[str, object]:

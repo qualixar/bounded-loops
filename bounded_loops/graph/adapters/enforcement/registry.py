@@ -74,6 +74,7 @@ def default_registry(
     container_image: str | None = None,
     microvm_transport: RemoteExecTransport | None = None,
     openshell_transport: RemoteExecTransport | None = None,
+    include_host_managed: bool = True,
 ) -> IsolationProviderRegistry:
     """Assemble the full fail-closed provider chain (ADR-12 D1).
 
@@ -89,14 +90,21 @@ def default_registry(
     provider whose backend is not configured declines fail-closed, so the default
     chain is safe to assemble in full on any host; a deployment supplies the
     image / transports to light up the extra tiers.
+
+    ``include_host_managed`` gates the ambient-sandbox provider. It runs a live
+    negative probe (a child that attempts an out-of-workspace write + a loopback
+    socket) on every selection, so deferring to the host is a DELIBERATE
+    deployment choice ("this engine runs inside Claude Code / Codex / OpenShell —
+    do not double-sandbox"), not an always-on side effect. The node worker leaves
+    it off by default and always applies its own isolation; a host-embedded
+    deployment injects a registry with it enabled.
     """
     caps = capabilities if capabilities is not None else probe_platform()
-    return IsolationProviderRegistry(
-        [
-            HostManagedProvider(),
-            NativeProvider(caps),
-            ContainerProvider(caps, image=container_image),
-            MicroVMProvider(transport=microvm_transport),
-            OpenShellProvider(transport=openshell_transport),
-        ]
-    )
+    providers: list[IsolationProvider] = []
+    if include_host_managed:
+        providers.append(HostManagedProvider())
+    providers.append(NativeProvider(caps))
+    providers.append(ContainerProvider(caps, image=container_image))
+    providers.append(MicroVMProvider(transport=microvm_transport))
+    providers.append(OpenShellProvider(transport=openshell_transport))
+    return IsolationProviderRegistry(providers)

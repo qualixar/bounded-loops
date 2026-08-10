@@ -166,7 +166,7 @@ def _validate_node_event(event_type: str, payload: Mapping[str, object]) -> None
         required.add("artifact_digests")
     elif event_type == "node.failed":
         required.add("reason")
-    allowed = required | ({"route", "transport"} if event_type == "node.succeeded" else set())
+    allowed = required | ({"route", "transport", "isolation"} if event_type == "node.succeeded" else set())
     if not required <= set(payload) <= allowed:
         raise GraphIntegrityError(f"{event_type} payload has an invalid shape")
     if not isinstance(payload["node_id"], str) or not payload["node_id"]:
@@ -183,6 +183,8 @@ def _validate_node_event(event_type: str, payload: Mapping[str, object]) -> None
             _validate_route(payload["route"])
         if "transport" in payload and (not isinstance(payload["transport"], str) or not payload["transport"]):
             raise GraphIntegrityError("node.succeeded transport identity is invalid")
+        if "isolation" in payload:
+            _validate_isolation(payload["isolation"])
     if event_type == "node.failed" and (not isinstance(payload["reason"], str) or not payload["reason"]):
         raise GraphIntegrityError("node.failed requires a non-empty reason")
 
@@ -200,6 +202,25 @@ def _validate_route(value: object) -> None:
         raise GraphIntegrityError("node.succeeded route fallback is invalid")
     if not _is_digest(value["policy_digest"]):
         raise GraphIntegrityError("node.succeeded route policy digest is invalid")
+
+
+_CONTROL_STATUSES = frozenset({"enforced", "not_enforced", "unknown"})
+
+
+def _validate_isolation(value: object) -> None:
+    """The per-node isolation receipt: a provider id and a per-dimension control
+    matrix whose every value is a known control status."""
+    if not isinstance(value, Mapping) or set(value) != {"provider_id", "controls"}:
+        raise GraphIntegrityError("node.succeeded isolation has an invalid shape")
+    provider_id = value["provider_id"]
+    if not isinstance(provider_id, str) or not provider_id:
+        raise GraphIntegrityError("node.succeeded isolation provider_id is invalid")
+    controls = value["controls"]
+    if not isinstance(controls, Mapping) or not controls:
+        raise GraphIntegrityError("node.succeeded isolation controls are invalid")
+    for dimension, status in controls.items():
+        if not isinstance(dimension, str) or not dimension or status not in _CONTROL_STATUSES:
+            raise GraphIntegrityError("node.succeeded isolation control value is invalid")
 
 
 def _validate_identity(identity: GraphRunIdentity) -> None:

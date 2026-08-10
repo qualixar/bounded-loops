@@ -65,3 +65,45 @@ def test_graph_event_log_rejects_node_transitions_before_run_started(tmp_path):
 
     with pytest.raises(GraphIntegrityError, match="RUNNING"):
         store.replay_projection()
+
+
+def _running_log(tmp_path):
+    store = GraphEventLog(tmp_path / "events.jsonl", _identity())
+    created = store.append("0" * 64, _event("run.created", "created", {"state": "PENDING"}))
+    started = store.append(created.event_hash, _event("run.started", "started", {"state": "RUNNING"}))
+    return store, started.event_hash
+
+
+def _succeeded_payload(**extra: object) -> dict[str, object]:
+    return {
+        "node_id": "probe", "state": "SUCCEEDED", "attempt": 1,
+        "artifact_digests": ["sha256:" + "a" * 64], **extra,
+    }
+
+
+def test_node_succeeded_accepts_isolation_receipt(tmp_path):
+    store, head = _running_log(tmp_path)
+    payload = _succeeded_payload(
+        isolation={
+            "provider_id": "native",
+            "controls": {"net": "enforced", "fs_write": "enforced", "kernel": "not_enforced"},
+        }
+    )
+    store.append(head, _event("node.succeeded", "node-ok", payload))
+    assert store.replay_projection().state == "RUNNING"  # validates without raising
+
+
+def test_node_succeeded_rejects_unknown_control_status(tmp_path):
+    store, head = _running_log(tmp_path)
+    payload = _succeeded_payload(isolation={"provider_id": "native", "controls": {"net": "sometimes"}})
+    with pytest.raises(GraphIntegrityError, match="isolation"):
+        store.append(head, _event("node.succeeded", "node-bad", payload))
+        store.replay_projection()
+
+
+def test_node_succeeded_rejects_isolation_without_provider(tmp_path):
+    store, head = _running_log(tmp_path)
+    payload = _succeeded_payload(isolation={"controls": {"net": "enforced"}})
+    with pytest.raises(GraphIntegrityError, match="isolation"):
+        store.append(head, _event("node.succeeded", "node-bad2", payload))
+        store.replay_projection()

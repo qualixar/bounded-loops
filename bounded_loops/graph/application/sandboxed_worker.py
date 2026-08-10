@@ -10,8 +10,8 @@ own node.
 Flow for one node attempt:
 
 1. Re-validate the execution envelope (defense in depth).
-2. Ask the capability matrix which mechanism can honestly deliver the node's
-   isolation here; fail closed if none can.
+2. Ask the isolation-provider registry which provider can honestly deliver the
+   node's isolation tier here; fail closed if none can.
 3. Build a private, per-node workspace (isolated ``outputs/`` ``inputs/``
    ``home/`` ``tmp/``) and materialize declared input artifacts read-only.
 4. Wrap the resolved argv in the selected sandbox (network denied, writes
@@ -44,7 +44,10 @@ from bounded_loops.adapters._env import build_subprocess_env
 from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn
 from bounded_loops.domain.models import TurnState
 from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
-from bounded_loops.graph.adapters.enforcement.sandbox import wrap_argv
+from bounded_loops.graph.adapters.enforcement.provider import EnforcedControls
+from bounded_loops.graph.adapters.enforcement.providers.remote_exec import RemoteExecTransport
+from bounded_loops.graph.adapters.enforcement.registry import IsolationProviderRegistry, default_registry
+from bounded_loops.graph.adapters.enforcement.sandbox import SEATBELT_BINARY
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.application.execution_policy import (
     ExecutionEnvelope,
@@ -60,7 +63,7 @@ from bounded_loops.graph.application.workspace_promotion import (
 )
 from bounded_loops.graph.domain.artifacts import ArtifactAccess
 from bounded_loops.graph.domain.connections import ResolvedRoute
-from bounded_loops.graph.domain.errors import GraphIntegrityError
+from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
@@ -68,6 +71,10 @@ _DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024
 _DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024
 _DEFAULT_DEADLINE_S = 30.0
 _UNSAFE_PATH_COMPONENT = re.compile(r"[^A-Za-z0-9._-]")
+# The concrete OS mechanism that actually launched, read from the wrapped
+# ``argv[0]`` (ground truth) — the human/receipt mechanism label that sits
+# alongside the provider id and the per-dimension controls.
+_MECHANISM_BY_ARGV0 = {SEATBELT_BINARY: "seatbelt", "bwrap": "bubblewrap", "unshare": "unshare_net", "docker": "docker"}
 
 
 def _safe_component(value: str) -> str:
@@ -127,19 +134,52 @@ class SandboxedNodeWorker:
     sensitivity: str = "internal"
     retention_class: str = "standard"
     apply_rlimits: bool = True
+    isolation_registry: IsolationProviderRegistry | None = None
+    container_image: str | None = None
+    microvm_transport: RemoteExecTransport | None = None
+    openshell_transport: RemoteExecTransport | None = None
     _mechanism_used: dict[str, str] = field(default_factory=dict, compare=False)
+    _provider_used: dict[str, str] = field(default_factory=dict, compare=False)
+    _controls_used: dict[str, EnforcedControls] = field(default_factory=dict, compare=False)
+    _registry_cache: dict[str, IsolationProviderRegistry] = field(default_factory=dict, compare=False)
 
     def mechanism_for(self, node_id: str) -> str | None:
-        """The sandbox mechanism actually used for *node_id* (for receipts)."""
+        """The concrete OS mechanism actually launched for *node_id* (seatbelt /
+        bubblewrap / unshare_net / docker), or the provider id for the floor."""
         return self._mechanism_used.get(node_id)
+
+    def provider_for(self, node_id: str) -> str | None:
+        """The isolation provider selected for *node_id* (native / container / …)."""
+        return self._provider_used.get(node_id)
+
+    def controls_for(self, node_id: str) -> EnforcedControls | None:
+        """The per-dimension controls actually enforced for *node_id* (receipts)."""
+        return self._controls_used.get(node_id)
+
+    def _registry_for(self, image: str | None) -> IsolationProviderRegistry:
+        """The isolation registry to select from. An injected registry is used
+        verbatim; otherwise a default chain is built and cached per container
+        image. host_managed is left OFF here — the worker always applies its own
+        isolation unless a deployment injects a host-deferring registry."""
+        if self.isolation_registry is not None:
+            return self.isolation_registry
+        key = image if image is not None else (self.container_image or "")
+        registry = self._registry_cache.get(key)
+        if registry is None:
+            registry = default_registry(
+                self.capabilities,
+                container_image=image if image is not None else self.container_image,
+                microvm_transport=self.microvm_transport,
+                openshell_transport=self.openshell_transport,
+                include_host_managed=False,
+            )
+            self._registry_cache[key] = registry
+        return registry
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
     ) -> WorkerResult:
         validate_execution_envelope(plan, node, envelope)
-        mechanism, reason = self.capabilities.select_mechanism(envelope.isolation, envelope.network_mode)
-        if mechanism is None:
-            raise GraphIntegrityError(f"node {node.node_id!r} cannot be sandboxed here: {reason}")
 
         spec = self.resolver.resolve(node)
         if not isinstance(spec, NodeExecutionSpec):
@@ -168,6 +208,23 @@ class SandboxedNodeWorker:
             if os.path.islink(directory) or not os.path.realpath(directory).startswith(resolved_root + os.sep):
                 raise GraphIntegrityError("per-node workspace escaped the workspace root")
 
+        # Select an isolation PROVIDER that can honestly deliver this node's tier
+        # here, or fail closed. The engine never hardcodes a mechanism; the chosen
+        # provider publishes the real per-dimension controls the receipt records.
+        # The live workspace is passed so a probe-backed provider (when enabled)
+        # tests exactly the confinement the node would inherit.
+        registry = self._registry_for(spec.container_image)
+        try:
+            outcome = registry.select(
+                tier=envelope.isolation, network_mode=envelope.network_mode, workspace=outputs,
+            )
+        except GraphValidationError as exc:
+            raise GraphIntegrityError(
+                f"node {node.node_id!r} cannot be isolated here: {exc.message}"
+            ) from exc
+        provider = outcome.provider
+        selection = outcome.selection
+
         if spec.inputs:
             materialize_workspace_inputs(
                 inputs, spec.inputs, ArtifactAccess(self.organization_id, self.project_id), self.artifact_store,
@@ -179,20 +236,30 @@ class SandboxedNodeWorker:
         env["BL_GRAPH_INPUTS"] = str(inputs.resolve())
         env["BL_GRAPH_OUTPUTS"] = str(outputs.resolve())
 
-        wrapped = wrap_argv(
-            mechanism,
+        launch = provider.build_launch(
             inner_argv=spec.argv,
             workspace=outputs,
             home=home,
             tmpdir=tmp,
+            tier=envelope.isolation,
             network_mode=envelope.network_mode,
-            image=spec.container_image,
         )
+        if launch.kind != "local":
+            # Remote isolation (microvm / openshell) needs the C1 remote-staging
+            # bridge: ship the content-addressed workspace to the backend, run, and
+            # fetch declared outputs back through the egress broker. Provider
+            # SELECTION and control publishing are wired here in E3; remote dispatch
+            # lands with C1. Fail closed until then — never silently drop a remote
+            # node onto the local host.
+            raise GraphIntegrityError(
+                f"node {node.node_id!r} selected the {selection.provider_id!r} remote isolation provider, "
+                "whose execution bridge is delivered in C1 (remote workspace staging + egress broker)"
+            )
 
         deadline_s = (node.hard_deadline_ms / 1000.0) if node.hard_deadline_ms else self.default_deadline_s
         preexec = _rlimit_preexec(int(math.ceil(deadline_s)) + 1) if self.apply_rlimits else None
         turn = ProcessTurn.start(
-            wrapped,
+            list(launch.argv),
             cwd=outputs,
             env=env,
             output_limit_bytes=self.max_output_bytes,
@@ -221,10 +288,18 @@ class SandboxedNodeWorker:
             outputs, policy, cast(ArtifactWriterPort, self.artifact_store),
         )
         digests = tuple(record.digest for record in records)
-        self._mechanism_used[node.node_id] = mechanism.value
+        self._mechanism_used[node.node_id] = _MECHANISM_BY_ARGV0.get(launch.argv[0], selection.provider_id)
+        self._provider_used[node.node_id] = selection.provider_id
+        self._controls_used[node.node_id] = selection.controls
 
         route, transport = self._route_for(plan, node)
-        return WorkerResult(digests, route, transport)
+        return WorkerResult(
+            digests,
+            route,
+            transport,
+            isolation_provider_id=selection.provider_id,
+            enforced_controls=selection.controls.as_dict(),
+        )
 
     def _route_for(
         self, plan: ExecutionPlan, node: PlannedNode,

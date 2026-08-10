@@ -152,7 +152,14 @@ def _build_policy(plan: ExecutionPlan) -> ConfiguredExecutionPolicy:
     return ConfiguredExecutionPolicy(envelopes)
 
 
-def _persist_run_dir(out_dir: Path, plan: ExecutionPlan, mechanism: str) -> None:
+def _persist_run_dir(
+    out_dir: Path,
+    plan: ExecutionPlan,
+    mechanism: str,
+    *,
+    provider_id: str | None = None,
+    controls: dict[str, str] | None = None,
+) -> None:
     (out_dir / "plan.json").write_bytes(plan.canonical_json)
     (out_dir / "manifest.yaml").write_text(SANDBOX_DEMO_YAML, encoding="utf-8")
     (out_dir / "connections.json").write_text("[]", encoding="utf-8")
@@ -164,6 +171,8 @@ def _persist_run_dir(out_dir: Path, plan: ExecutionPlan, mechanism: str) -> None
         "run_id": _RUN_ID,
         "sandbox_execution": True,
         "sandbox_mechanism": mechanism,
+        "sandbox_provider": provider_id,
+        "isolation_controls": controls,
         "platform": sys.platform,
     }
     (out_dir / "run-meta.json").write_text(json.dumps(run_meta, sort_keys=True), encoding="utf-8")
@@ -210,7 +219,10 @@ def run_sandbox_demo(out_dir: Path, *, json_out: bool = False) -> int:
     )
     run_projection = controller.run()
     used = worker.mechanism_for("sandbox_probe") or mechanism.value
-    _persist_run_dir(out_dir, plan, used)
+    provider_id = worker.provider_for("sandbox_probe")
+    node_controls = worker.controls_for("sandbox_probe")
+    controls_dict = node_controls.as_dict() if node_controls is not None else None
+    _persist_run_dir(out_dir, plan, used, provider_id=provider_id, controls=controls_dict)
 
     arena = read_arena_projection(
         plan, event_log,
@@ -223,6 +235,8 @@ def run_sandbox_demo(out_dir: Path, *, json_out: bool = False) -> int:
         print(json.dumps({
             "sandbox_execution": True,
             "mechanism": used,
+            "provider": provider_id,
+            "controls": controls_dict,
             "platform": sys.platform,
             "run_state": run_projection.state,
             "run_id": _RUN_ID,
@@ -234,7 +248,10 @@ def run_sandbox_demo(out_dir: Path, *, json_out: bool = False) -> int:
     print("Sandboxed graph run — REAL execution, no Docker required")
     print("=" * 62)
     print(f"platform  : {sys.platform}")
+    print(f"provider  : {provider_id}  (selected by the fail-closed isolation registry)")
     print(f"mechanism : {used}  (network OS-denied, writes confined to the workspace)")
+    if controls_dict is not None:
+        print(f"controls  : {' '.join(f'{dim}={status}' for dim, status in controls_dict.items())}")
     print(f"run_state : {run_projection.state}")
     for n in arena.nodes:
         mark = "OK " if n.state == "SUCCEEDED" else "!! "

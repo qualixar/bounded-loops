@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities, probe_platform
+from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
 from bounded_loops.graph.adapters.enforcement.provider import (
     Control,
     EnforcedControls,
