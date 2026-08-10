@@ -316,3 +316,140 @@ def test_controller_denies_unenforced_environment_before_worker_invocation(tmp_p
     assert controller.run().state == "FAILED"
     assert worker.calls == []
     assert controller.event_log.replay()[-2].event.payload["reason"] == "execution environment denied worker"
+
+
+# ── F2: durable resume / crash recovery ────────────────────────────────────────
+
+class _SimulatedCrash(BaseException):
+    """A BaseException (NOT Exception), so the controller's ``except Exception``
+    does not catch it — models a hard process crash mid-node (``node.running`` is
+    already persisted, no terminal node event is written)."""
+
+
+class _CrashWorker:
+    def __init__(self, crash_on: str) -> None:
+        self._crash_on = crash_on
+
+    def execute(self, *, plan, node, envelope) -> WorkerResult:
+        if node.node_id == self._crash_on:
+            raise _SimulatedCrash("simulated process crash")
+        return WorkerResult(
+            ("sha256:" + "d" * 64,),
+            ResolvedRoute("openai", "codex", "in", False, "sha256:" + "c" * 64),
+            "local_cli",
+        )
+
+
+def _controller(plan, event_log, worker, gate=None):
+    return GraphRunController(
+        plan=plan, event_log=event_log, worker=worker, gate=gate or _Gate(True, []),
+        artifact_verifier=_artifacts(), execution_policy=_policy(plan),
+        execution_enforcer=_Enforcer([]), timestamp=lambda: "2026-08-08T00:00:00Z",
+    )
+
+
+def _two_node_plan():
+    graph = validate_authoring_graph({
+        "api_version": "bounded-loops.dev/graph/v1",
+        "graph_id": "two-node-run",
+        "version": "1.0.0",
+        "nodes": [
+            {"id": "a", "kind": "research_claim", "inputs": {}, "outputs": {"claim": "text"},
+             "budget": {"max_attempts": 1, "max_wallclock_s": 1}, "effects": ["read_only"],
+             "isolation": "workspace_only", "connection_slot": "model_a"},
+            {"id": "b", "kind": "research_claim", "inputs": {"ctx": "text"}, "outputs": {"claim": "text"},
+             "budget": {"max_attempts": 1, "max_wallclock_s": 1}, "effects": ["read_only"],
+             "isolation": "workspace_only", "connection_slot": "model_b"},
+        ],
+        "edges": [{"from_node": "a", "from_port": "claim", "to_node": "b", "to_port": "ctx", "when": None}],
+        "connection_slots": [
+            {"id": "model_a", "requires": ["text_generation"], "data_class_max": "public"},
+            {"id": "model_b", "requires": ["text_generation"], "data_class_max": "public"},
+        ],
+        "policies": {"data_class": "public", "fail_mode": "fail_closed"},
+    })
+
+    def _binding(binding_id, slot_id, connection_id):
+        return {
+            "binding_id": binding_id, "slot_id": slot_id, "connector_id": "codex-cli",
+            "connector_version": "1.0.0", "connection_id": connection_id,
+            "admission_digest": "sha256:" + "b" * 64,
+            "route_policy_digest": "sha256:" + "c" * 64, "provider_id": "openai",
+            "model_target": "codex", "region": "in", "fallback": False, "capabilities": {"text_generation"},
+            "data_class_max": "public", "allowed_effects": {"read_only"},
+            "isolation": "workspace_only", "transport": "local_cli", "admitted": True,
+        }
+
+    return compile_graph(graph, CompileSnapshot(
+        policy_digest="sha256:" + "a" * 64, package_digests=frozenset(),
+        connections=(
+            _binding("binding-1", "model_a", "conn-1"),
+            _binding("binding-2", "model_b", "conn-2"),
+        ),
+    ))
+
+
+def test_resume_redrives_a_node_interrupted_mid_execution(tmp_path):
+    plan = _plan()
+    identity = _identity(plan)
+    log1 = GraphEventLog(tmp_path / "events.jsonl", identity)
+    with pytest.raises(_SimulatedCrash):
+        _controller(plan, log1, _CrashWorker(crash_on="research")).run()
+    # Mid-node: node.running is persisted, no terminal node event; projection RUNNING.
+    assert [e.event.event_type for e in log1.replay()] == [
+        "run.created", "run.started", "node.ready", "node.starting", "node.running",
+    ]
+    assert log1.replay_projection().state == "RUNNING"
+
+    # A fresh controller re-attaches to the same stream and completes.
+    worker = _Worker([])
+    resumed = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), worker)
+    assert resumed.resume().state == "SUCCEEDED"
+    assert worker.calls == ["research"]  # re-driven exactly once
+    # No duplicated events — the deterministic prefix re-appended as head-safe no-ops.
+    assert [e.event.event_type for e in resumed.event_log.replay()] == [
+        "run.created", "run.started", "node.ready", "node.starting", "node.running",
+        "node.gating", "node.succeeded", "run.succeeded",
+    ]
+
+
+def test_resume_skips_a_succeeded_node_and_redrives_the_incomplete_one(tmp_path):
+    plan = _two_node_plan()
+    identity = _identity(plan)
+    log1 = GraphEventLog(tmp_path / "events.jsonl", identity)
+    with pytest.raises(_SimulatedCrash):  # 'a' succeeds, then crash mid-'b'
+        _controller(plan, log1, _CrashWorker(crash_on="b")).run()
+    assert log1.replay_projection().state == "RUNNING"
+
+    worker = _Worker([])
+    resumed = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), worker)
+    assert resumed.resume().state == "SUCCEEDED"
+    assert worker.calls == ["b"]  # 'a' is already SUCCEEDED and is not re-run
+
+
+def test_resume_of_a_terminal_run_is_idempotent(tmp_path):
+    plan = _plan()
+    identity = _identity(plan)
+    assert _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), _Worker([])).run().state == "SUCCEEDED"
+    before = [e.event.event_type for e in GraphEventLog(tmp_path / "events.jsonl", identity).replay()]
+
+    worker = _Worker([])
+    resumed = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), worker)
+    assert resumed.resume().state == "SUCCEEDED"
+    assert worker.calls == []  # completed work is never re-run
+    assert [e.event.event_type for e in resumed.event_log.replay()] == before  # nothing appended
+
+
+def test_resume_refuses_an_empty_stream(tmp_path):
+    plan = _plan()
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+    with pytest.raises(GraphIntegrityError, match="empty"):
+        _controller(plan, log, _Worker([])).resume()
+
+
+def test_run_refuses_to_resume_a_nonempty_stream(tmp_path):
+    plan = _plan()
+    identity = _identity(plan)
+    assert _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), _Worker([])).run().state == "SUCCEEDED"
+    with pytest.raises(GraphIntegrityError, match="resume"):
+        _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), _Worker([])).run()

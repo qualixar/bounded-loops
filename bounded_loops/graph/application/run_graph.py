@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Callable, Mapping, Protocol
 
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
+from bounded_loops.graph.application.arena_projection import latest_node_states
 from bounded_loops.graph.application.execution_policy import (
     ExecutionEnvelope,
     ExecutionEnforcerPort,
@@ -67,11 +68,13 @@ class ArtifactVerifierPort(Protocol):
 
 
 class GraphRunController:
-    """Run a fresh graph sequentially with durable transition evidence.
+    """Run or resume a graph sequentially with durable transition evidence.
 
-    This deliberately starts with one controller and one dispatch at a time.
-    Parallel capacity and resume are separate follow-up contracts because they
-    must not weaken idempotency or the independent-gate invariant.
+    One controller, one dispatch at a time. ``run()`` starts a fresh stream;
+    ``resume()`` re-attaches to an interrupted (RUNNING) stream, rebuilds node
+    state from the receipts, and continues at-least-once without weakening
+    idempotency or the independent-gate invariant. Parallel capacity remains a
+    separate follow-up contract.
     """
 
     def __init__(
@@ -108,15 +111,57 @@ class GraphRunController:
         self._head = "0" * 64
 
     def run(self) -> GraphRunProjection:
-        """Execute a new run; any gate rejection fails closed."""
+        """Execute a NEW run from an empty stream; any gate rejection fails closed."""
         projection = self.event_log.replay_projection()
         if projection.state != "EMPTY":
-            raise GraphIntegrityError("fresh controller refuses to resume a non-empty graph stream")
+            raise GraphIntegrityError("fresh controller refuses to resume a non-empty graph stream; call resume()")
         self._head = projection.head_hash
         self._append("run.created", "run.created", {"state": "PENDING"})
         self._append("run.started", "run.started", {"state": "RUNNING"})
         states = {node.node_id: NodeState.PENDING for node in self.plan.nodes}
+        return self._run_loop(states)
 
+    def resume(self) -> GraphRunProjection:
+        """Resume an interrupted run from its durable event log (at-least-once).
+
+        A fresh controller instance re-attaches to a RUNNING stream, rebuilds each
+        node's state from the verified receipts, and continues. A node that reached
+        SUCCEEDED is left done; every other node is re-driven — its deterministic
+        prefix events re-append as head-safe no-ops (see ``_append``) and its worker
+        re-executes at-least-once (a content-addressed workspace re-promotion is
+        idempotent; external-effect double-spend is guarded separately by
+        idempotency keys). A terminal stream returns its projection unchanged; an
+        EMPTY stream is a misuse — call ``run()``.
+        """
+        projection = self.event_log.replay_projection()
+        if projection.state == "EMPTY":
+            raise GraphIntegrityError("cannot resume an empty graph stream; call run()")
+        if projection.state in ("SUCCEEDED", "FAILED", "CANCELLED"):
+            return projection
+        if projection.state != "RUNNING":
+            raise GraphIntegrityError(f"cannot resume from graph state {projection.state}")
+        self._head = projection.head_hash
+        return self._run_loop(self._rebuild_states())
+
+    def _rebuild_states(self) -> dict[str, NodeState]:
+        """Rebuild node states from receipts: a SUCCEEDED node stays done; every
+        other node is reset to PENDING to be re-driven. Uses the same strict receipt
+        lifecycle validation as the Arena projection."""
+        latest = latest_node_states(self.plan, self.event_log.replay())
+        states: dict[str, NodeState] = {}
+        for node in self.plan.nodes:
+            observed = latest[node.node_id]["state"]
+            if observed == "SUCCEEDED":
+                states[node.node_id] = NodeState.SUCCEEDED
+            elif observed in ("PENDING", "READY", "STARTING", "RUNNING", "GATING"):
+                states[node.node_id] = NodeState.PENDING
+            else:  # a RUNNING stream must contain no FAILED node (failure is terminal)
+                raise GraphIntegrityError(
+                    f"cannot resume: node {node.node_id!r} is in unresumable state {observed!r}"
+                )
+        return states
+
+    def _run_loop(self, states: dict[str, NodeState]) -> GraphRunProjection:
         while True:
             ready = derive_ready_nodes(self.plan, states)
             if not ready:
@@ -268,7 +313,14 @@ class GraphRunController:
                 payload=payload,
             ),
         )
-        self._head = stored.event_hash
+        # Advance the head only when this append EXTENDED the chain from the current
+        # head (a new tip). When a resumed node re-drives its already-logged, fully
+        # deterministic prefix (node.ready/starting/running/…), append() returns the
+        # historical event idempotently; that event's previous_hash is not the live
+        # head, so we must NOT move the head backward. The first genuinely-missing
+        # event chains from the live head and advances it normally.
+        if stored.previous_hash == self._head:
+            self._head = stored.event_hash
 
     @staticmethod
     def _validate_result(result: WorkerResult) -> None:

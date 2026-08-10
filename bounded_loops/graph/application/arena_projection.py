@@ -84,7 +84,7 @@ def read_arena_projection(
     _match_plan(identity, plan)
     snapshot = event_log.verified_snapshot()
     receipt_verifier.verify(identity, snapshot.receipts)
-    latest = _latest_nodes(plan, snapshot.receipts)
+    latest = latest_node_states(plan, snapshot.receipts)
     if snapshot.projection.state == "SUCCEEDED" and any(value["state"] != "SUCCEEDED" for value in latest.values()):
         raise GraphIntegrityError("Arena succeeded receipt has a planned node that is not succeeded")
     bindings = {binding.binding_id: binding for binding in plan.connection_bindings}
@@ -122,7 +122,9 @@ def _match_plan(identity: GraphRunIdentity, plan: ExecutionPlan) -> None:
         raise GraphIntegrityError("Arena receipt stream does not match immutable plan")
 
 
-def _latest_nodes(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ...]) -> dict[str, dict[str, object]]:
+def latest_node_states(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ...]) -> dict[str, dict[str, object]]:
+    """Rebuild each planned node's latest receipt state, validating the lifecycle
+    strictly. Shared by the Arena read model and the controller's resume path."""
     values = {node.node_id: {"state": "PENDING", "attempt": 0} for node in plan.nodes}
     for stored in receipts:
         event = stored.event
