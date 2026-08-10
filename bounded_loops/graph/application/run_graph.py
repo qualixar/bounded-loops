@@ -172,6 +172,11 @@ class GraphRunController:
             if observed == "SUCCEEDED":
                 states[node.node_id] = NodeState.SUCCEEDED
                 continue
+            if observed == "FAILED":
+                # Unreachable via resume() (the FAILED-finalize gate precedes this) —
+                # a defensive guard so the helper stays safe if ever reused: a run
+                # that already failed is finalized, never re-driven.
+                raise GraphIntegrityError(f"cannot resume: node {node.node_id!r} has already failed")
             if observed in ("STARTING", "RUNNING", "GATING") and (node.required_effects & _EFFECTFUL_EFFECTS):
                 raise GraphIntegrityError(
                     f"cannot safely resume: node {node.node_id!r} carries an external / irreversible effect and "
