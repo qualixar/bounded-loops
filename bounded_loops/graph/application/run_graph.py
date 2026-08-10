@@ -102,6 +102,22 @@ class ApprovalResolverPort(Protocol):
     def resolve(self, *, identity: GraphRunIdentity, node: PlannedNode, attempt: int) -> "ApprovalOutcome": ...
 
 
+def is_egress_node(plan: ExecutionPlan, node: PlannedNode, egress_transports: frozenset[str]) -> bool:
+    """A connector/EGRESS node's work is an authorized network call over an admitted connection
+    (a frontier model API), NOT a sandboxed subprocess — so it is routed to the connector worker
+    and does NOT pass the process-isolation enforcer (egress is authorized inside the connector
+    path). It is identified by being bound to a connection whose transport the deployment has
+    declared an egress transport; ``egress_transports`` defaults to empty, so nothing is egress
+    unless a deployment opts in (e.g. a local_cli connector stays a sandboxed subprocess)."""
+    if node.binding_id is None:
+        return False
+    transport = next(
+        (binding.transport for binding in plan.connection_bindings if binding.binding_id == node.binding_id),
+        None,
+    )
+    return transport is not None and transport in egress_transports
+
+
 class GraphRunController:
     """Run or resume a graph sequentially with durable transition evidence.
 
@@ -125,8 +141,10 @@ class GraphRunController:
         timestamp: Callable[[], str],
         actor: str = "graph-controller",
         approval_resolver: ApprovalResolverPort | None = None,
+        connector_worker: NodeWorkerPort | None = None,
+        egress_transports: frozenset[str] = frozenset(),
     ) -> None:
-        if worker is gate:
+        if worker is gate or connector_worker is gate:
             raise GraphIntegrityError("worker and independent gate must be separate objects")
         identity = event_log.identity
         if (
@@ -145,6 +163,8 @@ class GraphRunController:
         self._timestamp = timestamp
         self._actor = actor
         self._approval_resolver = approval_resolver
+        self._connector_worker = connector_worker
+        self._egress_transports = egress_transports
         self._head = "0" * 64
 
     def run(self) -> GraphRunProjection:
@@ -255,12 +275,25 @@ class GraphRunController:
                     )
                 except Exception:
                     return self._fail_node(states, node_id, "execution policy denied worker")
+                # ONE classification drives BOTH the enforcer skip and the worker choice, so
+                # they can never drift into an unsandboxed subprocess (single source of truth).
+                egress = is_egress_node(self.plan, node, self._egress_transports)
+                if not egress:
+                    # An egress/connector node runs no subprocess to sandbox — the sandbox
+                    # enforcer would deny it the network it must use — so egress authorization
+                    # happens inside the connector worker instead. Every other node is enforced.
+                    try:
+                        self._execution_enforcer.enforce(plan=self.plan, node=node, envelope=envelope)
+                    except Exception:
+                        return self._fail_node(states, node_id, "execution environment denied worker")
+                worker = self._connector_worker if egress else self._worker
+                if worker is None:
+                    # Egress node but no connector worker wired: fail closed. Never fall back to
+                    # the subprocess worker — that would run egress work on the wrong (sandboxed)
+                    # path, and the enforcer was already skipped for this node.
+                    return self._fail_node(states, node_id, "no connector worker configured for egress node")
                 try:
-                    self._execution_enforcer.enforce(plan=self.plan, node=node, envelope=envelope)
-                except Exception:
-                    return self._fail_node(states, node_id, "execution environment denied worker")
-                try:
-                    result = self._worker.execute(plan=self.plan, node=node, envelope=envelope)
+                    result = worker.execute(plan=self.plan, node=node, envelope=envelope)
                 except Exception:
                     return self._fail_node(states, node_id, "worker execution failed")
                 try:
