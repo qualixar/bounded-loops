@@ -14,10 +14,15 @@ from bounded_loops.graph.application.execution_policy import (
     validate_execution_envelope,
 )
 from bounded_loops.graph.application.schedule_ready import NodeState, derive_ready_nodes, dispatch_node
+from bounded_loops.graph.domain.authoring import Effect
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.events import GraphRunIdentity, GraphRunProjection, UnsignedGraphEvent
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
+
+# Effects whose real-world action cannot be safely repeated by an at-least-once
+# re-drive without a per-effect idempotency key (ADR-12 D7).
+_EFFECTFUL_EFFECTS = frozenset({Effect.EXTERNAL_WRITE, Effect.FINANCIAL, Effect.IRREVERSIBLE})
 
 
 @dataclass(frozen=True)
@@ -136,29 +141,43 @@ class GraphRunController:
         projection = self.event_log.replay_projection()
         if projection.state == "EMPTY":
             raise GraphIntegrityError("cannot resume an empty graph stream; call run()")
-        if projection.state in ("SUCCEEDED", "FAILED", "CANCELLED"):
+        # Every terminal state resumes idempotently (a finished run re-runs nothing).
+        if projection.state in ("SUCCEEDED", "FAILED", "CANCELLED", "HALTED", "EXPIRED"):
             return projection
-        if projection.state != "RUNNING":
+        if projection.state not in ("PENDING", "RUNNING"):
             raise GraphIntegrityError(f"cannot resume from graph state {projection.state}")
         self._head = projection.head_hash
-        return self._run_loop(self._rebuild_states())
-
-    def _rebuild_states(self) -> dict[str, NodeState]:
-        """Rebuild node states from receipts: a SUCCEEDED node stays done; every
-        other node is reset to PENDING to be re-driven. Uses the same strict receipt
-        lifecycle validation as the Arena projection."""
+        # A crash between run.created and run.started leaves a non-empty PENDING
+        # stream that run() refuses; complete the start so it is never wedged.
+        if projection.state == "PENDING":
+            self._append("run.started", "run.started", {"state": "RUNNING"})
         latest = latest_node_states(self.plan, self.event_log.replay())
+        # A crash between node.failed and run.failed leaves a RUNNING stream with a
+        # FAILED node; finalize the terminal deterministically rather than re-drive a
+        # run that has already failed.
+        if any(observed["state"] == "FAILED" for observed in latest.values()):
+            self._append("run.failed", "run.failed", {"state": "FAILED"})
+            return self.event_log.replay_projection()
+        return self._run_loop(self._states_from(latest))
+
+    def _states_from(self, latest: dict[str, dict[str, object]]) -> dict[str, NodeState]:
+        """Map rebuilt receipt states to controller states: a SUCCEEDED node stays
+        done; every other node re-drives from PENDING. An EFFECTFUL node interrupted
+        mid-execution (STARTING/RUNNING/GATING) cannot be re-driven safely without a
+        resume idempotency key (ADR-12 D7), so it fails closed rather than risk a
+        double external / irreversible effect."""
         states: dict[str, NodeState] = {}
         for node in self.plan.nodes:
             observed = latest[node.node_id]["state"]
             if observed == "SUCCEEDED":
                 states[node.node_id] = NodeState.SUCCEEDED
-            elif observed in ("PENDING", "READY", "STARTING", "RUNNING", "GATING"):
-                states[node.node_id] = NodeState.PENDING
-            else:  # a RUNNING stream must contain no FAILED node (failure is terminal)
+                continue
+            if observed in ("STARTING", "RUNNING", "GATING") and (node.required_effects & _EFFECTFUL_EFFECTS):
                 raise GraphIntegrityError(
-                    f"cannot resume: node {node.node_id!r} is in unresumable state {observed!r}"
+                    f"cannot safely resume: node {node.node_id!r} carries an external / irreversible effect and "
+                    "was interrupted mid-execution; a resume idempotency key (D7) is required before re-driving it"
                 )
+            states[node.node_id] = NodeState.PENDING
         return states
 
     def _run_loop(self, states: dict[str, NodeState]) -> GraphRunProjection:

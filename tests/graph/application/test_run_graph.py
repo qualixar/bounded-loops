@@ -16,6 +16,7 @@ from bounded_loops.graph.application.run_graph import (
     GraphRunController,
     WorkerResult,
 )
+from bounded_loops.graph.application.schedule_ready import NodeState
 from bounded_loops.graph.application.validate_graph import validate_authoring_graph
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.errors import GraphIntegrityError
@@ -479,3 +480,91 @@ def test_resume_tolerates_a_live_clock_different_from_the_crashed_run(tmp_path):
         "run.created", "run.started", "node.ready", "node.starting", "node.running",
         "node.gating", "node.succeeded", "run.succeeded",
     ]
+
+
+class _CrashOnRunFailed(GraphEventLog):
+    """Persists everything except the FIRST run.failed — models a crash after
+    node.failed is durable but before the terminal run.failed is written."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._armed = True
+
+    def append(self, expected_previous_hash, event):
+        if event.event_type == "run.failed" and self._armed:
+            self._armed = False
+            raise _SimulatedCrash("crash before run.failed is durable")
+        return super().append(expected_previous_hash, event)
+
+
+def _effectful_plan():
+    graph = validate_authoring_graph({
+        "api_version": "bounded-loops.dev/graph/v1", "graph_id": "effectful-run", "version": "1.0.0",
+        "nodes": [{
+            "id": "pay", "kind": "tool", "inputs": {}, "outputs": {"receipt": "text"},
+            "budget": {"max_attempts": 1, "max_wallclock_s": 1}, "effects": ["external_write"],
+            "isolation": "container_restricted", "connection_slot": "model", "tool_ref": "charge-v1",
+        }],
+        "edges": [],
+        "connection_slots": [{"id": "model", "requires": ["text_generation"], "data_class_max": "public"}],
+        "policies": {"data_class": "public", "fail_mode": "fail_closed"},
+    })
+    return compile_graph(graph, CompileSnapshot(
+        policy_digest="sha256:" + "a" * 64, package_digests=frozenset(),
+        connections=({
+            "binding_id": "binding-1", "slot_id": "model", "connector_id": "codex-cli",
+            "connector_version": "1.0.0", "connection_id": "conn-1", "admission_digest": "sha256:" + "b" * 64,
+            "route_policy_digest": "sha256:" + "c" * 64, "provider_id": "openai", "model_target": "codex",
+            "region": "in", "fallback": False, "capabilities": {"text_generation"}, "data_class_max": "public",
+            "allowed_effects": {"external_write"}, "isolation": "container_restricted",
+            "transport": "local_cli", "admitted": True,
+        },),
+    ))
+
+
+def test_resume_completes_a_run_wedged_between_created_and_started(tmp_path):
+    """A crash between run.created and run.started leaves a non-empty PENDING stream
+    that run() refuses; resume() must complete the start and finish the run."""
+    from bounded_loops.graph.domain.events import UnsignedGraphEvent
+
+    plan = _plan()
+    identity = _identity(plan)
+    log = GraphEventLog(tmp_path / "events.jsonl", identity)
+    log.append("0" * 64, UnsignedGraphEvent(
+        event_id="run-1:run.created", idempotency_key="run-1:run.created", event_type="run.created",
+        timestamp="2026-08-08T00:00:00Z", actor="graph-controller", payload={"state": "PENDING"}))
+    assert log.replay_projection().state == "PENDING"
+
+    worker = _Worker([])
+    resumed = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), worker)
+    assert resumed.resume().state == "SUCCEEDED"
+    assert worker.calls == ["research"]
+
+
+def test_resume_finalizes_a_run_wedged_between_node_failed_and_run_failed(tmp_path):
+    """A crash between node.failed and run.failed leaves a RUNNING stream with a
+    FAILED node; resume() must finalize the terminal without re-driving."""
+    plan = _plan()
+    identity = _identity(plan)
+    crash_log = _CrashOnRunFailed(tmp_path / "events.jsonl", identity)
+    with pytest.raises(_SimulatedCrash):
+        _controller(plan, crash_log, _Worker([]), gate=_Gate(False, [])).run()
+    assert crash_log.replay_projection().state == "RUNNING"
+    assert [e.event.event_type for e in crash_log.replay()][-1] == "node.failed"
+
+    worker = _Worker([])
+    resumed = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), worker)
+    assert resumed.resume().state == "FAILED"
+    assert worker.calls == []  # a run that already failed is never re-driven
+    assert [e.event.event_type for e in resumed.event_log.replay()][-1] == "run.failed"
+
+
+def test_resume_refuses_to_redrive_an_effectful_node_interrupted_mid_execution(tmp_path):
+    """An external/irreversible-effect node interrupted mid-execution must fail closed
+    (a resume idempotency key is required, ADR-12 D7) — never blindly re-executed."""
+    plan = _effectful_plan()
+    controller = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", _identity(plan)), _Worker([]))
+    with pytest.raises(GraphIntegrityError, match="idempotency key"):
+        controller._states_from({"pay": {"state": "RUNNING", "attempt": 1}})
+    # A never-started effectful node (PENDING) is fine to (re-)drive.
+    assert controller._states_from({"pay": {"state": "PENDING", "attempt": 0}})["pay"] is NodeState.PENDING
