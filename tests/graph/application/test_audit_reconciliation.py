@@ -6,8 +6,19 @@ from __future__ import annotations
 
 import pytest
 
-from bounded_loops.graph.application.audit_reconciliation import reconcile_audit
-from bounded_loops.graph.domain.audits import AuditCell, AuditFinding, AuditResult, validate_audit_coverage
+from bounded_loops.graph.application.audit_reconciliation import (
+    ValidatedRepairIds,
+    reconcile_audit,
+    resolve_by_repair,
+)
+from bounded_loops.graph.domain.audits import (
+    AuditCell,
+    AuditedArtifact,
+    AuditFinding,
+    AuditResult,
+    RepairAttempt,
+    validate_audit_coverage,
+)
 from bounded_loops.graph.domain.errors import GraphValidationError
 
 
@@ -15,12 +26,26 @@ def _cell(name: str, mandatory: bool = True) -> AuditCell:
     return AuditCell(name=name, mandatory=mandatory)
 
 
-def _finding(severity: str, disposition: str = "open") -> AuditFinding:
-    return AuditFinding(severity=severity, disposition=disposition)
+def _finding(severity: str, disposition: str = "open", finding_id: str = "F-1") -> AuditFinding:
+    return AuditFinding(finding_id=finding_id, severity=severity, disposition=disposition)
 
 
 def _result(cell: str, assessor: str = "auditor", producer: str = "maker", finding: AuditFinding | None = None) -> AuditResult:
     return AuditResult(cell=cell, assessor=assessor, producer=producer, finding=finding)
+
+
+def _artifact(*finding_ids: str) -> AuditedArtifact:
+    return AuditedArtifact(artifact_digest="sha256:" + "a" * 64, finding_ids=tuple(finding_ids))
+
+
+def _repair(addressed: tuple[str, ...], *, out: str = "b") -> RepairAttempt:
+    return RepairAttempt(
+        repair_id="repair-1",
+        input_artifact_digest="sha256:" + "a" * 64,
+        output_artifact_digest="sha256:" + out * 64,
+        addressed_finding_ids=addressed,
+        regression_evidence_digest="sha256:" + "c" * 64,
+    )
 
 
 def test_release_cleared_when_all_mandatory_cells_independently_covered():
@@ -105,6 +130,41 @@ def test_malformed_input_raises():
         reconcile_audit((_cell("x"),), (_result("x", "a", "p", _finding("critical", "open")),))
     with pytest.raises(GraphValidationError):
         reconcile_audit((_cell("x"),), (_result("", "a", "p"),))  # empty cell name
+    with pytest.raises(GraphValidationError, match="finding_id"):
+        reconcile_audit((_cell("x"),), (_result("x", "a", "p", _finding("S0", "open", finding_id="")),))
+
+
+def test_a_valid_repair_unblocks_a_release():
+    cells = (_cell("security"),)
+    results = (_result("security", "a1", "p1", _finding("S0", "open", finding_id="F-1")),)
+    assert reconcile_audit(cells, results).released is False  # blocked before repair
+
+    resolved = resolve_by_repair(_artifact("F-1"), _repair(("F-1",)))
+    assert resolved == frozenset({"F-1"})
+
+    decision = reconcile_audit(cells, results, repaired_finding_ids=resolved)
+    assert decision.released is True
+    assert decision.verdicts[0].highest_severity == "S0"  # a repair unblocks; it never lowers severity
+
+
+def test_a_repair_for_a_different_finding_does_not_unblock():
+    cells = (_cell("security"),)
+    results = (_result("security", "a1", "p1", _finding("S0", "open", finding_id="F-1")),)
+    decision = reconcile_audit(cells, results, repaired_finding_ids=ValidatedRepairIds(frozenset({"F-2"})))
+    assert decision.released is False
+    assert decision.verdicts[0].blocking_finding_ids == ("F-1",)
+
+
+def test_an_invalid_repair_lineage_raises_and_resolves_nothing():
+    # a "repair" that produces no new artifact (output digest == input) is not a real repair
+    with pytest.raises(GraphValidationError):
+        resolve_by_repair(_artifact("F-1"), _repair(("F-1",), out="a"))
+
+
+def test_reports_blocking_finding_ids():
+    cells = (_cell("security"),)
+    results = (_result("security", "a1", "p1", _finding("S1", "open", finding_id="F-9")),)
+    assert reconcile_audit(cells, results).verdicts[0].blocking_finding_ids == ("F-9",)
 
 
 def test_consistent_with_validate_audit_coverage():

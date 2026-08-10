@@ -19,6 +19,11 @@ class AuditCell:
 
 @dataclass(frozen=True)
 class AuditFinding:
+    """A finding against an artifact. ``finding_id`` is a STABLE GLOBAL identity: the same id
+    always denotes the same logical finding (and distinct findings carry distinct ids), matching
+    ``AuditedArtifact.finding_ids`` so a repair can address it and reconciliation can unblock it."""
+
+    finding_id: str
     severity: str
     disposition: str
 

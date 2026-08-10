@@ -26,7 +26,7 @@ def test_audit_coverage_requires_independent_results_for_every_mandatory_cell():
     with pytest.raises(GraphValidationError, match="producer"):
         validate_audit_coverage((AuditCell("security", mandatory=True),), (AuditResult("security", "terra", "terra", None),))
     with pytest.raises(GraphValidationError, match="S1"):
-        validate_audit_coverage((AuditCell("security", mandatory=True),), (AuditResult("security", "sol", "terra", AuditFinding("S1", "open")),))
+        validate_audit_coverage((AuditCell("security", mandatory=True),), (AuditResult("security", "sol", "terra", AuditFinding("F-1", "S1", "open")),))
 
 
 def test_repair_lineage_requires_a_new_artifact_and_preserves_prior_finding_ids():
