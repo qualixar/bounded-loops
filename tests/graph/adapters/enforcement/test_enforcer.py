@@ -9,6 +9,7 @@ and never touch a real Docker daemon.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import types
 
 import pytest
@@ -30,15 +31,14 @@ _DEST = (NetworkDestination(hostname="api.example.com", port=443),)
 
 
 def _caps(**over) -> PlatformCapabilities:
-    base = dict(
+    base = PlatformCapabilities(
         platform="linux",
         docker_available=True,
         process_groups=True,
         rlimits=True,
         egress_proxy=False,
     )
-    base.update(over)
-    return PlatformCapabilities(**base)
+    return replace(base, **over)
 
 
 def _env(level, effects, mode, dests=()) -> ExecutionEnvelope:

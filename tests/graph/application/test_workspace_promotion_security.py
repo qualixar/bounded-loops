@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import os
+from pathlib import Path
 import signal
 import threading
 import types
@@ -44,7 +45,7 @@ def _policy(outputs: dict[str, str] | None = None, *, max_bytes: int = 64) -> Wo
     )
 
 
-def _workspace(tmp_path) -> "os.PathLike[str]":
+def _workspace(tmp_path) -> Path:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     return workspace

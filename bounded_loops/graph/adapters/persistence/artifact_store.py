@@ -10,7 +10,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from typing import BinaryIO, Sequence
+from typing import Protocol, Sequence
 
 from bounded_loops.graph.domain.artifacts import (
     ArtifactAccess,
@@ -20,6 +20,18 @@ from bounded_loops.graph.domain.artifacts import (
     ArtifactState,
 )
 from bounded_loops.graph.domain.errors import GraphIntegrityError
+
+
+class _Readable(Protocol):
+    """The only capability this store needs from a byte source: sequential reads.
+
+    Declaring the minimum keeps ``LocalArtifactStore`` a truthful structural match
+    for ``ArtifactWriterPort`` (whose ``put_many`` also promises only a reader), so
+    the descriptor-backed ``_BoundedReader`` the promoter passes in — which is not a
+    full ``BinaryIO`` — is accepted here exactly as the port contract says it should be.
+    """
+
+    def read(self, size: int = ...) -> bytes: ...
 
 
 class LocalArtifactStore:
@@ -34,11 +46,11 @@ class LocalArtifactStore:
         self._objects.mkdir(parents=True, exist_ok=True)
         self._metadata.mkdir(parents=True, exist_ok=True)
 
-    def put(self, stream: BinaryIO, policy: ArtifactPolicy) -> ArtifactRecord:
+    def put(self, stream: _Readable, policy: ArtifactPolicy) -> ArtifactRecord:
         return self.put_many(((stream, policy),))[0]
 
     def put_many(
-        self, items: Sequence[tuple[BinaryIO, ArtifactPolicy]],
+        self, items: Sequence[tuple[_Readable, ArtifactPolicy]],
     ) -> tuple[ArtifactRecord, ...]:
         """Stage, pre-validate, then commit — so a mid-batch failure leaves no
         artifact metadata behind.
@@ -192,7 +204,7 @@ class LocalArtifactStore:
                 expired.append(self.tombstone(record.ref, "retention_expired"))
         return tuple(expired)
 
-    def _write_temporary(self, stream: BinaryIO) -> tuple[str, int, Path]:
+    def _write_temporary(self, stream: _Readable) -> tuple[str, int, Path]:
         fd, name = tempfile.mkstemp(prefix=".artifact-", suffix=".tmp", dir=self._objects)
         path = Path(name)
         hasher = hashlib.sha256()

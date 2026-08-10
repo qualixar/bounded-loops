@@ -9,6 +9,8 @@ deterministic on any platform.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
@@ -28,9 +30,8 @@ _IMG = "example/tool@sha256:" + "a" * 64
 
 
 def _caps(**over) -> PlatformCapabilities:
-    base = dict(platform="linux", docker_available=False, process_groups=True, rlimits=True)
-    base.update(over)
-    return PlatformCapabilities(**base)
+    base = PlatformCapabilities(platform="linux", docker_available=False, process_groups=True, rlimits=True)
+    return replace(base, **over)
 
 
 # ── selection matrix ───────────────────────────────────────────────────────────
