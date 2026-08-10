@@ -56,7 +56,7 @@ class GraphEventLog:
         for stored in events:
             if stored.event.idempotency_key != event.idempotency_key:
                 continue
-            if _unsigned_dict(stored.event) == _unsigned_dict(event):
+            if _same_logical_event(stored.event, event):
                 return stored
             raise GraphIntegrityError("idempotency key was reused with a different event")
         stored = StoredGraphEvent(
@@ -290,6 +290,21 @@ def _parse(line: str, number: int) -> StoredGraphEvent:
 
 def _unsigned_dict(event: UnsignedGraphEvent) -> dict[str, object]:
     return {"actor": event.actor, "event_id": event.event_id, "event_type": event.event_type, "idempotency_key": event.idempotency_key, "payload": _plain(event.payload), "timestamp": event.timestamp}
+
+
+def _same_logical_event(a: UnsignedGraphEvent, b: UnsignedGraphEvent) -> bool:
+    """Two events sharing an idempotency key are the SAME logical event — an
+    at-least-once retry, or a resume re-appending a node's already-logged
+    deterministic prefix — when everything but the timestamp matches. The timestamp
+    naturally differs across a retry (a resumed run has a live clock), and is not
+    part of logical identity, so a faithful re-append is DEDUPLICATED (the existing
+    event is returned), never rejected as a reused key. A genuinely different
+    event (different actor / id / type / payload) under the same key still raises.
+    """
+    left, right = _unsigned_dict(a), _unsigned_dict(b)
+    left.pop("timestamp")
+    right.pop("timestamp")
+    return left == right
 
 
 def _plain(value: object) -> object:

@@ -453,3 +453,29 @@ def test_run_refuses_to_resume_a_nonempty_stream(tmp_path):
     assert _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), _Worker([])).run().state == "SUCCEEDED"
     with pytest.raises(GraphIntegrityError, match="resume"):
         _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), _Worker([])).run()
+
+
+def test_resume_tolerates_a_live_clock_different_from_the_crashed_run(tmp_path):
+    """Production resumes in a NEW process with a live clock: re-appending a node's
+    deterministic prefix carries a fresh timestamp, which must be deduped as the
+    same logical event — never rejected as a reused idempotency key."""
+    import itertools
+
+    plan = _plan()
+    identity = _identity(plan)
+    with pytest.raises(_SimulatedCrash):  # crash under a fixed T0 clock
+        _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), _CrashWorker(crash_on="research")).run()
+
+    tick = itertools.count()  # a DIFFERENT, advancing clock for the resume
+    worker = _Worker([])
+    resumed = GraphRunController(
+        plan=plan, event_log=GraphEventLog(tmp_path / "events.jsonl", identity), worker=worker,
+        gate=_Gate(True, []), artifact_verifier=_artifacts(), execution_policy=_policy(plan),
+        execution_enforcer=_Enforcer([]), timestamp=lambda: "2026-08-08T00:00:%02dZ" % next(tick),
+    )
+    assert resumed.resume().state == "SUCCEEDED"
+    assert worker.calls == ["research"]
+    assert [e.event.event_type for e in resumed.event_log.replay()] == [
+        "run.created", "run.started", "node.ready", "node.starting", "node.running",
+        "node.gating", "node.succeeded", "run.succeeded",
+    ]
