@@ -32,10 +32,22 @@ _EFFECT_MINIMUM = {
     Effect.IRREVERSIBLE: IsolationLevel.CONTAINER_RESTRICTED,
 }
 _NETWORK_EFFECTS = frozenset({Effect.EXTERNAL_WRITE, Effect.FINANCIAL, Effect.IRREVERSIBLE})
+# The compiler-admitted transport of a local-CLI connector node (a sandboxed subprocess
+# that runs the user's own authenticated agent CLI). It is the ONLY node that may open
+# the network under NetworkMode.OPEN (a trusted-local posture), and only when a deployment
+# selects OPEN — never an arbitrary node.
+_LOCAL_CLI_TRANSPORT = "local_cli"
 
 
 class NetworkMode(str, Enum):
     DENY = "deny"
+    # OPEN: full outbound network, filesystem still confined. For an admitted local-CLI
+    # connector on a trusted local host (the default "run the agent freely" posture, so
+    # the agent reaches its model and its tools and real coding work completes).
+    OPEN = "open"
+    # ALLOWLIST: outbound only to declared destinations via a proxy (an opt-in enterprise
+    # egress firewall for hosted/multi-tenant/untrusted deployments). Not yet implemented
+    # at the sandbox layer — refused there so the network is never opened destination-blind.
     ALLOWLIST = "allowlist"
 
 
@@ -140,10 +152,20 @@ def _validate_isolation(node: PlannedNode, actual: IsolationLevel) -> None:
 
 
 def _validate_network(node: PlannedNode, envelope: ExecutionEnvelope) -> None:
-    needs_network = bool(node.required_effects & _NETWORK_EFFECTS)
     destinations = envelope.network_destinations
     if len(set(destinations)) != len(destinations):
         raise GraphValidationError("execution_network", "/envelope/network_destinations", "network destinations must be unique")
+    if envelope.network_mode is NetworkMode.OPEN:
+        # Trusted-local CLI connector: full outbound network, filesystem still confined.
+        # Gated to the compiler-admitted `local_cli` transport (already checked against the
+        # binding in `_validate_transport`), so ONLY an admitted local-CLI connector can open
+        # the network, and only when the deployment selects OPEN — never an arbitrary node.
+        if envelope.transport != _LOCAL_CLI_TRANSPORT:
+            raise GraphValidationError("execution_network", "/envelope/network_mode", "open network is only for an admitted local-CLI connector node")
+        if destinations:
+            raise GraphValidationError("execution_network", "/envelope/network_destinations", "open network takes no destination allowlist")
+        return
+    needs_network = bool(node.required_effects & _NETWORK_EFFECTS)
     if needs_network:
         if envelope.network_mode is not NetworkMode.ALLOWLIST or not destinations:
             raise GraphValidationError("execution_network", "/envelope/network_destinations", "network effects require a specific network allowlist")

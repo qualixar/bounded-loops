@@ -34,7 +34,8 @@ class NativeProvider:
     def _mechanism(self, tier: IsolationLevel, network_mode: NetworkMode) -> SandboxMechanism | None:
         caps = self._caps
         if network_mode is NetworkMode.ALLOWLIST:
-            return None  # authorized egress needs a proxy — not native's job
+            return None  # destination-allowlisted egress needs a proxy — not native's job
+        open_network = network_mode is NetworkMode.OPEN
         if tier is IsolationLevel.WORKSPACE_ONLY:
             return SandboxMechanism.NONE
         if tier is IsolationLevel.PROCESS_RESTRICTED:
@@ -44,7 +45,9 @@ class NativeProvider:
                 return SandboxMechanism.SEATBELT
             if caps.bubblewrap:
                 return SandboxMechanism.BUBBLEWRAP
-            if caps.net_namespace:
+            # `unshare -n` can ONLY create an isolated (empty) net namespace — it cannot
+            # honor OPEN, so it is not a valid mechanism for a network-open node.
+            if caps.net_namespace and not open_network:
                 return SandboxMechanism.UNSHARE_NET
             return SandboxMechanism.NONE
         if tier is IsolationLevel.CONTAINER_RESTRICTED:
@@ -55,19 +58,31 @@ class NativeProvider:
             return None  # no native container-grade mechanism (container provider may still)
         return None  # customer_managed_worker is not a native tier
 
-    def _controls(self, mechanism: SandboxMechanism) -> EnforcedControls:
+    def _controls(self, mechanism: SandboxMechanism, network_mode: NetworkMode) -> EnforcedControls:
         pid = Control.ENFORCED if self._caps.process_groups else Control.NOT_ENFORCED
+        # Under OPEN the network is deliberately NOT firewalled — report it honestly so a
+        # receipt never overclaims network containment for a trusted-local connector.
+        net_open = network_mode is NetworkMode.OPEN
+        net = Control.NOT_ENFORCED if net_open else Control.ENFORCED
         if mechanism is SandboxMechanism.SEATBELT:
             return EnforcedControls(
-                net=Control.ENFORCED, fs_write=Control.ENFORCED, fs_read=Control.NOT_ENFORCED,
+                net=net, fs_write=Control.ENFORCED, fs_read=Control.NOT_ENFORCED,
                 pid=pid, user=Control.NOT_ENFORCED, kernel=Control.NOT_ENFORCED, egress=Control.NOT_ENFORCED,
-                notes=("Seatbelt: outbound network denied; writes confined to workspace/HOME/TMPDIR; reads not confined",),
+                notes=(
+                    "Seatbelt: outbound network OPEN (trusted-local); writes confined to workspace/HOME/TMPDIR; reads not confined"
+                    if net_open else
+                    "Seatbelt: outbound network denied; writes confined to workspace/HOME/TMPDIR; reads not confined",
+                ),
             )
         if mechanism is SandboxMechanism.BUBBLEWRAP:
             return EnforcedControls(
-                net=Control.ENFORCED, fs_write=Control.ENFORCED, fs_read=Control.NOT_ENFORCED,
+                net=net, fs_write=Control.ENFORCED, fs_read=Control.NOT_ENFORCED,
                 pid=Control.ENFORCED, user=Control.ENFORCED, kernel=Control.NOT_ENFORCED, egress=Control.NOT_ENFORCED,
-                notes=("bubblewrap: isolated network namespace; read-only rootfs + rw workspace",),
+                notes=(
+                    "bubblewrap: outbound network OPEN (trusted-local, --share-net); read-only rootfs + rw workspace"
+                    if net_open else
+                    "bubblewrap: isolated network namespace; read-only rootfs + rw workspace",
+                ),
             )
         if mechanism is SandboxMechanism.UNSHARE_NET:
             return EnforcedControls(
@@ -92,7 +107,7 @@ class NativeProvider:
                 f"native cannot deliver {tier.value} with {network_mode.value} network on this host",
                 EnforcedControls(),
             )
-        return Availability(True, "", self._controls(mechanism))
+        return Availability(True, "", self._controls(mechanism, network_mode))
 
     def build_launch(
         self,

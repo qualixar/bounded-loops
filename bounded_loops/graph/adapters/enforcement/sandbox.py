@@ -185,16 +185,17 @@ def wrap_argv(
     network_mode: NetworkMode,
     image: str | None = None,
 ) -> list[str]:
-    """Wrap *inner_argv* in the selected mechanism, denying network when the
-    envelope's network mode is ``DENY``.
+    """Wrap *inner_argv* in the selected mechanism, applying the envelope's network mode.
 
-    Authorized (allowlist) egress is not implemented, so this refuses to build a
-    network-open wrapper: it never silently opens the network. The capability
-    matrix already fails closed on allowlist before reaching here; this is the
-    second, independent guard against that fail-open.
+    ``DENY`` firewalls all outbound sockets. ``OPEN`` deliberately allows outbound
+    network while keeping filesystem write-confinement unchanged — the trusted-local
+    ``local_cli`` connector posture, so an admitted agent CLI reaches its model and tools.
+    ``ALLOWLIST`` (destination-filtered egress via a proxy) is NOT implemented and is
+    refused here, so the network is never opened *destination-blind under an allowlist
+    promise* — it is only ever opened explicitly, via ``OPEN``.
     """
     if network_mode is NetworkMode.ALLOWLIST:
-        raise ValueError("authorized (allowlist) egress is not implemented; refusing to open the network")
+        raise ValueError("destination-allowlisted egress is not implemented; refusing to open the network")
     deny = network_mode is NetworkMode.DENY
     if mechanism is SandboxMechanism.NONE:
         return list(inner_argv)
