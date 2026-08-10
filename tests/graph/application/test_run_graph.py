@@ -21,7 +21,7 @@ from bounded_loops.graph.application.validate_graph import validate_authoring_gr
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.errors import GraphValidationError
-from bounded_loops.graph.domain.events import GraphRunIdentity
+from bounded_loops.graph.domain.events import GraphRunIdentity, UnsignedGraphEvent
 
 
 def _plan():
@@ -568,3 +568,44 @@ def test_resume_refuses_to_redrive_an_effectful_node_interrupted_mid_execution(t
         controller._states_from({"pay": {"state": "RUNNING", "attempt": 1}})
     # A never-started effectful node (PENDING) is fine to (re-)drive.
     assert controller._states_from({"pay": {"state": "PENDING", "attempt": 0}})["pay"] is NodeState.PENDING
+
+
+def _raw_append(store: GraphEventLog, head: str, event_type: str, key: str, payload: dict[str, object]) -> str:
+    """Append one arbitrary, correctly hash-chained event — the tamperer's tool: it
+    re-chains the log so the hash chain verifies, standing in for an attacker who
+    recomputed the entire chain after editing it."""
+    return store.append(
+        head,
+        UnsignedGraphEvent(
+            event_id=f"event-{key}", idempotency_key=key, event_type=event_type,
+            timestamp="2026-08-08T00:00:00Z", actor="controller", payload=payload,
+        ),
+    ).event_hash
+
+
+def test_resume_rejects_a_forged_stream_where_a_child_succeeds_before_its_parent(tmp_path):
+    """Cross-node causality guard on the resume path (finding H4a): a tampered, fully
+    re-hash-chained log in which child ``b`` runs to SUCCEEDED while parent ``a`` never
+    leaves PENDING keeps every per-node lifecycle legal but inverts DAG order. resume()
+    rebuilds node state through latest_node_states and must fail closed rather than
+    re-drive from an impossible ordering."""
+    plan = _two_node_plan()
+    identity = _identity(plan)
+    store = GraphEventLog(tmp_path / "events.jsonl", identity)
+    head = _raw_append(store, "0" * 64, "run.created", "run-1:run.created", {"state": "PENDING"})
+    head = _raw_append(store, head, "run.started", "run-1:run.started", {"state": "RUNNING"})
+    for event_type, state in (
+        ("node.ready", "READY"), ("node.starting", "STARTING"),
+        ("node.running", "RUNNING"), ("node.gating", "GATING"),
+    ):
+        head = _raw_append(store, head, event_type, f"b:{state}", {"node_id": "b", "state": state, "attempt": 1})
+    _raw_append(store, head, "node.succeeded", "b:SUCCEEDED", {
+        "node_id": "b", "state": "SUCCEEDED", "attempt": 1, "artifact_digests": ["sha256:" + "d" * 64],
+    })
+    # No terminal run event: the projection stays RUNNING, so resume() proceeds to
+    # rebuild node state — exactly where the inverted DAG ordering is caught.
+    assert GraphEventLog(tmp_path / "events.jsonl", identity).replay_projection().state == "RUNNING"
+
+    resumed = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), _Worker([]))
+    with pytest.raises(GraphIntegrityError, match="causal"):
+        resumed.resume()

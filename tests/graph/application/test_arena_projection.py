@@ -7,6 +7,7 @@ import pytest
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
 from bounded_loops.graph.application.arena_projection import (
     ArenaReadRequest,
+    latest_node_states,
     read_arena_projection,
 )
 from bounded_loops.graph.domain.authoring import Effect, IsolationLevel
@@ -63,6 +64,33 @@ def _bound_plan() -> ExecutionPlan:
     return replace(
         plan, nodes=(replace(plan.nodes[0], binding_id=binding.binding_id), plan.nodes[1]),
         connection_bindings=(binding,),
+    )
+
+
+def _join_plan() -> ExecutionPlan:
+    """Two roots (``a``, ``b``) feeding an ``any_successful`` ``join``: the join may
+    leave PENDING as soon as ONE parent has SUCCEEDED, even while the other is still
+    PENDING (see ``schedule_ready`` join semantics). Used to prove the causality
+    guard does not regress legitimate join admission."""
+    def _leaf(node_id: str, kind: str, approval: dict[str, object]) -> PlannedNode:
+        return PlannedNode(
+            node_id=node_id, kind=kind, package_digest=None, binding_id=None,
+            required_effects=frozenset({Effect.READ_ONLY}), isolation=IsolationLevel.WORKSPACE_ONLY,
+            hard_deadline_ms=1000, budgets={"max_attempts": 1}, approval_policy=approval,
+        )
+
+    return replace(
+        _plan(),
+        nodes=(
+            _leaf("a", "research_claim", {}),
+            _leaf("b", "research_claim", {}),
+            _leaf("join", "join", {"join_mode": "any_successful"}),
+        ),
+        edges=(
+            PlannedEdge("a", "out", "join", "left", None),
+            PlannedEdge("b", "out", "join", "right", None),
+        ),
+        levels=(("a", "b"), ("join",)),
     )
 
 
@@ -219,3 +247,48 @@ def test_arena_projection_preserves_only_a_route_and_transport_matching_the_bind
 
     assert arena.nodes[0].route == ("openai", "codex", "in", False, "sha256:" + "e" * 64)
     assert arena.nodes[0].transport == "local_cli"
+
+
+def test_arena_projection_rejects_a_child_that_succeeds_before_its_parent(tmp_path):
+    """A tampered, fully re-hash-chained stream can keep every per-node lifecycle
+    legal yet invert DAG order — here the child ``review`` runs to SUCCEEDED while its
+    parent ``research`` never leaves PENDING. The per-node ``_ALLOWED`` lifecycle
+    cannot see this; the cross-node causality guard must fail closed (finding H4a)."""
+    plan = _plan()
+    store = GraphEventLog(tmp_path / "forged.jsonl", _identity(plan))
+    head = _append(store, "0" * 64, "run.created", "created", {"state": "PENDING"})
+    head = _append(store, head, "run.started", "started", {"state": "RUNNING"})
+    head = _append(store, head, "node.ready", "review-ready", {"node_id": "review", "state": "READY", "attempt": 1})
+    head = _append(store, head, "node.starting", "review-starting", {"node_id": "review", "state": "STARTING", "attempt": 1})
+    head = _append(store, head, "node.running", "review-running", {"node_id": "review", "state": "RUNNING", "attempt": 1})
+    head = _append(store, head, "node.gating", "review-gating", {"node_id": "review", "state": "GATING", "attempt": 1})
+    _append(store, head, "node.succeeded", "review-succeeded", {
+        "node_id": "review", "state": "SUCCEEDED", "attempt": 1, "artifact_digests": [],
+    })
+
+    with pytest.raises(GraphIntegrityError, match="causal"):
+        _read(plan, store)
+
+
+def test_latest_node_states_admits_a_valid_any_successful_join_with_an_unfinished_parent(tmp_path):
+    """The causality guard is the dual of the scheduler's admission rule, so it must
+    NOT reject a legitimate ``any_successful`` join that proceeds while one parent is
+    still PENDING. Guards Option B against a naive all-predecessors-SUCCEEDED rule
+    that would break join semantics (schedule_ready)."""
+    plan = _join_plan()
+    store = GraphEventLog(tmp_path / "join.jsonl", _identity(plan))
+    head = _append(store, "0" * 64, "run.created", "created", {"state": "PENDING"})
+    head = _append(store, head, "run.started", "started", {"state": "RUNNING"})
+    lifecycle = (("node.ready", "READY"), ("node.starting", "STARTING"), ("node.running", "RUNNING"), ("node.gating", "GATING"))
+    for node_id in ("a", "join"):  # NB: parent 'b' is never driven — it stays PENDING
+        for event_type, state in lifecycle:
+            head = _append(store, head, event_type, f"{node_id}-{state}", {"node_id": node_id, "state": state, "attempt": 1})
+        head = _append(store, head, "node.succeeded", f"{node_id}-succeeded", {
+            "node_id": node_id, "state": "SUCCEEDED", "attempt": 1, "artifact_digests": [],
+        })
+
+    latest = latest_node_states(plan, store.replay())
+
+    assert latest["a"]["state"] == "SUCCEEDED"
+    assert latest["b"]["state"] == "PENDING"
+    assert latest["join"]["state"] == "SUCCEEDED"

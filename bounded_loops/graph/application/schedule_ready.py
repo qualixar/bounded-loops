@@ -43,7 +43,7 @@ def derive_ready_nodes(plan: ExecutionPlan, states: Mapping[str, NodeState]) -> 
         if states[node.node_id] is not NodeState.PENDING:
             continue
         parents = tuple(states[parent] for parent in predecessors[node.node_id])
-        if _ready_for(node.kind, node.approval_policy, parents):
+        if predecessors_admit(node.kind, node.approval_policy, parents):
             ready.append(node.node_id)
     return tuple(ready)
 
@@ -57,7 +57,14 @@ def dispatch_node(states: Mapping[str, NodeState], node_id: str) -> dict[str, No
     return next_states
 
 
-def _ready_for(kind: str, policy: Mapping[str, object], parents: tuple[NodeState, ...]) -> bool:
+def predecessors_admit(kind: str, policy: Mapping[str, object], parents: tuple[NodeState, ...]) -> bool:
+    """Whether a node's predecessor states permit it to leave PENDING.
+
+    The single source of truth for cross-node DAG causality. ``derive_ready_nodes``
+    uses it at run time to admit a node; the receipt read model
+    (``arena_projection.latest_node_states``) reuses it to verify, at replay time,
+    that a rebuilt receipt stream never admitted a node before its predecessors did —
+    so the scheduler and the verifier can never disagree about causality."""
     if not parents:
         return True
     if kind != "join":

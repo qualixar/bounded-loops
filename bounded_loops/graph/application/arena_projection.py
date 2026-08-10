@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
+from bounded_loops.graph.application.schedule_ready import NodeState, predecessors_admit
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import GraphRunIdentity, StoredGraphEvent
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode, ResolvedBinding
@@ -123,9 +124,14 @@ def _match_plan(identity: GraphRunIdentity, plan: ExecutionPlan) -> None:
 
 
 def latest_node_states(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ...]) -> dict[str, dict[str, object]]:
-    """Rebuild each planned node's latest receipt state, validating the lifecycle
-    strictly. Shared by the Arena read model and the controller's resume path."""
+    """Rebuild each planned node's latest receipt state, validating BOTH the per-node
+    lifecycle strictly (``_ALLOWED``) AND cross-node DAG causality (a node never leaves
+    PENDING before its ``plan.edges`` predecessors admit it). Shared by the Arena read
+    model and the controller's resume path — so both fail closed on a tampered, fully
+    re-hash-chained log that inverts node order (finding H4a)."""
     values = {node.node_id: {"state": "PENDING", "attempt": 0} for node in plan.nodes}
+    nodes_by_id = {node.node_id: node for node in plan.nodes}
+    predecessors = _predecessors(plan)
     for stored in receipts:
         event = stored.event
         if not event.event_type.startswith("node."):
@@ -151,8 +157,47 @@ def latest_node_states(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ..
             raise GraphIntegrityError("Arena receipt node lifecycle is invalid")
         if attempt != current_attempt and current_state != "PENDING":
             raise GraphIntegrityError("Arena receipt node attempt sequence is invalid")
+        # A node may only ever leave PENDING via READY (`_ALLOWED`); that single
+        # admission edge is where cross-node causality is decided, and predecessor
+        # states are monotonic thereafter, so one check here is sufficient and sound.
+        if current_state == "PENDING" and next_state == "READY":
+            _assert_causal_admission(nodes_by_id[node_id], predecessors[node_id], values)
         values[node_id] = dict(event.payload)
     return values
+
+
+def _predecessors(plan: ExecutionPlan) -> dict[str, tuple[str, ...]]:
+    """Map each planned node to its DAG predecessors (edge sources), mirroring the
+    scheduler's construction in ``derive_ready_nodes``."""
+    sources: dict[str, list[str]] = {node.node_id: [] for node in plan.nodes}
+    for edge in plan.edges:
+        sources[edge.to_node].append(edge.from_node)
+    return {node_id: tuple(parents) for node_id, parents in sources.items()}
+
+
+def _assert_causal_admission(
+    node: PlannedNode, predecessors: tuple[str, ...], values: dict[str, dict[str, object]],
+) -> None:
+    """Fail closed if a node left PENDING before its DAG predecessors admitted it.
+
+    This is the receipt-time dual of the scheduler's admission rule
+    (``predecessors_admit``): the SAME predicate that lets ``derive_ready_nodes``
+    dispatch a node must hold over the predecessor states rebuilt from the receipt
+    sequence so far. A tampered, fully re-hash-chained log that inverts DAG order — a
+    child reaching READY (and thus SUCCEEDED) before its parents — is rejected here even
+    though every per-node ``_ALLOWED`` lifecycle is individually legal. Join semantics
+    are honored exactly, because the check and the scheduler share one predicate."""
+    parents: list[NodeState] = []
+    for source in predecessors:
+        state = values[source]["state"]
+        if not isinstance(state, str) or state not in NodeState.__members__:
+            raise GraphIntegrityError("Arena receipt node state is invalid")
+        parents.append(NodeState(state))
+    if not predecessors_admit(node.kind, node.approval_policy, tuple(parents)):
+        raise GraphIntegrityError(
+            f"Arena receipt violates DAG causality: node {node.node_id!r} left PENDING "
+            "before its plan predecessors admitted it"
+        )
 
 
 def _node_projection(
