@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Callable, Mapping, Protocol
 
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
@@ -14,7 +15,7 @@ from bounded_loops.graph.application.execution_policy import (
     validate_execution_envelope,
 )
 from bounded_loops.graph.application.schedule_ready import NodeState, derive_ready_nodes, dispatch_node
-from bounded_loops.graph.domain.authoring import Effect
+from bounded_loops.graph.domain.authoring import Effect, NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.events import GraphRunIdentity, GraphRunProjection, UnsignedGraphEvent
@@ -72,6 +73,29 @@ class ArtifactVerifierPort(Protocol):
     def verify(self, *, identity: GraphRunIdentity, digests: tuple[str, ...]) -> None: ...
 
 
+class ApprovalOutcome(str, Enum):
+    """The decision the controller reads for a node paused awaiting a human.
+
+    ``PENDING`` is the fail-closed default: with no decided outcome the run stays
+    paused rather than proceeding.
+    """
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class ApprovalResolverPort(Protocol):
+    """Reports whether a human has decided an approval node for THIS run/attempt.
+
+    The controller never itself validates a human decision (roles, signatures,
+    nonces live in the approvals use case); it only asks this port for the already
+    recorded outcome, and treats ``PENDING`` as "keep waiting".
+    """
+
+    def resolve(self, *, identity: GraphRunIdentity, node: PlannedNode, attempt: int) -> "ApprovalOutcome": ...
+
+
 class GraphRunController:
     """Run or resume a graph sequentially with durable transition evidence.
 
@@ -94,6 +118,7 @@ class GraphRunController:
         execution_enforcer: ExecutionEnforcerPort,
         timestamp: Callable[[], str],
         actor: str = "graph-controller",
+        approval_resolver: ApprovalResolverPort | None = None,
     ) -> None:
         if worker is gate:
             raise GraphIntegrityError("worker and independent gate must be separate objects")
@@ -113,6 +138,7 @@ class GraphRunController:
         self._execution_enforcer = execution_enforcer
         self._timestamp = timestamp
         self._actor = actor
+        self._approval_resolver = approval_resolver
         self._head = "0" * 64
 
     def run(self) -> GraphRunProjection:
@@ -177,6 +203,12 @@ class GraphRunController:
                 # a defensive guard so the helper stays safe if ever reused: a run
                 # that already failed is finalized, never re-driven.
                 raise GraphIntegrityError(f"cannot resume: node {node.node_id!r} has already failed")
+            if observed == "AWAITING_APPROVAL":
+                # Paused for a human decision: no worker ran and no effect fired
+                # (approval GATES the effect), so re-driving only re-consults the
+                # decision. Safe to re-drive even for an effectful approval node.
+                states[node.node_id] = NodeState.PENDING
+                continue
             if observed in ("STARTING", "RUNNING", "GATING") and (node.required_effects & _EFFECTFUL_EFFECTS):
                 raise GraphIntegrityError(
                     f"cannot safely resume: node {node.node_id!r} carries an external / irreversible effect and "
@@ -197,11 +229,19 @@ class GraphRunController:
             for node_id in ready:
                 states[node_id] = NodeState.READY
                 self._append_node(node_id, "node.ready", NodeState.READY)
+                node = self._node(node_id)
+                if node.kind == NodeKind.APPROVAL.value:
+                    # A human checkpoint: it runs no worker. Consult the recorded
+                    # decision — pause (return) if none yet, fail closed on reject,
+                    # or record success on approve and drive on.
+                    paused = self._resolve_approval(states, node_id, node)
+                    if paused is not None:
+                        return paused
+                    continue
                 states = dispatch_node(states, node_id)
                 self._append_node(node_id, "node.starting", NodeState.STARTING)
                 states[node_id] = NodeState.RUNNING
                 self._append_node(node_id, "node.running", NodeState.RUNNING)
-                node = self._node(node_id)
                 try:
                     envelope = validate_execution_envelope(
                         self.plan, node,
@@ -250,6 +290,46 @@ class GraphRunController:
                     )
                     continue
                 return self._fail_node(states, node_id, "independent gate rejected output")
+
+    def _resolve_approval(
+        self, states: dict[str, NodeState], node_id: str, node: PlannedNode,
+    ) -> GraphRunProjection | None:
+        """Apply the recorded human decision for an approval node.
+
+        Returns a projection when the run must STOP — a fail-closed failure (no
+        resolver, a rejection, or a malformed outcome) or a durable pause (no
+        decision yet, so the node is left AWAITING_APPROVAL and the run stays
+        resumable). Returns ``None`` when the node was approved: its
+        ``node.succeeded`` receipt is written (the human decision is the
+        independent gate) and the caller drives the remaining nodes.
+        """
+        # An approval node ALWAYS records that it reached the human gate first, so
+        # every terminal transition is AWAITING_APPROVAL -> {SUCCEEDED, FAILED} — the
+        # node never fails or succeeds straight from READY, which would be an
+        # unprojectable receipt (READY has no terminal edge). It also keeps the honest
+        # story: the receipt shows the node required human approval before its outcome.
+        states[node_id] = NodeState.AWAITING_APPROVAL
+        self._append_node(node_id, "node.awaiting_approval", NodeState.AWAITING_APPROVAL)
+        if self._approval_resolver is None:
+            return self._fail_node(states, node_id, "approval node reached without an approval resolver")
+        try:
+            outcome = self._approval_resolver.resolve(
+                identity=self.event_log.identity, node=node, attempt=1,
+            )
+        except Exception:
+            # Consistent with worker/gate/policy failures: a resolver error fails the
+            # run closed (durable FAILED) rather than escaping as an uncaught exception.
+            return self._fail_node(states, node_id, "approval resolver evaluation failed")
+        if outcome is ApprovalOutcome.APPROVED:
+            states[node_id] = NodeState.SUCCEEDED
+            self._append_node(node_id, "node.succeeded", NodeState.SUCCEEDED, artifact_digests=[])
+            return None
+        if outcome is ApprovalOutcome.REJECTED:
+            return self._fail_node(states, node_id, "human approval was rejected")
+        if outcome is not ApprovalOutcome.PENDING:
+            return self._fail_node(states, node_id, "approval resolver returned an invalid outcome")
+        # PENDING: no decision yet — stay paused; the hold receipt is already durable.
+        return self.event_log.replay_projection()
 
     def _node(self, node_id: str) -> PlannedNode:
         return next(node for node in self.plan.nodes if node.node_id == node_id)

@@ -15,9 +15,10 @@ from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode, Resolved
 
 _ALLOWED = {
     "PENDING": frozenset({"READY"}),
-    "READY": frozenset({"STARTING"}),
+    "READY": frozenset({"STARTING", "AWAITING_APPROVAL"}),
     "STARTING": frozenset({"RUNNING"}),
     "RUNNING": frozenset({"GATING", "FAILED"}),
+    "AWAITING_APPROVAL": frozenset({"SUCCEEDED", "FAILED"}),
     "GATING": frozenset({"SUCCEEDED", "FAILED"}),
     "SUCCEEDED": frozenset(),
     "FAILED": frozenset(),
@@ -162,6 +163,18 @@ def latest_node_states(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ..
         # states are monotonic thereafter, so one check here is sufficient and sound.
         if current_state == "PENDING" and next_state == "READY":
             _assert_causal_admission(nodes_by_id[node_id], predecessors[node_id], values)
+        # AWAITING_APPROVAL is an approval-node-only human hold. `_ALLOWED` is
+        # kind-agnostic, so enforce the kind here: no other node kind may reach it,
+        # in an honest OR a fully re-hash-chained log — a non-approval node still
+        # can only succeed through the worker+gate lifecycle.
+        if next_state == "AWAITING_APPROVAL" and nodes_by_id[node_id].kind != "approval":
+            raise GraphIntegrityError("Arena receipt has a non-approval node awaiting approval")
+        # Symmetric guard: an approval node is a HUMAN gate — it never runs a worker,
+        # so it may only leave READY via AWAITING_APPROVAL. Rejecting READY->STARTING
+        # for kind "approval" means a forged worker path (…->GATING->SUCCEEDED) can
+        # never grant an approval node without the human decision.
+        if next_state == "STARTING" and nodes_by_id[node_id].kind == "approval":
+            raise GraphIntegrityError("Arena receipt has an approval node bypassing the human gate")
         values[node_id] = dict(event.payload)
     return values
 

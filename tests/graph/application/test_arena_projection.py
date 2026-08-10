@@ -147,9 +147,9 @@ def test_arena_projection_is_receipt_derived_and_does_not_mutate_execution_evide
         "artifact_digests": ["sha256:" + "d" * 64],
     })
     head = _append(store, head, "node.ready", "review-ready", {"node_id": "review", "state": "READY", "attempt": 1})
-    head = _append(store, head, "node.starting", "review-starting", {"node_id": "review", "state": "STARTING", "attempt": 1})
-    head = _append(store, head, "node.running", "review-running", {"node_id": "review", "state": "RUNNING", "attempt": 1})
-    head = _append(store, head, "node.gating", "review-gating", {"node_id": "review", "state": "GATING", "attempt": 1})
+    # review is an approval (human-gate) node: it reaches SUCCEEDED via the approval
+    # lifecycle (READY -> AWAITING_APPROVAL -> SUCCEEDED), never the worker path.
+    head = _append(store, head, "node.awaiting_approval", "review-awaiting", {"node_id": "review", "state": "AWAITING_APPROVAL", "attempt": 1})
     head = _append(store, head, "node.succeeded", "review-succeeded", {
         "node_id": "review", "state": "SUCCEEDED", "attempt": 1, "artifact_digests": [],
     })
@@ -292,3 +292,21 @@ def test_latest_node_states_admits_a_valid_any_successful_join_with_an_unfinishe
     assert latest["a"]["state"] == "SUCCEEDED"
     assert latest["b"]["state"] == "PENDING"
     assert latest["join"]["state"] == "SUCCEEDED"
+
+
+def test_arena_projection_rejects_a_non_approval_node_awaiting_approval(tmp_path):
+    """AWAITING_APPROVAL is an approval-node-only hold. A forged, fully re-hash-chained
+    log that parks a non-approval node (``research``, kind research_claim) there — a
+    shortcut that would otherwise skip the worker+gate lifecycle — must be rejected
+    even though the raw READY->AWAITING_APPROVAL edge is in the kind-agnostic table."""
+    plan = _plan()
+    store = GraphEventLog(tmp_path / "forged.jsonl", _identity(plan))
+    head = _append(store, "0" * 64, "run.created", "created", {"state": "PENDING"})
+    head = _append(store, head, "run.started", "started", {"state": "RUNNING"})
+    head = _append(store, head, "node.ready", "research-ready", {"node_id": "research", "state": "READY", "attempt": 1})
+    _append(store, head, "node.awaiting_approval", "research-awaiting", {
+        "node_id": "research", "state": "AWAITING_APPROVAL", "attempt": 1,
+    })
+
+    with pytest.raises(GraphIntegrityError, match="non-approval"):
+        _read(plan, store)

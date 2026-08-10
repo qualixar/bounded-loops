@@ -25,6 +25,7 @@ _NODE_EVENTS = {
     "node.ready": "READY",
     "node.starting": "STARTING",
     "node.running": "RUNNING",
+    "node.awaiting_approval": "AWAITING_APPROVAL",
     "node.gating": "GATING",
     "node.succeeded": "SUCCEEDED",
     "node.failed": "FAILED",
