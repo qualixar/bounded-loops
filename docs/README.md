@@ -22,3 +22,19 @@ which remains the canonical quick-start and product overview.
   replays a recorded fix, the `forbid:` anti-tamper guard, the L1/L2/L3
   rung ladder, and the verify protocol (`bl lint` + `bl run --yes`) —
   worked through against the real `loops/citation-existence-check/` loop.
+
+- **[graph-quickstart.md](./graph-quickstart.md)** — runnable quickstart for
+  `bl graph`: install, create manifest/connections/inputs files, execute a
+  Local-CLI graph (`bl graph run --execute`), inspect with `bl graph arena`
+  and `bl graph status`, and run the built-in native-sandbox demo.
+
+- **[graph-capabilities.md](./graph-capabilities.md)** — honest capabilities
+  and boundaries: what ships (compiler, Local-CLI connector, native-sandbox
+  demo, Arena, memory spine, egress broker, cross-model audit engine, MCP
+  surface), what is an implemented seam not yet wired as a run mode (BYOK/HTTP
+  connector, enterprise egress firewall, hosted receipt verifier), and what a
+  deploying engineer must provide.
+
+- **[RELEASE-READINESS.md](./RELEASE-READINESS.md)** — crisp release-readiness
+  assessment: what a client gets today, what requires their own configuration,
+  the not-yet list, and the quality posture.
