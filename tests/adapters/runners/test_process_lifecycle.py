@@ -7,16 +7,67 @@ from pathlib import Path
 import sys
 import time
 
-import pytest
-
 from bounded_loops.adapters.runners.process_lifecycle import (
     ProcessTurn,
     TurnState,
 )
 
+# Generous, bounded waits so heavy CI load cannot turn asynchronous process
+# startup or teardown into a false failure. On an idle machine these return in
+# well under a second; the ceilings only bite when the box is saturated.
+_READY_TIMEOUT_S = 30.0
+_DEATH_TIMEOUT_S = 10.0
+_WAIT_TIMEOUT_S = 5.0
+_POLL_INTERVAL_S = 0.02
+
 
 def _python(code: str) -> list[str]:
     return [sys.executable, "-c", code]
+
+
+def _read_pid_when_ready(path: Path, timeout_s: float) -> int:
+    """Return a fixture descendant's pid once its pidfile is fully written.
+
+    Each descendant writes its pidfile *after* it has spawned, so a readable
+    integer here is a genuine readiness signal: the process (and the child it
+    forked) already exist and belong to the turn's process group. This tolerates
+    the brief window where the file exists but has not yet been populated, and
+    replaces the previous fixed 2s deadline that three nested Python interpreter
+    cold-starts could blow through under load.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            text = ""
+        if text:
+            return int(text)
+        time.sleep(_POLL_INTERVAL_S)
+    raise AssertionError(
+        f"fixture descendant {path.name} did not start within {timeout_s:.0f}s"
+    )
+
+
+def _assert_pid_dead(pid: int, timeout_s: float) -> None:
+    """Poll until ``pid`` is fully gone, allowing the OS to finish an async kill.
+
+    ``cancel`` signals the whole process group synchronously, but the kernel
+    tears the descendants down, and init reaps the resulting orphans,
+    asynchronously. Polling for ProcessLookupError proves the descendant is
+    truly gone without demanding it happen within a single scheduler tick.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"pid {pid} still alive {timeout_s:.0f}s after cancellation"
+            )
+        time.sleep(_POLL_INTERVAL_S)
 
 
 def test_completed_turn_caps_output_and_redacts_secret(tmp_path: Path) -> None:
@@ -62,24 +113,26 @@ def test_cancel_terminates_parent_and_descendant_process_group(tmp_path: Path) -
         env={"PATH": os.environ["PATH"]},
         output_limit_bytes=1024,
     )
-    deadline = time.monotonic() + 2
-    while (
-        not child_pid_path.exists() or not grandchild_pid_path.exists()
-    ) and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert child_pid_path.exists() and grandchild_pid_path.exists(), "fixture descendants did not start"
-    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
-    grandchild_pid = int(grandchild_pid_path.read_text(encoding="utf-8"))
+    try:
+        # Wait on a real readiness signal (both descendants recorded their pids)
+        # instead of a fixed sleep, so cancellation cannot race process startup.
+        child_pid = _read_pid_when_ready(child_pid_path, _READY_TIMEOUT_S)
+        grandchild_pid = _read_pid_when_ready(grandchild_pid_path, _READY_TIMEOUT_S)
 
-    turn.cancel("test cancellation")
-    turn.cancel("idempotent second cancellation")
-    result = turn.wait(timeout_s=2)
+        turn.cancel("test cancellation")
+        turn.cancel("idempotent second cancellation")
+        result = turn.wait(timeout_s=_WAIT_TIMEOUT_S)
 
-    assert result.state is TurnState.CANCELLED
-    with pytest.raises(ProcessLookupError):
-        os.kill(child_pid, 0)
-    with pytest.raises(ProcessLookupError):
-        os.kill(grandchild_pid, 0)
+        assert result.state is TurnState.CANCELLED
+        # The guarantee under test is unchanged: the parent AND the descendant
+        # process group are both terminated. We only tolerate the OS finishing
+        # the (asynchronous) teardown and orphan reap within a bounded window.
+        _assert_pid_dead(child_pid, _DEATH_TIMEOUT_S)
+        _assert_pid_dead(grandchild_pid, _DEATH_TIMEOUT_S)
+    finally:
+        # Never leak the sleep(60) chain if an assertion above fails early:
+        # cancel is idempotent and kills the whole process group.
+        turn.cancel("test cleanup")
 
 
 def test_wait_deadline_terminates_a_hanging_turn(tmp_path: Path) -> None:
