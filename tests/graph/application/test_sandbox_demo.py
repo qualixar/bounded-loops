@@ -73,9 +73,32 @@ def test_run_execute_requires_out(capsys):
     assert "--out" in capsys.readouterr().err
 
 
-def test_run_execute_refuses_arbitrary_manifest(tmp_path, capsys):
+def test_run_execute_refuses_non_local_cli_manifest(tmp_path, capsys):
+    # `--execute <manifest>` now runs an admitted local-CLI graph for real; a manifest whose
+    # nodes are NOT admitted local-CLI connectors is still refused (by the preflight).
+    manifest = tmp_path / "graph.yaml"
+    manifest.write_text(
+        'api_version: "bounded-loops.dev/graph/v1"\n'
+        "graph_id: plain\n"
+        'version: "1.0.0"\n'
+        "nodes:\n"
+        "  - id: n1\n"
+        "    kind: research_claim\n"
+        "    inputs: {}\n"
+        "    outputs: {claim: text}\n"
+        "    budget: {max_attempts: 1, max_wallclock_s: 5}\n"
+        "    effects: [read_only]\n"
+        "    isolation: workspace_only\n"
+        "edges: []\n"
+        "connection_slots: []\n"
+        "policies: {data_class: public, fail_mode: fail_closed}\n",
+        encoding="utf-8",
+    )
     rc = cmd_graph_run(
-        argparse.Namespace(execute=True, out=str(tmp_path), manifest="graph.yaml", json=False)
+        argparse.Namespace(
+            execute=True, out=str(tmp_path / "out"), manifest=str(manifest),
+            connections=None, inputs=None, json=False,
+        )
     )
     assert rc == 2
-    assert "built-in" in capsys.readouterr().err
+    assert "local-cli" in capsys.readouterr().err.lower()

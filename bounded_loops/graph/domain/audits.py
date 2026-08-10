@@ -55,6 +55,74 @@ class RepairAttempt:
     regression_evidence_digest: str
 
 
+@dataclass(frozen=True)
+class AuditAssignment:
+    """Binds a coverage cell to an independent evaluator identity.
+
+    Validators run inline at construction time so an ``AuditPlan`` can assert
+    that every assignment it holds is already well-formed.  The ``independence``
+    field documents the enforced constraint (e.g. ``"assessor != producer"``);
+    it is never empty so the intent is always explicit in the persisted plan.
+    """
+
+    cell: str
+    model_id: str
+    tool_id: str
+    version: str
+    rubric_digest: str
+    independence: str
+
+    def __post_init__(self) -> None:
+        for field, value in (
+            ("cell", self.cell),
+            ("model_id", self.model_id),
+            ("tool_id", self.tool_id),
+            ("version", self.version),
+            ("independence", self.independence),
+        ):
+            if not isinstance(value, str) or not value:
+                raise GraphValidationError("audit_assignment", f"/{field}", f"{field} must be non-empty")
+        _digest(self.rubric_digest, "/rubric_digest")
+
+
+@dataclass(frozen=True)
+class AuditPlan:
+    """An audit plan for one frozen artifact: mandatory coverage cells and their
+    evaluator assignments.
+
+    Fail-closed invariants (enforced at construction, mirroring the
+    ``reconcile_audit`` vacuous-pass guard):
+    - At least one mandatory cell — an empty plan would vacuously clear release.
+    - No duplicate cell names.
+    - Every mandatory cell has a matching assignment.
+    - Both digest fields are valid SHA-256.
+    """
+
+    artifact_digest: str
+    rubric_digest: str
+    mandatory_cells: tuple[AuditCell, ...]
+    assignments: tuple[AuditAssignment, ...]
+
+    def __post_init__(self) -> None:
+        _digest(self.artifact_digest, "/artifact_digest")
+        _digest(self.rubric_digest, "/rubric_digest")
+        if not self.mandatory_cells:
+            raise GraphValidationError(
+                "audit_plan", "/mandatory_cells",
+                "audit plan must have at least one mandatory cell (fail-closed: empty plan would vacuously pass)",
+            )
+        cell_names = [cell.name for cell in self.mandatory_cells]
+        if len(set(cell_names)) != len(cell_names):
+            raise GraphValidationError("audit_plan", "/mandatory_cells", "duplicate cell names in mandatory cells")
+        assigned_cells = {a.cell for a in self.assignments}
+        for cell in self.mandatory_cells:
+            if cell.mandatory and cell.name not in assigned_cells:
+                raise GraphValidationError(
+                    "audit_plan", f"/assignments/{cell.name}",
+                    f"mandatory cell {cell.name!r} has no assignment",
+                )
+
+
 def validate_audit_coverage(cells: tuple[AuditCell, ...], results: tuple[AuditResult, ...]) -> None:
     """Fail release coverage on missing, self-only, or open S0/S1 cells."""
     by_cell: dict[str, list[AuditResult]] = {}

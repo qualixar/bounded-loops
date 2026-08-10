@@ -222,15 +222,15 @@ def _node_projection(
     transport = receipt.get("transport")
     if transport is not None and (not isinstance(transport, str) or not transport):
         raise GraphIntegrityError("Arena receipt transport is invalid")
-    binding = bindings.get(node.binding_id) if node.binding_id else None
-    _match_binding(node, binding, route, transport)
-    artifacts = receipt.get("artifact_digests", ())
     state = receipt["state"]
     attempt = receipt["attempt"]
-    if not isinstance(artifacts, (tuple, list)) or not all(isinstance(value, str) for value in artifacts):
-        raise GraphIntegrityError("Arena receipt artifacts are invalid")
     if not isinstance(state, str) or isinstance(attempt, bool) or not isinstance(attempt, int):
         raise GraphIntegrityError("Arena receipt node state is invalid")
+    binding = bindings.get(node.binding_id) if node.binding_id else None
+    _match_binding(node, binding, route, transport, state)
+    artifacts = receipt.get("artifact_digests", ())
+    if not isinstance(artifacts, (tuple, list)) or not all(isinstance(value, str) for value in artifacts):
+        raise GraphIntegrityError("Arena receipt artifacts are invalid")
     return ArenaNodeProjection(
         node_id=node.node_id, kind=node.kind, state=state, attempt=attempt,
         required_effects=tuple(sorted(effect.value for effect in node.required_effects)),
@@ -262,6 +262,7 @@ def _match_binding(
     binding: ResolvedBinding | None,
     route: tuple[str, str, str, bool, str] | None,
     transport: str | None,
+    state: str,
 ) -> None:
     if node.binding_id is None:
         if route is not None or transport is not None:
@@ -269,6 +270,15 @@ def _match_binding(
         return
     if binding is None:
         raise GraphIntegrityError("Arena node binding is absent from immutable plan")
-    expected = (binding.provider_id, binding.model_target, binding.region, binding.fallback, binding.route_policy_digest)
-    if route != expected or transport != binding.transport:
-        raise GraphIntegrityError("Arena receipt route or transport does not match immutable binding")
+    # Route/transport are recorded ONLY on a node's SUCCEEDED receipt (the controller binds them
+    # to the admitted route there). So a SUCCEEDED bound node must match its binding exactly; a
+    # bound node that did NOT succeed (FAILED / interrupted) recorded neither and must carry
+    # neither — which lets a failed connector run still project and render in the Arena (where the
+    # user most needs to see WHY it failed) instead of raising a receipt-integrity error.
+    if state == "SUCCEEDED":
+        expected = (binding.provider_id, binding.model_target, binding.region, binding.fallback, binding.route_policy_digest)
+        if route != expected or transport != binding.transport:
+            raise GraphIntegrityError("Arena receipt route or transport does not match immutable binding")
+        return
+    if route is not None or transport is not None:
+        raise GraphIntegrityError("Arena receipt has route or transport for a node that did not succeed")

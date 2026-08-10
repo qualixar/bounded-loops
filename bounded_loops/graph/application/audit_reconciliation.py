@@ -18,7 +18,9 @@ from dataclasses import dataclass
 from typing import NewType
 
 from bounded_loops.graph.domain.audits import (
+    AuditAssignment,
     AuditCell,
+    AuditPlan,
     AuditedArtifact,
     AuditResult,
     RepairAttempt,
@@ -40,7 +42,17 @@ _RESOLVED = "resolved"
 @dataclass(frozen=True)
 class CellVerdict:
     """One reconciled release cell. `highest_severity` is the max severity seen (never lowered);
-    `dissent` is set when the lanes disagreed on the outcome."""
+    `dissent` is set when the lanes disagreed on the outcome.
+
+    When an ``AuditPlan`` is supplied to ``reconcile_audit``, ``evaluator_model_id`` and
+    ``evaluator_tool_id`` record WHICH model/tool was assigned to audit this cell — enabling
+    downstream traceability without changing any existing severity/dissent/repair semantics.
+    Callers that do not supply a plan receive ``None`` for both fields (backward-compatible).
+
+    NOTE: cryptographic signing of ``CellVerdict`` is DEFERRED — a signed verdict would require
+    a key-management subsystem (see LLD 06 open checklist: "severity cannot be lowered without
+    signed disposition"). This is recorded here so the next implementer does not need to rediscover
+    the gap."""
 
     cell: str
     mandatory: bool
@@ -50,6 +62,8 @@ class CellVerdict:
     missing: bool
     producer_only: bool
     blocking_finding_ids: tuple[str, ...]
+    evaluator_model_id: str | None = None
+    evaluator_tool_id: str | None = None
 
     @property
     def release_blocking(self) -> bool:
@@ -73,27 +87,49 @@ def reconcile_audit(
     results: tuple[AuditResult, ...],
     *,
     repaired_finding_ids: ValidatedRepairIds = ValidatedRepairIds(frozenset()),
+    plan: AuditPlan | None = None,
 ) -> ReleaseDecision:
-    """Reconcile per-cell audit results into a release decision. `repaired_finding_ids` MUST be
-    the output of `resolve_by_repair` (a validated repair verdict) — its branded type makes the
-    type-checker reject a raw frozenset (a compile-time contract; NewType is erased at runtime).
-    Those findings no longer block, exactly as a `resolved` disposition
-    would, but severity is still preserved. A `finding_id` is a GLOBAL identity: the same id always
-    denotes the same logical finding, and distinct findings MUST carry distinct ids (matching the
-    lineage model's `AuditedArtifact.finding_ids`), so a repaired id unblocks exactly its finding.
+    """Reconcile per-cell audit results into a release decision.
+
+    ``repaired_finding_ids`` MUST be the output of ``resolve_by_repair`` (a validated repair
+    verdict) — its branded type makes the type-checker reject a raw frozenset (a compile-time
+    contract; NewType is erased at runtime).  Those findings no longer block, exactly as a
+    ``resolved`` disposition would, but severity is still preserved.
+
+    ``plan`` is optional.  When supplied:
+    - ``plan.mandatory_cells`` overrides the ``cells`` positional argument.
+    - Each ``CellVerdict`` gains ``evaluator_model_id`` and ``evaluator_tool_id`` from the
+      matching ``AuditAssignment`` (``None`` when no assignment covers the cell, e.g. for
+      non-mandatory sampled cells).
+    - The existing severity / dissent / repair semantics are entirely unchanged.
+
+    When ``plan`` is ``None`` the behaviour is identical to the pre-plan signature — no
+    existing call-site is affected (``evaluator_model_id`` and ``evaluator_tool_id`` are
+    ``None`` on every ``CellVerdict``).
+
     Raises on MALFORMED input (unknown finding severity, empty identifiers); a well-formed but
     failing audit is a BLOCKED decision, never an exception."""
+    effective_cells = plan.mandatory_cells if plan is not None else cells
+    assignment_by_cell: dict[str, AuditAssignment] = (
+        {a.cell: a for a in plan.assignments} if plan is not None else {}
+    )
     _validate_results(results)
     by_cell: dict[str, list[AuditResult]] = {}
     for result in results:
         by_cell.setdefault(result.cell, []).append(result)
-    verdicts = tuple(_cell_verdict(cell, by_cell.get(cell.name, []), repaired_finding_ids) for cell in cells)
+    verdicts = tuple(
+        _cell_verdict(cell, by_cell.get(cell.name, []), repaired_finding_ids,
+                      assignment_by_cell.get(cell.name))
+        for cell in effective_cells
+    )
     blocking = tuple(verdict.cell for verdict in verdicts if verdict.release_blocking)
     dissent = tuple(verdict.cell for verdict in verdicts if verdict.dissent)
     # Fail closed on a misconfigured plan: a release with NO mandatory cell is never "cleared"
     # (that would be a vacuous pass). This is stricter than validate_audit_coverage, which
     # returns quietly on an empty/all-optional plan — reconcile hardens that fail-open.
-    if not any(cell.mandatory for cell in cells):
+    # Note: AuditPlan.__post_init__ also enforces non-empty mandatory_cells, so a plan can
+    # never supply an empty cell list, but we keep this guard for the cells-only call path.
+    if not any(cell.mandatory for cell in effective_cells):
         return ReleaseDecision(False, "release blocked: no mandatory release cells defined", blocking, dissent, verdicts)
     released = not blocking
     reason = (
@@ -104,7 +140,12 @@ def reconcile_audit(
     return ReleaseDecision(released, reason, blocking, dissent, verdicts)
 
 
-def _cell_verdict(cell: AuditCell, covered: list[AuditResult], repaired_finding_ids: frozenset[str]) -> CellVerdict:
+def _cell_verdict(
+    cell: AuditCell,
+    covered: list[AuditResult],
+    repaired_finding_ids: frozenset[str],
+    assignment: AuditAssignment | None = None,
+) -> CellVerdict:
     missing = cell.mandatory and not covered
     producer_only = cell.mandatory and bool(covered) and all(r.assessor == r.producer for r in covered)
     severities = [r.finding.severity for r in covered if r.finding is not None]
@@ -126,6 +167,8 @@ def _cell_verdict(cell: AuditCell, covered: list[AuditResult], repaired_finding_
         missing=missing,
         producer_only=producer_only,
         blocking_finding_ids=blocking_ids,
+        evaluator_model_id=assignment.model_id if assignment is not None else None,
+        evaluator_tool_id=assignment.tool_id if assignment is not None else None,
     )
 
 

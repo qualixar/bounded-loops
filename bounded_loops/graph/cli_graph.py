@@ -2,9 +2,11 @@
 
 Honesty contract (never violate):
 - `run`  : compile a manifest (honest preview); `--execute --out <dir>` REALLY
-           runs the built-in graph inside a native OS sandbox (no Docker),
-           proven by an independent gate. Arbitrary-manifest execution stays
-           refused until an admitted per-node package broker exists.
+           runs a graph inside a native OS sandbox (no Docker), proven by an
+           independent gate. With NO manifest it runs the built-in demo; with an
+           admitted local-CLI manifest (+ --connections/--inputs) it runs that
+           graph's agent-CLI nodes for real. BYOK/HTTP and sandboxed tool nodes
+           stay refused until their later phases.
 - `demo` : PROMINENT banner labels the run as a DEMONSTRATION with no
            sandbox, isolation, or network enforcement.
 
@@ -569,24 +571,66 @@ def cmd_graph_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) -> int:
+    """Read a user manifest (+ optional --connections/--inputs) and run it for real."""
+    manifest_path = Path(manifest)
+    suffix = manifest_path.suffix.lower()
+    if suffix not in (".json", ".yaml", ".yml"):
+        _err(f"graph run: unsupported extension '{suffix}'")
+        return 2
+    try:
+        text = manifest_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        _err(f"graph run: cannot read '{manifest_path}' — {exc}")
+        return 2
+    connections_raw: list[object] = []
+    if getattr(args, "connections", None):
+        try:
+            connections_raw = json.loads(Path(args.connections).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            _err(f"graph run: cannot load connections — {exc}")
+            return 2
+    node_prompts: dict[str, str] = {}
+    if getattr(args, "inputs", None):
+        try:
+            raw = json.loads(Path(args.inputs).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            _err(f"graph run: cannot load inputs — {exc}")
+            return 2
+        if not isinstance(raw, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in raw.items()
+        ):
+            _err("graph run: --inputs must be a JSON object mapping node_id -> prompt string")
+            return 2
+        node_prompts = raw
+    from bounded_loops.graph.application.execute_graph import execute_graph_run
+    return execute_graph_run(
+        manifest_text=text,
+        manifest_suffix=".json" if suffix == ".json" else ".yaml",
+        connections_raw=list(connections_raw),
+        node_prompts=node_prompts,
+        out_dir=out_dir,
+        json_out=getattr(args, "json", False),
+    )
+
+
 def cmd_graph_run(args: argparse.Namespace) -> int:
     """bl graph run — compile a manifest (honest preview), or `--execute --out
-    <dir>` to REALLY run the built-in graph inside a native OS sandbox (no
-    Docker required)."""
+    <dir>` to REALLY run a graph inside a native OS sandbox (no Docker). With no
+    manifest this runs the built-in demo; with an admitted local-CLI manifest it
+    runs that graph's agent-CLI nodes for real."""
     if getattr(args, "execute", False):
         out = getattr(args, "out", None)
         if not out:
             _err("graph run --execute requires --out <dir>")
             return 2
-        if getattr(args, "manifest", None):
-            _err(
-                "graph run --execute currently runs only the built-in sandboxed demo "
-                "graph; arbitrary-manifest execution needs an admitted package per node "
-                "(runner broker, a later phase). Omit the manifest to run the demo."
-            )
-            return 2
-        from bounded_loops.graph.application.sandbox_demo import run_sandbox_demo
-        return run_sandbox_demo(Path(out), json_out=getattr(args, "json", False))
+        manifest = getattr(args, "manifest", None)
+        if not manifest:
+            # No manifest → the built-in native-sandbox demonstration (unchanged).
+            from bounded_loops.graph.application.sandbox_demo import run_sandbox_demo
+            return run_sandbox_demo(Path(out), json_out=getattr(args, "json", False))
+        # A user manifest → REAL execution of its admitted local-CLI connector nodes.
+        return _execute_manifest(args, manifest, Path(out))
 
     if not getattr(args, "manifest", None):
         _err("graph run: provide a <manifest>, or use --execute --out <dir> to run the built-in sandboxed demo")
@@ -638,7 +682,7 @@ def cmd_graph_run(args: argparse.Namespace) -> int:
         _err(f"graph run: compile failed [{exc.code}] {exc.pointer} — {exc.message}")
         return 2
 
-    _RUN_NOTICE = "execution requires an admitted sandboxed runner (E2); no node executed"
+    _RUN_NOTICE = "compile-only preview; use --execute to run an admitted local-CLI graph"
 
     if getattr(args, "json", False):
         print(json.dumps(
@@ -665,8 +709,9 @@ def cmd_graph_run(args: argparse.Namespace) -> int:
         )
     print()
     print(
-        "Execution requires an admitted sandboxed runner (E2), which is not yet\n"
-        "available; no node was executed.  Use `bl graph demo` to see the pipeline."
+        "This is a compile-only preview; no node was executed. To really run an\n"
+        "admitted local-CLI graph:  bl graph run --execute <manifest> --connections\n"
+        "<json> --inputs <json> --out <dir>  (or `bl graph demo` for the pipeline)."
     )
     return 0
 
@@ -746,14 +791,16 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     # run
     run_p = graph_subs.add_parser(
         "run",
-        help="Compile a graph (preview), or --execute the built-in sandboxed demo (no Docker).",
+        help="Compile a graph (preview), or --execute it (built-in demo, or an admitted local-CLI manifest) in a native sandbox.",
     )
     run_p.add_argument("manifest", nargs="?", default=None, metavar="<manifest.(yaml|json)>",
                        help="Path to the graph manifest file (omit with --execute for the built-in demo).")
     run_p.add_argument("--connections", default=None, metavar="<json>",
                        help="Path to a JSON file containing connection candidates.")
+    run_p.add_argument("--inputs", default=None, metavar="<json>",
+                       help="JSON object mapping node_id -> prompt (run-time input for local-CLI nodes).")
     run_p.add_argument("--execute", action="store_true",
-                       help="Actually execute the built-in graph inside a native OS sandbox (no Docker).")
+                       help="Actually execute: the built-in demo (no manifest), or an admitted local-CLI manifest.")
     run_p.add_argument("--out", default=None, metavar="<dir>",
                        help="Output run directory for --execute.")
     run_p.add_argument("--json", action="store_true", help="Emit JSON output.")

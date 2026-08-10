@@ -81,3 +81,4 @@ extend-exclude = ["loops/*/seed", "loops/*/*/seed"]
 # pytest.importorskip() must run before the guarded imports that follow it —
 # E402 is a false positive for this well-known optional-dependency test pattern.
 "tests/adapters/io/test_otel_tracer.py" = ["E402"]
+"tests/graph/adapters/test_slm_client.py" = ["E402"]

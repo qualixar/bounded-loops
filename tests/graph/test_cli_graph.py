@@ -279,9 +279,9 @@ def test_run_prints_honest_notice_and_exits_0(
     rc = cmd_graph_run(_ns(manifest=str(manifest), connections=str(conn_file)))
     assert rc == 0
     out = capsys.readouterr().out
-    # Must contain an honest notice — E2, sandbox, or "not yet available"
+    # Must contain an honest notice — a compile-only preview that points at --execute.
     combined = out.lower()
-    assert "e2" in combined or "sandbox" in combined or "not yet available" in combined
+    assert "compile-only" in combined or "preview" in combined
 
 
 def test_run_does_not_execute_nodes(
@@ -464,7 +464,7 @@ def test_run_json_shape(
     assert isinstance(data["levels"], list)
     assert isinstance(data["nodes"], list)
     assert "notice" in data
-    assert "E2" in data["notice"] or "no node executed" in data["notice"]
+    assert "preview" in data["notice"]
 
 
 def test_status_exits_2_on_malformed_run_meta(

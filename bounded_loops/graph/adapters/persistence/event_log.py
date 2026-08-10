@@ -30,6 +30,17 @@ _NODE_EVENTS = {
     "node.succeeded": "SUCCEEDED",
     "node.failed": "FAILED",
 }
+# Additive audit trail events (LLD 06 / ADR-12).  These do NOT transition the
+# run state — they annotate a RUNNING graph with coverage and release evidence.
+# Payload schemas are validated on both append (fail-closed before persistence)
+# and replay (a hand-forged but correctly re-hash-chained log cannot slip a
+# malformed audit event past a consumer reading the raw stream).
+_AUDIT_EVENTS = frozenset({
+    "audit.plan.created",
+    "audit.result.published",
+    "repair.attempt.created",
+    "release.decision.issued",
+})
 
 
 class GraphEventLog:
@@ -80,6 +91,9 @@ class GraphEventLog:
         # unprojectable). Fail closed here, before the write.
         if stored.event.event_type in _NODE_EVENTS:
             _validate_node_event(stored.event.event_type, stored.event.payload)
+        # Mirror the same fail-closed gate for the additive audit event types.
+        if stored.event.event_type in _AUDIT_EVENTS:
+            _validate_audit_event(stored.event.event_type, stored.event.payload)
         self._append(_canonical(stored, include_hash=True))
         return stored
 
@@ -110,6 +124,9 @@ class GraphEventLog:
             # consumer that reads the raw stream rather than the projection.
             if stored.event.event_type in _NODE_EVENTS:
                 _validate_node_event(stored.event.event_type, stored.event.payload)
+            # Mirror the same on-read gate for additive audit events.
+            if stored.event.event_type in _AUDIT_EVENTS:
+                _validate_audit_event(stored.event.event_type, stored.event.payload)
             events.append(stored)
             keys.add(stored.event.idempotency_key)
             previous = stored.event_hash
@@ -160,6 +177,13 @@ def _apply(projection: GraphRunProjection, stored: StoredGraphEvent) -> GraphRun
         state = _state(stored.event.payload, "FAILED")
     elif event_type == "run.cancelled":
         state = _state(stored.event.payload, "CANCELLED")
+    elif event_type in _AUDIT_EVENTS:
+        # Audit events are additive annotation events: they require a RUNNING
+        # graph (audits happen during an active run) but do not change state.
+        if projection.state != "RUNNING":
+            raise GraphIntegrityError("audit event requires graph run to be RUNNING")
+        _validate_audit_event(event_type, stored.event.payload)
+        state = "RUNNING"
     else:
         raise GraphIntegrityError(f"unsupported graph event type: {event_type}")
     return GraphRunProjection(state, stored.sequence, stored.event_hash)
@@ -271,6 +295,64 @@ def _validate_verdict(value: object, expected_passed: bool) -> None:
         raise GraphIntegrityError("node verdict requires a non-empty reason")
     if "evidence_digest" in value and not _is_digest(value["evidence_digest"]):
         raise GraphIntegrityError("node verdict evidence digest is invalid")
+
+
+def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> None:
+    """Validate the payload of an additive audit trail event.
+
+    Each type has a CLOSED required-key set (no extra keys allowed) and
+    per-field type/value rules.  Validation runs on both append and replay —
+    matching the node-event pattern — so a malformed audit event is caught
+    before it is durably written AND when re-reading an existing stream.
+    """
+    if event_type == "audit.plan.created":
+        required = {"plan_digest", "artifact_digest", "rubric_digest", "cell_count"}
+        if set(payload) != required:
+            raise GraphIntegrityError("audit.plan.created payload has an invalid shape")
+        if not _is_digest(payload["plan_digest"]):
+            raise GraphIntegrityError("audit.plan.created plan_digest must be a SHA-256 digest")
+        if not _is_digest(payload["artifact_digest"]):
+            raise GraphIntegrityError("audit.plan.created artifact_digest must be a SHA-256 digest")
+        if not _is_digest(payload["rubric_digest"]):
+            raise GraphIntegrityError("audit.plan.created rubric_digest must be a SHA-256 digest")
+        cell_count = payload["cell_count"]
+        if isinstance(cell_count, bool) or not isinstance(cell_count, int) or cell_count < 1:
+            raise GraphIntegrityError("audit.plan.created cell_count must be a positive integer")
+
+    elif event_type == "audit.result.published":
+        required = {"result_digest", "cell", "assessor", "producer"}
+        if set(payload) != required:
+            raise GraphIntegrityError("audit.result.published payload has an invalid shape")
+        if not _is_digest(payload["result_digest"]):
+            raise GraphIntegrityError("audit.result.published result_digest must be a SHA-256 digest")
+        for field in ("cell", "assessor", "producer"):
+            if not isinstance(payload[field], str) or not payload[field]:
+                raise GraphIntegrityError(f"audit.result.published {field} must be a non-empty string")
+
+    elif event_type == "repair.attempt.created":
+        required = {"repair_id", "input_artifact_digest", "output_artifact_digest"}
+        if set(payload) != required:
+            raise GraphIntegrityError("repair.attempt.created payload has an invalid shape")
+        if not isinstance(payload["repair_id"], str) or not payload["repair_id"]:
+            raise GraphIntegrityError("repair.attempt.created repair_id must be a non-empty string")
+        if not _is_digest(payload["input_artifact_digest"]):
+            raise GraphIntegrityError("repair.attempt.created input_artifact_digest must be a SHA-256 digest")
+        if not _is_digest(payload["output_artifact_digest"]):
+            raise GraphIntegrityError("repair.attempt.created output_artifact_digest must be a SHA-256 digest")
+
+    elif event_type == "release.decision.issued":
+        required = {"released", "blocking_cells", "reason"}
+        if set(payload) != required:
+            raise GraphIntegrityError("release.decision.issued payload has an invalid shape")
+        if not isinstance(payload["released"], bool):
+            raise GraphIntegrityError("release.decision.issued released must be a boolean")
+        if not isinstance(payload["blocking_cells"], (list, tuple)):
+            raise GraphIntegrityError("release.decision.issued blocking_cells must be a list")
+        if not isinstance(payload["reason"], str) or not payload["reason"]:
+            raise GraphIntegrityError("release.decision.issued reason must be a non-empty string")
+
+    else:
+        raise GraphIntegrityError(f"unsupported audit event type: {event_type}")
 
 
 def _validate_identity(identity: GraphRunIdentity) -> None:
