@@ -572,7 +572,7 @@ def cmd_graph_status(args: argparse.Namespace) -> int:
 
 
 def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) -> int:
-    """Read a user manifest (+ optional --connections/--inputs) and run it for real."""
+    """Read a user manifest (+ optional --connections/--inputs/--admitted) and run it for real."""
     manifest_path = Path(manifest)
     suffix = manifest_path.suffix.lower()
     if suffix not in (".json", ".yaml", ".yml"):
@@ -603,6 +603,36 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
             _err("graph run: --inputs must be a JSON object mapping node_id -> prompt string")
             return 2
         node_prompts = raw
+    # BYOK/HTTP mode: --admitted is a JSON file containing a map of
+    # connection_id -> admitted-connection-record dict.  No secrets — only env-var names.
+    admitted_connections = None
+    if getattr(args, "admitted", None):
+        try:
+            admitted_raw = json.loads(Path(args.admitted).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            _err(f"graph run: cannot load --admitted records — {exc}")
+            return 2
+        if not isinstance(admitted_raw, dict):
+            _err("graph run: --admitted must be a JSON object mapping connection_id -> record")
+            return 2
+        from bounded_loops.graph.adapters.connectors.admitted_connection_request import (
+            AdmittedConnectionRecord,
+        )
+        from bounded_loops.graph.domain.errors import GraphValidationError as _GVE
+        try:
+            admitted_connections = {}
+            for conn_id, record_raw in admitted_raw.items():
+                record = AdmittedConnectionRecord.from_mapping(record_raw)
+                if record.connection_id != conn_id:
+                    _err(
+                        f"graph run: --admitted map key {conn_id!r} does not match the record's "
+                        f"connection_id {record.connection_id!r}"
+                    )
+                    return 2
+                admitted_connections[conn_id] = record
+        except _GVE as exc:
+            _err(f"graph run: invalid --admitted record — [{exc.code}] {exc.pointer}: {exc.message}")
+            return 2
     from bounded_loops.graph.application.execute_graph import execute_graph_run
     return execute_graph_run(
         manifest_text=text,
@@ -611,6 +641,7 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
         node_prompts=node_prompts,
         out_dir=out_dir,
         json_out=getattr(args, "json", False),
+        admitted_connections=admitted_connections,
     )
 
 
@@ -800,9 +831,18 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     run_p.add_argument("--inputs", default=None, metavar="<json>",
                        help="JSON object mapping node_id -> prompt (run-time input for local-CLI nodes).")
     run_p.add_argument("--execute", action="store_true",
-                       help="Actually execute: the built-in demo (no manifest), or an admitted local-CLI manifest.")
+                       help="Actually execute: the built-in demo (no manifest), or an admitted connector manifest.")
     run_p.add_argument("--out", default=None, metavar="<dir>",
                        help="Output run directory for --execute.")
+    run_p.add_argument(
+        "--admitted", default=None, metavar="<json>",
+        help=(
+            "Path to a JSON file containing a map of connection_id -> admitted-connection "
+            "record (BYOK/HTTP mode).  Each record names the endpoint, the credential "
+            "ENV-VAR name (never the value), the expiry, and the request style.  "
+            "Required for graphs with https-transport connector nodes."
+        ),
+    )
     run_p.add_argument("--json", action="store_true", help="Emit JSON output.")
     run_p.set_defaults(func=cmd_graph_run)
 

@@ -101,4 +101,4 @@ def test_run_execute_refuses_non_local_cli_manifest(tmp_path, capsys):
         )
     )
     assert rc == 2
-    assert "local-cli" in capsys.readouterr().err.lower()
+    assert "not an admitted connector node" in capsys.readouterr().err.lower()
