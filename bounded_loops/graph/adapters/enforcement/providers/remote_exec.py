@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 import ipaddress
 import json
 import re
-from typing import Mapping, Protocol
+from typing import Protocol
 from urllib import request as _urlrequest
 from urllib.error import URLError
 from urllib.parse import urlsplit
@@ -42,7 +42,6 @@ from bounded_loops.graph.adapters.enforcement.provider import (
 from bounded_loops.graph.application.execution_policy import NetworkMode
 from bounded_loops.graph.domain.authoring import IsolationLevel
 
-_ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 # A relative POSIX path with no NUL, no backslash, and no ``..`` component.
 _REL_POSIX = re.compile(r"^(?!/)(?!.*(?:^|/)\.\.(?:/|$))[^\x00\\]+$")
@@ -116,7 +115,13 @@ class RemoteFile:
 
 @dataclass(frozen=True)
 class RemoteExecRequest:
-    """A portable request to run one node's command on a remote backend."""
+    """A portable request to run one node's command on a remote backend.
+
+    Deliberately carries NO environment map: a secret must never ride inside a
+    launch spec. The remote backend supplies its own base environment, and any
+    non-secret variables a node needs are provisioned out-of-band by the C1
+    egress broker (which alone is allowed to touch credentials).
+    """
 
     argv: tuple[str, ...]
     workdir: str = "/workspace"
@@ -124,7 +129,6 @@ class RemoteExecRequest:
     network: str = "deny"
     runtime: str | None = None
     limits: RemoteExecLimits = field(default_factory=RemoteExecLimits)
-    env: Mapping[str, str] = field(default_factory=dict)
     files: tuple[RemoteFile, ...] = ()
 
     def __post_init__(self) -> None:
@@ -140,14 +144,6 @@ class RemoteExecRequest:
             raise ValueError("network must be 'deny' or 'allowlist'")
         if self.runtime is not None and (not isinstance(self.runtime, str) or not self.runtime):
             raise ValueError("runtime must be a non-empty string or None")
-        env: dict[str, str] = {}
-        for key, value in dict(self.env).items():
-            if not (isinstance(key, str) and _ENV_KEY.match(key)):
-                raise ValueError(f"env key {key!r} is not a valid non-secret identifier")
-            if not isinstance(value, str):
-                raise ValueError("env values must be strings")
-            env[key] = value
-        object.__setattr__(self, "env", env)
         object.__setattr__(self, "files", tuple(self.files))
 
     def to_payload(self) -> dict[str, object]:
@@ -159,7 +155,6 @@ class RemoteExecRequest:
             "network": self.network,
             "runtime": self.runtime,
             "limits": self.limits.as_dict(),
-            "env": dict(sorted(self.env.items())),
             "files": [f.as_dict() for f in self.files],
         }
 
@@ -260,13 +255,27 @@ class RemoteIsolationProvider:
 
 
 def _is_loopback(host: str) -> bool:
-    stripped = host.strip("[]")
-    if stripped.lower() == "localhost":
-        return True
+    """True only for a LITERAL loopback IP (127.0.0.0/8 or ::1).
+
+    A hostname — including ``localhost`` — is deliberately rejected: trusting a
+    name means trusting the resolver, and a poisoned or misconfigured resolver
+    could point ``localhost`` at a public address. A self-hosted sidecar is always
+    reachable at a literal loopback IP, so requiring one closes the DNS-trust hole.
+    """
     try:
-        return ipaddress.ip_address(stripped).is_loopback
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
     except ValueError:
         return False
+
+
+class _DenyRedirect(_urlrequest.HTTPRedirectHandler):
+    """Refuse HTTP redirects. The base URL is validated as loopback once at
+    construction; following a 3xx could bounce us (and a request payload) to
+    another host, defeating the loopback guarantee. Raising URLError surfaces as
+    a normal transport failure."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]  # noqa: ANN001, ARG002
+        raise URLError(f"loopback-exec transport refuses an off-host redirect to {newurl!r}")
 
 
 class LoopbackExecTransport:
@@ -274,23 +283,34 @@ class LoopbackExecTransport:
 
     The sidecar speaks the Piston-style seam over HTTP: ``POST /exec`` with the
     request payload, returning ``{exit_code, stdout, stderr, timed_out}``. It is
-    LOOPBACK-ONLY by construction (the constructor rejects any non-loopback host)
-    — an SSRF guard and the project's egress boundary in one. It attests a SHARED
-    host kernel honestly, so it can back a container-grade remote node but is
-    refused by the own-kernel (microvm / openshell) providers.
+    LOOPBACK-ONLY by construction: the constructor accepts only a literal loopback
+    IP, and the default opener uses neither an HTTP proxy nor redirects — an SSRF
+    guard and the project's egress boundary in one. Because a generic sidecar's
+    isolation is opaque to an HTTP client, it attests every OS control it cannot
+    prove as UNKNOWN, so it can honestly back only ``workspace_only`` nodes; a
+    backend-specific transport (a real E2B / NemoClaw client) attests the controls
+    it truly knows its backend enforces.
+
+    ``opener`` is a test seam for injecting a fake HTTP client; an injected opener
+    is trusted to preserve the loopback guarantee (no proxies, no redirects), and
+    production always uses the safe default built here.
     """
 
     backend_id = "loopback-exec"
 
-    def __init__(self, *, base_url: str = "http://localhost:2000", timeout_s: float = 5.0, opener=None) -> None:
+    def __init__(self, *, base_url: str = "http://127.0.0.1:2000", timeout_s: float = 5.0, opener=None) -> None:
         parsed = urlsplit(base_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname or not _is_loopback(parsed.hostname):
-            raise ValueError("LoopbackExecTransport targets a loopback self-hosted endpoint only")
+            raise ValueError("LoopbackExecTransport targets a literal loopback IP endpoint only")
         if type(timeout_s) is bool or not isinstance(timeout_s, (int, float)) or not (0 < timeout_s <= 60):
             raise ValueError("timeout_s must be in (0, 60]")
         self._base = base_url.rstrip("/")
         self._timeout = float(timeout_s)
-        self._opener = opener if opener is not None else _urlrequest.build_opener()
+        # Ignore any HTTP(S)_PROXY env (a proxy would route the request off-loopback)
+        # and refuse redirects (a 3xx must not bounce us off the loopback host).
+        self._opener = opener if opener is not None else _urlrequest.build_opener(
+            _DenyRedirect(), _urlrequest.ProxyHandler({}),
+        )
 
     def availability(self) -> tuple[bool, str]:
         try:
@@ -306,15 +326,23 @@ class LoopbackExecTransport:
     def attested_controls(
         self, *, tier: IsolationLevel, network_mode: NetworkMode,
     ) -> EnforcedControls:
+        # A generic exec sidecar is opaque: this transport is only an HTTP client
+        # and cannot PROVE what the sidecar enforces, so every OS control it cannot
+        # verify is UNKNOWN (never ENFORCED — that would be an over-claim). It can
+        # assert only two negatives: the node runs on THIS host (no own kernel) and
+        # there is no authorized-egress proxy. Honestly, then, it can back only
+        # workspace_only nodes; a backend-specific transport (a real E2B or NemoClaw
+        # client) attests the controls it actually knows its backend enforces.
         return EnforcedControls(
-            net=Control.ENFORCED if network_mode is NetworkMode.DENY else Control.NOT_ENFORCED,
-            fs_write=Control.ENFORCED,
-            fs_read=Control.ENFORCED,
-            pid=Control.ENFORCED,
-            user=Control.ENFORCED,
+            net=Control.UNKNOWN,
+            fs_write=Control.UNKNOWN,
+            fs_read=Control.UNKNOWN,
+            pid=Control.UNKNOWN,
+            user=Control.UNKNOWN,
             kernel=Control.NOT_ENFORCED,
             egress=Control.NOT_ENFORCED,
-            notes=("self-hosted exec sidecar (namespaces + cgroups): SHARED host kernel — not own-kernel isolation",),
+            notes=("generic self-hosted exec sidecar: isolation is opaque to the client, so "
+                   "unverifiable controls are UNKNOWN; it shares this host's kernel",),
         )
 
     def submit(self, request: RemoteExecRequest) -> RemoteExecResult:
@@ -349,6 +377,7 @@ class LoopbackExecTransport:
             stderr=stderr,
             timed_out=bool(data.get("timed_out", False)),
             attested_controls=self.attested_controls(
-                tier=IsolationLevel.CONTAINER_RESTRICTED, network_mode=NetworkMode.DENY,
+                tier=IsolationLevel.WORKSPACE_ONLY,
+                network_mode=NetworkMode.DENY if request.network == "deny" else NetworkMode.ALLOWLIST,
             ),
         )

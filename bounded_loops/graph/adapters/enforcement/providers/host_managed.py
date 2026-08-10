@@ -47,7 +47,7 @@ _PROBE = (
     "except PermissionError:\n"
     "    res['socket'] = 'denied'\n"
     "except OSError as e:\n"
-    "    res['socket'] = 'denied' if e.errno == 1 else 'allowed'\n"
+    "    res['socket'] = 'denied' if e.errno in (1, 13) else 'allowed'\n"
     "print(json.dumps(res))\n"
 )
 
@@ -57,7 +57,10 @@ class HostManagedProvider:
 
     def __init__(self, *, python: str | None = None) -> None:
         self._python = python or sys.executable
-        self._cached: tuple[Control, Control] | None = None  # (fs_write, net) as observed
+        # (fs_write, net) observed per RESOLVED workspace — ambient confinement is
+        # verified against the exact path the node will run in, never reused blindly
+        # across workspaces.
+        self._cached: dict[str, tuple[Control, Control]] = {}
 
     def _run_probe(self, workspace: Path) -> tuple[Control, Control] | None:
         """Return (fs_write, net) observed ambient controls, or None if the probe
@@ -89,10 +92,13 @@ class HostManagedProvider:
             return Availability(False, "host_managed cannot provide authorized-egress", EnforcedControls())
         if workspace is None:
             return Availability(False, "host_managed requires a workspace to run its confinement probe", EnforcedControls())
-        observed = self._cached or self._run_probe(workspace)
+        key = str(workspace.resolve())
+        observed = self._cached.get(key)
         if observed is None:
-            return Availability(False, "host_managed confinement probe could not run", EnforcedControls())
-        self._cached = observed
+            observed = self._run_probe(workspace)
+            if observed is None:
+                return Availability(False, "host_managed confinement probe could not run", EnforcedControls())
+            self._cached[key] = observed
         fs_write, net = observed
         if fs_write is not Control.ENFORCED and net is not Control.ENFORCED:
             return Availability(

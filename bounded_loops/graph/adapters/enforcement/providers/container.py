@@ -53,14 +53,15 @@ class ContainerProvider:
         return EnforcedControls(
             net=Control.ENFORCED if network_mode is NetworkMode.DENY else Control.NOT_ENFORCED,
             fs_write=Control.ENFORCED,
-            fs_read=Control.ENFORCED,
+            fs_read=Control.NOT_ENFORCED,
             pid=Control.ENFORCED,
             user=Control.ENFORCED,
             kernel=Control.NOT_ENFORCED,
             egress=Control.NOT_ENFORCED,
             notes=(
-                "hardened docker: --network none, --cap-drop ALL, no-new-privileges, "
-                "--read-only rootfs, --pids-limit, non-root --user; SHARED host kernel (not a microVM)",
+                "hardened docker (net=--network none, fs_write=--read-only rootfs + workspace bind, "
+                "pid=--pids-limit, user=--cap-drop ALL + no-new-privileges + --user); reads inside the "
+                "image are NOT confined so fs_read is not claimed; SHARED host kernel (not a microVM)",
             ),
         )
 

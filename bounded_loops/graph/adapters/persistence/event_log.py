@@ -205,21 +205,26 @@ def _validate_route(value: object) -> None:
 
 
 _CONTROL_STATUSES = frozenset({"enforced", "not_enforced", "unknown"})
+# The complete, closed set of dimensions every receipt must publish (mirrors the
+# engine's EnforcedControls). Requiring the FULL set — no more, no fewer — stops a
+# forged or buggy emitter from omitting a dimension to hide under-isolation
+# (omission must never be read as "not_enforced" by a downstream reader).
+_ISOLATION_DIMENSIONS = frozenset({"net", "fs_write", "fs_read", "pid", "user", "kernel", "egress"})
 
 
 def _validate_isolation(value: object) -> None:
-    """The per-node isolation receipt: a provider id and a per-dimension control
-    matrix whose every value is a known control status."""
+    """The per-node isolation receipt: a provider id and a COMPLETE per-dimension
+    control matrix whose every value is a known control status."""
     if not isinstance(value, Mapping) or set(value) != {"provider_id", "controls"}:
         raise GraphIntegrityError("node.succeeded isolation has an invalid shape")
     provider_id = value["provider_id"]
-    if not isinstance(provider_id, str) or not provider_id:
+    if not isinstance(provider_id, str) or not (1 <= len(provider_id) <= 64):
         raise GraphIntegrityError("node.succeeded isolation provider_id is invalid")
     controls = value["controls"]
-    if not isinstance(controls, Mapping) or not controls:
-        raise GraphIntegrityError("node.succeeded isolation controls are invalid")
-    for dimension, status in controls.items():
-        if not isinstance(dimension, str) or not dimension or status not in _CONTROL_STATUSES:
+    if not isinstance(controls, Mapping) or set(controls) != _ISOLATION_DIMENSIONS:
+        raise GraphIntegrityError("node.succeeded isolation must publish every control dimension exactly once")
+    for status in controls.values():
+        if status not in _CONTROL_STATUSES:
             raise GraphIntegrityError("node.succeeded isolation control value is invalid")
 
 

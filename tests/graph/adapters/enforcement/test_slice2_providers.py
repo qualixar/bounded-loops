@@ -126,14 +126,13 @@ def test_request_validation_and_payload_is_deterministic():
     with pytest.raises(ValueError):
         RemoteExecRequest(argv=["x"], network="open")
     with pytest.raises(ValueError):
-        RemoteExecRequest(argv=["x"], env={"BAD KEY": "v"})
-    with pytest.raises(ValueError):
         RemoteExecRequest(argv=["x"], workdir="relative")
-    req = RemoteExecRequest(argv=["python", "-c", "print(1)"], env={"B": "2", "A": "1"})
+    req = RemoteExecRequest(argv=["python", "-c", "print(1)"], runtime="python@3.12")
     payload = req.to_payload()
     assert payload["argv"] == ["python", "-c", "print(1)"]
-    assert list(payload["env"].keys()) == ["A", "B"]  # sorted → deterministic
-    assert json.dumps(payload)  # fully JSON-serialisable
+    assert payload["network"] == "deny" and payload["runtime"] == "python@3.12"
+    assert "env" not in payload  # no secret-carrying env channel in a launch spec
+    assert json.dumps(payload, sort_keys=True)  # JSON-serialisable + deterministic
 
 
 def test_build_remote_launch_shape():
@@ -149,13 +148,16 @@ def test_build_remote_launch_shape():
 # ── reference loopback transport ────────────────────────────────────────────────
 
 def test_loopback_transport_rejects_non_loopback_urls():
-    for bad in ("http://example.com", "http://169.254.169.254", "https://10.0.0.5:2000", "ftp://localhost"):
+    # A hostname (even "localhost") is rejected — only a literal loopback IP is
+    # trusted, so a poisoned resolver can never point the transport off-host.
+    for bad in ("http://example.com", "http://169.254.169.254", "https://10.0.0.5:2000",
+                "ftp://127.0.0.1", "http://localhost:2000", "http://0.0.0.0:2000"):
         with pytest.raises(ValueError):
             LoopbackExecTransport(base_url=bad)
-    # loopback forms are accepted
+    # literal loopback IPs are accepted
     LoopbackExecTransport(base_url="http://127.0.0.1:2000")
+    LoopbackExecTransport(base_url="http://127.5.5.5:2000")
     LoopbackExecTransport(base_url="http://[::1]:2000")
-    LoopbackExecTransport(base_url="http://localhost:2000")
 
 
 def test_loopback_transport_declines_when_unreachable_live():
@@ -188,6 +190,31 @@ def test_loopback_transport_submit_rejects_non_json():
     t = LoopbackExecTransport(base_url="http://127.0.0.1:2000", opener=_FakeOpener(resp=_FakeResp(body=b"<html>")))
     with pytest.raises(RemoteExecError):
         t.submit(RemoteExecRequest(argv=["echo"]))
+
+
+def test_loopback_transport_refuses_redirects():
+    from urllib.error import URLError
+
+    from bounded_loops.graph.adapters.enforcement.providers.remote_exec import _DenyRedirect
+
+    with pytest.raises(URLError):
+        _DenyRedirect().redirect_request(
+            None, None, 307, "Temporary Redirect", {}, "http://attacker.example.com/collect",
+        )
+
+
+def test_loopback_transport_backs_only_workspace_only():
+    """Honest attestation: an opaque sidecar can back workspace_only (no required
+    dimensions) but NOT container_restricted (net/fs_write are UNKNOWN, never
+    ENFORCED), so the receipt can never over-claim what the sidecar enforces."""
+    transport = LoopbackExecTransport(
+        base_url="http://127.0.0.1:2000", opener=_FakeOpener(resp=_FakeResp(status=200)),
+    )
+    prov = RemoteIsolationProvider(provider_id="remote", transport=transport, require_kernel=False)
+    ok = prov.probe(tier=IsolationLevel.WORKSPACE_ONLY, network_mode=NetworkMode.DENY)
+    assert ok.available and controls_meet(IsolationLevel.WORKSPACE_ONLY, NetworkMode.DENY, ok.controls)[0]
+    weak = prov.probe(tier=IsolationLevel.CONTAINER_RESTRICTED, network_mode=NetworkMode.DENY)
+    assert not controls_meet(IsolationLevel.CONTAINER_RESTRICTED, NetworkMode.DENY, weak.controls)[0]
 
 
 # ── container provider ──────────────────────────────────────────────────────────

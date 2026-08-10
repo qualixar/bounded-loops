@@ -81,23 +81,38 @@ def _succeeded_payload(**extra: object) -> dict[str, object]:
     }
 
 
+_FULL_CONTROLS = {
+    "net": "enforced", "fs_write": "enforced", "fs_read": "not_enforced",
+    "pid": "enforced", "user": "not_enforced", "kernel": "not_enforced", "egress": "not_enforced",
+}
+
+
 def test_node_succeeded_accepts_isolation_receipt(tmp_path):
     store, head = _running_log(tmp_path)
-    payload = _succeeded_payload(
-        isolation={
-            "provider_id": "native",
-            "controls": {"net": "enforced", "fs_write": "enforced", "kernel": "not_enforced"},
-        }
-    )
+    payload = _succeeded_payload(isolation={"provider_id": "native", "controls": dict(_FULL_CONTROLS)})
     store.append(head, _event("node.succeeded", "node-ok", payload))
     assert store.replay_projection().state == "RUNNING"  # validates without raising
 
 
 def test_node_succeeded_rejects_unknown_control_status(tmp_path):
     store, head = _running_log(tmp_path)
-    payload = _succeeded_payload(isolation={"provider_id": "native", "controls": {"net": "sometimes"}})
+    controls = dict(_FULL_CONTROLS)
+    controls["net"] = "sometimes"
+    payload = _succeeded_payload(isolation={"provider_id": "native", "controls": controls})
     with pytest.raises(GraphIntegrityError, match="isolation"):
         store.append(head, _event("node.succeeded", "node-bad", payload))
+        store.replay_projection()
+
+
+def test_node_succeeded_rejects_incomplete_isolation_matrix(tmp_path):
+    """Downgrade-by-omission: a receipt missing a dimension must be rejected, not
+    read as 'not_enforced'."""
+    store, head = _running_log(tmp_path)
+    payload = _succeeded_payload(
+        isolation={"provider_id": "native", "controls": {"net": "enforced", "fs_write": "enforced"}}
+    )
+    with pytest.raises(GraphIntegrityError, match="isolation"):
+        store.append(head, _event("node.succeeded", "node-partial", payload))
         store.replay_projection()
 
 
