@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from bounded_loops.graph.application.memory_store import KeyValueBackedMemoryStore
+from bounded_loops.graph.application.memory_store import KeyValueBackedMemoryStore, _netstring
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 
 _NS = ("memories",)
@@ -192,3 +192,34 @@ def test_a_corrupt_or_hostile_envelope_schema_is_rejected(envelope):
 def test_an_oversize_tenant_is_refused():
     with pytest.raises(GraphValidationError, match="identifier byte cap"):
         _store(org="o" * 2000)
+
+
+def test_a_nul_byte_in_any_identifier_is_refused():
+    # A NUL byte in org/project/key goes raw into the netstring backend key; on a durable
+    # SQLite backend that silently breaks prefix listing (length()/substr() truncate at
+    # NUL) so search would drop entries get() still finds. Refuse it at the boundary.
+    with pytest.raises(GraphValidationError, match="NUL"):
+        _store(org="o\x00rg")
+    with pytest.raises(GraphValidationError, match="NUL"):
+        _store(project="pro\x00j")
+    with pytest.raises(GraphValidationError, match="NUL"):
+        _store().put(_NS, "k\x00ey", {"x": 1})
+    with pytest.raises(GraphValidationError, match="NUL"):
+        _store().put(("name\x00space",), "k", {"x": 1})
+
+
+def test_search_rejects_a_planted_nul_key_envelope():
+    # Read-side defense-in-depth, symmetric with write-side NUL rejection. A raw-backend
+    # writer (the documented C-064 trust boundary) plants a schema-valid envelope whose
+    # KEY contains NUL, under a backend key that re-encodes correctly so the identity
+    # cross-check would pass. _record_from_envelope must refuse to surface it rather than
+    # hand back a NUL-bearing record that a legit NUL-free search could never target.
+    kv = _FakeKv()
+    store = _store(kv, org="org1", project="proj1")
+    store.put(("a",), "k1", 1)
+    prefix = next(iter(kv.store))[: -len(_netstring("k1"))]  # the ("a",) namespace prefix
+    kv.store[prefix + _netstring("k\x00evil")] = json.dumps(
+        {"ns": ["a"], "key": "k\x00evil", "t": "2026-01-01T00:00:00+00:00", "v": 9}
+    )
+    with pytest.raises(GraphIntegrityError):
+        store.search(("a",))

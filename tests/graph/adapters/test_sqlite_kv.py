@@ -44,6 +44,43 @@ def test_durable_across_instances(tmp_path):
     assert SqliteDurableKeyValue(path).get("k") == "persisted"
 
 
+def test_rejects_a_nul_byte_in_keys_and_prefix(tmp_path):
+    # SQLite's TEXT length()/substr() truncate at the first NUL, so a NUL in a key or
+    # prefix would silently UNDER-MATCH on list_prefix (search drops entries get() finds).
+    # The port refuses NUL fail-closed rather than mis-list. Verified empirically:
+    # length("a\x00b")==1, so substr-based prefix listing cannot see past the NUL.
+    kv = SqliteDurableKeyValue(tmp_path / "m.db")
+    with pytest.raises(GraphIntegrityError, match="NUL"):
+        kv.set("a\x00b", "v")
+    with pytest.raises(GraphIntegrityError, match="NUL"):
+        kv.get("a\x00b")
+    with pytest.raises(GraphIntegrityError, match="NUL"):
+        kv.delete("a\x00b")
+    with pytest.raises(GraphIntegrityError, match="NUL"):
+        kv.list_prefix("a\x00")
+
+
+def test_rejects_an_empty_prefix(tmp_path):
+    # substr(key,1,0)=="" matches EVERY row — an empty prefix would dump the whole
+    # shared, multi-tenant backend. Never a legitimate namespace query; fail closed.
+    kv = SqliteDurableKeyValue(tmp_path / "m.db")
+    kv.set("anything", "v")
+    with pytest.raises(GraphIntegrityError, match="prefix"):
+        kv.list_prefix("")
+
+
+def test_connections_are_full_synchronous_for_durability(tmp_path):
+    # WAL alone leaves `synchronous` build-dependent (may be NORMAL → power-loss can lose
+    # the last commit). We pin FULL explicitly so "durable" is deterministic and honest.
+    kv = SqliteDurableKeyValue(tmp_path / "m.db")
+    conn = kv._connect()
+    try:
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2  # 2 == FULL
+        assert str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
+    finally:
+        conn.close()
+
+
 def test_refuses_a_symlink_path(tmp_path):
     real = tmp_path / "real.db"
     real.write_text("")

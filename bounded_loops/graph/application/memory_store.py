@@ -214,6 +214,16 @@ class KeyValueBackedMemoryStore:
         return _netstring(self._organization_id) + _netstring(self._project_id) + _netstring(namespace_json)
 
 
+def _reject_nul(field: str, pointer: str, value: str) -> None:
+    # A NUL byte is never a legitimate identifier character and is unsafe in the durable
+    # backend: SQLite's TEXT length()/substr() truncate at the first NUL, so a namespace
+    # prefix or key carrying NUL would silently under-match on listing (search would drop
+    # entries that get() still finds). Reject fail-closed at the contract boundary so no
+    # NUL identifier ever reaches a backend and desyncs search from get.
+    if "\x00" in value:
+        raise GraphValidationError(field, pointer, "identifier must not contain a NUL byte")
+
+
 def _validate_namespace(namespace: MemoryNamespace) -> MemoryNamespace:
     if not isinstance(namespace, tuple) or not namespace:
         raise GraphValidationError("memory_namespace", "/namespace", "namespace must be a non-empty tuple")
@@ -222,6 +232,7 @@ def _validate_namespace(namespace: MemoryNamespace) -> MemoryNamespace:
             raise GraphValidationError("memory_namespace", "/namespace", "namespace parts must be non-empty strings")
         if len(part.encode("utf-8")) > _MAX_IDENTIFIER_BYTES:
             raise GraphValidationError("memory_namespace", "/namespace", "namespace part exceeds the identifier byte cap")
+        _reject_nul("memory_namespace", "/namespace", part)
     return namespace
 
 
@@ -230,6 +241,7 @@ def _validate_key(key: str) -> None:
         raise GraphValidationError("memory_key", "/key", "key must be a non-empty string")
     if len(key.encode("utf-8")) > _MAX_IDENTIFIER_BYTES:
         raise GraphValidationError("memory_key", "/key", "key exceeds the identifier byte cap")
+    _reject_nul("memory_key", "/key", key)
 
 
 def _serialize(value: object) -> str:
@@ -282,6 +294,11 @@ def _record_from_envelope(raw: str) -> MemoryRecord:
         or not key.strip()
         or len(key.encode("utf-8")) > _MAX_IDENTIFIER_BYTES
         or not isinstance(updated_at, str)
+        # Symmetric with write-side _reject_nul: a stored envelope carrying a NUL in its
+        # namespace/key could only be planted by a raw-backend writer (a legit write is
+        # NUL-rejected). Reject it on READ too, so search never surfaces such an entry.
+        or any("\x00" in part for part in namespace_raw)
+        or "\x00" in key
     ):
         raise GraphIntegrityError("corrupt memory envelope")
     return MemoryRecord(tuple(namespace_raw), key, data["v"], updated_at)
@@ -293,3 +310,4 @@ def _validate_tenant(organization_id: str, project_id: str) -> None:
             raise GraphValidationError("memory_tenant", "/", "organization and project are required")
         if len(value.encode("utf-8")) > _MAX_IDENTIFIER_BYTES:
             raise GraphValidationError("memory_tenant", "/", "organization or project exceeds the identifier byte cap")
+        _reject_nul("memory_tenant", "/", value)
