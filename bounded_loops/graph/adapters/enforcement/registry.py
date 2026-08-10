@@ -19,8 +19,12 @@ from bounded_loops.graph.adapters.enforcement.provider import (
     ProviderSelection,
     controls_meet,
 )
+from bounded_loops.graph.adapters.enforcement.providers.container import ContainerProvider
 from bounded_loops.graph.adapters.enforcement.providers.host_managed import HostManagedProvider
+from bounded_loops.graph.adapters.enforcement.providers.microvm import MicroVMProvider
 from bounded_loops.graph.adapters.enforcement.providers.native import NativeProvider
+from bounded_loops.graph.adapters.enforcement.providers.openshell import OpenShellProvider
+from bounded_loops.graph.adapters.enforcement.providers.remote_exec import RemoteExecTransport
 from bounded_loops.graph.application.execution_policy import NetworkMode
 from bounded_loops.graph.domain.authoring import IsolationLevel
 from bounded_loops.graph.domain.errors import GraphValidationError
@@ -64,11 +68,35 @@ class IsolationProviderRegistry:
         )
 
 
-def default_registry(capabilities: PlatformCapabilities | None = None) -> IsolationProviderRegistry:
-    """Precedence per ADR-12: host_managed (probe-backed) → native.
+def default_registry(
+    capabilities: PlatformCapabilities | None = None,
+    *,
+    container_image: str | None = None,
+    microvm_transport: RemoteExecTransport | None = None,
+    openshell_transport: RemoteExecTransport | None = None,
+) -> IsolationProviderRegistry:
+    """Assemble the full fail-closed provider chain (ADR-12 D1).
 
-    container / microvm / openshell providers are added by the caller (slice 2)
-    via a registry constructed with the full provider list.
+    Precedence — first available provider whose controls meet the tier wins:
+    ``host_managed`` (probe-backed ambient sandbox) → ``native`` (Seatbelt /
+    bubblewrap floor) → ``container`` (hardened local Docker) → ``microvm``
+    (E2B / Firecracker own-kernel) → ``openshell`` (NVIDIA NemoClaw).
+
+    Cheap-local-first: for ``container_restricted`` a native Seatbelt / bwrap
+    sandbox is chosen before spinning up Docker or a remote worker. The remote
+    providers only win when the local ones cannot deliver the tier (e.g.
+    ``customer_managed_worker``, which needs own-kernel isolation). Every remote
+    provider whose backend is not configured declines fail-closed, so the default
+    chain is safe to assemble in full on any host; a deployment supplies the
+    image / transports to light up the extra tiers.
     """
     caps = capabilities if capabilities is not None else probe_platform()
-    return IsolationProviderRegistry([HostManagedProvider(), NativeProvider(caps)])
+    return IsolationProviderRegistry(
+        [
+            HostManagedProvider(),
+            NativeProvider(caps),
+            ContainerProvider(caps, image=container_image),
+            MicroVMProvider(transport=microvm_transport),
+            OpenShellProvider(transport=openshell_transport),
+        ]
+    )

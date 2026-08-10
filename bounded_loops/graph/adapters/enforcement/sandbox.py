@@ -45,6 +45,15 @@ _DIGEST_PIN = re.compile(r"@sha256:[0-9a-f]{64}$")
 _WRITABLE_DEVICES = ("/dev/null", "/dev/zero", "/dev/dtracehelper", "/dev/tty", "/dev/random", "/dev/urandom")
 
 
+def is_digest_pinned(image: object) -> bool:
+    """True iff *image* is a non-flag, digest-pinned ref (``name@sha256:<64 hex>``).
+
+    Providers use this to fail closed at probe time — declining honestly — rather
+    than only discovering an unpinned (mutable-tag) image when the launch is built.
+    """
+    return isinstance(image, str) and not image.startswith("-") and _DIGEST_PIN.search(image) is not None
+
+
 class SandboxMechanism(str, Enum):
     """A concrete mechanism that can deliver a required isolation tier."""
 
@@ -136,7 +145,7 @@ def docker_argv(
     memory: str = "1g",
     pids_limit: str = "256",
 ) -> list[str]:
-    if image.startswith("-") or not _DIGEST_PIN.search(image):
+    if not is_digest_pinned(image):
         raise ValueError("container image must be a non-flag, digest-pinned ref (name@sha256:<64 hex>)")
     if not inner_argv:
         raise ValueError("inner argv must not be empty")
