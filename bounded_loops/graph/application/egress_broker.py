@@ -132,6 +132,15 @@ def _parse_iso(value: str) -> datetime:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
+def split_destination(destination: str) -> tuple[str, int | None]:
+    """Public alias for :func:`_split_destination`.
+
+    A forwarder that connects to the broker's pinned IPs must derive the host (for the
+    Host header / TLS SNI) and port from the SAME parse the broker used to resolve them —
+    exposing one parser keeps the two from drifting."""
+    return _split_destination(destination)
+
+
 def _split_destination(destination: str) -> tuple[str, int | None]:
     """Parse ``host`` / ``host:port`` / ``[ipv6]:port`` into (host, port). Raises on a
     malformed value so the broker denies fail-closed."""
