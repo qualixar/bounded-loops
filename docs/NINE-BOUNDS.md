@@ -175,6 +175,18 @@ environment.
 
 > Editable source: [`diagrams/bounds-across-layers.mmd`](diagrams/bounds-across-layers.mmd) · regenerate with `mmdc -i diagrams/bounds-across-layers.mmd -o diagrams/bounds-across-layers.svg`
 
+## The graph engine, node by node
+
+The bounded-loops graph engine (`bl graph`) composes a DAG of nodes, each
+gated independently of the worker that produced its output (worker≠gate,
+controller-enforced) — the same non-negotiable behind every bound on this
+page, now enforced once per node rather than once per loop. Graph nodes
+declare their own per-node controls (budget, effects, isolation) rather
+than this file's `bounds.yaml` fields, but the underlying principle is
+identical: no worker grades its own work. See
+[graph-capabilities.md](./graph-capabilities.md) for the node-level
+capability and isolation reference.
+
 ## See also
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — the hexagonal design these bounds

@@ -100,7 +100,11 @@ Prompts are not persisted; re-supply on every call.
 **`approve(request, *, node_id, decision)`** — records a human decision for an
 approval node and resumes the run.  For `"approved"`: validates authority,
 persists the decision durably to `approvals.json`, then resumes.  For
-`"rejected"`: records in-memory rejection and fails the run closed.
+`"rejected"`: validates authority, durably persists the rejection to
+`approvals.json` under the same `flock` + atomic `os.replace` discipline, then
+fails the run closed.  `resume` rehydrates whichever decision was durably
+committed before a crash, so a bare resume never re-pauses a gate a human
+already decided.
 
 See `examples/graph_runtime_reference.py` for working call patterns for all
 three methods, including the immutable-update pattern via `dataclasses.replace`
@@ -167,13 +171,15 @@ else.
 ## What is not yet available
 
 - Approval nodes in `bl graph run --execute`: refused at preflight with a named
-  message.  MCP-driven approve via `LocalGraphRuntimeFacade.approve` is shipped.
-- Durable approval load on resume: `resume` does not reload previously persisted
-  `approvals.json` entries into the resolver; a re-approved run must call
-  `approve` again (known follow-up).
-- Durable rejection persistence: `"rejected"` decisions are recorded in-process
-  but not written to `approvals.json` (known follow-up).
-- Cross-model audit controller and Arena wiring (later phase).
-- Enterprise egress firewall — RC-LOCKDOWN tier (later phase).
+  message.  MCP-driven approve/reject via `LocalGraphRuntimeFacade.approve` is
+  shipped, including durable persistence and rehydration on resume (C-080).
+- Cross-model audit controller and Arena wiring — write side: the read side
+  (coverage table + release verdict via `bl graph arena`) is shipped (C-079);
+  structurally binding a coverage cell to the auditor's `model_id` and receipt
+  route is still deferred.
+- Enterprise egress firewall — RC-LOCKDOWN as the default connector tier: the
+  `NetworkMode.ALLOWLIST` OS-cage mechanism is shipped and proven live on macOS
+  Seatbelt (C-081, fail-closed on Linux/docker), but connector nodes in
+  `--execute` do not use it yet.
 - Hosted `ArenaReceiptVerifierPort` — `bl graph status` outputs a
   `LOCAL/UNVERIFIED` notice for all local runs.

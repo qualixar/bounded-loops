@@ -137,7 +137,9 @@ bl graph run --execute manifest.yaml \
 
 The engine:
 1. Compiles the manifest against `connections.json` (compile errors exit early with a clear message).
-2. Runs a preflight check — refuses approval nodes and non-`local_cli` nodes with a specific error.
+2. Runs a preflight check — refuses approval nodes and any node whose binding is
+   neither `local_cli` nor `https` (with a matching admitted connection), with a
+   specific error.
 3. Probes the platform for native sandbox support (macOS Seatbelt / Linux bubblewrap).
 4. Runs each admitted `local_cli` node: invokes `claude -p`, pipes the prompt to stdin, captures stdout as the content-addressed output artifact.
 5. Gates each node with an independent structural acceptance gate.

@@ -78,17 +78,21 @@ The connector invokes the user's own subscription-mode agent CLI as a subprocess
 
 The engine never reads, stores, or logs the user's credentials. The CLI
 authenticates out-of-band via its own login session. Network access is OPEN for
-admitted `local_cli` nodes so the CLI can reach its model and tools. All other
-node types in this phase are DENY.
+admitted `local_cli` nodes so the CLI can reach its model and tools. An admitted
+`https` node gets its own network mode instead (`ALLOWLIST`, isolation lifted to
+`container_restricted` — see item 8). Any node that is neither is refused at
+preflight and never reaches a network-mode decision.
 
 The run-time prompt (`inputs.json`: `node_id -> prompt string`) is not persisted in
 the run directory. A prompt may contain a secret; the content-addressed reply
 artifact is the durable receipt.
 
 **Fail-closed preflight** (checked before any node runs):
-- `approval` nodes are refused — human-approval execution is a later phase.
-- Any node whose binding is not `local_cli` is refused with an explicit message naming
-  which phase will handle it.
+- `approval` nodes are refused — human-approval execution via `--execute` is a later
+  phase (the facade/MCP path already supports it durably; see item 8 below).
+- Any node whose binding is neither `local_cli` nor `https` (see item 8) is refused
+  with an explicit message naming which phase will handle it — e.g. sandboxed tool
+  execution.
 - An unknown `provider_id` (not in the five profiles above) fails the node closed.
 - A missing prompt for a node fails the node closed.
 - A CLI binary not found in PATH fails the node closed.
@@ -173,15 +177,20 @@ effect-bound credential lease. It never hands a credential value to a node. Prop
   link-local (including 169.254.169.254), CGNAT, multicast, and reserved ranges are
   denied. The broker returns pinned addresses; the forwarder connects only to those.
 
-The `ConnectorForwardPort` is the deployment-owned forwarder that resolves the
-credential from a local keychain or KMS out-of-band and connects only to the broker's
-pinned addresses. No credential value and no request/response bytes pass through the
-broker itself.
+The `ConnectorForwardPort` is a `Protocol`; the engine bundles `HttpConnectorForwarder`
+as its concrete implementation, paired with `EnvCredentialResolver` (resolves the
+credential from an environment variable named in the `AdmittedConnectionRecord` — never
+the credential value itself). A deployment may substitute its own forwarder/resolver
+(for example, keychain- or KMS-backed) but does not have to. Either way, the forwarder
+connects only to the broker's pinned addresses; no credential value and no
+request/response bytes pass through the broker itself.
 
-**Shipping status**: the broker and its SSRF protection logic are implemented and
-tested. The `ConnectorForwardPort` is a `Protocol` — a deployment provides the
-concrete forwarder. The BYOK/HTTP connector as a run mode (wiring the broker +
-forwarder into `bl graph run --execute` for HTTP-transport nodes) is a later phase.
+**Shipping status**: SHIPPED. The broker, its SSRF protection logic, and the BYOK/HTTP
+connector as a run mode are implemented, tested, and wired end-to-end — `bl graph run
+--execute manifest.yaml --admitted admitted.json ...` routes `https`-transport nodes
+through this stack via `_ByokDispatchWorker` (`execute_graph.py:1-15,128,247`).
+Preflight fails closed if an `https` node has no matching `AdmittedConnectionRecord`
+(`execute_graph.py:267-277`).
 
 ---
 
@@ -219,39 +228,45 @@ and receipts remain authority.
 
 ---
 
-## Documented seams — in-progress
+## Documented seams — partial or narrower-than-production wiring
 
-These components exist in the codebase as designed interfaces. They are not yet wired
-into `bl graph run --execute` as runnable modes.
-
-### BYOK/HTTP connector as a run mode
-
-The `connector_forward.py` seam (grant → mint lease → egress broker authorize →
-deployment forwarder → content-addressed result) is implemented at the application
-layer. Wiring it into `bl graph run --execute` for HTTP-transport nodes is a later
-phase. A node whose connection has `transport: http` will be refused at preflight with
-a clear message: `BYOK/HTTP and sandboxed tool execution are later phases`.
+Each of these has a real, tested mechanism in the codebase already. What is listed here
+is the specific gap between that mechanism and full production wiring — not an absence
+of the mechanism itself.
 
 ### Concrete GraphRuntimeFacade wiring
 
 `mcp_graph.py` defines the `GraphRuntimeFacade` `Protocol` and the full MCP tool
-surface. The deployment must provide a concrete facade that wires real workers,
-isolation adapters, an authorizer, and the approval authority. No concrete facade is
-bundled.
+surface. `LocalGraphRuntimeFacade` is bundled as the reference concrete implementation
+(`graph_runtime_facade.py`): it wires real arena reads, real connector workers
+(`build_execution_controller`), and the real `approvals.approve` use case for persisted
+local run directories. Its approval authorizer and signature verifier default to
+same-tenant-subject and non-empty-signature checks — a hosted, multi-tenant deployment
+still must supply a role-checking `ApprovalAuthorizationPort` and a crypto
+`ApprovalSignatureVerifierPort` for production-grade authority.
 
-### Cross-model audit controller and Arena wiring
+### Cross-model audit controller and Arena wiring — write side
 
-The audit plan service and reconciliation logic are implemented. The controller→Arena
-wiring that propagates audit results into the graph execution flow and Arena projection
-is out of scope for the current phase (noted explicitly in `audit_plan.py`).
+The audit plan service and reconciliation logic are implemented, and the **read side is
+wired as a runnable mode** (C-079): `bl graph run --execute --audit-plan <json>`
+persists the plan alongside the run, and `bl graph arena` computes the coverage table
+and release verdict from it, failing closed if the projection cannot be computed
+(`cli_graph.py:858`, `execute_graph.py:596-617`, `cli_arena.py:70-90`). Independence is
+receipt-**asserted** — the assessor is never the producer. What remains deferred is the
+**write side**: structurally binding a coverage cell to the `AuditAssignment.model_id`
+and its succeeded-receipt route, rather than asserting independence from the plan alone.
 
-### Enterprise egress firewall (RC-LOCKDOWN)
+### Enterprise egress firewall (RC-LOCKDOWN) as the default connector tier
 
-The Local-CLI connector's default posture is "run freely" — the CLI inherits the
-operator's real environment so its subscription and tools work. An opt-in RC-LOCKDOWN
-tier (enterprise egress firewall that restricts what the CLI can reach) is a later
-phase. The current implementation is the trusted-local default, gated to
-compiler-admitted `local_cli` transport only.
+The mechanism — `NetworkMode.ALLOWLIST`, a loopback-only OS cage plus a destination-
+allowlisted CONNECT proxy (`enforcer.py:25`, `providers/native.py`, `sandbox.py`,
+`egress_proxy.py`) — is shipped and proven live on macOS Seatbelt: a caged process can
+reach only the proxy; everything else comes back `denied_by_sandbox`. Linux/docker/bwrap
+fail closed today (authorized egress is refused, never faked) rather than caging. It is
+exercised today via the native-sandbox probe path (`sandbox_demo.py`), not by connector
+nodes: `bl graph run --execute` still runs `local_cli` nodes network-`OPEN` and `https`
+nodes broker-mediated, neither OS-caged. Making `ALLOWLIST` the default tier for
+connector nodes is the later-phase item — the cage itself is not.
 
 ### Hosted ArenaReceiptVerifierPort
 
@@ -267,8 +282,9 @@ is the honest statement of this posture.
 | Binding | What to provide |
 |---|---|
 | Agent CLI binaries | Install and log in to `claude`, `codex`, `grok`, `muse`, and/or `agy` on the host |
-| `ConnectorForwardPort` | A forwarder that reads credentials from your keychain/KMS and connects only to the broker's pinned addresses |
-| `GraphRuntimeFacade` | A concrete facade that wires workers, isolation, authorizer, and approval authority for the MCP server |
+| BYOK admitted-connection records | A JSON file mapping `connection_id` to endpoint + credential ENV-VAR name (no secrets), passed via `--admitted` |
+| `ConnectorForwardPort` (optional override) | The engine bundles `HttpConnectorForwarder` + `EnvCredentialResolver` by default; supply your own only for keychain/KMS-backed credential resolution instead of an env var |
+| `GraphRuntimeFacade` (hosted-grade override) | `LocalGraphRuntimeFacade` ships as the reference concrete facade; a hosted deployment supplies a role-checking `ApprovalAuthorizationPort` and a crypto `ApprovalSignatureVerifierPort` in its place |
 | Durable memory adapters | An SLM-backed `GraphMemoryStorePort` and `SemanticMemoryStorePort` for cross-run memory persistence |
 | `AuditStorePort` | A concrete audit store (e.g., `LocalAuditStore`) for persisting audit plans |
 | Hosted receipt verifier | A `ArenaReceiptVerifierPort` implementation if you want the Arena to verify hash chains against a remote server |

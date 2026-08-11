@@ -186,6 +186,19 @@ on the very first lap, exactly as the cassette and gate predict. If your
 loop doesn't reach this line, the gate is telling you something real is
 still broken — don't hand-edit the ledger or the gate to force it.
 
+## From a single loop to a graph
+
+The independent-gate principle this page walks through for a single loop —
+a worker proposes, a separate gate decides, never the other way round — is
+the same invariant the bounded-loops graph engine (`bl graph`) enforces
+across a DAG of many nodes, each gated independently (worker≠gate,
+controller-enforced). `bl graph run --execute` runs an admitted-connector
+graph (nodes bound to a local-CLI or BYOK/HTTPS connection) the same way
+`bl run --yes` runs a single loop above: the independent gate, not the
+node's own claim, decides the outcome. See
+[graph-quickstart.md](./graph-quickstart.md) to build and run your first
+graph.
+
 ## See also
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — how the runner/gate/bounds you

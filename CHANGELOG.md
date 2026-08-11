@@ -3,6 +3,42 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — graph engine v0.4 (beta)
+
+The headline of this line is **the bounded-loops graph engine** (`bl graph`): a
+DAG of independently-gated bounded loops built on the same keyless loop engine.
+
+### Added
+
+- **Graph engine (`bl graph`)** — compile and run a DAG of bounded loops where an
+  independent gate decides each node and a producer never grades its own work.
+  Subcommands: `lint`, `plan`, `run` (with `--execute`), `arena`, `status`,
+  `artifacts`, `demo`, and `studio`.
+- **Two credential-safe connector modes** — Local-CLI (runs your already-logged-in
+  `claude`/`codex`/`grok`/`muse`/`agy` subscription; credentials are never read or
+  logged) and BYOK/HTTPS (a frontier-model API through a no-secret egress broker
+  with single-use, time-bound leases and SSRF/DNS-rebind protection).
+- **Receipt-derived read-only Arena** — an append-only, hash-chained event log plus
+  content-addressed artifacts, rendered as a non-executing HTML projection
+  (`bl graph arena`). Local runs are marked `LOCAL/UNVERIFIED`.
+- **Cross-model audit coverage** — `--audit-plan` runs independent auditor nodes;
+  the Arena shows a release verdict that blocks on producer-only cells or
+  unresolved high-severity findings.
+- **Durable human approvals** — approve/reject decisions are persisted and
+  rehydrated on resume through the runtime facade / MCP path.
+- **Opt-in OS egress firewall** — a `NetworkMode.ALLOWLIST` loopback-proxy cage
+  enforced by macOS Seatbelt (fail-closed on other platforms).
+- **MCP graph surface** — the `bl graph` tools are exposed over MCP with
+  session-bound subject identity.
+
+### Notes
+
+- `bl graph` is a beta. See the honest capability matrix in the README and
+  [`docs/RELEASE-READINESS.md`](docs/RELEASE-READINESS.md) for exactly what is
+  enforced, and where.
+- The base loop engine, the nine bounds, the 68-loop catalog, and all `bl run`
+  behavior are unchanged.
+
 ## [0.3.1] — 2026-07-13
 
 ### Fixed

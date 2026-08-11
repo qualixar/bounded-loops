@@ -1,7 +1,7 @@
 # Graph Engine — Release Readiness Assessment
 
 **Version:** 0.3.1  
-**Assessment date:** 2026-08-11 (updated post-RE/RF shipping)  
+**Assessment date:** 2026-08-11 (updated post-RE/RF/C-079/C-080/C-081 shipping)  
 **Scope:** `bl graph` subcommand group and supporting application/adapter layers
 
 ---
@@ -61,10 +61,18 @@ A client who installs `bounded-loops` and runs `bl graph` gets:
 
 8. **Cross-model audit engine** — `AuditPlanService` (coverage validation, content-addressed
    plan persistence) and `reconcile_audit` (highest-severity-preserving, dissent-flagging
-   multi-lane reconciliation with full blocking-reason enumeration).
+   multi-lane reconciliation with full blocking-reason enumeration). The read side is wired
+   as a runnable mode (C-079): `bl graph run --execute --audit-plan <json>` persists the
+   plan alongside the run, and `bl graph arena` computes and renders the coverage table +
+   release verdict, failing closed if the projection cannot be computed. Independence is
+   receipt-**asserted** (the assessor is never the producer); structurally binding a
+   coverage cell to the auditor's model_id and receipt route (write-side independence) is
+   still deferred.
 
-9. **Graph runtime over MCP** — `bounded-loops-mcp` exposes the full graph tool surface
-   over MCP (RF shipped). `LocalGraphRuntimeFacade` is now bundled: a concrete,
+9. **Graph runtime over MCP** — the graph engine's MCP tools are wired by the
+   `mcp_graph.register(...)` shim onto a deployment-provided server (RF); the shipped
+   `bounded-loops-mcp` server itself exposes the loop tools only, not the graph tools.
+   `LocalGraphRuntimeFacade` is now bundled: a concrete,
    file-backed `GraphRuntimeFacade` that wires real arena reads, real connector workers,
    and the `approvals.approve` use case. `SameTenantArenaAuthorizer` is bundled for
    same-tenant local runs. Approval authority (authorizer + signature verifier) is
@@ -72,7 +80,10 @@ A client who installs `bounded-loops` and runs `bl graph` gets:
    session is the auth boundary). `mcp_graph.register(mcp, facade, subject_provider=...)`
    wires four MCP tools: `graph_status_tool`, `graph_state_md_tool`, `graph_resume_tool`,
    `graph_approve_tool` (mutating tools gated by `confirm=True`). Subject identity comes
-   from `subject_provider` — never from LLM arguments. See
+   from `subject_provider` — never from LLM arguments. Both `approve` and `reject`
+   decisions are persisted durably to `approvals.json` (exclusive `flock` + atomic
+   `os.replace`) and rehydrated on `resume` (C-080), so a crash between a human decision
+   and the next resume is recovered from the ledger, not re-asked. See
    `examples/graph_runtime_reference.py` and `docs/graph-reference-composition.md`.
 
 ---
@@ -98,11 +109,9 @@ A client who installs `bounded-loops` and runs `bl graph` gets:
 
 | Capability | Status |
 |---|---|
-| Human-approval checkpoint via `bl graph run --execute` | `approval` nodes are refused at preflight in `execute_graph_run` with a named message. MCP-driven approve via `LocalGraphRuntimeFacade.approve` IS shipped (RF). |
-| RF follow-up — durable approval load on resume | `LocalGraphRuntimeFacade.resume` does not reload previously persisted `approvals.json` entries into the resolver. A re-approved run must call `approve` again (known follow-up). |
-| RF follow-up — durable rejection persistence | `"rejected"` decisions are recorded in-process but not persisted to `approvals.json`. A session restart after a rejection loses the rejection record (known follow-up). |
-| Cross-model audit controller + Arena wiring | Audit plan service and reconciliation are implemented. The wiring into the graph execution flow and Arena projection is explicitly out of scope for the current phase (noted in `audit_plan.py`). |
-| Enterprise egress firewall (RC-LOCKDOWN) | The Local-CLI connector's "run freely" posture is the only available tier. The opt-in RC-LOCKDOWN tier that restricts what the CLI can reach is a later phase. |
+| Human-approval checkpoint via `bl graph run --execute` | `approval` nodes are refused at preflight in `execute_graph_run` with a named message. MCP-driven approve via `LocalGraphRuntimeFacade.approve` IS shipped (RF), and both approve and reject decisions are now durable with rehydration on resume (C-080) — see above. |
+| Cross-model audit controller + Arena wiring — write side | Audit plan service, reconciliation, and the read-side controller→Arena wiring (coverage table + release verdict via `bl graph arena`) are implemented and shipped (C-079). Structurally binding a coverage cell to the auditor's `model_id` and receipt route — write-side independence, beyond today's receipt-asserted independence — is still deferred. |
+| Enterprise egress firewall (RC-LOCKDOWN) as the default connector tier | The `NetworkMode.ALLOWLIST` OS-cage mechanism is shipped and proven live on macOS Seatbelt (C-081); Linux/docker fail closed rather than caging. Connector nodes in `--execute` do not use it yet — `local_cli` stays network-OPEN and `https` stays broker-mediated. Making ALLOWLIST their default tier is the later-phase item. |
 | Hosted `ArenaReceiptVerifierPort` | `LocalGraphRuntimeFacade` uses `_NoopArenaReceiptVerifier` for all local runs. `bl graph status` outputs a `LOCAL/UNVERIFIED` notice. Remote hash-chain verification is a later phase. |
 | Sandboxed arbitrary-tool node execution (package broker) | Refused at preflight with a named message. |
 
@@ -112,7 +121,7 @@ A client who installs `bounded-loops` and runs `bl graph` gets:
 
 | Dimension | State |
 |---|---|
-| Test suite | ~1485 tests; marked `network`, `external_tool`, `provider_smoke`, and `clean_install` tests are opt-in and excluded from the default `pytest` run |
+| Test suite | 1527 passed, 7 skipped, 30 deselected; marked `network`, `external_tool`, `provider_smoke`, and `clean_install` tests are opt-in and excluded from the default `pytest` run |
 | Linting | `ruff` clean |
 | Type checking | `mypy` clean |
 | File size cap | 800-line hard cap per file (enforced by convention; the CLI graph handler splits handlers across sibling files to stay within budget) |
@@ -132,7 +141,8 @@ Arena review of run artifacts, in-process demonstration of the run-directory str
 
 **Not ready for production without:** hosted authorization ports (`ApprovalAuthorizationPort`,
 `ApprovalSignatureVerifierPort`, `ArenaReceiptVerifierPort`) replacing the local defaults, an
-`AuditStorePort` wiring, a durable memory adapter, and the RF follow-ups (durable approval load
-on resume, durable rejection persistence). The cross-model audit controller/Arena wiring,
-human-approval execution via `bl graph run --execute`, and the enterprise egress firewall
-(RC-LOCKDOWN) are later phases with clear seam boundaries already defined in the codebase.
+`AuditStorePort` wiring, and a durable memory adapter. Human-approval execution via `bl graph
+run --execute` (the CLI path — the facade/MCP path already ships durable approve/reject),
+write-side structural independence for the cross-model audit controller, and the enterprise
+egress firewall (RC-LOCKDOWN) as the default connector tier are later phases with clear seam
+boundaries already defined in the codebase.
