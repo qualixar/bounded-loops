@@ -92,6 +92,34 @@ def build_seatbelt_profile(*, writable: Sequence[Path], deny_network: bool) -> s
     return "\n".join(lines)
 
 
+def build_seatbelt_allowlist_profile(*, writable: Sequence[Path], proxy_port: int) -> str:
+    """Seatbelt profile for ``NetworkMode.ALLOWLIST``: deny ALL network EXCEPT outbound to the
+    loopback egress proxy, and confine writes exactly as the deny/open profile does.
+
+    Under ALLOWLIST a caged process may open a socket ONLY to ``localhost:proxy_port`` — the
+    RC-LOCKDOWN CONNECT proxy, which itself enforces the destination allowlist + SSRF guard. SBPL is
+    last-match-wins, so the trailing ``(allow network-outbound (remote ip "localhost:<port>"))``
+    overrides ``(deny network*)`` for exactly that loopback endpoint and nothing else — a compromised
+    process cannot reach any other host, so it cannot bypass the proxy's allowlist.
+    """
+    if isinstance(proxy_port, bool) or not isinstance(proxy_port, int) or not (1 <= proxy_port <= 65535):
+        raise ValueError("egress proxy port must be an integer in 1..65535")
+    lines = ["(version 1)", "(allow default)", "(deny network*)"]
+    # Loopback-only egress hole. ``localhost`` is the SBPL loopback token; it matches the ``127.0.0.1``
+    # the worker points the child at — VERIFIED by the live Seatbelt test (``test_live_allowlist_cages_
+    # egress_to_the_loopback_proxy``: the caged child reaches the proxy and nothing else). A literal
+    # ``(remote ip "127.0.0.1:<port>")`` is NOT accepted by ``sandbox-exec`` (it rejects the whole
+    # profile), so the loopback token is the correct, portable form (dual-audit D3). The port is a
+    # range-checked int — no attacker-controlled text enters the profile.
+    lines.append(f'(allow network-outbound (remote ip "localhost:{proxy_port}"))')
+    lines.append('(deny file-write* (subpath "/"))')
+    for path in writable:
+        lines.append(f'(allow file-write* (subpath "{_canonical(path)}"))')
+    for device in _WRITABLE_DEVICES:
+        lines.append(f'(allow file-write* (literal "{device}"))')
+    return "\n".join(lines)
+
+
 def seatbelt_argv(profile: str, inner_argv: Sequence[str]) -> list[str]:
     if not inner_argv:
         raise ValueError("inner argv must not be empty")
@@ -184,18 +212,31 @@ def wrap_argv(
     tmpdir: Path,
     network_mode: NetworkMode,
     image: str | None = None,
+    egress_proxy_port: int | None = None,
 ) -> list[str]:
     """Wrap *inner_argv* in the selected mechanism, applying the envelope's network mode.
 
     ``DENY`` firewalls all outbound sockets. ``OPEN`` deliberately allows outbound
     network while keeping filesystem write-confinement unchanged — the trusted-local
     ``local_cli`` connector posture, so an admitted agent CLI reaches its model and tools.
-    ``ALLOWLIST`` (destination-filtered egress via a proxy) is NOT implemented and is
-    refused here, so the network is never opened *destination-blind under an allowlist
-    promise* — it is only ever opened explicitly, via ``OPEN``.
+    ``ALLOWLIST`` (destination-filtered egress) opens the network ONLY to the loopback egress
+    proxy at ``egress_proxy_port`` (RC-LOCKDOWN): the process reaches nothing but that proxy, which
+    enforces the destination allowlist + SSRF guard. It requires the proxy port AND an OS mechanism
+    that can express "loopback-only egress" — today only Seatbelt; other mechanisms are refused
+    fail-closed (the network is never opened destination-blind under an allowlist promise).
     """
     if network_mode is NetworkMode.ALLOWLIST:
-        raise ValueError("destination-allowlisted egress is not implemented; refusing to open the network")
+        if egress_proxy_port is None:
+            raise ValueError("destination-allowlisted egress requires a loopback egress-proxy port")
+        if mechanism is SandboxMechanism.SEATBELT:
+            profile = build_seatbelt_allowlist_profile(
+                writable=[workspace, home, tmpdir], proxy_port=egress_proxy_port,
+            )
+            return seatbelt_argv(profile, inner_argv)
+        raise ValueError(
+            f"destination-allowlisted OS egress cage is only implemented via Seatbelt; "
+            f"{mechanism.value} cannot confine egress to the loopback proxy (refusing fail-closed)"
+        )
     deny = network_mode is NetworkMode.DENY
     if mechanism is SandboxMechanism.NONE:
         return list(inner_argv)

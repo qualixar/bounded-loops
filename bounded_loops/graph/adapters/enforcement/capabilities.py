@@ -11,8 +11,10 @@ is deliverable by a native sandbox (macOS Seatbelt or Linux bubblewrap) just as
 well as by Docker. The matrix selects whichever mechanism the host can truly
 provide and names it in the published controls, so a receipt never claims a
 "container" when a Seatbelt profile did the work. Authorized (allowlist) egress
-still additionally requires an egress proxy (DNS/redirect/private-IP denial),
-which is not built yet, so those nodes fail closed regardless of mechanism.
+additionally requires a loopback egress proxy (destination allowlist + SSRF /
+DNS-rebind denial); the RC-LOCKDOWN cage delivers that on macOS via a Seatbelt
+profile that denies all egress except the loopback proxy. Where that cage is not
+expressible (no Seatbelt), authorized-egress nodes still fail closed.
 """
 
 from __future__ import annotations
@@ -78,13 +80,19 @@ class PlatformCapabilities:
             if not self.egress_proxy:
                 return (
                     None,
-                    "authorized egress requires a container egress proxy "
-                    "(DNS / redirect / private-IP denial), which is not yet available",
+                    "authorized egress requires a loopback egress proxy "
+                    "(destination allowlist + SSRF / DNS-rebind denial), which is not available on this host",
                 )
-            mechanism = self._container_grade_mechanism()
-            if mechanism is None:
-                return (None, "authorized egress requires docker, bubblewrap, or sandbox-exec; none available")
-            return (mechanism, "")
+            # RC-LOCKDOWN: the loopback-only egress cage is expressible ONLY via Seatbelt today. Other
+            # container-grade mechanisms (docker / bubblewrap) cannot yet confine egress to the proxy,
+            # so authorized egress fails closed on them rather than pretending.
+            if not self.seatbelt:
+                return (
+                    None,
+                    "authorized-egress OS cage is only implemented via Seatbelt (macOS); "
+                    "this host cannot confine egress to the loopback proxy",
+                )
+            return (SandboxMechanism.SEATBELT, "")
         if level is IsolationLevel.WORKSPACE_ONLY:
             return (SandboxMechanism.NONE, "")
         if level is IsolationLevel.PROCESS_RESTRICTED:
@@ -116,6 +124,12 @@ class PlatformCapabilities:
         When *mechanism* is omitted the mechanism that would be selected for a
         network-denied node at *level* is used, so the disclosure matches what
         this host would actually do.
+
+        NOTE (dual-audit D4): this helper describes the network-DENY posture; it does not take a
+        network mode, so it does NOT enumerate the authorized-egress (ALLOWLIST) loopback-proxy cage.
+        A run receipt must take its per-dimension controls from the selected provider's
+        ``EnforcedControls`` (which reports ``egress=ENFORCED`` under ALLOWLIST), not from this
+        capability-matrix disclosure — the latter would under-claim egress (a safe direction).
         """
         if level is IsolationLevel.WORKSPACE_ONLY:
             return (
@@ -170,7 +184,10 @@ def probe_platform(*, docker_timeout_s: float = 4.0) -> PlatformCapabilities:
         seatbelt=_seatbelt_available(),
         bubblewrap=shutil.which("bwrap") is not None,
         net_namespace=sys.platform.startswith("linux") and shutil.which("unshare") is not None,
-        egress_proxy=False,
+        # RC-LOCKDOWN: the loopback egress proxy is an in-process capability, but caging a process to
+        # it requires an OS mechanism that expresses "loopback-only egress" — today only Seatbelt. So
+        # authorized egress is available exactly where Seatbelt is (macOS); elsewhere it fails closed.
+        egress_proxy=_seatbelt_available(),
     )
 
 

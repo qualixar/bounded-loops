@@ -125,6 +125,7 @@ class HostManagedProvider:
         tmpdir: Path,
         tier: IsolationLevel,
         network_mode: NetworkMode,
+        egress_proxy_port: int | None = None,  # noqa: ARG002 — host sandbox owns egress confinement
     ) -> LaunchSpec:
         # Defer to the host sandbox: run the node unwrapped (the host confines it,
         # proven by the probe the registry ran before selecting us).

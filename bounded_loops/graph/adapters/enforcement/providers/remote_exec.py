@@ -242,6 +242,7 @@ class RemoteIsolationProvider:
 
     def build_launch(
         self, *, inner_argv, workspace, home, tmpdir, tier: IsolationLevel, network_mode: NetworkMode,
+        egress_proxy_port: int | None = None,  # noqa: ARG002 — remote egress cage not implemented
     ) -> LaunchSpec:
         if network_mode is NetworkMode.ALLOWLIST:
             raise ValueError(f"{self.provider_id}: cannot open authorized egress yet")

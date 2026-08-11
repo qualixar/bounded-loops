@@ -33,6 +33,7 @@ gap is a liveness limit, not an isolation escape.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 import math
 import os
 import re
@@ -44,6 +45,7 @@ from bounded_loops.adapters._env import build_subprocess_env
 from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn
 from bounded_loops.domain.models import TurnState
 from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
+from bounded_loops.graph.adapters.enforcement.egress_proxy import LoopbackEgressProxy
 from bounded_loops.graph.adapters.enforcement.provider import EnforcedControls
 from bounded_loops.graph.adapters.enforcement.providers.remote_exec import RemoteExecTransport
 from bounded_loops.graph.adapters.enforcement.registry import IsolationProviderRegistry, default_registry
@@ -51,6 +53,7 @@ from bounded_loops.graph.adapters.enforcement.sandbox import SEATBELT_BINARY
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.application.execution_policy import (
     ExecutionEnvelope,
+    NetworkMode,
     validate_execution_envelope,
 )
 from bounded_loops.graph.application.run_graph import WorkerResult
@@ -67,6 +70,7 @@ from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidati
 from bounded_loops.graph.domain.events import GraphRunIdentity
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
+_LOGGER = logging.getLogger(__name__)
 _DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024
 _DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024
 _DEFAULT_DEADLINE_S = 30.0
@@ -75,6 +79,19 @@ _UNSAFE_PATH_COMPONENT = re.compile(r"[^A-Za-z0-9._-]")
 # ``argv[0]`` (ground truth) — the human/receipt mechanism label that sits
 # alongside the provider id and the per-dimension controls.
 _MECHANISM_BY_ARGV0 = {SEATBELT_BINARY: "seatbelt", "bwrap": "bubblewrap", "unshare": "unshare_net", "docker": "docker"}
+
+
+def _egress_log_sink(node_id: str) -> Callable[..., None]:
+    """Log sink for the RC-LOCKDOWN egress proxy: a DENY is a security-relevant event (WARNING), an
+    allowed tunnel is DEBUG. Every decision is surfaced to the logger — never silently dropped."""
+
+    def _sink(*, allowed: bool, destination: str, reason: str) -> None:
+        if allowed:
+            _LOGGER.debug("egress-proxy ALLOW node=%s dest=%s (%s)", node_id, destination, reason)
+        else:
+            _LOGGER.warning("egress-proxy DENY node=%s dest=%s (%s)", node_id, destination, reason)
+
+    return _sink
 
 
 def _safe_component(value: str) -> str:
@@ -236,41 +253,63 @@ class SandboxedNodeWorker:
         env["BL_GRAPH_INPUTS"] = str(inputs.resolve())
         env["BL_GRAPH_OUTPUTS"] = str(outputs.resolve())
 
-        launch = provider.build_launch(
-            inner_argv=spec.argv,
-            workspace=outputs,
-            home=home,
-            tmpdir=tmp,
-            tier=envelope.isolation,
-            network_mode=envelope.network_mode,
-        )
-        if launch.kind != "local":
-            # Remote isolation (microvm / openshell) needs the C1 remote-staging
-            # bridge: ship the content-addressed workspace to the backend, run, and
-            # fetch declared outputs back through the egress broker. Provider
-            # SELECTION and control publishing are wired here in E3; remote dispatch
-            # lands with C1. Fail closed until then — never silently drop a remote
-            # node onto the local host.
-            raise GraphIntegrityError(
-                f"node {node.node_id!r} selected the {selection.provider_id!r} remote isolation provider, "
-                "whose execution bridge is delivered in C1 (remote workspace staging + egress broker)"
-            )
+        # RC-LOCKDOWN: for an ALLOWLIST node, start the loopback egress proxy for EXACTLY the admitted
+        # destinations, point the process at it, and OS-cage the process so it can reach NOTHING but
+        # the proxy. The proxy enforces the destination allowlist + SSRF guard; the cage stops a
+        # compromised process from bypassing it. Started INSIDE the try so the finally tears it down
+        # even if its own start (or anything after) raises — never a leaked listener (dual-audit D2).
+        egress_proxy: LoopbackEgressProxy | None = None
+        try:
+            egress_proxy_port: int | None = None
+            if envelope.network_mode is NetworkMode.ALLOWLIST:
+                egress_proxy = LoopbackEgressProxy(
+                    allowed=tuple(envelope.network_destinations),
+                    log=_egress_log_sink(node.node_id),
+                )
+                egress_proxy_port = egress_proxy.start()
+                proxy_url = f"http://127.0.0.1:{egress_proxy_port}"
+                for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+                    env[var] = proxy_url
 
-        deadline_s = (node.hard_deadline_ms / 1000.0) if node.hard_deadline_ms else self.default_deadline_s
-        preexec = _rlimit_preexec(int(math.ceil(deadline_s)) + 1) if self.apply_rlimits else None
-        turn = ProcessTurn.start(
-            list(launch.argv),
-            cwd=outputs,
-            env=env,
-            output_limit_bytes=self.max_output_bytes,
-            input_text=spec.stdin_text,
-            preexec_fn=preexec,
-        )
-        result = turn.wait(timeout_s=deadline_s)
-        if result.state is not TurnState.COMPLETED:
-            raise GraphIntegrityError(
-                f"node {node.node_id!r} did not complete within its deadline ({result.state.value})"
+            launch = provider.build_launch(
+                inner_argv=spec.argv,
+                workspace=outputs,
+                home=home,
+                tmpdir=tmp,
+                tier=envelope.isolation,
+                network_mode=envelope.network_mode,
+                egress_proxy_port=egress_proxy_port,
             )
+            if launch.kind != "local":
+                # Remote isolation (microvm / openshell) needs the C1 remote-staging
+                # bridge: ship the content-addressed workspace to the backend, run, and
+                # fetch declared outputs back through the egress broker. Provider
+                # SELECTION and control publishing are wired here in E3; remote dispatch
+                # lands with C1. Fail closed until then — never silently drop a remote
+                # node onto the local host.
+                raise GraphIntegrityError(
+                    f"node {node.node_id!r} selected the {selection.provider_id!r} remote isolation provider, "
+                    "whose execution bridge is delivered in C1 (remote workspace staging + egress broker)"
+                )
+
+            deadline_s = (node.hard_deadline_ms / 1000.0) if node.hard_deadline_ms else self.default_deadline_s
+            preexec = _rlimit_preexec(int(math.ceil(deadline_s)) + 1) if self.apply_rlimits else None
+            turn = ProcessTurn.start(
+                list(launch.argv),
+                cwd=outputs,
+                env=env,
+                output_limit_bytes=self.max_output_bytes,
+                input_text=spec.stdin_text,
+                preexec_fn=preexec,
+            )
+            result = turn.wait(timeout_s=deadline_s)
+            if result.state is not TurnState.COMPLETED:
+                raise GraphIntegrityError(
+                    f"node {node.node_id!r} did not complete within its deadline ({result.state.value})"
+                )
+        finally:
+            if egress_proxy is not None:
+                egress_proxy.stop()
 
         policy = WorkspacePromotionPolicy(
             organization_id=self.organization_id,

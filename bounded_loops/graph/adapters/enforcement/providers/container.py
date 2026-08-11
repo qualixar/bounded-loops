@@ -100,6 +100,7 @@ class ContainerProvider:
         tmpdir: Path,
         tier: IsolationLevel,
         network_mode: NetworkMode,
+        egress_proxy_port: int | None = None,  # noqa: ARG002 — container egress cage not implemented
     ) -> LaunchSpec:
         if network_mode is NetworkMode.ALLOWLIST:
             raise ValueError("container cannot open authorized egress yet")

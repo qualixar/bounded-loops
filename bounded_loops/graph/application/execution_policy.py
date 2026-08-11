@@ -45,9 +45,11 @@ class NetworkMode(str, Enum):
     # connector on a trusted local host (the default "run the agent freely" posture, so
     # the agent reaches its model and its tools and real coding work completes).
     OPEN = "open"
-    # ALLOWLIST: outbound only to declared destinations via a proxy (an opt-in enterprise
-    # egress firewall for hosted/multi-tenant/untrusted deployments). Not yet implemented
-    # at the sandbox layer — refused there so the network is never opened destination-blind.
+    # ALLOWLIST: outbound only to declared destinations via a loopback proxy (an opt-in enterprise
+    # egress firewall). Enforced at the sandbox layer by RC-LOCKDOWN on macOS Seatbelt: the process is
+    # caged to a loopback egress proxy that admits only the declared destinations (SSRF/DNS-rebind
+    # guarded). Where that cage is not expressible (no Seatbelt), it is refused fail-closed — the
+    # network is never opened destination-blind under an allowlist promise.
     ALLOWLIST = "allowlist"
 
 

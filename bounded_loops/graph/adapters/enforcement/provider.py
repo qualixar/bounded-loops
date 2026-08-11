@@ -142,4 +142,9 @@ class IsolationProvider(Protocol):
         tmpdir: Path,
         tier: IsolationLevel,
         network_mode: NetworkMode,
-    ) -> LaunchSpec: ...
+        egress_proxy_port: int | None = None,
+    ) -> LaunchSpec:
+        """Build the concrete launch. ``egress_proxy_port`` is the loopback port of the RC-LOCKDOWN
+        egress proxy the worker has already started for a ``NetworkMode.ALLOWLIST`` node; a provider
+        that OS-cages egress uses it to confine the process to that loopback endpoint."""
+        ...

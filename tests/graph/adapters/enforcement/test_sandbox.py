@@ -79,13 +79,19 @@ def test_unshare_is_a_process_restricted_net_fallback_only():
     assert mech is None
 
 
-def test_allowlist_egress_stays_closed_until_a_proxy_exists():
+def test_allowlist_egress_stays_closed_until_a_seatbelt_cage_exists():
+    # No egress proxy → fail closed.
     caps = _caps(platform="darwin", seatbelt=True, docker_available=True, egress_proxy=False)
     mech, reason = caps.select_mechanism(IsolationLevel.CONTAINER_RESTRICTED, NetworkMode.ALLOWLIST)
     assert mech is None and "egress proxy" in reason
-    ok = _caps(docker_available=True, egress_proxy=True)
+    # Egress proxy present but no Seatbelt cage (docker-only) → still fail closed (Seatbelt-only today).
+    no_cage = _caps(platform="linux", docker_available=True, egress_proxy=True)
+    mech, reason = no_cage.select_mechanism(IsolationLevel.CONTAINER_RESTRICTED, NetworkMode.ALLOWLIST)
+    assert mech is None and "Seatbelt" in reason
+    # Egress proxy + Seatbelt → the loopback-only egress cage.
+    ok = _caps(platform="darwin", seatbelt=True, egress_proxy=True)
     mech, _ = ok.select_mechanism(IsolationLevel.CONTAINER_RESTRICTED, NetworkMode.ALLOWLIST)
-    assert mech is SandboxMechanism.DOCKER
+    assert mech is SandboxMechanism.SEATBELT
 
 
 # ── honest published controls ────────────────────────────────────────────────

@@ -94,8 +94,22 @@ def test_allowlist_egress_fails_closed_without_an_egress_proxy_even_with_docker(
         _enforce(_caps(docker_available=True, egress_proxy=False), IsolationLevel.CONTAINER_RESTRICTED, [Effect.EXTERNAL_WRITE], NetworkMode.ALLOWLIST, _DEST)
 
 
-def test_allowlist_egress_ok_when_container_and_egress_proxy_available():
-    _enforce(_caps(docker_available=True, egress_proxy=True), IsolationLevel.CONTAINER_RESTRICTED, [Effect.EXTERNAL_WRITE], NetworkMode.ALLOWLIST, _DEST)
+def test_allowlist_egress_ok_when_seatbelt_cage_and_egress_proxy_available():
+    # RC-LOCKDOWN: authorized egress is enforceable on macOS Seatbelt (loopback-only egress cage +
+    # proxy). egress_proxy availability alone is not enough — the Seatbelt cage must be present.
+    _enforce(
+        _caps(platform="darwin", seatbelt=True, docker_available=True, egress_proxy=True),
+        IsolationLevel.CONTAINER_RESTRICTED, [Effect.EXTERNAL_WRITE], NetworkMode.ALLOWLIST, _DEST,
+    )
+
+
+def test_allowlist_egress_fails_closed_without_a_seatbelt_cage():
+    # egress proxy present but no Seatbelt (docker-only Linux) → the loopback cage is not expressible.
+    with pytest.raises(GraphValidationError):
+        _enforce(
+            _caps(platform="linux", seatbelt=False, docker_available=True, egress_proxy=True),
+            IsolationLevel.CONTAINER_RESTRICTED, [Effect.EXTERNAL_WRITE], NetworkMode.ALLOWLIST, _DEST,
+        )
 
 
 def test_customer_managed_worker_fails_closed():

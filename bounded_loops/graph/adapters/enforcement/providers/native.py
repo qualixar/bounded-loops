@@ -34,7 +34,13 @@ class NativeProvider:
     def _mechanism(self, tier: IsolationLevel, network_mode: NetworkMode) -> SandboxMechanism | None:
         caps = self._caps
         if network_mode is NetworkMode.ALLOWLIST:
-            return None  # destination-allowlisted egress needs a proxy — not native's job
+            # RC-LOCKDOWN: authorized egress is caged by denying ALL network except the loopback
+            # egress proxy. Requires CONTAINER_RESTRICTED + Seatbelt (the only mechanism that can
+            # express loopback-only egress today) AND an available egress proxy — the SAME gate the
+            # capability matrix applies, so the two never disagree (dual-audit D1). Else fail closed.
+            if tier is IsolationLevel.CONTAINER_RESTRICTED and caps.seatbelt and caps.egress_proxy:
+                return SandboxMechanism.SEATBELT
+            return None
         open_network = network_mode is NetworkMode.OPEN
         if tier is IsolationLevel.WORKSPACE_ONLY:
             return SandboxMechanism.NONE
@@ -65,14 +71,22 @@ class NativeProvider:
         net_open = network_mode is NetworkMode.OPEN
         net = Control.NOT_ENFORCED if net_open else Control.ENFORCED
         if mechanism is SandboxMechanism.SEATBELT:
+            allowlist = network_mode is NetworkMode.ALLOWLIST
+            # Under ALLOWLIST the Seatbelt profile denies all egress EXCEPT the loopback proxy, so BOTH
+            # net (no destination-blind egress) AND egress (authorized-egress proxy in force) are ENFORCED.
+            egress = Control.ENFORCED if allowlist else Control.NOT_ENFORCED
+            if allowlist:
+                note = ("Seatbelt: egress DENIED except the loopback egress proxy (destination-allowlisted); "
+                        "writes confined to workspace/HOME/TMPDIR; reads not confined")
+            elif net_open:
+                note = ("Seatbelt: outbound network OPEN (trusted-local); "
+                        "writes confined to workspace/HOME/TMPDIR; reads not confined")
+            else:
+                note = "Seatbelt: outbound network denied; writes confined to workspace/HOME/TMPDIR; reads not confined"
             return EnforcedControls(
                 net=net, fs_write=Control.ENFORCED, fs_read=Control.NOT_ENFORCED,
-                pid=pid, user=Control.NOT_ENFORCED, kernel=Control.NOT_ENFORCED, egress=Control.NOT_ENFORCED,
-                notes=(
-                    "Seatbelt: outbound network OPEN (trusted-local); writes confined to workspace/HOME/TMPDIR; reads not confined"
-                    if net_open else
-                    "Seatbelt: outbound network denied; writes confined to workspace/HOME/TMPDIR; reads not confined",
-                ),
+                pid=pid, user=Control.NOT_ENFORCED, kernel=Control.NOT_ENFORCED, egress=egress,
+                notes=(note,),
             )
         if mechanism is SandboxMechanism.BUBBLEWRAP:
             return EnforcedControls(
@@ -118,12 +132,13 @@ class NativeProvider:
         tmpdir: Path,
         tier: IsolationLevel,
         network_mode: NetworkMode,
+        egress_proxy_port: int | None = None,
     ) -> LaunchSpec:
         mechanism = self._mechanism(tier, network_mode)
         if mechanism is None:
             raise ValueError(f"native provider cannot launch {tier.value}/{network_mode.value} here")
         argv = wrap_argv(
             mechanism, inner_argv=inner_argv, workspace=workspace, home=home, tmpdir=tmpdir,
-            network_mode=network_mode,
+            network_mode=network_mode, egress_proxy_port=egress_proxy_port,
         )
         return LaunchSpec(kind="local", argv=tuple(argv))

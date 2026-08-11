@@ -125,6 +125,13 @@ def _is_public_unicast(ip: str) -> bool:
     return not any(addr.version == net.version and addr in net for net in _EXTRA_DENY_NETWORKS)
 
 
+def is_public_unicast(ip: str) -> bool:
+    """Public alias for :func:`_is_public_unicast` — the SAME globally-routable public-unicast SSRF
+    guard the broker applies, exposed so the OS-egress-firewall CONNECT proxy (RC-LOCKDOWN) pins and
+    admits destinations under one policy rather than reimplementing (or importing a private) check."""
+    return _is_public_unicast(ip)
+
+
 def _parse_iso(value: str) -> datetime:
     if not isinstance(value, str) or not value:
         raise ValueError("empty timestamp")

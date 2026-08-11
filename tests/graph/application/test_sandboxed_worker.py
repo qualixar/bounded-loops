@@ -19,7 +19,7 @@ from bounded_loops.graph.adapters.enforcement.capabilities import (
     probe_platform,
 )
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
-from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, NetworkMode
+from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, NetworkDestination, NetworkMode
 from bounded_loops.graph.application.sandboxed_worker import (
     NodeExecutionSpec,
     SandboxedNodeWorker,
@@ -50,6 +50,25 @@ _WRITE_OUTSIDE = (
     "except OSError:\n"
     "    outside = 'denied'\n"
     "open('result.json', 'w').write(json.dumps({'outside': outside}))\n"
+)
+
+
+_ALLOWLIST_PROBE = (
+    "import json, os, socket\n"
+    "proxy = os.environ.get('HTTPS_PROXY', '')\n"
+    "port = int(proxy.rsplit(':', 1)[1]) if proxy.count(':') >= 2 else 0\n"
+    "def _try(family, addr, p):\n"
+    "    try:\n"
+    "        s = socket.socket(family); s.settimeout(2); s.connect((addr, p)); s.close(); return 'reachable'\n"
+    "    except PermissionError:\n"
+    "        return 'denied_by_sandbox'\n"
+    "    except OSError as e:\n"
+    "        return 'denied_by_sandbox' if e.errno == 1 else ('refused' if e.errno == 61 else 'err:%s' % e.errno)\n"
+    "res = {'proxy': proxy,\n"
+    "       'to_proxy_v4': _try(socket.AF_INET, '127.0.0.1', port),\n"
+    "       'to_proxy_v6': _try(socket.AF_INET6, '::1', port),\n"
+    "       'to_other': _try(socket.AF_INET, '127.0.0.1', 1)}\n"
+    "open('result.json', 'w').write(json.dumps(res))\n"
 )
 
 
@@ -135,6 +154,39 @@ def test_live_sandbox_denies_network_and_isolates_home(tmp_path):
     assert result.enforced_controls is not None
     assert result.enforced_controls["net"] == "enforced"
     assert result.enforced_controls["kernel"] == "not_enforced"
+
+
+@pytest.mark.skipif(not _LIVE.seatbelt, reason="RC-LOCKDOWN loopback egress cage needs macOS Seatbelt")
+def test_live_allowlist_cages_egress_to_the_loopback_proxy(tmp_path):
+    # REAL end-to-end (loopback only, no external egress): under ALLOWLIST the process must reach the
+    # loopback egress proxy AND NOTHING ELSE — the OS cage is the enforcement, the proxy is the allowlist.
+    spec = NodeExecutionSpec(
+        argv=(sys.executable, "-I", "-B", "-c", _ALLOWLIST_PROBE),
+        declared_outputs={"result.json": "application/json"},
+    )
+    envelope = ExecutionEnvelope(
+        isolation=IsolationLevel.CONTAINER_RESTRICTED,
+        transport=None,
+        allowed_effects=frozenset({Effect.EXTERNAL_WRITE}),
+        network_mode=NetworkMode.ALLOWLIST,
+        network_destinations=(NetworkDestination("api.example.com", 443),),
+    )
+    worker = _worker(tmp_path, _Resolver(spec), _LIVE)
+    result = worker.execute(
+        plan=_plan(),
+        node=_node(level=IsolationLevel.CONTAINER_RESTRICTED, effects=(Effect.EXTERNAL_WRITE,)),
+        envelope=envelope,
+    )
+    payload = _read_artifact(worker.artifact_store, result.output_artifact_digests[0])
+    assert payload["proxy"].startswith("http://127.0.0.1:"), payload  # proxy env injected
+    assert payload["to_proxy_v4"] == "reachable", payload             # IPv4 loopback hole IS our proxy
+    # The Seatbelt `localhost` token also admits ::1:port; our proxy dual-binds it, so the child hits
+    # OUR proxy there too — not a co-resident colluder (dual-audit MAJOR-1 closed).
+    assert payload["to_proxy_v6"] == "reachable", payload
+    assert payload["to_other"] == "denied_by_sandbox", payload        # every other egress is caged
+    controls = worker.controls_for("probe")
+    assert controls is not None
+    assert controls.egress is Control.ENFORCED and controls.net is Control.ENFORCED
 
 
 @_needs_native

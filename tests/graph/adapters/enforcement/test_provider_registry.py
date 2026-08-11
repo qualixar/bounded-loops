@@ -76,9 +76,26 @@ def test_native_container_unavailable_without_native_mechanism():
     assert not prov.probe(tier=IsolationLevel.CONTAINER_RESTRICTED, network_mode=NetworkMode.DENY).available
 
 
-def test_native_allowlist_unavailable():
-    prov = NativeProvider(_SEATBELT)
-    assert not prov.probe(tier=IsolationLevel.CONTAINER_RESTRICTED, network_mode=NetworkMode.ALLOWLIST).available
+def test_native_allowlist_caged_on_seatbelt_with_proxy_else_fail_closed():
+    from dataclasses import replace
+    # RC-LOCKDOWN: available only with BOTH Seatbelt AND an egress proxy (loopback-only cage), egress ENFORCED.
+    caged = replace(_SEATBELT, egress_proxy=True)
+    ok = NativeProvider(caged).probe(
+        tier=IsolationLevel.CONTAINER_RESTRICTED, network_mode=NetworkMode.ALLOWLIST,
+    )
+    assert ok.available
+    assert ok.controls.egress is Control.ENFORCED
+    assert ok.controls.net is Control.ENFORCED
+    # Seatbelt present but no egress proxy → native and the capability matrix AGREE it is unenforceable
+    # (dual-audit D1: the two gates must never disagree).
+    assert not NativeProvider(_SEATBELT).probe(
+        tier=IsolationLevel.CONTAINER_RESTRICTED, network_mode=NetworkMode.ALLOWLIST,
+    ).available
+    # Without Seatbelt the loopback cage is not expressible → fail closed (never a fake).
+    for caps in (_BWRAP, _BARE):
+        assert not NativeProvider(caps).probe(
+            tier=IsolationLevel.CONTAINER_RESTRICTED, network_mode=NetworkMode.ALLOWLIST,
+        ).available
 
 
 def test_native_bubblewrap_controls():
