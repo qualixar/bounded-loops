@@ -620,6 +620,9 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
             return 2
     node_prompts: dict[str, str] = {}
     if getattr(args, "inputs", None):
+        if Path(args.inputs).is_symlink():
+            _err("graph run: --inputs must not be a symlink")
+            return 2
         try:
             raw = json.loads(Path(args.inputs).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:

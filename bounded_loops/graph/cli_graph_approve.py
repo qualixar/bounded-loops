@@ -124,8 +124,13 @@ def _load_identity_and_facade(
     # itself uses this exact deferred-import technique for execute_graph_run/sandbox_demo.
     from bounded_loops.graph.cli_graph import _load_plan_from_run_dir
 
+    # `for_run_dir` already refused a symlinked run_dir and validated it as a genuine
+    # run, so resolving here is safe; load identity from the RESOLVED path (not the raw
+    # arg) so a `..`/relative path cannot make this second read diverge from the facade's
+    # already-validated view (dual-audit convergence MINOR — removes a redundant TOCTOU).
+    resolved = run_dir.resolve()
     try:
-        _plan, identity, _meta = _load_plan_from_run_dir(run_dir)
+        _plan, identity, _meta = _load_plan_from_run_dir(resolved)
     except (FileNotFoundError, ValueError, GraphValidationError) as exc:
         _err(f"graph approve: cannot reconstruct plan — {exc}")
         return None, None

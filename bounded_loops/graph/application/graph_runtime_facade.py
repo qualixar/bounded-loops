@@ -344,6 +344,19 @@ class LocalGraphRuntimeFacade:
     # above: existing callers' constructor calls are byte-for-byte unaffected.
     _literal_run_dir: Path | None = field(default=None, kw_only=True)
 
+    def __post_init__(self) -> None:
+        # `_literal_run_dir` is a FACTORY-ONLY field: `for_run_dir` sets it to a
+        # validated absolute, resolved, non-symlink run directory. A caller that sets
+        # it directly on the constructor would bypass those checks, so re-assert the
+        # invariant here as defense in depth (dual-audit convergence MINOR).
+        if self._literal_run_dir is not None and (
+            not self._literal_run_dir.is_absolute() or self._literal_run_dir.is_symlink()
+        ):
+            raise GraphIntegrityError(
+                "_literal_run_dir must be an absolute, non-symlink path set via "
+                "LocalGraphRuntimeFacade.for_run_dir()"
+            )
+
     # ── additive constructor: open ONE run directory literally ──────────────
 
     @classmethod

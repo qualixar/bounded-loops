@@ -387,3 +387,19 @@ def test_approve_help_documents_exit_code_3_as_paused(capsys) -> None:
     assert "3" in out
     assert "PAUSED" in out.upper()
     assert "not an error" in out.lower()
+
+
+def test_run_execute_refuses_a_symlinked_inputs_file(tmp_path: Path, capsys) -> None:
+    # M-d (dual-audit convergence MINOR): the --inputs symlink guard on `bl graph approve`
+    # must be mirrored on the `bl graph run --execute` path (parity; local FS hygiene).
+    manifest = _write_manifest(tmp_path, _APPROVAL_MANIFEST)
+    real_inputs = tmp_path / "real_inputs.json"
+    real_inputs.write_text(json.dumps({"checkpoint": "go"}), encoding="utf-8")
+    link = tmp_path / "inputs_link.json"
+    link.symlink_to(real_inputs)
+    rc = cmd_graph_run(_ns(
+        manifest=str(manifest), execute=True, out=str(tmp_path / "out"),
+        inputs=str(link), json=True,
+    ))
+    assert rc == 2
+    assert "symlink" in capsys.readouterr().err.lower()

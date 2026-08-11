@@ -73,6 +73,28 @@ def _build_flat_paused_run(tmp_path: Path, name: str = "flat-run") -> Path:
     return out
 
 
+def test_literal_run_dir_set_directly_bypassing_factory_is_refused(tmp_path: Path) -> None:
+    # `_literal_run_dir` is a FACTORY-ONLY field: `for_run_dir` sets it to a validated
+    # absolute, resolved, non-symlink run directory. A direct constructor call that sets
+    # it to a relative or symlinked path must fail closed (dual-audit convergence MINOR).
+    with pytest.raises(GraphIntegrityError):
+        LocalGraphRuntimeFacade(
+            runs_root=tmp_path,
+            arena_authorizer=SameTenantArenaAuthorizer(),
+            _literal_run_dir=Path("relative/not/absolute"),
+        )
+    real = tmp_path / "real_run"
+    real.mkdir()
+    link = tmp_path / "link_run"
+    link.symlink_to(real)
+    with pytest.raises(GraphIntegrityError):
+        LocalGraphRuntimeFacade(
+            runs_root=tmp_path,
+            arena_authorizer=SameTenantArenaAuthorizer(),
+            _literal_run_dir=link,  # absolute, but a symlink
+        )
+
+
 def _request() -> ArenaReadRequest:
     return ArenaReadRequest(
         subject_id=_ORG, organization_id=_ORG, project_id=_PROJECT, run_id=_RUN_ID,

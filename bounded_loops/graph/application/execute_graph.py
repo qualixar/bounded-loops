@@ -513,12 +513,19 @@ def execute_graph_run(
     try:
         projection = controller.run()
     except GraphIntegrityError as exc:
-        return _fail(
-            json_out,
-            f"this --out already holds a run; to continue a paused run use "
-            f"`bl graph approve --run {out_dir} --node <node_id> --decision "
-            f"approved|rejected` — {exc}",
-        )
+        # Distinguish the benign re-run case (a user who saw rc=3 PAUSED and just
+        # re-ran the same command, expecting a "resume") from a GENUINE integrity
+        # failure (a tampered/torn event log, a worker-integrity violation). Both
+        # fail closed (rc=2), but a tamper must NOT be misreported as "just re-run
+        # with approve" — preserve the forensic signal (dual-audit convergence MINOR).
+        if "non-empty graph stream" in str(exc):
+            return _fail(
+                json_out,
+                f"this --out already holds a run; to continue a paused run use "
+                f"`bl graph approve --run {out_dir} --node <node_id> --decision "
+                f"approved|rejected` — {exc}",
+            )
+        return _fail(json_out, f"run integrity failure — {exc}")
     _persist_run_dir(
         out_dir, plan, manifest_text, connections_raw, identity,
         mode=mode_label, audit_plan_json=audit_plan_json,
