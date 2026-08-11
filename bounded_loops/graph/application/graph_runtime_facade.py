@@ -1,0 +1,529 @@
+"""Real ``LocalGraphRuntimeFacade`` — status / resume / approve over a persisted run directory.
+
+This is the deployment-side facade that the MCP shim (``mcp_graph.register``) injects.
+It wires real arena reads, real connector workers, and the real ``approvals.approve`` use case
+through a narrow set of file-based local adapters.
+
+Security model
+--------------
+* Authorization is enforced by ``SameTenantArenaAuthorizer`` (subject == org, same-tenant only).
+* Prompts are NOT persisted — they are supplied fresh on every resume call.  If a connector node
+  needs a prompt and none is supplied, ``resume`` FAILS CLOSED with a clear message.
+* Approval authority flows from the ``approvals.approve`` use case. The authorizer + signature
+  verifier are INJECTABLE (``approval_authorizer`` / ``approval_signature_verifier``): a hosted
+  deployment supplies a real crypto verifier + a role-checking authorizer. The LOCAL defaults
+  authorize any same-tenant subject and accept a non-empty signature because the MCP session IS the
+  authentication boundary for local runs — they do NOT verify the actor's role (that is the hosted
+  authorizer's job).
+* The ``_FileApprovalCommandPort`` persists decisions atomically (``os.replace``) with an
+  exclusive file lock so concurrent resume+approve calls cannot corrupt the decision record.
+
+Run directory layout (``runs_root / org / project / run_id /``)
+----------------------------------------------------------------
+  plan.json                — canonical execution plan bytes (written by execute_graph_run)
+  manifest.yaml            — original authoring manifest
+  connections.json         — admitted connection records (JSON array)
+  run-meta.json            — execution metadata (plan_id, org, project, run_id, policy_digest)
+  controller-events.jsonl  — hash-chained event log
+  approvals.json           — (written here) durable approval decision records
+  artifacts/               — per-node artifact store
+"""
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+import re
+import ssl
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Mapping
+
+from bounded_loops.graph.adapters.connectors.admitted_connection_request import AdmittedConnectionRecord
+from bounded_loops.graph.adapters.connectors.local_cli_worker import CLI_PROFILES, CliProfile
+from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
+from bounded_loops.graph.application.approval_gate import RecordedApprovalResolver
+from bounded_loops.graph.application.approvals import (
+    ApprovalAuthorizationPort,
+    ApprovalCommand,
+    ApprovalCommit,
+    ApprovalSignatureVerifierPort,
+    ApprovalTarget,
+    AuthenticatedApprovalContext,
+    approve as _approve_use_case,
+    request_digest as _request_digest,
+)
+from bounded_loops.graph.application.arena_projection import (
+    ArenaAuthorizationPort,
+    ArenaProjection,
+    ArenaReadRequest,
+    latest_node_states,
+    read_arena_projection,
+)
+from bounded_loops.graph.application.egress_broker import EgressBroker
+from bounded_loops.graph.application.execute_graph import (
+    build_execution_controller,
+)
+from bounded_loops.graph.application.run_graph import is_egress_node
+from bounded_loops.graph.cli_graph import _load_plan_from_run_dir
+from bounded_loops.graph.domain.approvals import ApprovalDecision, ApprovalRequest
+from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
+from bounded_loops.graph.domain.events import GraphRunIdentity, StoredGraphEvent
+from bounded_loops.graph.domain.plan import ExecutionPlan
+
+_ALL_EXECUTOR_TRANSPORTS = frozenset({"local_cli", "https"})
+
+# A run-dir path segment: no "/", no "..", no absolute — reject a traversal before it is joined.
+_SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _safe_segment(value: str, name: str) -> str:
+    if not isinstance(value, str) or value in (".", "..") or _SAFE_SEGMENT.fullmatch(value) is None:
+        raise GraphIntegrityError(f"runtime facade: unsafe {name!r} path segment")
+    return value
+
+
+# ── public authorizer ─────────────────────────────────────────────────────────
+
+
+class SameTenantArenaAuthorizer:
+    """Allow reads only when the subject IS the organization (local same-tenant runs).
+
+    A subject that differs from the organization is rejected; cross-tenant access is
+    further blocked by ``read_arena_projection``'s tenant-match check (which compares
+    the request's org/project/run against the event-log identity BEFORE calling the
+    authorizer).
+    """
+
+    def authorize(self, request: ArenaReadRequest) -> bool:
+        return request.subject_id == request.organization_id
+
+
+# ── private arena receipt verifier ────────────────────────────────────────────
+
+
+class _NoopArenaReceiptVerifier:
+    """No-op verifier for locally produced receipts (hash-chain integrity is enough)."""
+
+    def verify(self, identity: GraphRunIdentity, receipts: tuple[StoredGraphEvent, ...]) -> None:
+        return None
+
+
+# ── private approval port adapters ────────────────────────────────────────────
+
+
+class _SameTenantApprovalAuthorizer:
+    """Permit approval only when the authenticated subject is within the same tenant."""
+
+    def authorize(self, request: ApprovalRequest, context: AuthenticatedApprovalContext) -> bool:
+        return (
+            bool(context.subject_id)
+            and context.organization_id == request.organization_id
+            and context.project_id == request.project_id
+        )
+
+
+class _LocalApprovalSignatureVerifier:
+    """Accept any non-empty signature for local MCP-authenticated runs.
+
+    The MCP session IS the authentication boundary; external cryptographic signatures are
+    not required for same-host runs where the subject is trusted by the MCP transport.
+    """
+
+    def verify(self, request: ApprovalRequest, decision: ApprovalDecision) -> bool:
+        return isinstance(decision.signature, str) and bool(decision.signature.strip())
+
+
+@dataclass
+class _FileApprovalCommandPort:
+    """File-backed durable approval persistence.
+
+    Persists decisions to ``run_dir / "approvals.json"`` with an exclusive ``fcntl.flock``
+    and ``os.replace`` atomic write.  Idempotency is enforced: re-submitting the same
+    ``idempotency_key`` returns the original commit without mutating the record.
+    """
+
+    _run_dir: Path
+
+    def commit(self, command: ApprovalCommand) -> ApprovalCommit:
+        approval_path = self._run_dir / "approvals.json"
+        lock_path = self._run_dir / "approvals.lock"
+        lock_path.touch(exist_ok=True)
+
+        with lock_path.open("r+") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                record = _load_approvals(approval_path)
+                # Idempotency: same key → same commit
+                for stored in record.get("commits", []):
+                    if stored.get("idempotency_key") == command.idempotency_key:
+                        return ApprovalCommit(
+                            approval_id=stored["approval_id"],
+                            new_resource_version=stored["new_resource_version"],
+                            idempotency_key=stored["idempotency_key"],
+                        )
+                # Resource-version guard (already validated by use case, but defensive)
+                current_version = record.get("resource_version", 1)
+                if current_version != command.expected_resource_version:
+                    raise GraphValidationError(
+                        "approval_stale",
+                        "/expected_resource_version",
+                        f"approval version mismatch: expected {command.expected_resource_version}, "
+                        f"got {current_version}",
+                    )
+                new_version = current_version + 1
+                commit = ApprovalCommit(
+                    approval_id=command.request.approval_id,
+                    new_resource_version=new_version,
+                    idempotency_key=command.idempotency_key,
+                )
+                commits = list(record.get("commits", []))
+                commits.append({
+                    "approval_id": commit.approval_id,
+                    "new_resource_version": commit.new_resource_version,
+                    "idempotency_key": commit.idempotency_key,
+                    "node_id": command.request.node_id,
+                    "actor_id": command.context.subject_id,
+                    "decided_at": command.decision.decided_at,
+                })
+                new_record = {"resource_version": new_version, "commits": commits}
+                _atomic_write(approval_path, json.dumps(new_record, indent=2).encode("utf-8"))
+                return commit
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+
+
+def _load_approvals(path: Path) -> dict:
+    # A MISSING ledger is a legitimate fresh start; a CORRUPT/torn ledger must FAIL CLOSED — never
+    # silently reset to version 1 (that would wipe the idempotency/version guard and let a decision
+    # be re-committed). Dual-audit MAJOR.
+    if not path.is_file():
+        return {"resource_version": 1, "commits": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise GraphIntegrityError(f"approval ledger is unreadable or corrupt: {path}") from exc
+    if not isinstance(data, dict):
+        raise GraphIntegrityError("approval ledger is malformed")
+    return data
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(data)
+    os.replace(str(tmp), str(path))
+
+
+# ── facade ────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class LocalGraphRuntimeFacade:
+    """Concrete ``GraphRuntimeFacade`` for local run directories.
+
+    Injects all real ports; the MCP shim sees only the three protocol methods.
+
+    Parameters
+    ----------
+    runs_root:
+        Root directory under which run dirs live as ``org / project / run_id /``.
+    arena_authorizer:
+        Authorization port for ``read_arena_projection``.  Pass ``SameTenantArenaAuthorizer``
+        for same-tenant local access.
+    cli_profiles:
+        Mapping of profile name → ``CliProfile`` forwarded to ``build_execution_controller``.
+    environ:
+        Environment overrides forwarded to workers.
+    node_prompts:
+        Re-supplied prompts for connector nodes that need to be re-driven on resume.
+        NOT persisted — callers must re-supply on every resume / approve call.
+    admitted_connections:
+        BYOK/https admitted-connection records.  Pass ``None`` (default) for local-CLI-only runs.
+    byok_egress_broker / byok_credential_resolver / byok_tls_context:
+        Injectable BYOK infrastructure passed through to ``build_execution_controller``.
+    """
+
+    runs_root: Path
+    arena_authorizer: ArenaAuthorizationPort
+    cli_profiles: Mapping[str, CliProfile] = field(default_factory=lambda: dict(CLI_PROFILES))
+    environ: Mapping[str, str] | None = None
+    node_prompts: Mapping[str, str] = field(default_factory=dict)
+    admitted_connections: Mapping[str, AdmittedConnectionRecord] | None = None
+    byok_egress_broker: EgressBroker | None = None
+    byok_credential_resolver: object = None
+    byok_tls_context: ssl.SSLContext | None = None
+    # Approval authority is INJECTABLE so a hosted deployment supplies a real crypto signature
+    # verifier + a role-checking authorizer; the local defaults authorize any same-tenant subject
+    # and accept the MCP session as the authentication boundary (documented local posture).
+    approval_authorizer: ApprovalAuthorizationPort | None = None
+    approval_signature_verifier: ApprovalSignatureVerifierPort | None = None
+
+    # ── GraphRuntimeFacade protocol ──────────────────────────────────────────
+
+    def status(self, request: ArenaReadRequest) -> ArenaProjection:
+        """Read the current arena projection for an existing run (side-effect-free)."""
+        plan, identity, _meta = self._load(request)
+        run_dir = self._run_dir(request)
+        event_log = GraphEventLog(run_dir / "controller-events.jsonl", identity)
+        return read_arena_projection(
+            plan, event_log, request,
+            self.arena_authorizer, _NoopArenaReceiptVerifier(),
+        )
+
+    def resume(self, request: ArenaReadRequest) -> ArenaProjection:
+        """Resume an interrupted run, returning the post-resume projection.
+
+        FAILS CLOSED if any connector node is non-terminal (not SUCCEEDED/FAILED) and its
+        node_id is absent from ``node_prompts`` — prompts are not persisted, so re-supply
+        them on every resume call.
+
+        Resuming an already-terminal run is idempotent: the projection is returned unchanged.
+        """
+        plan, identity, _meta = self._load(request)
+        self._authorize_mutation(request, identity)
+        run_dir = self._run_dir(request)
+        event_log = GraphEventLog(run_dir / "controller-events.jsonl", identity)
+        self._check_connector_prompts(plan, event_log)
+        try:
+            controller, _store, event_log = build_execution_controller(
+                plan=plan,
+                identity=identity,
+                out_dir=run_dir,
+                node_prompts=self.node_prompts,
+                admitted_connections=self.admitted_connections,
+                cli_profiles=self.cli_profiles,
+                environ=self.environ,
+                byok_egress_broker=self.byok_egress_broker,
+                byok_credential_resolver=self.byok_credential_resolver,
+                byok_tls_context=self.byok_tls_context,
+            )
+        except GraphValidationError as exc:
+            raise GraphIntegrityError(f"resume: controller wiring failed — {exc.message}") from exc
+        controller.resume()
+        return read_arena_projection(
+            plan, event_log, request,
+            self.arena_authorizer, _NoopArenaReceiptVerifier(),
+        )
+
+    def approve(
+        self,
+        request: ArenaReadRequest,
+        *,
+        node_id: str,
+        decision: str,
+    ) -> ArenaProjection:
+        """Record a human decision for an approval node and resume the run.
+
+        For ``decision == "approved"``, the full ``approvals.approve`` use case is run
+        (validates authority, signature, effects, nonce) and the decision is durably persisted
+        BEFORE the run continues — fail-closed at every step.
+
+        For ``decision == "rejected"``, the rejection is recorded directly and the run is
+        failed closed (the ``approvals`` use case only grants approvals today).
+        """
+        plan, identity, _meta = self._load(request)
+        self._authorize_mutation(request, identity)
+        run_dir = self._run_dir(request)
+        event_log = GraphEventLog(run_dir / "controller-events.jsonl", identity)
+        self._check_connector_prompts(plan, event_log)
+
+        resolver = RecordedApprovalResolver()
+
+        if decision == "approved":
+            self._record_approval(
+                request=request, plan=plan, identity=identity,
+                event_log=event_log, node_id=node_id, resolver=resolver, run_dir=run_dir,
+            )
+        else:
+            # "rejected" (or any future extension) → record rejection; run will fail closed.
+            resolver.record_rejection(identity=identity, node_id=node_id, attempt=1)
+
+        try:
+            controller, _store, event_log = build_execution_controller(
+                plan=plan,
+                identity=identity,
+                out_dir=run_dir,
+                node_prompts=self.node_prompts,
+                admitted_connections=self.admitted_connections,
+                cli_profiles=self.cli_profiles,
+                environ=self.environ,
+                byok_egress_broker=self.byok_egress_broker,
+                byok_credential_resolver=self.byok_credential_resolver,
+                byok_tls_context=self.byok_tls_context,
+                approval_resolver=resolver,
+            )
+        except GraphValidationError as exc:
+            raise GraphIntegrityError(f"approve: controller wiring failed — {exc.message}") from exc
+        controller.resume()
+        return read_arena_projection(
+            plan, event_log, request,
+            self.arena_authorizer, _NoopArenaReceiptVerifier(),
+        )
+
+    # ── private helpers ──────────────────────────────────────────────────────
+
+    def _run_dir(self, request: ArenaReadRequest) -> Path:
+        # Validate every segment (no "/", no "..", no absolute) AND assert the resolved path stays
+        # inside runs_root — a crafted org/project/run_id must never escape the run root (dual-audit
+        # BLOCKER: a forged run-meta OUTSIDE runs_root would otherwise pass the later tenant check).
+        org = _safe_segment(request.organization_id, "organization_id")
+        project = _safe_segment(request.project_id, "project_id")
+        run_id = _safe_segment(request.run_id, "run_id")
+        candidate = (self.runs_root / org / project / run_id).resolve()
+        root = self.runs_root.resolve()
+        if candidate != root and root not in candidate.parents:
+            raise GraphIntegrityError("runtime facade: run directory escapes runs_root")
+        return candidate
+
+    def _load(
+        self, request: ArenaReadRequest,
+    ) -> tuple[ExecutionPlan, GraphRunIdentity, dict]:
+        """Load plan + identity from the persisted run dir; raise ``GraphIntegrityError`` on any failure."""
+        run_dir = self._run_dir(request)
+        try:
+            return _load_plan_from_run_dir(run_dir)
+        except FileNotFoundError as exc:
+            raise GraphIntegrityError(
+                f"run not found: {request.organization_id}/{request.project_id}/{request.run_id}"
+            ) from exc
+        except (ValueError, OSError) as exc:
+            raise GraphIntegrityError(f"run directory corrupted: {exc}") from exc
+
+    def _authorize_mutation(self, request: ArenaReadRequest, identity: GraphRunIdentity) -> None:
+        """Authorize BEFORE any mutation. resume()/approve() re-drive or record on the run, but
+        read_arena_projection only authorizes at the END — too late — so mirror its tenant-match +
+        authorizer check here, up front, and fail closed so an unauthorized subject can never
+        mutate another tenant's run and merely be denied the read afterwards."""
+        if (
+            request.organization_id != identity.organization_id
+            or request.project_id != identity.project_id
+            or request.run_id != identity.run_id
+        ):
+            raise GraphIntegrityError("runtime facade: request tenant does not match the run")
+        if not self.arena_authorizer.authorize(request):
+            raise GraphIntegrityError("runtime facade: subject is not authorized for this run")
+
+    def _check_connector_prompts(
+        self, plan: ExecutionPlan, event_log: GraphEventLog,
+    ) -> None:
+        """Fail closed if a connector node is non-terminal and has no supplied prompt."""
+        receipts = event_log.replay()
+        current_states = latest_node_states(plan, receipts)
+        for node in plan.nodes:
+            if not is_egress_node(plan, node, _ALL_EXECUTOR_TRANSPORTS):
+                continue
+            node_state = str(current_states[node.node_id]["state"])
+            if node_state in ("SUCCEEDED", "FAILED"):
+                continue
+            if node.node_id not in self.node_prompts:
+                raise GraphIntegrityError(
+                    f"cannot resume: connector node {node.node_id!r} is {node_state} "
+                    "but no prompt was re-supplied; add it to node_prompts and retry"
+                )
+
+    def _record_approval(
+        self,
+        *,
+        request: ArenaReadRequest,
+        plan: ExecutionPlan,
+        identity: GraphRunIdentity,
+        event_log: GraphEventLog,
+        node_id: str,
+        resolver: RecordedApprovalResolver,
+        run_dir: Path,
+    ) -> None:
+        """Run the full ``approvals.approve`` use case and record the commit in the resolver."""
+        node = next((n for n in plan.nodes if n.node_id == node_id), None)
+        if node is None:
+            raise GraphIntegrityError(f"approval node {node_id!r} not found in plan")
+
+        required_role = str(node.approval_policy.get("required_role") or "reviewer")
+        snapshot = event_log.verified_snapshot()
+        evidence_digest = "sha256:" + snapshot.projection.head_hash
+
+        now = datetime.now(timezone.utc)
+        expires_at = (now + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        decided_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        nonce = hashlib.sha256(
+            f"{identity.run_id}:{node_id}:nonce".encode("utf-8")
+        ).hexdigest()
+        approval_id = hashlib.sha256(
+            f"{identity.organization_id}:{identity.project_id}:{identity.run_id}:{node_id}".encode("utf-8")
+        ).hexdigest()
+        idempotency_key = approval_id
+
+        auth_ctx_raw = json.dumps(
+            {
+                "organization_id": request.organization_id,
+                "project_id": request.project_id,
+                "subject_id": request.subject_id,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        auth_context_digest = "sha256:" + hashlib.sha256(auth_ctx_raw).hexdigest()
+
+        approval_request = ApprovalRequest(
+            approval_id=approval_id,
+            organization_id=identity.organization_id,
+            project_id=identity.project_id,
+            graph_digest=identity.graph_digest,
+            plan_digest=identity.plan_digest,
+            node_id=node_id,
+            attempt=1,
+            evidence_digest=evidence_digest,
+            requested_effects=frozenset(node.required_effects),
+            required_role=required_role,
+            nonce=nonce,
+            expires_at=expires_at,
+        )
+
+        req_digest = _request_digest(approval_request)
+        approval_decision = ApprovalDecision(
+            request_digest=req_digest,
+            actor_id=request.subject_id,
+            actor_role=required_role,
+            decision="approve",
+            auth_context_digest=auth_context_digest,
+            decided_at=decided_at,
+            signature="local-attestation",
+        )
+
+        context = AuthenticatedApprovalContext(
+            subject_id=request.subject_id,
+            organization_id=request.organization_id,
+            project_id=request.project_id,
+            auth_context_digest=auth_context_digest,
+        )
+
+        target = ApprovalTarget(
+            organization_id=identity.organization_id,
+            project_id=identity.project_id,
+            graph_digest=identity.graph_digest,
+            plan_digest=identity.plan_digest,
+            node_id=node_id,
+            attempt=1,
+            evidence_digest=evidence_digest,
+            requested_effects=frozenset(node.required_effects),
+            resource_version=1,
+        )
+
+        command_port = _FileApprovalCommandPort(run_dir)
+        commit = _approve_use_case(
+            approval_request,
+            target,
+            approval_decision,
+            context,
+            self.approval_authorizer or _SameTenantApprovalAuthorizer(),
+            self.approval_signature_verifier or _LocalApprovalSignatureVerifier(),
+            command_port,
+            expected_resource_version=1,
+            idempotency_key=idempotency_key,
+            now=now,
+        )
+        resolver.record_committed_approval(
+            identity=identity, request=approval_request, commit=commit,
+        )

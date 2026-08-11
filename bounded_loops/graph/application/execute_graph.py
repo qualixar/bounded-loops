@@ -20,6 +20,10 @@ Preflight fails closed if an ``https`` node has no matching admitted record.
 
 The per-node prompt is RUN-TIME input (``node_id -> prompt``), never baked into the portable
 graph.
+
+``build_execution_controller`` is the shared controller-assembly helper extracted for reuse by
+``LocalGraphRuntimeFacade``.  ``execute_graph_run`` calls it after manifest compilation and
+preflight; the facade calls it on resume/approve over an existing run dir.
 """
 
 from __future__ import annotations
@@ -72,6 +76,7 @@ from bounded_loops.graph.application.execution_policy import (
 )
 from bounded_loops.graph.domain.authoring import AuthoringGraphSpec, IsolationLevel, NodeKind
 from bounded_loops.graph.application.run_graph import (
+    ApprovalResolverPort,
     GraphRunController,
     WorkerResult,
     is_egress_node,
@@ -273,6 +278,123 @@ def _preflight(
     return None
 
 
+def build_execution_controller(
+    *,
+    plan: ExecutionPlan,
+    identity: GraphRunIdentity,
+    out_dir: Path,
+    node_prompts: Mapping[str, str],
+    admitted_connections: Mapping[str, AdmittedConnectionRecord] | None = None,
+    cli_profiles: Mapping[str, CliProfile] = CLI_PROFILES,
+    environ: Mapping[str, str] | None = None,
+    byok_egress_broker: EgressBroker | None = None,
+    byok_credential_resolver: object = None,
+    byok_tls_context: ssl.SSLContext | None = None,
+    approval_resolver: ApprovalResolverPort | None = None,
+) -> tuple[GraphRunController, LocalArtifactStore, GraphEventLog]:
+    """Shared controller-assembly helper for ``execute_graph_run`` and ``LocalGraphRuntimeFacade``.
+
+    Accepts an already-compiled plan and a known identity; builds the full wiring
+    (platform-caps enforcement check, artifact store, event log, workers, policy) and returns
+    a ready-to-use ``GraphRunController`` alongside the store and event log it owns.
+
+    Raises ``GraphValidationError`` if the platform cannot enforce the required isolation for any
+    non-egress node.  The caller decides how to surface this (int exit code vs. exception).
+
+    ``out_dir`` must already exist (call ``mkdir`` before ``build_execution_controller``).
+    ``approval_resolver`` is wired into the controller so an approval-node graph can continue
+    past human gates on resume; pass ``None`` for graphs with no approval nodes.
+    """
+    admitted = admitted_connections or {}
+
+    # ── platform-capability check ────────────────────────────────────────────
+    # Egress/connector nodes are routed to ConnectorNodeWorker — no subprocess is
+    # sandboxed — so the platform capability check does not apply to them.
+    caps = probe_platform()
+    egress_node_ids = frozenset(
+        n.node_id for n in plan.nodes
+        if is_egress_node(plan, n, _ALL_EXECUTOR_TRANSPORTS)
+    )
+    for node in plan.nodes:
+        if node.node_id in egress_node_ids:
+            continue
+        ok, reason = caps.can_enforce(node.isolation, _nmf_for_node(node))
+        if not ok:
+            raise GraphValidationError(
+                "execution_enforcement",
+                f"/nodes/{node.node_id}",
+                f"cannot enforce {node.isolation.value} isolation: {reason}",
+            )
+    enforcer = ExecutionEnforcer(caps)
+
+    # ── stores ───────────────────────────────────────────────────────────────
+    organization_id = identity.organization_id
+    project_id = identity.project_id
+    run_id = identity.run_id
+
+    store = LocalArtifactStore(out_dir / "artifacts")
+    event_log = GraphEventLog(out_dir / "controller-events.jsonl", identity)
+
+    # ── transport detection + worker assembly ────────────────────────────────
+    has_local_cli = any(is_egress_node(plan, n, _LOCAL_CLI_TRANSPORTS) for n in plan.nodes)
+    has_https = any(is_egress_node(plan, n, _HTTPS_TRANSPORTS) for n in plan.nodes)
+    egress_transports = _ALL_EXECUTOR_TRANSPORTS if (has_local_cli and has_https) else (
+        _HTTPS_TRANSPORTS if has_https else _LOCAL_CLI_TRANSPORTS
+    )
+
+    local_cli_worker = LocalCliConnectorWorker(
+        identity=identity,
+        artifact_store=store,
+        resolver=NodeCliResolver(node_prompts, profiles=cli_profiles),
+        workspace_root=out_dir / "work",
+        organization_id=organization_id,
+        project_id=project_id,
+        environ=environ,
+    )
+
+    if has_https:
+        https_worker = _build_https_worker(
+            plan=plan,
+            store=store,
+            run_id=run_id,
+            node_prompts=node_prompts,
+            admitted=admitted,
+            organization_id=organization_id,
+            project_id=project_id,
+            environ=environ,
+            egress_broker=byok_egress_broker,
+            credential_resolver=byok_credential_resolver,
+            tls_context=byok_tls_context,
+        )
+        if has_local_cli:
+            connector_worker: object = _ByokDispatchWorker(
+                local_cli_worker=local_cli_worker,
+                https_worker=https_worker,
+                plan=plan,
+            )
+        else:
+            connector_worker = https_worker
+    else:
+        connector_worker = local_cli_worker
+
+    # ── controller ───────────────────────────────────────────────────────────
+    controller = GraphRunController(
+        plan=plan,
+        event_log=event_log,
+        worker=_UnsupportedNodeWorker(),
+        gate=StructuralAcceptanceGate(store, organization_id=organization_id, project_id=project_id),
+        artifact_verifier=LocalArtifactVerifier(store),
+        execution_policy=_build_policy(plan, egress_transports, admitted),
+        execution_enforcer=enforcer,
+        timestamp=_now_iso,
+        actor="graph-controller",
+        connector_worker=connector_worker,  # type: ignore[arg-type]
+        egress_transports=egress_transports,
+        approval_resolver=approval_resolver,
+    )
+    return controller, store, event_log
+
+
 def execute_graph_run(
     *,
     manifest_text: str,
@@ -323,33 +445,6 @@ def execute_graph_run(
     if problem is not None:
         return _fail(json_out, problem)
 
-    caps = probe_platform()
-    try:
-        # Egress/connector nodes are routed to ConnectorNodeWorker — no subprocess is
-        # sandboxed — so the platform capability check (which gates subprocess isolation)
-        # does not apply to them.  run_graph.py applies the same single-source-of-truth
-        # egress classification at runtime (skips enforcer.enforce for egress nodes);
-        # we mirror it here at build time so the enforcer never incorrectly refuses an
-        # https connector node that declares external_write but runs via the BYOK HTTP
-        # path instead of a sandboxed subprocess.
-        egress_node_ids = frozenset(
-            n.node_id for n in plan.nodes
-            if is_egress_node(plan, n, _ALL_EXECUTOR_TRANSPORTS)
-        )
-        for node in plan.nodes:
-            if node.node_id in egress_node_ids:
-                continue
-            ok, reason = caps.can_enforce(node.isolation, _nmf_for_node(node))
-            if not ok:
-                raise GraphValidationError(
-                    "execution_enforcement",
-                    f"/nodes/{node.node_id}",
-                    f"cannot enforce {node.isolation.value} isolation: {reason}",
-                )
-        enforcer = ExecutionEnforcer(caps)
-    except GraphValidationError as exc:
-        return _fail(json_out, f"execution enforcement refused before run: {exc.message}")
-
     identity = GraphRunIdentity(
         organization_id=organization_id,
         project_id=project_id,
@@ -358,68 +453,30 @@ def execute_graph_run(
         plan_digest=plan.plan_id,
         policy_digest=plan.policy_digest,
     )
-    store = LocalArtifactStore(out_dir / "artifacts")
-    event_log = GraphEventLog(out_dir / "controller-events.jsonl", identity)
 
-    # Determine active transport sets.
+    # Mode label is deterministic from the plan — compute before building the controller.
     has_local_cli = any(is_egress_node(plan, n, _LOCAL_CLI_TRANSPORTS) for n in plan.nodes)
     has_https = any(is_egress_node(plan, n, _HTTPS_TRANSPORTS) for n in plan.nodes)
-    egress_transports = _ALL_EXECUTOR_TRANSPORTS if (has_local_cli and has_https) else (
-        _HTTPS_TRANSPORTS if has_https else _LOCAL_CLI_TRANSPORTS
-    )
-
-    local_cli_worker = LocalCliConnectorWorker(
-        identity=identity,
-        artifact_store=store,
-        resolver=NodeCliResolver(node_prompts, profiles=cli_profiles),
-        workspace_root=out_dir / "work",
-        organization_id=organization_id,
-        project_id=project_id,
-        environ=environ,
-    )
-
-    if has_https:
-        https_worker = _build_https_worker(
-            plan=plan,
-            store=store,
-            run_id=run_id,
-            node_prompts=node_prompts,
-            admitted=admitted,
-            organization_id=organization_id,
-            project_id=project_id,
-            environ=environ,
-            egress_broker=byok_egress_broker,
-            credential_resolver=byok_credential_resolver,
-            tls_context=byok_tls_context,
-        )
-        if has_local_cli:
-            connector_worker: object = _ByokDispatchWorker(
-                local_cli_worker=local_cli_worker,
-                https_worker=https_worker,
-                plan=plan,
-            )
-        else:
-            connector_worker = https_worker
-    else:
-        connector_worker = local_cli_worker
-
     mode_label = "local_cli+https" if (has_local_cli and has_https) else (
         "https" if has_https else "local_cli"
     )
 
-    controller = GraphRunController(
-        plan=plan,
-        event_log=event_log,
-        worker=_UnsupportedNodeWorker(),
-        gate=StructuralAcceptanceGate(store, organization_id=organization_id, project_id=project_id),
-        artifact_verifier=LocalArtifactVerifier(store),
-        execution_policy=_build_policy(plan, egress_transports, admitted),
-        execution_enforcer=enforcer,
-        timestamp=_now_iso,
-        actor="graph-controller",
-        connector_worker=connector_worker,  # type: ignore[arg-type]
-        egress_transports=egress_transports,
-    )
+    try:
+        controller, store, event_log = build_execution_controller(
+            plan=plan,
+            identity=identity,
+            out_dir=out_dir,
+            node_prompts=node_prompts,
+            admitted_connections=admitted,
+            cli_profiles=cli_profiles,
+            environ=environ,
+            byok_egress_broker=byok_egress_broker,
+            byok_credential_resolver=byok_credential_resolver,
+            byok_tls_context=byok_tls_context,
+        )
+    except GraphValidationError as exc:
+        return _fail(json_out, f"execution enforcement refused before run: {exc.message}")
+
     projection = controller.run()
     _persist_run_dir(out_dir, plan, manifest_text, connections_raw, identity, mode=mode_label)
     arena = read_arena_projection(
