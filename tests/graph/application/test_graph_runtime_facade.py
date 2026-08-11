@@ -607,3 +607,74 @@ def test_load_approvals_rejects_non_list_commits(tmp_path):
     (run_dir / "approvals.json").write_text('{"resource_version": 1, "commits": "oops"}', encoding="utf-8")
     with pytest.raises(GraphIntegrityError, match="must be a list"):
         _load_approvals(run_dir / "approvals.json")
+
+
+# ── convergence re-audit findings (N1 port-level mirror guard, N2 node-level conflict) ──
+
+def test_approve_after_durable_rejection_is_blocked(tmp_path):
+    """A node already durably rejected cannot then be approved via the facade (re-audit N1, serial)."""
+    runs_root = _build_approval_run(tmp_path)
+    run_dir = _approval_run_dir(tmp_path)
+    _seed_approvals_json(run_dir, {
+        "resource_version": 1, "commits": [],
+        "rejections": [{"node_id": "checkpoint", "attempt": 1,
+                        "approval_id": _deterministic_approval_id("checkpoint"),
+                        "actor_id": _ORG, "decided_at": "2026-08-11T00:00:00Z"}],
+    })
+    with pytest.raises(GraphIntegrityError, match="durable rejection already exists"):
+        _bare_facade(runs_root).approve(_request(), node_id="checkpoint", decision="approved")
+
+
+def test_commit_port_refuses_approval_when_rejection_exists(tmp_path):
+    """PORT-level mirror guard (re-audit N1): `_FileApprovalCommandPort.commit` refuses to approve a
+    node that already carries a durable rejection, even under concurrency (the facade pre-check is
+    serial-only). This holds the 'never both' invariant at the durable-write boundary itself."""
+    from bounded_loops.graph.application.graph_runtime_facade import _FileApprovalCommandPort
+    from bounded_loops.graph.application.approvals import ApprovalCommand, AuthenticatedApprovalContext
+    from bounded_loops.graph.domain.approvals import ApprovalRequest, ApprovalDecision
+
+    _build_approval_run(tmp_path)
+    run_dir = _approval_run_dir(tmp_path)
+    aid = _deterministic_approval_id("checkpoint")
+    _seed_approvals_json(run_dir, {
+        "resource_version": 1, "commits": [],
+        "rejections": [{"node_id": "checkpoint", "attempt": 1, "approval_id": aid,
+                        "actor_id": _ORG, "decided_at": "2026-08-11T00:00:00Z"}],
+    })
+    # The port's rejection guard fires BEFORE any digest/version check, so a placeholder request is
+    # sufficient to prove it (no need to satisfy the full approve-use-case request validation).
+    req = ApprovalRequest(
+        approval_id=aid, organization_id=_ORG, project_id=_PROJECT, graph_digest="sha256:" + "a" * 64,
+        plan_digest="sha256:" + "b" * 64, node_id="checkpoint", attempt=1,
+        evidence_digest="sha256:" + "0" * 64, requested_effects=frozenset(),
+        required_role="reviewer", nonce="nonce", expires_at="2027-01-01T00:00:00Z",
+    )
+    dec = ApprovalDecision(
+        request_digest="sha256:" + "d" * 64, actor_id=_ORG, actor_role="reviewer", decision="approve",
+        auth_context_digest="sha256:" + "c" * 64, decided_at="2026-08-11T00:00:00Z",
+        signature="local-attestation",
+    )
+    ctx = AuthenticatedApprovalContext(
+        subject_id=_ORG, organization_id=_ORG, project_id=_PROJECT,
+        auth_context_digest="sha256:" + "c" * 64,
+    )
+    cmd = ApprovalCommand(request=req, decision=dec, context=ctx, expected_resource_version=1, idempotency_key=aid)
+    with pytest.raises(GraphIntegrityError, match="durable rejection already exists"):
+        _FileApprovalCommandPort(run_dir).commit(cmd)
+
+
+def test_resume_detects_conflict_across_attempts(tmp_path):
+    """A ledger with an approval and a rejection for the SAME node under DIFFERENT attempts must still
+    fail closed as a conflict — the check is node-level, not (node, attempt) (re-audit N2)."""
+    runs_root = _build_approval_run(tmp_path)
+    run_dir = _approval_run_dir(tmp_path)
+    aid = _deterministic_approval_id("checkpoint")
+    _seed_approvals_json(run_dir, {
+        "resource_version": 2,
+        "commits": [{"approval_id": aid, "new_resource_version": 2, "idempotency_key": aid,
+                     "node_id": "checkpoint", "actor_id": _ORG, "decided_at": "2026-08-11T00:00:00Z"}],
+        "rejections": [{"node_id": "checkpoint", "attempt": 2, "approval_id": aid,
+                        "actor_id": _ORG, "decided_at": "2026-08-11T00:00:00Z"}],
+    })
+    with pytest.raises(GraphIntegrityError, match="conflicting"):
+        _bare_facade(runs_root).resume(_request())

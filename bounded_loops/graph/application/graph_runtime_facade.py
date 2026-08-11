@@ -158,6 +158,14 @@ class _FileApprovalCommandPort:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             try:
                 record = _load_approvals(approval_path)
+                # Fail closed on the MIRROR conflict: never approve a node that already carries a durable
+                # rejection (commit_rejection enforces the reverse). This holds the "never both" invariant
+                # at the PORT level even under concurrency — not only via the facade's serial pre-check
+                # (re-audit N1: a concurrent approve racing a rejection would otherwise slip through).
+                if any(r.get("node_id") == command.request.node_id for r in record.get("rejections", [])):
+                    raise GraphIntegrityError(
+                        f"cannot approve node {command.request.node_id!r}: a durable rejection already exists for it"
+                    )
                 # Idempotency: same key → same commit
                 for stored in record.get("commits", []):
                     if stored.get("idempotency_key") == command.idempotency_key:
@@ -684,9 +692,13 @@ class LocalGraphRuntimeFacade:
             resolver.record_rejection(identity=identity, node_id=node_id, attempt=attempt)
             rejected.add((node_id, attempt))
 
-        conflict = approved & rejected
-        if conflict:
-            raise GraphIntegrityError(f"conflicting durable approve+reject decisions for {sorted(conflict)!r}")
+        # Node-level conflict: a node must never carry BOTH decisions, regardless of attempt — a
+        # tamper that recorded them under different attempts must still fail closed (re-audit N2).
+        conflict_nodes = {node_id for node_id, _ in approved} & {node_id for node_id, _ in rejected}
+        if conflict_nodes:
+            raise GraphIntegrityError(
+                f"conflicting durable approve+reject decisions for nodes {sorted(conflict_nodes)!r}"
+            )
         return resolver
 
     @staticmethod
