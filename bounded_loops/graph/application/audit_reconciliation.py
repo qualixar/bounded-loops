@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import NewType
 
 from bounded_loops.graph.domain.audits import (
+    VALID_SEVERITIES,
     AuditAssignment,
     AuditCell,
     AuditPlan,
@@ -34,7 +35,7 @@ from bounded_loops.graph.domain.errors import GraphValidationError
 ValidatedRepairIds = NewType("ValidatedRepairIds", frozenset[str])
 
 _SEVERITY_RANK = {"none": 0, "S3": 1, "S2": 2, "S1": 3, "S0": 4}
-_FINDING_SEVERITIES = frozenset({"S0", "S1", "S2", "S3"})
+_FINDING_SEVERITIES = VALID_SEVERITIES  # single source of truth lives in the domain (C-079)
 _BLOCKING_SEVERITIES = frozenset({"S0", "S1"})
 _RESOLVED = "resolved"
 

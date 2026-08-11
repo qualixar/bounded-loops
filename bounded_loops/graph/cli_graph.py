@@ -633,6 +633,16 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
         except _GVE as exc:
             _err(f"graph run: invalid --admitted record — [{exc.code}] {exc.pointer}: {exc.message}")
             return 2
+    # Optional audit plan — read text from file, pass verbatim to execute_graph_run
+    # which persists it as audit-plan.json (read-side only; does not affect the run).
+    audit_plan_json_text: str | None = None
+    if getattr(args, "audit_plan", None):
+        try:
+            audit_plan_json_text = Path(args.audit_plan).read_text(encoding="utf-8")
+        except OSError as exc:
+            _err(f"graph run: cannot load --audit-plan — {exc}")
+            return 2
+
     from bounded_loops.graph.application.execute_graph import execute_graph_run
     return execute_graph_run(
         manifest_text=text,
@@ -642,6 +652,7 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
         out_dir=out_dir,
         json_out=getattr(args, "json", False),
         admitted_connections=admitted_connections,
+        audit_plan_json=audit_plan_json_text,
     )
 
 
@@ -841,6 +852,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
             "record (BYOK/HTTP mode).  Each record names the endpoint, the credential "
             "ENV-VAR name (never the value), the expiry, and the request style.  "
             "Required for graphs with https-transport connector nodes."
+        ),
+    )
+    run_p.add_argument(
+        "--audit-plan", default=None, metavar="<json>",
+        help=(
+            "Path to a JSON file containing an AuditPlan (cross-model audit coverage). "
+            "When supplied, the plan is persisted in the run directory so "
+            "`bl graph arena` can render the coverage cells and release decision. "
+            "Does not affect the run itself — read-side projection only."
         ),
     )
     run_p.add_argument("--json", action="store_true", help="Emit JSON output.")

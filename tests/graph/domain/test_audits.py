@@ -57,3 +57,37 @@ def test_repair_lineage_requires_a_new_artifact_and_preserves_prior_finding_ids(
                 regression_evidence_digest="sha256:" + "c" * 64,
             ),
         )
+
+
+# ── C-079 dual-audit: value objects reject invalid state at construction ──────
+
+def test_audit_finding_rejects_unknown_severity():
+    """A finding severity outside the canonical vocabulary must fail closed at construction so no
+    deserializer can smuggle a bad severity past the domain boundary (C-079 BLOCKER root)."""
+    with pytest.raises(GraphValidationError, match="severity"):
+        AuditFinding("F-1", "critical", "open")
+    with pytest.raises(GraphValidationError, match="severity"):
+        AuditFinding("F-1", "", "open")
+    # a valid severity still constructs
+    assert AuditFinding("F-1", "S1", "open").severity == "S1"
+
+
+def test_audit_finding_rejects_empty_id_or_disposition():
+    with pytest.raises(GraphValidationError, match="finding_id"):
+        AuditFinding("", "S1", "open")
+    with pytest.raises(GraphValidationError, match="disposition"):
+        AuditFinding("F-1", "S1", "")
+
+
+def test_audit_result_rejects_empty_identity_fields():
+    """Empty cell/assessor/producer must raise at construction — a malformed deserialized result then
+    becomes a read-side note instead of a late reconcile crash (C-079 BLOCKER root)."""
+    for kwargs in (
+        {"cell": "", "assessor": "a", "producer": "b"},
+        {"cell": "c", "assessor": "", "producer": "b"},
+        {"cell": "c", "assessor": "a", "producer": ""},
+    ):
+        with pytest.raises(GraphValidationError):
+            AuditResult(finding=None, **kwargs)
+    # a well-formed result still constructs
+    assert AuditResult(cell="c", assessor="a", producer="b", finding=None).cell == "c"

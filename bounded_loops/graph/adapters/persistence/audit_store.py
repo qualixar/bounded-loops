@@ -32,7 +32,7 @@ from bounded_loops.graph.domain.audits import (
 )
 from typing import cast
 
-from bounded_loops.graph.domain.errors import GraphIntegrityError
+from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 
 
 # Sub-directories, one per stored type.
@@ -225,7 +225,10 @@ def _result_from_dict(data: dict[str, object]) -> AuditResult:
     finding = None
     raw_finding = data["finding"]
     if raw_finding is not None:
-        assert isinstance(raw_finding, dict)
+        # Explicit type guard (not ``assert`` — that is stripped under ``python -O``, C-079 dual-audit):
+        # a non-object ``finding`` must fail closed here so the read-side records a note.
+        if not isinstance(raw_finding, dict):
+            raise GraphValidationError("audit_result", "/finding", "finding must be a JSON object or null")
         finding = AuditFinding(
             finding_id=raw_finding["finding_id"],  # type: ignore[index]
             severity=raw_finding["severity"],  # type: ignore[index]
@@ -237,6 +240,22 @@ def _result_from_dict(data: dict[str, object]) -> AuditResult:
         producer=data["producer"],  # type: ignore[arg-type]
         finding=finding,
     )
+
+
+# Public, stable deserialization surface. External read paths (the Arena audit projection) import
+# THESE, not the underscore-prefixed internals — so a future change to the private helpers cannot
+# silently break an out-of-package caller (C-079 dual-audit MINOR). Both delegate to the canonical
+# implementation above, which now validates every field at the domain-object boundary.
+def plan_from_mapping(data: dict[str, object]) -> AuditPlan:
+    """Deserialize an :class:`AuditPlan` from a JSON mapping (raises ``GraphValidationError`` on a
+    malformed plan — the caller decides whether that blocks release or is surfaced as a note)."""
+    return _plan_from_dict(data)
+
+
+def result_from_mapping(data: dict[str, object]) -> AuditResult:
+    """Deserialize an :class:`AuditResult` from a JSON mapping (raises ``GraphValidationError`` on a
+    malformed result so a hostile artifact fails closed at the read boundary)."""
+    return _result_from_dict(data)
 
 
 def _artifact_to_dict(artifact: AuditedArtifact) -> dict[str, object]:

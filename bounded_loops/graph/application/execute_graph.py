@@ -415,6 +415,10 @@ def execute_graph_run(
     byok_egress_broker: EgressBroker | None = None,
     byok_credential_resolver: object = None,
     byok_tls_context: ssl.SSLContext | None = None,
+    # Optional cross-model audit plan JSON text. When supplied, persisted verbatim
+    # as ``audit-plan.json`` in the run directory for read-side arena projection.
+    # Does NOT affect the controller loop — read-side only.
+    audit_plan_json: str | None = None,
 ) -> int:
     """Compile a user manifest and run its admitted connector nodes for real.
 
@@ -478,7 +482,10 @@ def execute_graph_run(
         return _fail(json_out, f"execution enforcement refused before run: {exc.message}")
 
     projection = controller.run()
-    _persist_run_dir(out_dir, plan, manifest_text, connections_raw, identity, mode=mode_label)
+    _persist_run_dir(
+        out_dir, plan, manifest_text, connections_raw, identity,
+        mode=mode_label, audit_plan_json=audit_plan_json,
+    )
     arena = read_arena_projection(
         plan,
         event_log,
@@ -579,11 +586,17 @@ def _persist_run_dir(
     identity: GraphRunIdentity,
     *,
     mode: str = "local_cli",
+    audit_plan_json: str | None = None,
 ) -> None:
     """Persist the four files ``bl graph status`` / ``arena`` reconstruct any run from. Written
     after the run so a crash never leaves a half-written receipt claiming success. Run-time inputs
     (prompts) are deliberately NOT persisted — a prompt may carry a secret, and the content-addressed
-    reply artifact is the durable receipt; the portable graph reconstructs from manifest+connections."""
+    reply artifact is the durable receipt; the portable graph reconstructs from manifest+connections.
+
+    When ``audit_plan_json`` is supplied it is written verbatim as ``audit-plan.json`` in the run
+    directory so ``bl graph arena`` can later compute the cross-model audit coverage projection.
+    The controller loop is NOT involved in this persistence — it is a read-side concern only.
+    """
     (out_dir / "plan.json").write_bytes(plan.canonical_json)
     (out_dir / "manifest.yaml").write_text(manifest_text, encoding="utf-8")
     (out_dir / "connections.json").write_text(
@@ -600,6 +613,8 @@ def _persist_run_dir(
         "platform": sys.platform,
     }
     (out_dir / "run-meta.json").write_text(json.dumps(run_meta, sort_keys=True), encoding="utf-8")
+    if audit_plan_json is not None:
+        (out_dir / "audit-plan.json").write_text(audit_plan_json, encoding="utf-8")
 
 
 def _report(

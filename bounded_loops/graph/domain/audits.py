@@ -10,6 +10,11 @@ from bounded_loops.graph.domain.errors import GraphValidationError
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
+# Canonical finding-severity vocabulary, owned by the domain so EVERY construction path
+# (in-code and deserialized) rejects an out-of-band severity at the value-object boundary —
+# a value object that can hold an invalid severity is itself the defect (C-079 dual-audit).
+VALID_SEVERITIES = frozenset({"S0", "S1", "S2", "S3"})
+
 
 @dataclass(frozen=True)
 class AuditCell:
@@ -21,19 +26,42 @@ class AuditCell:
 class AuditFinding:
     """A finding against an artifact. ``finding_id`` is a STABLE GLOBAL identity: the same id
     always denotes the same logical finding (and distinct findings carry distinct ids), matching
-    ``AuditedArtifact.finding_ids`` so a repair can address it and reconciliation can unblock it."""
+    ``AuditedArtifact.finding_ids`` so a repair can address it and reconciliation can unblock it.
+
+    Validated at construction (fail-closed at the innermost boundary): a deserializer feeding
+    hostile artifact bytes into this type raises here — so the read-side projection records a note
+    and blocks the cell, instead of the malformed value surviving until a late reconcile raise
+    aborts the whole projection (C-079 dual-audit BLOCKER)."""
 
     finding_id: str
     severity: str
     disposition: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.finding_id, str) or not self.finding_id:
+            raise GraphValidationError("audit_finding", "/finding_id", "finding_id must be a non-empty string")
+        if self.severity not in VALID_SEVERITIES:
+            raise GraphValidationError("audit_finding", "/severity", f"unknown finding severity {self.severity!r}")
+        if not isinstance(self.disposition, str) or not self.disposition:
+            raise GraphValidationError("audit_finding", "/disposition", "disposition must be a non-empty string")
+
 
 @dataclass(frozen=True)
 class AuditResult:
+    """One auditor's assessment of a cell for a producer. ``assessor``/``producer`` carry the
+    independence claim reconciliation checks (a producer is never the sole auditor); they and the
+    cell are validated here so a malformed deserialized result raises at construction rather than
+    at a later reconcile pass (C-079 dual-audit BLOCKER)."""
+
     cell: str
     assessor: str
     producer: str
     finding: AuditFinding | None
+
+    def __post_init__(self) -> None:
+        for field, value in (("cell", self.cell), ("assessor", self.assessor), ("producer", self.producer)):
+            if not isinstance(value, str) or not value:
+                raise GraphValidationError("audit_result", f"/{field}", f"{field} must be a non-empty string")
 
 
 @dataclass(frozen=True)

@@ -139,6 +139,18 @@
   .invariant b{color:var(--passed)}
   .invariant p{margin:2px 0 0;font-size:12.5px;color:var(--ink-2)}
   footer.ft{margin-top:30px;text-align:center;color:var(--ink-3);font-size:12px}
+  /* cross-model audit section */
+  .audit-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:22px 24px;box-shadow:var(--shadow)}
+  .audit-tbl{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:14px}
+  .audit-tbl th{text-align:left;padding:7px 12px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);border-bottom:2px solid var(--line);background:var(--surface-2)}
+  .audit-tbl td{padding:9px 12px;border-bottom:1px solid var(--line-2);vertical-align:top}
+  .audit-tbl tbody tr:last-child td{border-bottom:none}
+  .release-verdict{padding:14px 16px;border-radius:12px;display:flex;gap:11px;align-items:flex-start}
+  .release-verdict.released{background:var(--passed-bg);color:var(--passed)}
+  .release-verdict.blocked{background:var(--blocked-bg);color:var(--blocked)}
+  .release-verdict .audit-ic{flex:none;width:20px;height:20px;margin-top:1px}
+  .release-verdict p{margin:3px 0 0;font-size:12.5px;color:var(--ink-2)}
+  .audit-note{margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--working-bg);color:var(--working);font-size:12px}
   @media (max-width:720px){.hero{grid-template-columns:1fr}.hero h1{font-size:25px}}
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -180,6 +192,16 @@
 
   <div class="sec"><h2>Execution pipeline</h2><p>Each stage runs only after the one before it passes an independent check. Click a stage for details.</p></div>
   <div class="board"><svg class="edges" id="edges" aria-hidden="true"></svg><div class="waves" id="waves"></div></div>
+
+  <!-- Cross-model audit section — hidden when audit_coverage is absent from the payload -->
+  <div id="audit-section" style="display:none">
+    <div class="sec"><h2>Cross-Model Audit</h2><p>Independent coverage cells reconciled against the audit plan. Missing, self-only, or blocked cells prevent release. Independence is asserted by each auditor's receipt (assessor differs from producer) — structural routing attestation is a separate write-side control.</p></div>
+    <div class="audit-card">
+      <table class="audit-tbl" id="audit-cells"></table>
+      <div id="audit-verdict"></div>
+      <div id="audit-notes"></div>
+    </div>
+  </div>
 
   <div class="legend">
     <h3>How to read this</h3>
@@ -341,6 +363,45 @@
     d.innerHTML='<span class="sw" style="background:'+s.c+'"></span><span><b style="color:var(--ink)">'+s.w+'</b> — '+esc(s.d)+'</span>'; legend.appendChild(d);
   });
   document.getElementById("foot").textContent="Graph Arena · rendered from "+(D.receipt_sequence!=null?D.receipt_sequence:"?")+" receipts · this view cannot run, approve, or change the graph.";
+
+  // ---- cross-model audit section ----
+  if (D.audit_coverage) {
+    var aSection=document.getElementById("audit-section"); if(aSection)aSection.style.display="";
+    var acells=D.audit_coverage.cells||[];
+    var thead='<thead><tr><th>Cell</th><th>Required</th><th>Covered by</th><th>Severity</th><th>Status</th></tr></thead>';
+    var tbody="<tbody>";
+    acells.forEach(function(c){
+      var sev=(c.verdict_severity||"none");
+      var sevColor=sev==="none"?"var(--passed)":(sev==="S3"?"var(--ink-2)":(sev==="S2"?"var(--working)":"var(--blocked)"));
+      // Name WHY a cell blocks — missing / self-only / severity — instead of a bare "blocks" (C-079 M3).
+      var statusLabel=c.missing?"missing":(c.producer_only?"self-only":(c.blocking?"blocks":"clear"));
+      var status='<span style="color:'+(c.blocking?"var(--blocked)":"var(--passed)")+';font-weight:650">'+statusLabel+"</span>"+
+        (c.dissent?' <span title="independent lanes disagreed on the outcome" style="color:var(--working);font-weight:650">· dissent</span>':"");
+      tbody+="<tr>"+
+        "<td>"+esc(c.cell)+"</td>"+
+        "<td>"+(c.mandatory?"yes":"—")+"</td>"+
+        "<td>"+esc((c.covered_by||[]).join(", ")||"—")+"</td>"+
+        '<td style="color:'+sevColor+';font-weight:600">'+esc(sev)+"</td>"+
+        "<td>"+status+"</td>"+
+        "</tr>";
+    });
+    tbody+="</tbody>";
+    var auditTbl=document.getElementById("audit-cells"); if(auditTbl)auditTbl.innerHTML=thead+tbody;
+    var released=!!D.audit_coverage.released;
+    var blockingCells=D.audit_coverage.blocking_cells||[];
+    var reason=D.audit_coverage.reason||"";
+    var vEl=document.getElementById("audit-verdict");
+    if(vEl){
+      vEl.className="release-verdict "+(released?"released":"blocked");
+      vEl.innerHTML='<span class="audit-ic">'+(released?ICON.passed:ICON.blocked)+'</span>'+
+        '<div><b style="font-size:15px;font-weight:750;letter-spacing:-.01em">'+(released?"RELEASED":"BLOCKED")+"</b>"+
+        "<p>"+esc(reason)+"</p>"+
+        (blockingCells.length?"<p style='margin-top:4px'><b>Blocking:</b> "+esc(blockingCells.join(", "))+"</p>":"")+
+        "</div>";
+    }
+    var auditNotes=D.audit_coverage.notes||[];
+    if(auditNotes.length){var nEl=document.getElementById("audit-notes");if(nEl)nEl.innerHTML=auditNotes.map(function(n){return'<div class="audit-note">'+esc(n)+"</div>";}).join("");}
+  }
   if(!strongTrust){ var invP=document.querySelector(".invariant p"); if(invP) invP.textContent += (demo?" This run is a demonstration — no real independent check ran.":" This is a local view; receipts are shown but not verified here."); }
 
   // ---- drawer ----
