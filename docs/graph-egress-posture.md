@@ -1,29 +1,74 @@
-# Egress posture — config contract (Slice 2)
+# Egress posture — config contract and wiring (Slice 2)
 
-Config surface for the connector-node outbound-network default. Implementation:
-`bounded_loops/graph/adapters/enforcement/egress_posture.py` (the module docstring
-there is the authoritative source — this file is a skimmable mirror of it for the
-Slice 4 installer author and for wiring `_build_policy` in `execute_graph.py`).
+Config surface for the connector-node outbound-network default, AND (as of this revision)
+its actual wiring into `bl graph run --execute`. Implementation:
+`bounded_loops/graph/adapters/enforcement/egress_posture.py` (posture resolution + the
+generic, transport-agnostic capability decision — module docstring there is authoritative)
+and `bounded_loops/graph/application/egress_posture_policy.py` (where that generic decision
+meets a `local_cli` connector node's actual runtime capability — see "What is wired today"
+below). This file is a skimmable mirror of both for the Slice 4 installer author.
 
 ## What this is, and what it is not
 
-`bl graph run --execute` today hardcodes every admitted `local_cli` connector node
-to `NetworkMode.OPEN` (no cage, full outbound) — see README.md /
-RELEASE-READINESS.md: *"local_cli stays network-OPEN ... Making ALLOWLIST their
-default tier is the later-phase item."*
+`bl graph run --execute` previously hardcoded every admitted `local_cli` connector node to
+`NetworkMode.OPEN` unconditionally (no cage, full outbound) — see README.md /
+RELEASE-READINESS.md: *"local_cli stays network-OPEN ... Making ALLOWLIST their default
+tier is the later-phase item."* `execute_graph.py::_build_policy` now calls
+`resolve_local_cli_egress_decision` (via `build_execution_controller`) instead of
+hardcoding `NetworkMode.OPEN` directly — the posture is real, wired, and tested end-to-end.
 
-This module resolves a configurable **egress posture** and turns it into an
-honest, fail-closed decision. **It does not rewire `execute_graph.py` itself** —
-that (replacing the hardcoded `NetworkMode.OPEN` with a call to
-`decide_egress_posture`) is a separate, later change.
+## What is wired today: local_cli honors ONLY the `open` posture
 
-## The three postures
+Reading `local_cli_worker.py` in full (before wiring anything) surfaced a hard architectural
+constraint: `LocalCliConnectorWorker` runs the CLI **unwrapped** — no Seatbelt profile, no
+loopback egress proxy — and it inherits the operator's REAL `HOME`/`TMPDIR` *by design*, so
+the CLI finds its own subscription-login config. It also carries its own defense-in-depth
+guard that refuses any envelope but `NetworkMode.OPEN`. So:
 
-| Posture | Value | Behavior | Capability requirement |
+* **`open` (default)** — wired, unchanged, byte-for-byte today's behavior.
+* **`allowlist`** — **refused for any plan containing a `local_cli` node**, UNCONDITIONALLY,
+  before host capabilities are even consulted. This is deliberate: checking Seatbelt/
+  egress-proxy availability first would wrongly imply "get a Mac with Seatbelt and this
+  works" — it would not, because `LocalCliConnectorWorker` has no cage-wrapping integration
+  on ANY host. Making this actually work would mean adding real Seatbelt + egress-proxy
+  support to that worker — a substantial, separate feature in real tension with its
+  "inherit the real HOME so the CLI finds its own credentials" design, not something this
+  wiring invents unasked.
+* **`broker`** — **refused for any plan containing a `local_cli` node.** Confirmed against
+  `egress_broker.py` and the connector transports: a `local_cli` node's subscription CLI
+  authenticates out-of-band and talks to its own vendor over its own TLS; the no-secret
+  `EgressBroker` (a single-use lease bound to one declared destination/method/effect) has
+  nothing to mediate. There is no coherent way to route an entire subprocess's arbitrary
+  outbound calls through a broker built for one authorized HTTP request at a time.
+
+Both refusals fire at **preflight** (`build_execution_controller`, before any store/worker is
+built, before `controller.run()`) as a `GraphValidationError` — every existing caller
+(`execute_graph_run`, `LocalGraphRuntimeFacade.resume`/`.approve`) already wraps that call in
+`except GraphValidationError`, so it always surfaces as a clean, actionable refusal — never a
+mid-run traceback, never a silent downgrade to `open`.
+
+**A plan with no `local_cli` node is completely unaffected** — including the ALLOWLIST
+host-capability check, which is *skipped entirely* (not merely "not triggered") so an
+https-only run's success never depends on a fact (Seatbelt availability) that has nothing to
+do with how `https` actually works. `https` keeps its own independent, credential-broker-
+mediated, per-node `ALLOWLIST` construction, untouched by any of this.
+
+**Known gap (flagged, not fixed in this wiring pass):** `resolve_egress_posture()` parses
+`BOUNDED_LOOPS_EGRESS_ALLOWLIST` whenever it is *set*, independent of the resolved posture. A
+malformed allowlist value left over from a different posture (or a typo) will raise even for
+a plan with no `local_cli` node and even when posture isn't `allowlist` — a narrower version
+of the same "irrelevant config affecting an unrelated run" class of issue as the capability
+leak above, but in the already-reviewed resolution module rather than this wiring. Not
+changed here without an explicit decision, since it touches already-approved precedence
+logic outside this pass's granted scope.
+
+## The three postures (generic decision — `egress_posture.py`)
+
+| Posture | Value | Generic decision | Wired behavior for `local_cli` |
 |---|---|---|---|
-| Open (**default**) | `open` | No cage. Outbound unrestricted. The correct default for a trusted-local, logged-in subscription CLI (`claude`, `codex`, `grok`, ...) — the 70–80% case. | None |
-| Allowlist (opt-in) | `allowlist` | The existing Seatbelt loopback-proxy cage (`sandbox.py` / `egress_proxy.py` / `providers/native.py`) is applied; outbound admitted ONLY to configured hosts. | Seatbelt **and** the loopback egress proxy. **Fails closed** (refuses to run) if either is unavailable — never silently downgrades to `open`. |
-| Broker (BYOK) | `broker` | Not a sandboxed subprocess at all — calls must route through the existing no-secret `EgressBroker` (the same mechanism the `https` connector transport already uses). | None — host capabilities are irrelevant to this posture. |
+| Open (**default**) | `open` | No cage. Outbound unrestricted. | Wired: today's unchanged behavior. |
+| Allowlist (opt-in) | `allowlist` | The Seatbelt loopback-proxy cage (`sandbox.py` / `egress_proxy.py` / `providers/native.py`); fails closed without Seatbelt + the egress proxy. | **Refused for `local_cli`, unconditionally** — see above. Available to any FUTURE consumer whose worker can actually apply the cage. |
+| Broker (BYOK) | `broker` | Route through the existing no-secret `EgressBroker` (the `https` transport's own mechanism). | **Refused for `local_cli`** — architecturally incoherent, see above. |
 
 ## Selection precedence
 
@@ -78,25 +123,38 @@ Default path: `~/.bounded-loops/egress.json` (override via
   tampered installer-written file must never silently downgrade resolution to a
   less-restrictive tier.
 
-## Consuming the resolved config (for the future `execute_graph.py` wiring)
+## Consuming the resolved config
+
+`execute_graph.py::build_execution_controller` (used by both `execute_graph_run` and
+`LocalGraphRuntimeFacade.resume`/`.approve`) calls this once, before any store/worker is built:
 
 ```python
-from bounded_loops.graph.adapters.enforcement import (
-    decide_egress_posture, resolve_egress_posture,
-)
+from bounded_loops.graph.application.egress_posture_policy import resolve_local_cli_egress_decision
 
-config = resolve_egress_posture(environ=os.environ)   # or explicit_posture=... for an override
-decision = decide_egress_posture(config)               # probes PlatformCapabilities
+# Raises GraphValidationError for a local_cli plan under allowlist/broker (see above);
+# for anything else, returns the generic decision (always OPEN for a local_cli plan today).
+local_cli_decision = resolve_local_cli_egress_decision(plan, environ=environ, capabilities=caps)
+```
 
+`_build_policy` then uses `local_cli_decision.network_mode` for the `local_cli` branch
+(always `NetworkMode.OPEN` today) with a defensive backstop raise if it is ever anything
+else — unreachable via `build_execution_controller`'s own preflight refusal, but a real
+guard for the `LocalGraphRuntimeFacade` path too, since it calls `build_execution_controller`
+directly without a separate preflight step.
+
+A future consumer whose worker CAN apply the cage (not `LocalCliConnectorWorker`) would use
+`decide_egress_posture` directly, as originally documented:
+
+```python
+from bounded_loops.graph.adapters.enforcement import decide_egress_posture, resolve_egress_posture
+
+config = resolve_egress_posture(environ=os.environ)
+decision = decide_egress_posture(config)  # probes PlatformCapabilities
 if decision.requires_broker:
-    ...  # route through EgressBroker / ConnectorInvoker (the https-transport path);
-         # do NOT build a sandbox network envelope for this node
+    ...  # route through EgressBroker / ConnectorInvoker
 else:
-    envelope = ExecutionEnvelope(
-        ...,
-        network_mode=decision.network_mode,             # NetworkMode.OPEN | .ALLOWLIST
-        network_destinations=decision.network_destinations,
-    )
+    envelope = ExecutionEnvelope(..., network_mode=decision.network_mode,
+                                  network_destinations=decision.network_destinations)
 ```
 
 `decision.requires_broker` exists precisely so a caller cannot mistake
@@ -112,5 +170,14 @@ IP literal).
 
 ## Tests
 
-`tests/graph/adapters/enforcement/test_egress_posture.py` — 45 tests, 100% line
-coverage of `egress_posture.py`.
+- `tests/graph/adapters/enforcement/test_egress_posture.py` — 45 tests, 100% line coverage
+  of `egress_posture.py` (resolution + the generic capability decision).
+- `tests/graph/application/test_egress_posture_policy.py` — 11 unit tests for
+  `resolve_local_cli_egress_decision` (the local_cli-specific refusal rules above).
+- `tests/graph/application/test_execute_graph_egress_posture.py` — 10 end-to-end tests
+  driving a real plan through `execute_graph_run`: default backward compat, ALLOWLIST/BROKER
+  preflight refusal (with and without a cage-capable host, converging on the same message),
+  and a misconfigured posture value failing closed cleanly.
+- `tests/graph/application/test_execute_graph_byok.py` — 2 tests added proving an `https`
+  node succeeds identically under `allowlist` (with NO cage on the host) and `broker`
+  posture — the case that caught the capability-leak gap during development.

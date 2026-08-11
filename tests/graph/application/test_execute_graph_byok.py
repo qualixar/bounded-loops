@@ -509,3 +509,69 @@ policies: {data_class: public, fail_mode: fail_closed}
     store = LocalArtifactStore(out / "artifacts")
     with store.open(ArtifactRef(node.artifact_digests[0], _ORG, _PROJECT), ArtifactAccess(_ORG, _PROJECT)) as handle:
         assert handle.read() == b"LOCAL CLI REPLY: hello local cli"
+
+
+# ── test 7: https is unaffected by the deployment's egress posture (Slice 2) ──
+#
+# https has its own independent, per-node ALLOWLIST construction (credential-broker-mediated,
+# not OS-cage-mediated) in _build_policy — the deployment posture governs local_cli egress
+# only. These runs succeed identically under ALLOWLIST (even with NO cage on this host — https
+# never touches Seatbelt/egress-proxy) and under BROKER (https already IS the broker path).
+
+def _egress_environ(tmp_path: Path, **posture: str) -> dict[str, str]:
+    import os
+    env = {"PATH": os.environ.get("PATH", ""), "BOUNDED_LOOPS_EGRESS_CONFIG": str(tmp_path / "nonexistent.json")}
+    env.update(posture)
+    return env
+
+
+def test_byok_https_node_unaffected_by_allowlist_egress_posture_with_no_cage(
+    tmp_path: Path, tls_cert: tuple[Path, Path],
+):
+    from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
+
+    cert, key = tls_cert
+    mock_body = b'{"choices":[{"message":{"content":"BYOK REPLY"}}]}'
+    with _MockProvider(body=mock_body, tls=(cert, key)) as provider:
+        host = f"byok.test:{provider.port}"
+        record = _admitted_record(host)
+        client_ctx = ssl.create_default_context(cafile=str(cert))
+        cred_resolver = MappingCredentialResolver({_BINDING_ID: ProviderCredential({"authorization": "Bearer x"})})
+        out = tmp_path / "run"
+        rc = execute_graph_run(
+            manifest_text=_BYOK_MANIFEST, manifest_suffix=".yaml",
+            connections_raw=_byok_connections(host), node_prompts={"chat": "hi"},
+            out_dir=out, run_id="run-1", admitted_connections={_CONN_ID: record},
+            byok_egress_broker=_PinnedEgressBroker(), byok_credential_resolver=cred_resolver,
+            byok_tls_context=client_ctx,
+            environ=_egress_environ(
+                tmp_path, BOUNDED_LOOPS_EGRESS_POSTURE="allowlist", BOUNDED_LOOPS_EGRESS_ALLOWLIST="unrelated.example.com",
+            ),
+            # No Seatbelt, no egress proxy — https must not care; only local_cli would.
+            capabilities=PlatformCapabilities(platform="linux", docker_available=False, process_groups=True, rlimits=True),
+        )
+    assert rc == 0
+    arena, meta = _arena(out)
+    assert arena.run_state == "SUCCEEDED" and meta["mode"] == "https"
+
+
+def test_byok_https_node_unaffected_by_broker_egress_posture(tmp_path: Path, tls_cert: tuple[Path, Path]):
+    cert, key = tls_cert
+    mock_body = b'{"choices":[{"message":{"content":"BYOK REPLY"}}]}'
+    with _MockProvider(body=mock_body, tls=(cert, key)) as provider:
+        host = f"byok.test:{provider.port}"
+        record = _admitted_record(host)
+        client_ctx = ssl.create_default_context(cafile=str(cert))
+        cred_resolver = MappingCredentialResolver({_BINDING_ID: ProviderCredential({"authorization": "Bearer x"})})
+        out = tmp_path / "run"
+        rc = execute_graph_run(
+            manifest_text=_BYOK_MANIFEST, manifest_suffix=".yaml",
+            connections_raw=_byok_connections(host), node_prompts={"chat": "hi"},
+            out_dir=out, run_id="run-1", admitted_connections={_CONN_ID: record},
+            byok_egress_broker=_PinnedEgressBroker(), byok_credential_resolver=cred_resolver,
+            byok_tls_context=client_ctx,
+            environ=_egress_environ(tmp_path, BOUNDED_LOOPS_EGRESS_POSTURE="broker"),
+        )
+    assert rc == 0
+    arena, meta = _arena(out)
+    assert arena.run_state == "SUCCEEDED" and meta["mode"] == "https"
