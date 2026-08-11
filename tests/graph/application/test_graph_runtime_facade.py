@@ -13,6 +13,7 @@ Tests:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,7 +27,7 @@ from bounded_loops.graph.application.graph_runtime_facade import (
     LocalGraphRuntimeFacade,
     SameTenantArenaAuthorizer,
 )
-from bounded_loops.graph.domain.errors import GraphIntegrityError
+from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 
 # ── shared constants ─────────────────────────────────────────────────────────
 
@@ -294,8 +295,8 @@ def _approval_run_dir(tmp_path: Path) -> Path:
     return tmp_path / "approval-runs" / _ORG / _PROJECT / _RUN_ID
 
 
-def _build_approval_run(tmp_path: Path) -> Path:
-    """Build an approval-node run dir with the run PAUSED at the approval gate."""
+def _build_approval_run(tmp_path: Path, manifest: str = _APPROVAL_MANIFEST) -> Path:
+    """Build an approval-node run dir with the run PAUSED at the approval gate(s)."""
     from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog as _EL
     from bounded_loops.graph.domain.events import GraphRunIdentity
     from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
@@ -306,7 +307,7 @@ def _build_approval_run(tmp_path: Path) -> Path:
     )
     from bounded_loops.graph.application.approval_gate import RecordedApprovalResolver
 
-    graph = parse_authoring_graph_yaml(_APPROVAL_MANIFEST)
+    graph = parse_authoring_graph_yaml(manifest)
     plan = compile_graph(graph, CompileSnapshot(
         policy_digest="sha256:" + "a" * 64,
         package_digests=frozenset(),
@@ -324,7 +325,7 @@ def _build_approval_run(tmp_path: Path) -> Path:
 
     # Persist run dir files
     (run_dir / "plan.json").write_bytes(plan.canonical_json)
-    (run_dir / "manifest.yaml").write_text(_APPROVAL_MANIFEST, encoding="utf-8")
+    (run_dir / "manifest.yaml").write_text(manifest, encoding="utf-8")
     (run_dir / "connections.json").write_text("[]", encoding="utf-8")
     run_meta = {
         "execution": True, "mode": "local_cli",
@@ -417,3 +418,192 @@ def test_approve_rejection_fails_the_run(tmp_path):
     )
     final = facade.approve(request, node_id="checkpoint", decision="rejected")
     assert final.run_state == "FAILED"
+
+
+# ── C-078 follow-ups: durable approval/rejection crash-recovery ──────────────
+
+def _deterministic_approval_id(node_id: str) -> str:
+    return hashlib.sha256(f"{_ORG}:{_PROJECT}:{_RUN_ID}:{node_id}".encode("utf-8")).hexdigest()
+
+
+def _seed_approvals_json(run_dir: Path, record: dict) -> None:
+    (run_dir / "approvals.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+
+def _bare_facade(runs_root: Path) -> LocalGraphRuntimeFacade:
+    return LocalGraphRuntimeFacade(
+        runs_root=runs_root, arena_authorizer=SameTenantArenaAuthorizer(),
+        cli_profiles={}, environ={}, node_prompts={},
+    )
+
+
+def test_resume_rehonors_durable_approval_after_crash(tmp_path):
+    """An approval durably committed to approvals.json BEFORE a crash is re-honored on a BARE resume()
+    — the run advances without re-pausing the human gate (C-078 follow-up: approve-then-crash)."""
+    runs_root = _build_approval_run(tmp_path)  # paused at 'checkpoint'
+    run_dir = _approval_run_dir(tmp_path)
+    approval_id = _deterministic_approval_id("checkpoint")
+    _seed_approvals_json(run_dir, {
+        "resource_version": 2,
+        "commits": [{
+            "approval_id": approval_id, "new_resource_version": 2, "idempotency_key": approval_id,
+            "node_id": "checkpoint", "actor_id": _ORG, "decided_at": "2026-08-11T00:00:00Z",
+        }],
+    })
+    final = _bare_facade(runs_root).resume(_request())
+    assert final.run_state == "SUCCEEDED"
+    assert final.nodes[0].state == "SUCCEEDED"
+
+
+def test_resume_rejects_foreign_durable_approval(tmp_path):
+    """A durable approval whose approval_id is NOT the deterministic id for this run+node is rejected
+    as foreign (fail-closed). NOTE: this proves a WRONG id is rejected — it is NOT a claim that the
+    ledger is forgery-proof (the deterministic id is derivable from public identity; run-dir write is
+    trusted as operator in the local posture). Hosted tamper-evidence is a documented follow-up."""
+    runs_root = _build_approval_run(tmp_path)
+    run_dir = _approval_run_dir(tmp_path)
+    _seed_approvals_json(run_dir, {
+        "resource_version": 2,
+        "commits": [{
+            "approval_id": "f" * 64, "new_resource_version": 2, "idempotency_key": "f" * 64,
+            "node_id": "checkpoint", "actor_id": _ORG, "decided_at": "2026-08-11T00:00:00Z",
+        }],
+    })
+    with pytest.raises(GraphIntegrityError, match="foreign approval_id"):
+        _bare_facade(runs_root).resume(_request())
+
+
+def test_approve_rejection_is_durably_recorded(tmp_path):
+    """A rejection is now DURABLE — approve(rejected) persists it to approvals.json so it survives a
+    crash (previously it was recorded in-memory per call) (C-078 follow-up: durable rejection)."""
+    runs_root = _build_approval_run(tmp_path)
+    run_dir = _approval_run_dir(tmp_path)
+    final = _bare_facade(runs_root).approve(_request(), node_id="checkpoint", decision="rejected")
+    assert final.run_state == "FAILED"
+    stored = json.loads((run_dir / "approvals.json").read_text(encoding="utf-8"))
+    assert any(r["node_id"] == "checkpoint" for r in stored.get("rejections", [])), \
+        "rejection must be durably recorded in approvals.json"
+
+
+def test_resume_rehonors_durable_rejection_after_crash(tmp_path):
+    """A rejection durably recorded BEFORE a crash fails the run closed on a bare resume()."""
+    runs_root = _build_approval_run(tmp_path)
+    run_dir = _approval_run_dir(tmp_path)
+    _seed_approvals_json(run_dir, {
+        "resource_version": 1, "commits": [],
+        "rejections": [{"node_id": "checkpoint", "attempt": 1,
+                        "approval_id": _deterministic_approval_id("checkpoint"),
+                        "actor_id": _ORG, "decided_at": "2026-08-11T00:00:00Z"}],
+    })
+    final = _bare_facade(runs_root).resume(_request())
+    assert final.run_state == "FAILED"
+
+
+# ── RF hardening: dual-audit findings (multi-gate B1, validation, conflict, fail-closed) ──
+
+_TWO_GATE_MANIFEST = """\
+api_version: "bounded-loops.dev/graph/v1"
+graph_id: two-gate-facade
+version: "1.0.0"
+nodes:
+  - id: gate1
+    kind: approval
+    required_role: reviewer
+    inputs: {}
+    outputs: {approved: text}
+    budget: {max_attempts: 1, max_wallclock_s: 30}
+    effects: [read_only]
+    isolation: workspace_only
+  - id: gate2
+    kind: approval
+    required_role: reviewer
+    inputs: {}
+    outputs: {approved: text}
+    budget: {max_attempts: 1, max_wallclock_s: 30}
+    effects: [read_only]
+    isolation: workspace_only
+edges: []
+connection_slots: []
+policies: {data_class: public, fail_mode: fail_closed}
+"""
+
+
+def test_multi_gate_dag_second_approval_succeeds(tmp_path):
+    """BLOCKER B1: a DAG with two approval gates — approving the SECOND must not fail with a stale
+    resource-version (the ledger version advances on the first commit; hardcoding 1 broke gate 2)."""
+    runs_root = _build_approval_run(tmp_path, _TWO_GATE_MANIFEST)
+    facade = _bare_facade(runs_root)
+    mid = facade.approve(_request(), node_id="gate1", decision="approved")
+    assert mid.run_state == "RUNNING", "gate2 still pending → run keeps running"
+    final = facade.approve(_request(), node_id="gate2", decision="approved")
+    assert final.run_state == "SUCCEEDED", "second gate must not fail with approval_stale"
+
+
+def test_approve_rejects_invalid_decision_string(tmp_path):
+    """A decision other than 'approved'/'rejected' (e.g. 'approve') must raise — never be silently
+    treated as a rejection (dual-audit MAJOR)."""
+    runs_root = _build_approval_run(tmp_path)
+    with pytest.raises(GraphValidationError, match="decision"):
+        _bare_facade(runs_root).approve(_request(), node_id="checkpoint", decision="approve")
+
+
+def test_reject_unknown_node_raises_without_poisoning_ledger(tmp_path):
+    """Rejecting a node not in the plan must raise BEFORE any durable write, so approvals.json is
+    never poisoned (which would wedge every future resume) (dual-audit MAJOR)."""
+    runs_root = _build_approval_run(tmp_path)
+    run_dir = _approval_run_dir(tmp_path)
+    with pytest.raises(GraphIntegrityError):
+        _bare_facade(runs_root).approve(_request(), node_id="ghost", decision="rejected")
+    if (run_dir / "approvals.json").exists():
+        stored = json.loads((run_dir / "approvals.json").read_text(encoding="utf-8"))
+        assert all(r.get("node_id") != "ghost" for r in stored.get("rejections", []))
+    # the run must still be resumable, not wedged
+    assert _bare_facade(runs_root).status(_request()).run_state == "RUNNING"
+
+
+def test_approve_then_reject_same_node_is_a_conflict(tmp_path):
+    """Once a node is durably approved, rejecting it must fail closed — the ledger can never hold both
+    decisions for one node (dual-audit MAJOR)."""
+    runs_root = _build_approval_run(tmp_path)
+    facade = _bare_facade(runs_root)
+    facade.approve(_request(), node_id="checkpoint", decision="approved")
+    with pytest.raises(GraphIntegrityError, match="durable approval already exists"):
+        facade.approve(_request(), node_id="checkpoint", decision="rejected")
+
+
+def test_resume_rejects_foreign_durable_rejection(tmp_path):
+    """A durable rejection with a foreign approval_id is rejected fail-closed — rejections are guarded
+    exactly like approvals, never a weaker forgery/DoS surface (dual-audit MAJOR)."""
+    runs_root = _build_approval_run(tmp_path)
+    run_dir = _approval_run_dir(tmp_path)
+    _seed_approvals_json(run_dir, {
+        "resource_version": 1, "commits": [],
+        "rejections": [{"node_id": "checkpoint", "attempt": 1, "approval_id": "f" * 64,
+                        "actor_id": _ORG, "decided_at": "2026-08-11T00:00:00Z"}],
+    })
+    with pytest.raises(GraphIntegrityError, match="foreign approval_id"):
+        _bare_facade(runs_root).resume(_request())
+
+
+def test_resume_fails_closed_on_malformed_commit_entry(tmp_path):
+    """A durable approval entry missing required fields must raise GraphIntegrityError — never leak a
+    raw KeyError past the fail-closed contract (dual-audit MAJOR)."""
+    runs_root = _build_approval_run(tmp_path)
+    run_dir = _approval_run_dir(tmp_path)
+    aid = _deterministic_approval_id("checkpoint")
+    _seed_approvals_json(run_dir, {
+        "resource_version": 2,
+        "commits": [{"approval_id": aid, "node_id": "checkpoint"}],  # missing version/idempotency_key
+    })
+    with pytest.raises(GraphIntegrityError, match="malformed"):
+        _bare_facade(runs_root).resume(_request())
+
+
+def test_load_approvals_rejects_non_list_commits(tmp_path):
+    """A ledger whose commits is not a list must fail closed at load (dual-audit MAJOR)."""
+    from bounded_loops.graph.application.graph_runtime_facade import _load_approvals
+    _build_approval_run(tmp_path)
+    run_dir = _approval_run_dir(tmp_path)
+    (run_dir / "approvals.json").write_text('{"resource_version": 1, "commits": "oops"}', encoding="utf-8")
+    with pytest.raises(GraphIntegrityError, match="must be a list"):
+        _load_approvals(run_dir / "approvals.json")

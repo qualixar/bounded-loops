@@ -70,9 +70,10 @@ from bounded_loops.graph.application.execute_graph import (
 from bounded_loops.graph.application.run_graph import is_egress_node
 from bounded_loops.graph.cli_graph import _load_plan_from_run_dir
 from bounded_loops.graph.domain.approvals import ApprovalDecision, ApprovalRequest
+from bounded_loops.graph.domain.authoring import NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity, StoredGraphEvent
-from bounded_loops.graph.domain.plan import ExecutionPlan
+from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
 _ALL_EXECUTOR_TRANSPORTS = frozenset({"local_cli", "https"})
 
@@ -189,9 +190,59 @@ class _FileApprovalCommandPort:
                     "actor_id": command.context.subject_id,
                     "decided_at": command.decision.decided_at,
                 })
-                new_record = {"resource_version": new_version, "commits": commits}
+                # Write an ALLOW-LISTED schema only: preserve the durable ``rejections`` list (so an
+                # approval commit never wipes a prior rejection) but never re-serialize unknown/hostile
+                # keys, which would let junk accumulate and bloat every future write (dual-audit MAJOR).
+                new_record = {
+                    "resource_version": new_version,
+                    "commits": commits,
+                    "rejections": list(record.get("rejections", [])),
+                }
                 _atomic_write(approval_path, json.dumps(new_record, indent=2).encode("utf-8"))
                 return commit
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+
+    def commit_rejection(
+        self, *, node_id: str, attempt: int, approval_id: str, actor_id: str, decided_at: str,
+    ) -> None:
+        """Durably persist a human REJECTION so a later resume re-honors it (C-078 follow-up).
+
+        Rejections do not flow through the ``approvals.approve`` use case (which only GRANTS); they
+        are recorded here under the SAME exclusive ``flock`` + ``os.replace`` atomic-write discipline,
+        in a separate ``rejections`` list so the approval version chain is untouched. Idempotent by
+        ``(node_id, attempt)``. The ``approval_id`` (the deterministic run+node id) is stored so the
+        rehydration path can reject a foreign rejection record exactly as it does for approvals —
+        rejections must not be a weaker, unguarded forgery/DoS surface (dual-audit MAJOR).
+
+        FAIL-CLOSED on conflict: refuses to reject a node that already carries a durable APPROVAL
+        (and the approval path refuses the mirror case), so the ledger can never hold both decisions
+        for one node."""
+        approval_path = self._run_dir / "approvals.json"
+        lock_path = self._run_dir / "approvals.lock"
+        lock_path.touch(exist_ok=True)
+        with lock_path.open("r+") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                record = _load_approvals(approval_path)
+                if any(c.get("node_id") == node_id for c in record.get("commits", [])):
+                    raise GraphIntegrityError(
+                        f"cannot reject node {node_id!r}: a durable approval already exists for it"
+                    )
+                rejections = list(record.get("rejections", []))
+                for stored in rejections:
+                    if stored.get("node_id") == node_id and int(stored.get("attempt", 1)) == attempt:
+                        return  # already rejected — idempotent
+                rejections.append({
+                    "node_id": node_id, "attempt": attempt, "approval_id": approval_id,
+                    "actor_id": actor_id, "decided_at": decided_at,
+                })
+                new_record = {
+                    "resource_version": record.get("resource_version", 1),
+                    "commits": list(record.get("commits", [])),
+                    "rejections": rejections,
+                }
+                _atomic_write(approval_path, json.dumps(new_record, indent=2).encode("utf-8"))
             finally:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
@@ -201,13 +252,23 @@ def _load_approvals(path: Path) -> dict:
     # silently reset to version 1 (that would wipe the idempotency/version guard and let a decision
     # be re-committed). Dual-audit MAJOR.
     if not path.is_file():
-        return {"resource_version": 1, "commits": []}
+        return {"resource_version": 1, "commits": [], "rejections": []}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         raise GraphIntegrityError(f"approval ledger is unreadable or corrupt: {path}") from exc
     if not isinstance(data, dict):
         raise GraphIntegrityError("approval ledger is malformed")
+    # Shape-validate every field the version guard + rehydration rely on, so a malformed ledger fails
+    # closed HERE (GraphIntegrityError) rather than leaking a raw KeyError/AttributeError downstream
+    # (dual-audit MAJOR: e.g. a non-list ``commits`` or a string ``resource_version``).
+    version = data.get("resource_version", 1)
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise GraphIntegrityError("approval ledger resource_version must be an integer")
+    for key in ("commits", "rejections"):
+        entries = data.get(key, [])
+        if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+            raise GraphIntegrityError(f"approval ledger {key} must be a list of objects")
     return data
 
 
@@ -215,6 +276,15 @@ def _atomic_write(path: Path, data: bytes) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_bytes(data)
     os.replace(str(tmp), str(path))
+
+
+def _approval_id(identity: GraphRunIdentity, node_id: str) -> str:
+    """Deterministic approval identity for a run+node — the SAME derivation on the commit path and
+    the durable-rehydration path, so a re-honored approval matches exactly the one that was persisted
+    (and a durable record whose id does not match this derivation is rejected as foreign)."""
+    return hashlib.sha256(
+        f"{identity.organization_id}:{identity.project_id}:{identity.run_id}:{node_id}".encode("utf-8")
+    ).hexdigest()
 
 
 # ── facade ────────────────────────────────────────────────────────────────────
@@ -287,6 +357,9 @@ class LocalGraphRuntimeFacade:
         run_dir = self._run_dir(request)
         event_log = GraphEventLog(run_dir / "controller-events.jsonl", identity)
         self._check_connector_prompts(plan, event_log)
+        # Re-honor any human decision that was durably committed BEFORE the crash (approve-then-crash /
+        # reject-then-crash edge): a bare resume must not re-pause a gate a human already decided.
+        resolver = self._durable_resolver(identity=identity, plan=plan, run_dir=run_dir)
         try:
             controller, _store, event_log = build_execution_controller(
                 plan=plan,
@@ -299,6 +372,7 @@ class LocalGraphRuntimeFacade:
                 byok_egress_broker=self.byok_egress_broker,
                 byok_credential_resolver=self.byok_credential_resolver,
                 byok_tls_context=self.byok_tls_context,
+                approval_resolver=resolver,
             )
         except GraphValidationError as exc:
             raise GraphIntegrityError(f"resume: controller wiring failed — {exc.message}") from exc
@@ -321,8 +395,10 @@ class LocalGraphRuntimeFacade:
         (validates authority, signature, effects, nonce) and the decision is durably persisted
         BEFORE the run continues — fail-closed at every step.
 
-        For ``decision == "rejected"``, the rejection is recorded directly and the run is
-        failed closed (the ``approvals`` use case only grants approvals today).
+        For ``decision == "rejected"``, the same authority check is applied (via the injected
+        approval authorizer — not merely same-tenant), then the rejection is durably persisted and
+        the run is failed closed. The decision string, the target node, and any conflicting prior
+        decision are all validated before anything is written.
         """
         plan, identity, _meta = self._load(request)
         self._authorize_mutation(request, identity)
@@ -330,17 +406,35 @@ class LocalGraphRuntimeFacade:
         event_log = GraphEventLog(run_dir / "controller-events.jsonl", identity)
         self._check_connector_prompts(plan, event_log)
 
-        resolver = RecordedApprovalResolver()
+        # Reject any decision string other than the two the domain defines — a direct library caller
+        # (unlike the MCP shim) is otherwise silently treated as "rejected" (dual-audit MAJOR).
+        if decision not in ("approved", "rejected"):
+            raise GraphValidationError(
+                "approval_decision", "/decision", "decision must be 'approved' or 'rejected'",
+            )
+        # Validate the target BEFORE any durable write, so a bogus/non-approval node_id never poisons
+        # the ledger and wedges every future resume (dual-audit MAJOR).
+        node = self._require_approval_node(plan, node_id)
+        self._guard_decision_conflict(run_dir, node_id, decision)
 
         if decision == "approved":
             self._record_approval(
                 request=request, plan=plan, identity=identity,
-                event_log=event_log, node_id=node_id, resolver=resolver, run_dir=run_dir,
+                event_log=event_log, node_id=node_id, run_dir=run_dir,
             )
         else:
-            # "rejected" (or any future extension) → record rejection; run will fail closed.
-            resolver.record_rejection(identity=identity, node_id=node_id, attempt=1)
+            # "rejected": authorize with the SAME authority as an approval (not merely same-tenant),
+            # then DURABLY record the rejection so a crash before the run fails is still recovered.
+            self._authorize_decision(request=request, identity=identity, node=node)
+            _FileApprovalCommandPort(run_dir).commit_rejection(
+                node_id=node_id, attempt=1, approval_id=_approval_id(identity, node_id),
+                actor_id=request.subject_id,
+                decided_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            )
 
+        # Rebuild the resolver from the DURABLE ledger — approve() and resume() now share one source
+        # of truth, and the decision just written to approvals.json survives a crash before resume.
+        resolver = self._durable_resolver(identity=identity, plan=plan, run_dir=run_dir)
         try:
             controller, _store, event_log = build_execution_controller(
                 plan=plan,
@@ -432,10 +526,12 @@ class LocalGraphRuntimeFacade:
         identity: GraphRunIdentity,
         event_log: GraphEventLog,
         node_id: str,
-        resolver: RecordedApprovalResolver,
         run_dir: Path,
     ) -> None:
-        """Run the full ``approvals.approve`` use case and record the commit in the resolver."""
+        """Run the full ``approvals.approve`` use case, DURABLY persisting the grant to approvals.json.
+
+        The resolver is not recorded here — the caller rebuilds it from the durable ledger via
+        ``_durable_resolver`` so a crash between this commit and the resume still re-honors the grant."""
         node = next((n for n in plan.nodes if n.node_id == node_id), None)
         if node is None:
             raise GraphIntegrityError(f"approval node {node_id!r} not found in plan")
@@ -450,9 +546,7 @@ class LocalGraphRuntimeFacade:
         nonce = hashlib.sha256(
             f"{identity.run_id}:{node_id}:nonce".encode("utf-8")
         ).hexdigest()
-        approval_id = hashlib.sha256(
-            f"{identity.organization_id}:{identity.project_id}:{identity.run_id}:{node_id}".encode("utf-8")
-        ).hexdigest()
+        approval_id = _approval_id(identity, node_id)
         idempotency_key = approval_id
 
         auth_ctx_raw = json.dumps(
@@ -499,6 +593,11 @@ class LocalGraphRuntimeFacade:
             auth_context_digest=auth_context_digest,
         )
 
+        # Read the CURRENT ledger version so the SECOND approval in a multi-gate DAG is not rejected
+        # as stale: the version advances on every commit, so hardcoding 1 failed every gate after the
+        # first (dual-audit BLOCKER). The commit re-checks this under the flock, so a concurrent write
+        # still fails closed rather than silently overwriting.
+        current_version = _load_approvals(run_dir / "approvals.json").get("resource_version", 1)
         target = ApprovalTarget(
             organization_id=identity.organization_id,
             project_id=identity.project_id,
@@ -508,11 +607,11 @@ class LocalGraphRuntimeFacade:
             attempt=1,
             evidence_digest=evidence_digest,
             requested_effects=frozenset(node.required_effects),
-            resource_version=1,
+            resource_version=current_version,
         )
 
         command_port = _FileApprovalCommandPort(run_dir)
-        commit = _approve_use_case(
+        _approve_use_case(
             approval_request,
             target,
             approval_decision,
@@ -520,10 +619,138 @@ class LocalGraphRuntimeFacade:
             self.approval_authorizer or _SameTenantApprovalAuthorizer(),
             self.approval_signature_verifier or _LocalApprovalSignatureVerifier(),
             command_port,
-            expected_resource_version=1,
+            expected_resource_version=current_version,
             idempotency_key=idempotency_key,
             now=now,
         )
-        resolver.record_committed_approval(
-            identity=identity, request=approval_request, commit=commit,
+
+    def _durable_resolver(
+        self, *, identity: GraphRunIdentity, plan: ExecutionPlan, run_dir: Path,
+    ) -> RecordedApprovalResolver:
+        """Rebuild the approval resolver from the DURABLE approvals.json ledger (C-078 follow-up).
+
+        Crash-recovery: an approval or rejection that was durably committed BEFORE the process died is
+        re-honored on the next resume/approve, so the run never re-pauses a gate a human already decided.
+        Every entry is validated fail-closed: an unknown node, a malformed entry, a foreign ``approval_id``
+        (not the deterministic id for THIS run+node), or a node carrying BOTH a durable approval and a
+        rejection raises ``GraphIntegrityError`` (``_load_approvals`` fails closed first on a torn/mis-shaped
+        file).
+
+        LOCAL TRUST POSTURE — honest boundary, NOT a tamper-proof claim: ``approvals.json`` is a plain file,
+        not hash-chained like ``controller-events.jsonl``. The deterministic ``approval_id`` is a run-scoped
+        HANDLE derived from public identity — it corroborates that a record belongs to this run+node, but it
+        is NOT a credential. So anyone who can WRITE the run directory is trusted as the operator (the local
+        posture: the MCP session is the authentication boundary and the run dir is single-tenant local FS).
+        A HOSTED / multi-tenant deployment MUST make decisions tamper-EVIDENT — sign each record and
+        re-verify it here via the injected ``approval_signature_verifier``, or chain each decision into the
+        hash-chained receipt log — and MUST NOT treat run-dir writability as approval authority."""
+        resolver = RecordedApprovalResolver()
+        record = _load_approvals(run_dir / "approvals.json")
+        nodes_by_id = {n.node_id: n for n in plan.nodes}
+        approved: set[tuple[str, int]] = set()
+        rejected: set[tuple[str, int]] = set()
+
+        for stored in record.get("commits", []):
+            node_id = str(stored.get("node_id", ""))
+            node = nodes_by_id.get(node_id)
+            if node is None:
+                raise GraphIntegrityError(f"durable approval references unknown node {node_id!r}")
+            if stored.get("approval_id") != _approval_id(identity, node_id):
+                raise GraphIntegrityError(f"durable approval for node {node_id!r} has a foreign approval_id")
+            try:
+                commit = ApprovalCommit(
+                    approval_id=str(stored["approval_id"]),
+                    new_resource_version=int(stored["new_resource_version"]),
+                    idempotency_key=str(stored["idempotency_key"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise GraphIntegrityError(f"durable approval record for node {node_id!r} is malformed") from exc
+            resolver.record_committed_approval(
+                identity=identity, request=self._rehydrated_request(identity, node), commit=commit,
+            )
+            approved.add((node_id, 1))
+
+        for stored in record.get("rejections", []):
+            node_id = str(stored.get("node_id", ""))
+            if node_id not in nodes_by_id:
+                raise GraphIntegrityError(f"durable rejection references unknown node {node_id!r}")
+            # Rejections carry the SAME deterministic-id guard as approvals — never a weaker forgery surface.
+            if stored.get("approval_id") != _approval_id(identity, node_id):
+                raise GraphIntegrityError(f"durable rejection for node {node_id!r} has a foreign approval_id")
+            try:
+                attempt = int(stored.get("attempt", 1))
+            except (TypeError, ValueError) as exc:
+                raise GraphIntegrityError(f"durable rejection record for node {node_id!r} is malformed") from exc
+            resolver.record_rejection(identity=identity, node_id=node_id, attempt=attempt)
+            rejected.add((node_id, attempt))
+
+        conflict = approved & rejected
+        if conflict:
+            raise GraphIntegrityError(f"conflicting durable approve+reject decisions for {sorted(conflict)!r}")
+        return resolver
+
+    @staticmethod
+    def _rehydrated_request(identity: GraphRunIdentity, node: PlannedNode) -> ApprovalRequest:
+        # record_committed_approval reads only approval_id + tenant + node_id + attempt; the remaining
+        # fields are reconstructed deterministically and are never re-validated on the rehydration path.
+        return ApprovalRequest(
+            approval_id=_approval_id(identity, node.node_id),
+            organization_id=identity.organization_id,
+            project_id=identity.project_id,
+            graph_digest=identity.graph_digest,
+            plan_digest=identity.plan_digest,
+            node_id=node.node_id,
+            attempt=1,
+            evidence_digest="sha256:" + "0" * 64,  # unused by the resolver guard
+            requested_effects=frozenset(node.required_effects),
+            required_role=str(node.approval_policy.get("required_role") or "reviewer"),
+            nonce=hashlib.sha256(f"{identity.run_id}:{node.node_id}:nonce".encode("utf-8")).hexdigest(),
+            expires_at="",
         )
+
+    def _require_approval_node(self, plan: ExecutionPlan, node_id: str) -> PlannedNode:
+        """Return the APPROVAL node with ``node_id`` or fail closed — a bogus or non-approval node_id
+        must never reach a durable write and wedge every future resume (dual-audit MAJOR)."""
+        node = next((n for n in plan.nodes if n.node_id == node_id), None)
+        if node is None:
+            raise GraphIntegrityError(f"approval node {node_id!r} not found in plan")
+        if node.kind != NodeKind.APPROVAL.value:
+            raise GraphValidationError("approval_node", "/node_id", f"node {node_id!r} is not an approval node")
+        return node
+
+    def _guard_decision_conflict(self, run_dir: Path, node_id: str, decision: str) -> None:
+        """Refuse a decision that conflicts with one already durably recorded for the node, so the
+        ledger can never hold both an approval and a rejection for a node (dual-audit MAJOR)."""
+        record = _load_approvals(run_dir / "approvals.json")
+        has_approval = any(c.get("node_id") == node_id for c in record.get("commits", []))
+        has_rejection = any(r.get("node_id") == node_id for r in record.get("rejections", []))
+        if decision == "approved" and has_rejection:
+            raise GraphIntegrityError(f"cannot approve node {node_id!r}: a durable rejection already exists")
+        if decision == "rejected" and has_approval:
+            raise GraphIntegrityError(f"cannot reject node {node_id!r}: a durable approval already exists")
+
+    def _authorize_decision(
+        self, *, request: ArenaReadRequest, identity: GraphRunIdentity, node: PlannedNode,
+    ) -> None:
+        """Run the injected approval authorizer for a human decision, so a REJECTION is gated by the
+        SAME authority as an approval — not merely same-tenant (dual-audit: authorization asymmetry).
+        The local default authorizes any same-tenant subject; a hosted deployment injects a
+        role-checking authorizer, which now governs BOTH approve and reject."""
+        approval_request = self._rehydrated_request(identity, node)
+        auth_ctx_raw = json.dumps(
+            {
+                "organization_id": request.organization_id,
+                "project_id": request.project_id,
+                "subject_id": request.subject_id,
+            },
+            separators=(",", ":"), sort_keys=True,
+        ).encode("utf-8")
+        context = AuthenticatedApprovalContext(
+            subject_id=request.subject_id,
+            organization_id=request.organization_id,
+            project_id=request.project_id,
+            auth_context_digest="sha256:" + hashlib.sha256(auth_ctx_raw).hexdigest(),
+        )
+        authorizer = self.approval_authorizer or _SameTenantApprovalAuthorizer()
+        if not authorizer.authorize(approval_request, context):
+            raise GraphIntegrityError(f"not authorized to decide approval node {node.node_id!r}")
