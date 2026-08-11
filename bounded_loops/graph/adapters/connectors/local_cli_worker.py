@@ -263,6 +263,13 @@ class LocalCliConnectorWorker:
         proxy_url = f"http://127.0.0.1:{proxy_port}"
         for var in _PROXY_ENV_VARS:
             env[var] = proxy_url
+        # A pre-existing NO_PROXY/no_proxy could make a cooperating client SKIP the proxy for a
+        # matching host and attempt a direct connect instead — Seatbelt EPERMs that either way
+        # (not a bypass: the cage, not this env wiring, is the enforcement), but clearing it
+        # gives a clean "the tool used the proxy and got denied by the allowlist" fail mode
+        # instead of a confusing "direct connection refused" one.
+        env.pop("NO_PROXY", None)
+        env.pop("no_proxy", None)
         home = Path(env.get("HOME") or str(Path.home()))
         tmp = Path(env.get("TMPDIR") or tempfile.gettempdir())
         # The child's ACTUAL env must agree with what the Seatbelt profile allows — if HOME/

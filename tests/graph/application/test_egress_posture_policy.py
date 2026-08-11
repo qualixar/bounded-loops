@@ -44,11 +44,13 @@ def _binding(*, transport: str) -> ResolvedBinding:
     )
 
 
-def _node(*, transport: str | None, node_id: str = "agent") -> PlannedNode:
+def _node(
+    *, transport: str | None, node_id: str = "agent", effects: frozenset[Effect] = frozenset({Effect.WORKSPACE_WRITE}),
+) -> PlannedNode:
     return PlannedNode(
         node_id=node_id, kind="local_cli" if transport else "research_claim", package_digest=None,
         binding_id="binding-1" if transport else None,
-        required_effects=frozenset({Effect.WORKSPACE_WRITE}), isolation=IsolationLevel.PROCESS_RESTRICTED,
+        required_effects=effects, isolation=IsolationLevel.PROCESS_RESTRICTED,
         hard_deadline_ms=60_000, budgets={}, approval_policy={},
     )
 
@@ -97,7 +99,9 @@ def test_explicit_open_env_yields_open_for_a_local_cli_plan(tmp_path):
 
 
 def test_allowlist_with_cage_available_succeeds_for_a_local_cli_plan(tmp_path):
-    plan = _plan(_node(transport="local_cli"))
+    # A network effect is required (see the effect-floor tests below) — mirrors the SAME
+    # _NETWORK_EFFECTS floor validate_execution_envelope already applies to https.
+    plan = _plan(_node(transport="local_cli", effects=frozenset({Effect.EXTERNAL_WRITE})))
     decision = resolve_local_cli_egress_decision(
         plan,
         environ=_env(
@@ -114,7 +118,7 @@ def test_allowlist_with_cage_available_succeeds_for_a_local_cli_plan(tmp_path):
 def test_allowlist_without_the_cage_still_fails_closed_for_a_local_cli_plan(tmp_path):
     # decide_egress_posture's own generic host-capability check now applies live to local_cli
     # too — the refusal must name OPEN as the danger it refuses to silently fall back to.
-    plan = _plan(_node(transport="local_cli"))
+    plan = _plan(_node(transport="local_cli", effects=frozenset({Effect.EXTERNAL_WRITE})))
     with pytest.raises(GraphValidationError, match="OPEN"):
         resolve_local_cli_egress_decision(
             plan,
@@ -124,6 +128,55 @@ def test_allowlist_without_the_cage_still_fails_closed_for_a_local_cli_plan(tmp_
             ),
             capabilities=_NO_CAGE,
         )
+
+
+# ── FIX 3 (Grok M4): a clear preflight message for the effect-floor requirement ─
+
+
+def test_allowlist_without_a_network_effect_fails_closed_with_an_actionable_message(tmp_path):
+    # A local_cli node declaring ONLY workspace_write cannot be ALLOWLIST-eligible —
+    # validate_execution_envelope would refuse it anyway (mid-run, cryptically). Surface this
+    # at PREFLIGHT instead, with a message that names the actual fix (declare a network effect,
+    # or select OPEN), even when the cage IS available (this is not a capability problem).
+    plan = _plan(_node(transport="local_cli", effects=frozenset({Effect.WORKSPACE_WRITE})))
+    with pytest.raises(GraphValidationError, match="do not declare a network effect"):
+        resolve_local_cli_egress_decision(
+            plan,
+            environ=_env(
+                BOUNDED_LOOPS_EGRESS_POSTURE="allowlist", BOUNDED_LOOPS_EGRESS_ALLOWLIST="api.anthropic.com",
+                BOUNDED_LOOPS_EGRESS_CONFIG=str(tmp_path / "absent.json"),
+            ),
+            capabilities=_SEATBELT_WITH_PROXY,
+        )
+
+
+def test_allowlist_effect_floor_message_names_the_node_and_the_fix(tmp_path):
+    plan = _plan(_node(transport="local_cli", node_id="agent-7", effects=frozenset({Effect.WORKSPACE_WRITE})))
+    try:
+        resolve_local_cli_egress_decision(
+            plan,
+            environ=_env(
+                BOUNDED_LOOPS_EGRESS_POSTURE="allowlist", BOUNDED_LOOPS_EGRESS_ALLOWLIST="api.anthropic.com",
+                BOUNDED_LOOPS_EGRESS_CONFIG=str(tmp_path / "absent.json"),
+            ),
+            capabilities=_SEATBELT_WITH_PROXY,
+        )
+        pytest.fail("expected GraphValidationError")
+    except GraphValidationError as exc:
+        message = str(exc)
+        assert "agent-7" in message
+        assert "external_write" in message or "financial" in message or "irreversible" in message
+        assert "OPEN" in message  # names the alternative fix too
+
+
+def test_allowlist_effect_floor_check_does_not_fire_under_open_posture(tmp_path):
+    # The effect-floor requirement is specific to ALLOWLIST; a workspace_write-only node must
+    # keep working unchanged under the (default) OPEN posture.
+    plan = _plan(_node(transport="local_cli", effects=frozenset({Effect.WORKSPACE_WRITE})))
+    decision = resolve_local_cli_egress_decision(
+        plan, environ=_env(BOUNDED_LOOPS_EGRESS_CONFIG=str(tmp_path / "absent.json")), capabilities=_NO_CAGE,
+    )
+    assert decision.network_mode is NetworkMode.OPEN
 
 
 # ── BROKER is refused for a plan with a local_cli node ──────────────────────────

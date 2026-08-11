@@ -13,6 +13,10 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
+import socket
+import subprocess
+import tempfile
 import types
 
 import pytest
@@ -24,6 +28,7 @@ from bounded_loops.graph.adapters.connectors.local_cli_worker import (
     StaticCliResolver,
 )
 from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities, probe_platform
+from bounded_loops.graph.adapters.enforcement.egress_proxy import LoopbackEgressProxy
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, NetworkDestination, NetworkMode
 from bounded_loops.graph.domain.artifacts import ArtifactAccess, ArtifactRef
@@ -307,6 +312,7 @@ def test_live_allowlist_completes_a_real_connect_handshake_and_distinguishes_the
     with caplog.at_level("WARNING"):
         result = worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest))
     payload = json.loads(_read(worker._store, result.output_artifact_digests[0]))
+    print(f"\n[EMPIRICAL FIX-verify] CONNECT handshake from inside the ALLOWLIST cage: {payload!r}")
     # Both are refused on the wire (this fake domain resolves nowhere real) — the point is
     # the CONNECT handshake itself reached the proxy over BOTH families, proving a real HTTP
     # client (not just a raw socket) can drive the full protocol from inside the cage.
@@ -341,3 +347,117 @@ def test_live_caged_cli_blocked_from_a_non_allowlisted_host_fails_closed_with_re
     assert "exited 1" in message
     assert "sk-ant-abcdefghijklmnopqrstuvwxyz012345" not in message  # never a silent/leaked reply
     assert "REDACTED" in message
+
+
+# ── hardening pass: DNS robustness, NO_PROXY, UDS empirical check ──────────────
+
+
+@_needs_cage
+def test_live_allowlist_blocks_dns_resolution_for_a_real_resolvable_host(tmp_path):
+    # github.com DOES resolve outside the cage — verified HERE, first, outside the cage, so a
+    # pass below means "the cage blocked it," never "the name doesn't exist" (the exact
+    # ambiguity that made the original claim unreliable). Skip (not a false pass) if this
+    # network genuinely cannot resolve it at all.
+    try:
+        socket.getaddrinfo("github.com", 443, type=socket.SOCK_STREAM)
+    except OSError:
+        pytest.skip("github.com does not resolve on this host/network right now — cannot "
+                     "distinguish 'cage blocked it' from 'name does not exist' here")
+    code = (
+        "import json, socket, sys\n"
+        "sys.stdin.read()\n"
+        "try:\n"
+        "    socket.getaddrinfo('github.com', 443, type=socket.SOCK_STREAM)\n"
+        "    res = {'resolution': 'succeeded'}\n"
+        "except PermissionError as e:\n"
+        "    res = {'resolution': 'denied_by_sandbox (PermissionError): %s' % e}\n"
+        "except OSError as e:\n"
+        "    res = {'resolution': 'OSError errno=%s: %s' % (e.errno, e)}\n"
+        "print(json.dumps(res))\n"
+    )
+    cli = _python_standin(tmp_path, code)
+    worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(cli), prompt="hello")))
+    dest = (NetworkDestination(hostname="api.example.com", port=443),)
+    result = worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest))
+    payload = json.loads(_read(worker._store, result.output_artifact_digests[0]))
+    print(f"\n[EMPIRICAL FIX 1] getaddrinfo('github.com') inside the ALLOWLIST cage: "
+          f"{payload['resolution']!r}")
+    assert payload["resolution"] != "succeeded", payload
+
+
+def test_caged_argv_clears_no_proxy_from_the_child_env(tmp_path):
+    # FIX 2 (Grok M3): a cooperating client honoring a pre-existing NO_PROXY/no_proxy could
+    # attempt a direct connect for an excluded host — Seatbelt EPERMs it either way (not a
+    # bypass), but clearing it gives a cleaner, less confusing fail mode.
+    worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile("/bin/true"), prompt="x")))
+    workdir = tmp_path / "work"
+    workdir.mkdir(exist_ok=True)
+    env = {
+        "HOME": str(tmp_path / "home"), "PATH": "/usr/bin",
+        "NO_PROXY": "vendor.example.com", "no_proxy": "vendor.example.com",
+    }
+    (tmp_path / "home").mkdir(exist_ok=True)
+    worker._caged_argv(node=_node(), inner_argv=["/bin/true"], workdir=workdir, env=env, proxy_port=8888)
+    assert "NO_PROXY" not in env
+    assert "no_proxy" not in env
+
+
+@_needs_cage
+def test_live_allowlist_unix_domain_socket_connect_behavior_is_empirically_recorded(tmp_path):
+    # FIX 5: resolves the Grok/Muse disagreement empirically rather than by argument — does
+    # the Seatbelt ALLOWLIST cage's `(deny network*)` also cover AF_UNIX connect (Grok), or is
+    # a co-resident Unix-socket listener an uncaged exfil path (Muse)? A REAL listener is bound
+    # under workdir (writable + reachable — reads are unconfined) BEFORE the caged child runs,
+    # so a "connected" result would mean an ACTUAL local IPC channel was reachable, not merely
+    # that the socket path existed.
+    workdir = tmp_path / "work"
+    workdir.mkdir(exist_ok=True)
+    # AF_UNIX paths are capped at ~104 bytes on macOS — pytest's tmp_path nesting is far too
+    # long, so the listener socket (reachability only requires path traversal, never write
+    # access, so it need not live under workdir) uses a short, dedicated directory instead.
+    socket_dir = tempfile.mkdtemp(prefix="bl-uds-")
+    socket_path = Path(socket_dir) / "s.sock"
+
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    listener.listen(1)
+    try:
+        code = (
+            "import json, socket, sys\n"
+            "try:\n"
+            "    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(2)\n"
+            "    s.connect(sys.argv[1]); s.close(); result = 'connected'\n"
+            "except PermissionError as e:\n"
+            "    result = 'denied_by_sandbox (PermissionError): %s' % e\n"
+            "except OSError as e:\n"
+            "    result = 'OSError errno=%s: %s' % (e.errno, e)\n"
+            "print(json.dumps({'uds_connect': result}))\n"
+        )
+        cli = tmp_path / "uds_probe.py"
+        cli.write_text(f"#!/usr/bin/env python3\n{code}")
+        cli.chmod(0o755)
+
+        worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(str(cli)), prompt="")))
+        env = worker._child_env(CliProfile(str(cli)))
+        proxy = LoopbackEgressProxy(allowed=(NetworkDestination(hostname="api.example.com", port=443),))
+        proxy_port = proxy.start()
+        try:
+            argv = worker._caged_argv(
+                node=_node(), inner_argv=[str(cli), str(socket_path)], workdir=workdir, env=env, proxy_port=proxy_port,
+            )
+            proc = subprocess.run(argv, cwd=workdir, env=env, capture_output=True, text=True, timeout=10)
+        finally:
+            proxy.stop()
+    finally:
+        listener.close()
+        shutil.rmtree(socket_dir, ignore_errors=True)
+
+    payload = json.loads(proc.stdout.strip())
+    observed = payload["uds_connect"]
+    print(f"\n[EMPIRICAL FIX 5] AF_UNIX connect to a real co-resident listener under the "
+          f"ALLOWLIST cage: {observed!r}")
+    # RESOLVED (empirically, live, against a REAL listener — not argued): Grok was right.
+    # `(deny network*)` covers AF_UNIX connect too; Muse's "uncaged co-resident helper" claim
+    # does not hold on this host. Locked in as a real regression-catching assertion, not just
+    # a printed observation — see docs/graph-egress-posture.md's Known limitation section.
+    assert observed.startswith("denied_by_sandbox"), payload

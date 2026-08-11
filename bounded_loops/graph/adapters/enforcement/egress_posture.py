@@ -109,6 +109,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import errno
 import json
 import os
 from pathlib import Path
@@ -258,16 +259,29 @@ def _read_config_file(path: Path) -> Mapping[str, object] | None:
     JSON, a non-object body, an unknown key) raises — never silently treated as
     "absent", which would let a corrupt or tampered installer-written file quietly
     downgrade resolution to a lower-precedence tier (fail-open).
+
+    FIX (Muse — config TOCTOU): opens with O_NOFOLLOW in the SAME syscall that reads the
+    file, rather than a separate ``is_symlink()`` check followed by a separate ``read_text()``
+    — a symlink swapped in between those two calls could otherwise win that race. O_NOFOLLOW
+    makes the kernel refuse atomically at open() if the final path component is a symlink,
+    closing the window entirely (mirrors ``trust_store.py``'s own ``O_NOFOLLOW`` write path).
     """
-    if not path.exists():
-        return None
-    if path.is_symlink():
-        raise GraphValidationError(
-            "egress_posture", "/egress/config",
-            f"egress config file {path} must not be a symlink (refusing to follow it)",
-        )
     try:
-        raw = path.read_text(encoding="utf-8")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise GraphValidationError(
+                "egress_posture", "/egress/config",
+                f"egress config file {path} must not be a symlink (refusing to follow it)",
+            ) from exc
+        raise GraphValidationError(
+            "egress_posture", "/egress/config", f"egress config file {path} could not be read: {exc}",
+        ) from exc
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            raw = handle.read()
     except OSError as exc:
         raise GraphValidationError(
             "egress_posture", "/egress/config", f"egress config file {path} could not be read: {exc}",

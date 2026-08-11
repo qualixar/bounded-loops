@@ -46,11 +46,18 @@ from bounded_loops.graph.adapters.enforcement.egress_posture import (
     decide_egress_posture,
     resolve_egress_posture,
 )
+from bounded_loops.graph.application.execution_policy import NetworkMode
 from bounded_loops.graph.application.run_graph import is_egress_node
+from bounded_loops.graph.domain.authoring import Effect
 from bounded_loops.graph.domain.errors import GraphValidationError
 from bounded_loops.graph.domain.plan import ExecutionPlan
 
 _LOCAL_CLI_TRANSPORTS = frozenset({"local_cli"})
+# The SAME network-effect floor validate_execution_envelope (execution_policy.py) already
+# applies to every node — duplicated locally rather than cross-imported, matching this
+# project's own precedent (enforcer.py and execution_policy.py each keep their own copy of
+# this exact frozenset rather than sharing a private cross-module import).
+_NETWORK_EFFECTS = frozenset({Effect.EXTERNAL_WRITE, Effect.FINANCIAL, Effect.IRREVERSIBLE})
 
 
 def resolve_local_cli_egress_decision(
@@ -98,4 +105,29 @@ def resolve_local_cli_egress_decision(
         )
 
     caps = capabilities if capabilities is not None else probe_platform()
-    return decide_egress_posture(egress_config, capabilities=caps)
+    decision = decide_egress_posture(egress_config, capabilities=caps)
+    if decision.network_mode is NetworkMode.ALLOWLIST:
+        _require_network_effect_floor(plan)
+    return decision
+
+
+def _require_network_effect_floor(plan: ExecutionPlan) -> None:
+    """FIX 3 (Grok M4): ``validate_execution_envelope`` already refuses (mid-run, cryptically)
+    an ALLOWLIST envelope for a node whose declared effects lack a network effect
+    (``_NETWORK_EFFECTS`` — the SAME floor ``https`` nodes already must clear). Surface the
+    SAME fail-closed outcome at PREFLIGHT instead, with a message that names the node and the
+    actual fix, so an operator who selects ALLOWLIST for a graph whose local_cli node forgot to
+    declare a network effect gets an actionable message rather than a cryptic validation error
+    discovered only after the run has started.
+    """
+    for node in plan.nodes:
+        if not is_egress_node(plan, node, _LOCAL_CLI_TRANSPORTS):
+            continue
+        if not (frozenset(node.required_effects) & _NETWORK_EFFECTS):
+            raise GraphValidationError(
+                "egress_posture", f"/nodes/{node.node_id}",
+                f"node {node.node_id!r} is local_cli under ALLOWLIST egress posture, but its "
+                f"declared effects ({sorted(e.value for e in node.required_effects)}) do not "
+                "declare a network effect (external_write/financial/irreversible) — ALLOWLIST "
+                "requires one; declare one on this node, or select OPEN egress posture instead",
+            )

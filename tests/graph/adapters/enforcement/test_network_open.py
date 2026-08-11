@@ -129,6 +129,9 @@ def test_wrap_argv_builds_a_seatbelt_loopback_only_profile_for_allowlist(tmp_pat
     assert '(allow network-outbound (remote ip "localhost:54321"))' in profile
     assert '(deny file-write* (subpath "/"))' in profile
     assert argv[-2:] == ["/bin/echo", "hi"]
+    # DNS-robustness hardening: makes the (already network*-enforced, live-verified) DNS
+    # denial explicit rather than incidental — see sandbox.py's _DNS_MACH_SERVICES comment.
+    assert '(deny mach-lookup (global-name "com.apple.mDNSResponder"))' in profile
 
 
 def test_native_reports_open_network_as_not_enforced():

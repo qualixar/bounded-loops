@@ -299,6 +299,18 @@ def test_symlinked_config_file_raises(tmp_path):
         resolve_egress_posture(environ=_env(BOUNDED_LOOPS_EGRESS_CONFIG=str(link)))
 
 
+def test_dangling_symlinked_config_file_also_raises(tmp_path):
+    # FIX (Muse — config TOCTOU): proves the O_NOFOLLOW open() itself refuses ANY symlink at
+    # the final path component — including one whose target does not even exist — not merely
+    # re-testing the same input a naive is_symlink() check already caught. A naive "does the
+    # resolved target exist" check could otherwise be fooled into treating a dangling symlink
+    # as absent (None) rather than refusing it.
+    link = tmp_path / "egress.json"
+    link.symlink_to(tmp_path / "does-not-exist-target.json")
+    with pytest.raises(GraphValidationError, match="symlink"):
+        resolve_egress_posture(environ=_env(BOUNDED_LOOPS_EGRESS_CONFIG=str(link)))
+
+
 def test_config_file_allowlist_field_must_be_a_list_of_strings(tmp_path):
     config_path = tmp_path / "egress.json"
     config_path.write_text(json.dumps({"posture": "allowlist", "allowlist": "api.anthropic.com"}))
