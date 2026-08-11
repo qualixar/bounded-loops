@@ -140,6 +140,14 @@ class ConsoleServer(ThreadingHTTPServer):
         self.decisions_made = 0
         # Set once a shutdown has actually been scheduled. See `maybe_auto_stop`.
         self.resolved_and_idle = False
+        # Guards `decisions_made` and `resolved_and_idle` — both are read/written from
+        # DIFFERENT request-handler threads (one per accepted connection under
+        # ThreadingHTTPServer): a POST thread calls `record_decision`, a GET thread
+        # calls `maybe_auto_stop`, and two concurrent GETs can call `maybe_auto_stop`
+        # at once. Without this lock, two concurrent GETs could both observe
+        # `resolved_and_idle is False` and each spawn their own shutdown thread. See
+        # `maybe_auto_stop` for why this lock is NEVER held across `self.shutdown()`.
+        self._decision_lock = threading.Lock()
 
     @property
     def console_url(self) -> str:
@@ -152,7 +160,8 @@ class ConsoleServer(ThreadingHTTPServer):
 
     def record_decision(self) -> None:
         """Called by `ConsoleRequestHandler._decide` after a POST successfully commits."""
-        self.decisions_made += 1
+        with self._decision_lock:
+            self.decisions_made += 1
 
     def maybe_auto_stop(self, projection: ArenaProjection) -> None:
         """Schedule a shutdown once a decision has been made and none is left pending.
@@ -166,14 +175,23 @@ class ConsoleServer(ThreadingHTTPServer):
         instead of showing the resolved status. Triggering the shutdown only after a
         GET has ALREADY been fully written back removes that race entirely — the
         operator always sees the final page; the console simply does not outlive it.
-        Idempotent: a second call after the shutdown thread is already running is a
-        no-op, never a second competing shutdown thread.
+
+        The check-and-set of `decisions_made`/`resolved_and_idle` is guarded by
+        `_decision_lock` so two GETs arriving concurrently can never both observe
+        "not yet idle" and each spawn their own shutdown thread — only ONE ever
+        wins the flip to `resolved_and_idle = True`, single-flighting the shutdown.
+        `self.shutdown()` itself blocks until `serve_forever()`'s loop notices and
+        exits, so it is started on its OWN thread strictly AFTER the `with` block
+        has already released the lock — holding the lock across `shutdown()` would
+        let a concurrent `record_decision`/`maybe_auto_stop` call block forever on
+        a lock this thread is meanwhile blocked waiting to release: a deadlock.
         """
-        if self.decisions_made == 0 or self.resolved_and_idle:
-            return
-        if _awaiting_approval_nodes(projection):
-            return
-        self.resolved_and_idle = True
+        with self._decision_lock:
+            if self.decisions_made == 0 or self.resolved_and_idle:
+                return
+            if _awaiting_approval_nodes(projection):
+                return
+            self.resolved_and_idle = True
         threading.Thread(target=self.shutdown, daemon=True).start()
 
 
@@ -199,10 +217,22 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
     overriding `handle_one_request` and re-implementing request-line parsing by
     hand, trading the stdlib's well-tested parser for a bespoke one — a strictly
     WORSE security trade for a purely cosmetic gain, so it is left as-is.
+
+    `timeout = 30` (cross-audit FIX 5, Grok M3): a client that sends a header
+    claiming `Content-Length: 8192` and then never finishes the body would
+    otherwise pin this connection's handler thread in `_read_form`'s
+    `self.rfile.read(length)` forever. `socketserver.StreamRequestHandler.setup`
+    applies this class attribute as a socket timeout on every accepted
+    connection, so a stalled read raises and the connection is torn down
+    instead of hanging. This closes the SLOW-READ variant specifically; the
+    broader "another local process opens unbounded connections" surface stays
+    the accepted, documented residual on `ConsoleServer` above — both cross
+    auditors agreed that one is non-blocking for this LOCAL posture.
     """
 
     server: ConsoleServer  # type: ignore[assignment]
     protocol_version = "HTTP/1.0"
+    timeout = 30
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - stdlib signature
         # Keep stdout clean for the operator — the printed console URL is the only
@@ -239,13 +269,24 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
     # ── GET / ──────────────────────────────────────────────────────────────────
 
     def do_GET(self) -> None:
+        """Token is checked BEFORE path routing (cross-audit FIX 4).
+
+        Checking the path first would let an unauthenticated request tell
+        `GET /` (403, a live route) apart from `GET /nope` (404, no such
+        route) — a listener-liveness oracle for anyone probing this port
+        without the token. The token lives in the query string for GET, so it
+        costs nothing to check it first: ANY GET lacking a valid token gets
+        403 regardless of path; only once the token is valid does an unknown
+        path get its own 404. The one exception is `_split_path` itself, which
+        only parses the URL and never touches the facade or the filesystem.
+        """
         path, query = self._split_path()
-        if path != "/":
-            self._send_plain(HTTPStatus.NOT_FOUND, "not found")
-            return
         token = _first(query, "token")
         if not self._token_ok(token):
             self._send_plain(HTTPStatus.FORBIDDEN, "forbidden — missing or invalid token")
+            return
+        if path != "/":
+            self._send_plain(HTTPStatus.NOT_FOUND, "not found")
             return
         self._render_index(token=token, notice=_notice_from_query(query))
 
@@ -267,6 +308,18 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
     # ── POST /approve, POST /reject ─────────────────────────────────────────────
 
     def do_POST(self) -> None:
+        """Route BEFORE the token check — unlike `do_GET` — because for POST the
+        token lives in the form BODY, not the query string, so it cannot be
+        checked before `_split_path` without reading (and bounding) the body
+        first regardless of path. This does leave a route oracle: an
+        unauthenticated `POST /approve` (404 or 403 depending on Origin) is
+        distinguishable from `POST /whatever` (always 404) — but that only
+        confirms this listener exists and speaks this console's protocol,
+        which any port scan already reveals for free. It is NOT an approval
+        oracle: no path/method combination here reaches `facade.approve()`
+        without ALSO passing the Origin check and the constant-time token
+        check that follow, in that order, below.
+        """
         path, _query = self._split_path()
         if path not in ("/approve", "/reject"):
             self._send_plain(HTTPStatus.NOT_FOUND, "not found")
@@ -305,7 +358,17 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
         # `ConsoleServer.maybe_auto_stop`). The browser's own follow-up GET is what
         # decides whether the console shuts down, only once that page has been served.
         self.server.record_decision()
-        location = f"/?token={quote(token)}&resolved={quote(node_id)}&decision={quote(decision)}"
+        # `safe=""` on BOTH token and node_id (never the stdlib `quote` default of
+        # `safe='/'`): a node_id containing a literal `/` must be percent-encoded
+        # too, so it can never leave an unencoded slash sitting in the query string
+        # of a `Location` header. No header-injection risk exists today (CRLF is
+        # already percent-encoded by `quote`'s default safe set) — this is pure
+        # defense in depth, not a fix for an exploitable bug.
+        location = (
+            f"/?token={quote(token, safe='')}"
+            f"&resolved={quote(node_id, safe='')}"
+            f"&decision={quote(decision)}"
+        )
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", location)
         self.send_header("Content-Length", "0")
@@ -385,9 +448,17 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
         explicitly rather than relying on "the page happens not to link out
         today." `X-Content-Type-Options: nosniff` is a free, standard hardening
         header with no functional cost for a console this small.
+
+        `Cache-Control: no-store` + `Pragma: no-cache` (cross-audit FIX 3):
+        the token-bearing URL/page must never be written to disk cache or kept
+        in the browser's back/forward cache past this process's lifetime — a
+        cached copy would keep the capability usable (or at least visible)
+        after the console has already exited.
         """
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Pragma", "no-cache")
 
     def _send_plain(self, status: HTTPStatus, message: str) -> None:
         encoded = message.encode("utf-8")

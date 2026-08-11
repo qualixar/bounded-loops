@@ -12,15 +12,19 @@ run directories.
 from __future__ import annotations
 
 import http.client
+import socket
 import threading
+import time
 from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
 
+from bounded_loops.graph.application.arena_projection import ArenaProjection
 from bounded_loops.graph.application.execute_graph import execute_graph_run
 from bounded_loops.graph.console.server import (
     ConsoleOpenError,
+    ConsoleRequestHandler,
     ConsoleServer,
     open_console_run,
 )
@@ -572,3 +576,199 @@ def test_console_url_embeds_host_port_and_token(console) -> None:
     assert url.startswith("http://127.0.0.1:")
     assert f":{server.server_address[1]}/" in url
     assert f"token={server.token}" in url
+
+
+# ── cross-audit hardening pass (Grok + Muse, both CONVERGED) ─────────────────
+# FIX 1 (both models): decisions_made / resolved_and_idle race under concurrent
+# GET threads — guarded by `ConsoleServer._decision_lock`, single-flighting the
+# shutdown thread.
+
+def _empty_projection() -> ArenaProjection:
+    """A terminal projection with nothing left AWAITING_APPROVAL."""
+    return ArenaProjection(
+        organization_id="local-org", project_id="local-project", run_id="run-1",
+        graph_digest="sha256:" + "a" * 64, plan_digest="sha256:" + "b" * 64,
+        policy_digest="sha256:" + "c" * 64, run_state="SUCCEEDED",
+        receipt_sequence=1, receipt_head_hash="0" * 64,
+        nodes=(), edges=(), levels=(),
+    )
+
+
+def test_maybe_auto_stop_is_single_flighted_under_concurrent_calls(tmp_path: Path) -> None:
+    """FIX 1: many GET threads racing `maybe_auto_stop` after a decision was
+    already recorded must schedule AT MOST ONE shutdown, never one per thread.
+
+    Drives `ConsoleServer.maybe_auto_stop` directly (bypassing HTTP) from 20
+    threads at once, released together via a Barrier to maximize overlap.
+    `shutdown` itself is replaced with a call-counting stub: this test never
+    starts `serve_forever()`, and the REAL `shutdown()` blocks waiting for a
+    loop that would never be running, which would hang instead of failing.
+    """
+    run_dir = _paused_run(tmp_path)
+    identity, facade = open_console_run(run_dir)
+    server = ConsoleServer(identity=identity, facade=facade, port=0)
+    try:
+        server.decisions_made = 1  # simulate: a decision was already recorded
+
+        shutdown_calls: list[int] = []
+        calls_lock = threading.Lock()
+
+        def _counting_shutdown() -> None:
+            with calls_lock:
+                shutdown_calls.append(1)
+
+        server.shutdown = _counting_shutdown  # type: ignore[method-assign]
+
+        empty_projection = _empty_projection()
+        thread_count = 20
+        barrier = threading.Barrier(thread_count)
+
+        def _race() -> None:
+            barrier.wait()
+            server.maybe_auto_stop(empty_projection)
+
+        threads = [threading.Thread(target=_race) for _ in range(thread_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        # `maybe_auto_stop` starts the (fake, near-instant) shutdown on ITS OWN
+        # thread; give that a brief, bounded moment to actually run.
+        deadline = time.monotonic() + 2
+        while not shutdown_calls and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert server.resolved_and_idle is True
+        assert len(shutdown_calls) == 1, f"expected exactly one shutdown call, got {len(shutdown_calls)}"
+    finally:
+        server.server_close()
+
+
+def test_record_decision_and_maybe_auto_stop_share_one_lock(console) -> None:
+    """Sanity check that the real (non-stubbed) lock-guarded path still reaches
+    the exact same end state end-to-end: one decision recorded via a real POST,
+    one follow-up GET, exactly one auto-stop."""
+    server, _run_dir = console
+    status, headers, _body = _post(
+        server, "/approve", {"token": server.token, "node_id": "checkpoint"},
+        headers={"Origin": _origin(server)},
+    )
+    assert status == 303
+    assert server.decisions_made == 1
+
+    get_status, _headers2, _body2 = _get(server, headers["Location"])
+    assert get_status == 200
+    assert server.resolved_and_idle is True
+
+
+# FIX 2 (Muse): redirect Location must percent-encode '/' in BOTH token and
+# node_id (safe='' instead of the quote() default safe='/').
+
+def test_redirect_location_percent_encodes_slashes_in_node_id(
+    console, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No REAL node_id can contain '/' (the authoring schema restricts ids to
+    ``^[a-z][a-z0-9_-]{0,62}$``), so this defense-in-depth is exercised by
+    stubbing `facade.approve()` to succeed for ANY node_id — isolating
+    server.py's own URL-building from the facade's node-id validation."""
+    server, _run_dir = console
+
+    def _fake_approve(request: object, *, node_id: str, decision: str) -> ArenaProjection:
+        return _empty_projection()
+
+    monkeypatch.setattr(server.facade, "approve", _fake_approve)
+
+    hostile_node_id = "checkpoint/../evil"
+    status, headers, _body = _post(
+        server, "/approve", {"token": server.token, "node_id": hostile_node_id},
+        headers={"Origin": _origin(server)},
+    )
+    assert status == 303
+    location = headers["Location"]
+    query = location.split("?", 1)[1]
+    assert "/" not in query, f"unencoded '/' leaked into the redirect query string: {location!r}"
+    assert "checkpoint%2F..%2Fevil" in location
+
+
+# FIX 3 (Grok): Cache-Control: no-store + Pragma: no-cache on every response —
+# the token-bearing page must never be retained past this process's lifetime.
+
+def test_responses_are_never_cached(console) -> None:
+    server, _ = console
+    ok_status, ok_headers, _ = _get(server, f"/?token={server.token}")
+    assert ok_status == 200
+    assert ok_headers.get("Cache-Control") == "no-store"
+    assert ok_headers.get("Pragma") == "no-cache"
+
+    err_status, err_headers, _ = _get(server, "/?token=wrong")
+    assert err_status == 403
+    assert err_headers.get("Cache-Control") == "no-store"
+    assert err_headers.get("Pragma") == "no-cache"
+
+
+# FIX 4 (Muse MINOR-1): GET checks the token BEFORE path dispatch, so an
+# unauthenticated probe cannot distinguish a live route from an unknown one.
+
+def test_get_unknown_path_without_token_is_forbidden_not_not_found(console) -> None:
+    server, _ = console
+    status, _headers, _body = _get(server, "/nope")
+    assert status == 403
+
+
+def test_get_unknown_path_with_valid_token_is_not_found(console) -> None:
+    server, _ = console
+    status, _headers, _body = _get(server, f"/nope?token={server.token}")
+    assert status == 404
+
+
+def test_get_root_with_valid_token_still_renders_the_happy_path(console) -> None:
+    """The FIX 4 reorder must not break the authenticated happy path."""
+    server, _ = console
+    status, _headers, body = _get(server, f"/?token={server.token}")
+    assert status == 200
+    assert "checkpoint" in body
+
+
+# FIX 5 (Grok M3): a class-level `timeout` bounds a slow/stalled request body so
+# it cannot pin a handler thread forever.
+
+def test_console_request_handler_has_a_bounded_timeout() -> None:
+    assert ConsoleRequestHandler.timeout == 30
+
+
+def test_slow_request_body_does_not_hang_the_handler_thread(
+    console, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client that claims Content-Length: 8192 and then stalls must not hang
+    the connection forever. Patches the class timeout down to 0.3s so this test
+    does not actually wait 30s; a generous client-side 5s read timeout is the
+    test's own safety net, not the behavior under test."""
+    monkeypatch.setattr(ConsoleRequestHandler, "timeout", 0.3)
+    server, _run_dir = console
+
+    sock = socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5)
+    try:
+        origin = _origin(server)
+        request_head = (
+            "POST /approve HTTP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Content-Type: application/x-www-form-urlencoded\r\n"
+            "Content-Length: 8192\r\n"
+            f"Origin: {origin}\r\n"
+            "\r\n"
+        ).encode("ascii")
+        sock.sendall(request_head)
+        sock.sendall(b"token=abc")  # far short of the promised 8192 bytes — then stop
+
+        started = time.monotonic()
+        try:
+            data = sock.recv(4096)
+        except OSError:
+            data = b""
+        elapsed = time.monotonic() - started
+
+        assert data == b"", "server must close, not answer, a request it gave up on"
+        assert elapsed < 3, "server must give up well before the test's own client-side timeout"
+    finally:
+        sock.close()
