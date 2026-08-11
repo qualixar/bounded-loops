@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="referrer" content="no-referrer" />
+<title>Approval Console — bounded-loops</title>
+<!--
+  Graph Console — a minimal, LOCAL-ONLY click-to-approve surface for one run.
+  Every Approve/Reject button here posts straight to LocalGraphRuntimeFacade.approve()
+  (the SAME durable machinery `bl graph approve` uses) — this page never mutates a
+  run itself. It is rendered server-side per request; the body between the marker
+  below is replaced fresh on every GET by rendering.py.
+-->
+<style>
+  :root{
+    --bg:#f6f7f9; --surface:#ffffff; --ink:#0d1117; --ink-2:#4a5566; --ink-3:#7b8698;
+    --line:#e6e9ef; --brand:#4f46e5; --brand-ink:#ffffff; --danger:#be123c; --danger-ink:#ffffff;
+    --ok-bg:#dcfaee; --ok-ink:#047857; --warn-bg:#fdf1dc; --warn-ink:#b45309;
+    --radius:14px; --shadow:0 1px 2px rgba(16,24,40,.04),0 8px 24px -12px rgba(16,24,40,.18);
+    --font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,'SF Mono','JetBrains Mono',Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){:root[data-theme=auto]{
+    --bg:#0a0c10; --surface:#12151b; --ink:#eef1f6; --ink-2:#aab3c2; --ink-3:#6b7688;
+    --line:#232833; --brand:#7c74ff; --brand-ink:#0a0c10; --danger:#ff6b88; --danger-ink:#1a0a0e;
+    --ok-bg:#0e2a22; --ok-ink:#34d9a0; --warn-bg:#33260f; --warn-ink:#e0a44a;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 12px 30px -16px rgba(0,0,0,.7);
+  }}
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--font);line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:720px;margin:0 auto;padding:28px 20px 64px}
+  header.top{display:flex;align-items:baseline;gap:10px;padding:4px 2px 18px;border-bottom:1px solid var(--line);margin-bottom:20px}
+  header.top h1{font-size:16px;font-weight:700;letter-spacing:-.01em;margin:0}
+  header.top small{color:var(--ink-3);font-size:12px}
+  code{font-family:var(--mono);font-size:12px;background:var(--line);padding:2px 6px;border-radius:6px}
+  p.run{color:var(--ink-2);font-size:13px}
+  .notice{background:var(--ok-bg);color:var(--ok-ink);border-radius:10px;padding:10px 14px;font-size:13px;margin-bottom:16px}
+  .empty{color:var(--ink-3);font-size:14px;padding:24px 0;text-align:center}
+  .banner{color:var(--ink-3);font-size:11px;border:1px dashed var(--line);border-radius:10px;padding:10px 12px;margin-top:28px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px 20px;margin-bottom:16px}
+  .card h2{font-size:15px;font-family:var(--mono);margin:0 0 10px;word-break:break-all}
+  dl{display:grid;grid-template-columns:88px 1fr;gap:4px 10px;margin:0 0 14px;font-size:13px}
+  dt{color:var(--ink-3)}
+  dd{margin:0;color:var(--ink-2)}
+  .card form{display:inline-block;margin:0 8px 0 0}
+  button{border:none;border-radius:9px;padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer}
+  button.approve{background:var(--brand);color:var(--brand-ink)}
+  button.reject{background:var(--danger);color:var(--danger-ink)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>Approval Console</h1>
+    <small>bounded-loops — local, loopback-only</small>
+  </header>
+  <!--CONSOLE-BODY-->
+  <p class="banner">
+    LOCAL posture: this page is reachable only from this machine, and the link's token
+    is the only thing gating it — anyone else with this URL who can also reach 127.0.0.1
+    on this host could approve or reject in your place. A HOSTED deployment needs real
+    authentication, TLS, and a role-checking authorizer; this console does not provide
+    those and is not a substitute for them.
+  </p>
+</div>
+</body>
+</html>

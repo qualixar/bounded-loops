@@ -968,3 +968,22 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     studio_p.add_argument("--out", default=None, metavar="<file.html>",
                           help="Output HTML path (default: ./graph-studio.html).")
     studio_p.set_defaults(func=cmd_graph_studio)
+
+    # console (handler lives in the console package to keep this file within budget)
+    from bounded_loops.graph.console.cli_console import cmd_graph_console
+
+    console_p = graph_subs.add_parser(
+        "console",
+        help="Serve a minimal localhost approval console for one run (click-to-approve).",
+        description=(
+            "Loopback-only, single-run HTML console: lists paused approval-checkpoint "
+            "nodes with Approve/Reject buttons, each driving the SAME "
+            "LocalGraphRuntimeFacade.approve() `bl graph approve` uses. LOCAL posture "
+            "only — see the printed banner for what a hosted deployment still needs."
+        ),
+    )
+    console_p.add_argument("--run", required=True, metavar="<dir>",
+                           help="Run directory reported by `bl graph run --execute` (the 'out' path).")
+    console_p.add_argument("--port", type=int, default=0, metavar="<port>",
+                           help="TCP port to bind on 127.0.0.1 (default: 0, an OS-assigned ephemeral port).")
+    console_p.set_defaults(func=cmd_graph_console)
