@@ -2,8 +2,8 @@
 
 Two connector modes are supported:
 
-* **local_cli** (existing):  Run the user's own subscription agent CLI under an open-network
-  envelope. No credential is read; the CLI authenticates itself out-of-band.
+* **local_cli** (existing):  Run the user's own subscription agent CLI, OPEN by default or
+  Seatbelt-caged under ALLOWLIST (egress_posture_policy.py). No credential is read here.
 
 * **https / BYOK** (new):  Run a frontier-model API connector through the real
   ``HttpConnectorForwarder`` (RB), the no-secret ``ConnectorInvoker`` path, and a
@@ -18,12 +18,10 @@ Mode surface: ``admitted_connections`` is a ``Mapping[connection_id, AdmittedCon
 passed to ``execute_graph_run``.  The CLI exposes this as ``--admitted <json-map-file>``.
 Preflight fails closed if an ``https`` node has no matching admitted record.
 
-The per-node prompt is RUN-TIME input (``node_id -> prompt``), never baked into the portable
-graph.
+The per-node prompt is RUN-TIME input (``node_id -> prompt``), never baked into the portable graph.
 
-``build_execution_controller`` is the shared controller-assembly helper extracted for reuse by
-``LocalGraphRuntimeFacade``.  ``execute_graph_run`` calls it after manifest compilation and
-preflight; the facade calls it on resume/approve over an existing run dir.
+``build_execution_controller`` is the shared assembly helper reused by ``LocalGraphRuntimeFacade``:
+``execute_graph_run`` calls it after compile+preflight; the facade calls it on resume/approve.
 """
 
 from __future__ import annotations
@@ -53,6 +51,8 @@ from bounded_loops.graph.adapters.connectors.local_cli_worker import (
 )
 from bounded_loops.graph.adapters.connectors.node_cli_resolver import NodeCliResolver
 from bounded_loops.graph.adapters.enforcement import ExecutionEnforcer, probe_platform
+from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
+from bounded_loops.graph.adapters.enforcement.egress_posture import EgressPostureDecision
 from bounded_loops.graph.adapters.enforcement.enforcer import _network_mode_for as _nmf_for_node
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.adapters.persistence.artifact_verifier import LocalArtifactVerifier
@@ -68,6 +68,7 @@ from bounded_loops.graph.application.connector_forward import ConnectorInvoker
 from bounded_loops.graph.application.connector_worker import ConnectorNodeWorker
 from bounded_loops.graph.application.credential_broker import OpaqueCredentialBroker
 from bounded_loops.graph.application.egress_broker import EgressBroker
+from bounded_loops.graph.application.egress_posture_policy import resolve_local_cli_egress_decision
 from bounded_loops.graph.application.execution_policy import (
     ConfiguredExecutionPolicy,
     ExecutionEnvelope,
@@ -185,15 +186,16 @@ def _build_policy(
     plan: ExecutionPlan,
     egress_transports: frozenset[str],
     admitted: Mapping[str, AdmittedConnectionRecord] | None = None,
+    *,
+    local_cli_decision: EgressPostureDecision,
 ) -> ConfiguredExecutionPolicy:
     """One envelope per node.
 
-    * **local_cli** egress nodes: ``NetworkMode.OPEN`` — trusted-local process, no sandbox.
-    * **https** egress nodes: ``NetworkMode.ALLOWLIST`` with a ``NetworkDestination`` derived
-      from the admitted record's endpoint host/port, and isolation lifted to
-      ``CONTAINER_RESTRICTED``.  ``validate_execution_envelope`` enforces a
-      ``container_restricted`` floor for ``external_write`` effect (``_EFFECT_MINIMUM``); the
-      envelope must honour that floor even if the manifest declared ``process_restricted``.
+    * **local_cli**: OPEN (unchanged) or, under ALLOWLIST, a REAL Seatbelt-caged envelope
+      (isolation lifted like https's); BROKER is refused earlier.
+    * **https**: ``NetworkMode.ALLOWLIST`` from the admitted record's endpoint host/port,
+      isolation lifted to ``CONTAINER_RESTRICTED`` (``_EFFECT_MINIMUM``) — its own independent,
+      credential-broker-mediated ALLOWLIST, unchanged by egress posture.
     * everything else: ``NetworkMode.DENY``.
     """
     admitted_map = admitted or {}
@@ -219,12 +221,22 @@ def _build_policy(
                 network_destinations=(NetworkDestination(dest_host, dest_port),),
             )
         elif is_egress_node(plan, node, _LOCAL_CLI_TRANSPORTS):
+            mode = local_cli_decision.network_mode
+            if mode not in (NetworkMode.OPEN, NetworkMode.ALLOWLIST):
+                # Unreachable today (BROKER refused earlier in build_execution_controller);
+                # defensive backstop — also protects the facade's resume/approve (no preflight step).
+                raise GraphValidationError(
+                    "egress_posture", f"/nodes/{node.node_id}",
+                    f"node {node.node_id!r} is local_cli under an unsupported egress decision "
+                    f"({local_cli_decision.posture.value}); only open/allowlist is supported today",
+                )
+            allowlisted = mode is NetworkMode.ALLOWLIST
             envelopes[node.node_id] = ExecutionEnvelope(
-                isolation=node.isolation,
+                isolation=_https_isolation(node.isolation) if allowlisted else node.isolation,
                 transport=binding.transport if binding else None,
                 allowed_effects=node.required_effects,
-                network_mode=NetworkMode.OPEN,
-                network_destinations=(),
+                network_mode=mode,
+                network_destinations=local_cli_decision.network_destinations if allowlisted else (),
             )
         else:
             envelopes[node.node_id] = ExecutionEnvelope(
@@ -290,30 +302,30 @@ def build_execution_controller(
     admitted_connections: Mapping[str, AdmittedConnectionRecord] | None = None,
     cli_profiles: Mapping[str, CliProfile] = CLI_PROFILES,
     environ: Mapping[str, str] | None = None,
+    capabilities: PlatformCapabilities | None = None,
     byok_egress_broker: EgressBroker | None = None,
     byok_credential_resolver: object = None,
     byok_tls_context: ssl.SSLContext | None = None,
     approval_resolver: ApprovalResolverPort | None = None,
 ) -> tuple[GraphRunController, LocalArtifactStore, GraphEventLog]:
     """Shared controller-assembly helper for ``execute_graph_run`` and ``LocalGraphRuntimeFacade``.
+    Builds the full wiring (platform-caps check, artifact store, event log, workers, policy)
+    for an already-compiled plan; returns a ready-to-use ``GraphRunController`` plus the store
+    and event log it owns.
 
-    Accepts an already-compiled plan and a known identity; builds the full wiring
-    (platform-caps enforcement check, artifact store, event log, workers, policy) and returns
-    a ready-to-use ``GraphRunController`` alongside the store and event log it owns.
+    Raises ``GraphValidationError`` if the platform cannot enforce required isolation for any
+    non-egress node, OR if the resolved egress posture (Slice 2, read from *environ*) can't be
+    honored by this plan's local_cli node(s) — both existing callers already wrap this call.
 
-    Raises ``GraphValidationError`` if the platform cannot enforce the required isolation for any
-    non-egress node.  The caller decides how to surface this (int exit code vs. exception).
-
-    ``out_dir`` must already exist (call ``mkdir`` before ``build_execution_controller``).
-    ``approval_resolver`` is wired into the controller so an approval-node graph can continue
-    past human gates on resume; pass ``None`` for graphs with no approval nodes.
+    ``out_dir`` must already exist. ``approval_resolver`` continues an approval-node graph past
+    human gates; ``capabilities`` defaults to a real platform probe (``build_enforcer``'s convention).
     """
     admitted = admitted_connections or {}
 
     # ── platform-capability check ────────────────────────────────────────────
     # Egress/connector nodes are routed to ConnectorNodeWorker — no subprocess is
     # sandboxed — so the platform capability check does not apply to them.
-    caps = probe_platform()
+    caps = capabilities if capabilities is not None else probe_platform()
     egress_node_ids = frozenset(
         n.node_id for n in plan.nodes
         if is_egress_node(plan, n, _ALL_EXECUTOR_TRANSPORTS)
@@ -329,6 +341,9 @@ def build_execution_controller(
                 f"cannot enforce {node.isolation.value} isolation: {reason}",
             )
     enforcer = ExecutionEnforcer(caps)
+
+    # ── egress posture (Slice 2): resolved ONCE, before any store/worker is built ───────────
+    local_cli_decision = resolve_local_cli_egress_decision(plan, environ=environ, capabilities=caps)
 
     # ── stores ───────────────────────────────────────────────────────────────
     organization_id = identity.organization_id
@@ -353,6 +368,7 @@ def build_execution_controller(
         organization_id=organization_id,
         project_id=project_id,
         environ=environ,
+        capabilities=caps,
     )
 
     if has_https:
@@ -387,7 +403,7 @@ def build_execution_controller(
         worker=_UnsupportedNodeWorker(),
         gate=StructuralAcceptanceGate(store, organization_id=organization_id, project_id=project_id),
         artifact_verifier=LocalArtifactVerifier(store),
-        execution_policy=_build_policy(plan, egress_transports, admitted),
+        execution_policy=_build_policy(plan, egress_transports, admitted, local_cli_decision=local_cli_decision),
         execution_enforcer=enforcer,
         timestamp=_now_iso,
         actor="graph-controller",
@@ -412,6 +428,9 @@ def execute_graph_run(
     json_out: bool = False,
     cli_profiles: Mapping[str, CliProfile] = CLI_PROFILES,
     environ: Mapping[str, str] | None = None,
+    # Egress posture (Slice 2) — injectable PlatformCapabilities for deterministic tests;
+    # defaults to a real platform probe. See egress_posture_policy.py.
+    capabilities: PlatformCapabilities | None = None,
     # BYOK/HTTP mode — supply admitted-connection authority records (key = connection_id).
     admitted_connections: Mapping[str, AdmittedConnectionRecord] | None = None,
     # Injectable BYOK infrastructure for hermetic testing (all default to production values).
@@ -495,6 +514,7 @@ def execute_graph_run(
             admitted_connections=admitted,
             cli_profiles=cli_profiles,
             environ=environ,
+            capabilities=capabilities,
             byok_egress_broker=byok_egress_broker,
             byok_credential_resolver=byok_credential_resolver,
             byok_tls_context=byok_tls_context,

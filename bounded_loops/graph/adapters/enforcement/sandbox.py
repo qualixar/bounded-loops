@@ -43,6 +43,19 @@ _DIGEST_PIN = re.compile(r"@sha256:[0-9a-f]{64}$")
 # The only device nodes a sandboxed runtime may legitimately WRITE to — never
 # all of /dev, which would expose raw disk / bpf devices.
 _WRITABLE_DEVICES = ("/dev/null", "/dev/zero", "/dev/dtracehelper", "/dev/tty", "/dev/random", "/dev/urandom")
+# ALLOWLIST hardening: `(deny network*)` ALREADY empirically blocks getaddrinfo() for a real,
+# resolvable host on macOS (verified live: test_live_allowlist_blocks_dns_resolution_for_a_real_
+# resolvable_host) — resolution fails fast with a resolver error before any query leaves. This
+# makes that denial EXPLICIT rather than incidental, so intent survives even if a future macOS
+# resolver path changes. Confirmed present on this host via `launchctl print system`; the exact
+# mach service landscape for DNS is version-specific and NOT authoritatively documented by
+# Apple, so this list is a best-effort, defense-in-depth addition on top of (never a
+# replacement for) the network* deny that is the actual, verified enforcement boundary.
+_DNS_MACH_SERVICES = (
+    "com.apple.mDNSResponder",
+    "com.apple.mDNSResponder.reloaded",
+    "com.apple.dnssd.service",
+)
 
 
 def is_digest_pinned(image: object) -> bool:
@@ -105,6 +118,8 @@ def build_seatbelt_allowlist_profile(*, writable: Sequence[Path], proxy_port: in
     if isinstance(proxy_port, bool) or not isinstance(proxy_port, int) or not (1 <= proxy_port <= 65535):
         raise ValueError("egress proxy port must be an integer in 1..65535")
     lines = ["(version 1)", "(allow default)", "(deny network*)"]
+    for service in _DNS_MACH_SERVICES:
+        lines.append(f'(deny mach-lookup (global-name "{service}"))')
     # Loopback-only egress hole. ``localhost`` is the SBPL loopback token; it matches the ``127.0.0.1``
     # the worker points the child at — VERIFIED by the live Seatbelt test (``test_live_allowlist_cages_
     # egress_to_the_loopback_proxy``: the caged child reaches the proxy and nothing else). A literal
