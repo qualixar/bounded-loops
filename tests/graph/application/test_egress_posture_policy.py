@@ -1,17 +1,18 @@
 """Unit tests for `resolve_local_cli_egress_decision` — the seam between the deployment's
 resolved egress posture (`egress_posture.py`) and a local_cli connector node's egress.
 
-Ground truth verified by reading `local_cli_worker.py` in full: `LocalCliConnectorWorker`
-runs the CLI unwrapped (no Seatbelt profile, no egress proxy) and hard-refuses any envelope
-but `NetworkMode.OPEN` as a defense-in-depth guard. So for a plan containing a local_cli
-node:
+DECISION CHANGE (Varun): `LocalCliConnectorWorker` now has a real caged path for ALLOWLIST
+(see `local_cli_worker.py` and its tests) — it reuses the SAME Seatbelt loopback-proxy cage
+`SandboxedNodeWorker`/`https` already use. So for a plan containing a local_cli node:
 
-* OPEN   -> unaffected, byte-for-byte today's behavior.
-* ALLOWLIST -> refused UNCONDITIONALLY, before host capabilities are even consulted. The
-  refusal is NOT capability-gated because a Mac with Seatbelt would not fix it — the worker
-  itself has no cage-wrapping integration yet.
-* BROKER -> refused: a subscription CLI authenticates out-of-band; the no-secret EgressBroker
-  (a lease bound to one declared destination/method/effect) has nothing to mediate.
+* OPEN      -> unaffected, byte-for-byte today's behavior.
+* ALLOWLIST -> honored: `decide_egress_posture`'s generic, capability-aware decision applies
+  directly (fails closed here too if this host cannot deliver the cage — that check is now
+  live for local_cli, not skipped).
+* BROKER    -> still refused: a subscription CLI authenticates out-of-band and talks to its
+  own vendor over its own TLS; the no-secret EgressBroker (a lease bound to one declared
+  destination/method/effect) has nothing to mediate. Genuinely architecturally incoherent,
+  not a missing feature — this did not change.
 
 A plan with NO local_cli node is untouched by any of this (https/DENY nodes are unaffected).
 """
@@ -22,7 +23,7 @@ import pytest
 
 from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
 from bounded_loops.graph.application.egress_posture_policy import resolve_local_cli_egress_decision
-from bounded_loops.graph.application.execution_policy import NetworkMode
+from bounded_loops.graph.application.execution_policy import NetworkDestination, NetworkMode
 from bounded_loops.graph.domain.authoring import Effect, IsolationLevel
 from bounded_loops.graph.domain.errors import GraphValidationError
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode, ResolvedBinding
@@ -92,25 +93,29 @@ def test_explicit_open_env_yields_open_for_a_local_cli_plan(tmp_path):
     assert decision.network_mode is NetworkMode.OPEN
 
 
-# ── ALLOWLIST is refused unconditionally for a plan with a local_cli node ───────
+# ── ALLOWLIST is now honored for a plan with a local_cli node ──────────────────
 
 
-def test_allowlist_is_refused_for_local_cli_even_with_the_cage_available(tmp_path):
+def test_allowlist_with_cage_available_succeeds_for_a_local_cli_plan(tmp_path):
     plan = _plan(_node(transport="local_cli"))
-    with pytest.raises(GraphValidationError, match="not yet implemented for local_cli"):
-        resolve_local_cli_egress_decision(
-            plan,
-            environ=_env(
-                BOUNDED_LOOPS_EGRESS_POSTURE="allowlist", BOUNDED_LOOPS_EGRESS_ALLOWLIST="api.anthropic.com",
-                BOUNDED_LOOPS_EGRESS_CONFIG=str(tmp_path / "absent.json"),
-            ),
-            capabilities=_SEATBELT_WITH_PROXY,  # cage IS available — proves this isn't a capability gate
-        )
+    decision = resolve_local_cli_egress_decision(
+        plan,
+        environ=_env(
+            BOUNDED_LOOPS_EGRESS_POSTURE="allowlist", BOUNDED_LOOPS_EGRESS_ALLOWLIST="api.anthropic.com",
+            BOUNDED_LOOPS_EGRESS_CONFIG=str(tmp_path / "absent.json"),
+        ),
+        capabilities=_SEATBELT_WITH_PROXY,
+    )
+    assert decision.network_mode is NetworkMode.ALLOWLIST
+    assert decision.network_destinations == (NetworkDestination(hostname="api.anthropic.com", port=443),)
+    assert decision.requires_broker is False
 
 
-def test_allowlist_is_refused_for_local_cli_without_the_cage_too(tmp_path):
+def test_allowlist_without_the_cage_still_fails_closed_for_a_local_cli_plan(tmp_path):
+    # decide_egress_posture's own generic host-capability check now applies live to local_cli
+    # too — the refusal must name OPEN as the danger it refuses to silently fall back to.
     plan = _plan(_node(transport="local_cli"))
-    with pytest.raises(GraphValidationError, match="not yet implemented for local_cli"):
+    with pytest.raises(GraphValidationError, match="OPEN"):
         resolve_local_cli_egress_decision(
             plan,
             environ=_env(
@@ -119,24 +124,6 @@ def test_allowlist_is_refused_for_local_cli_without_the_cage_too(tmp_path):
             ),
             capabilities=_NO_CAGE,
         )
-
-
-def test_allowlist_refusal_message_does_not_blame_host_capability(tmp_path):
-    # The refusal must not imply "get a better host" — the worker itself has no cage
-    # integration, so blaming capability would be misleading.
-    plan = _plan(_node(transport="local_cli"))
-    try:
-        resolve_local_cli_egress_decision(
-            plan,
-            environ=_env(
-                BOUNDED_LOOPS_EGRESS_POSTURE="allowlist",
-                BOUNDED_LOOPS_EGRESS_CONFIG=str(tmp_path / "absent.json"),
-            ),
-            capabilities=_SEATBELT_WITH_PROXY,
-        )
-        pytest.fail("expected GraphValidationError")
-    except GraphValidationError as exc:
-        assert "cage" not in str(exc).lower() or "unsandboxed" in str(exc).lower()
 
 
 # ── BROKER is refused for a plan with a local_cli node ──────────────────────────

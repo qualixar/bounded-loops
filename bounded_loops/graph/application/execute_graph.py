@@ -2,8 +2,8 @@
 
 Two connector modes are supported:
 
-* **local_cli** (existing):  Run the user's own subscription agent CLI under an open-network
-  envelope. No credential is read; the CLI authenticates itself out-of-band.
+* **local_cli** (existing):  Run the user's own subscription agent CLI, OPEN by default or
+  Seatbelt-caged under ALLOWLIST (egress_posture_policy.py). No credential is read here.
 
 * **https / BYOK** (new):  Run a frontier-model API connector through the real
   ``HttpConnectorForwarder`` (RB), the no-secret ``ConnectorInvoker`` path, and a
@@ -18,12 +18,10 @@ Mode surface: ``admitted_connections`` is a ``Mapping[connection_id, AdmittedCon
 passed to ``execute_graph_run``.  The CLI exposes this as ``--admitted <json-map-file>``.
 Preflight fails closed if an ``https`` node has no matching admitted record.
 
-The per-node prompt is RUN-TIME input (``node_id -> prompt``), never baked into the portable
-graph.
+The per-node prompt is RUN-TIME input (``node_id -> prompt``), never baked into the portable graph.
 
-``build_execution_controller`` is the shared controller-assembly helper extracted for reuse by
-``LocalGraphRuntimeFacade``.  ``execute_graph_run`` calls it after manifest compilation and
-preflight; the facade calls it on resume/approve over an existing run dir.
+``build_execution_controller`` is the shared assembly helper reused by ``LocalGraphRuntimeFacade``:
+``execute_graph_run`` calls it after compile+preflight; the facade calls it on resume/approve.
 """
 
 from __future__ import annotations
@@ -193,11 +191,11 @@ def _build_policy(
 ) -> ConfiguredExecutionPolicy:
     """One envelope per node.
 
-    * **local_cli** egress nodes: OPEN, unchanged (a non-OPEN posture is refused earlier).
-    * **https** egress nodes: ``NetworkMode.ALLOWLIST`` from the admitted record's endpoint
-      host/port, isolation lifted to ``CONTAINER_RESTRICTED``. UNCHANGED by egress posture —
-      its own independent, credential-broker-mediated (not OS-cage) ALLOWLIST; the isolation
-      floor is enforced even if the manifest declared less (``_EFFECT_MINIMUM``).
+    * **local_cli**: OPEN (unchanged) or, under ALLOWLIST, a REAL Seatbelt-caged envelope
+      (isolation lifted like https's); BROKER is refused earlier.
+    * **https**: ``NetworkMode.ALLOWLIST`` from the admitted record's endpoint host/port,
+      isolation lifted to ``CONTAINER_RESTRICTED`` (``_EFFECT_MINIMUM``) — its own independent,
+      credential-broker-mediated ALLOWLIST, unchanged by egress posture.
     * everything else: ``NetworkMode.DENY``.
     """
     admitted_map = admitted or {}
@@ -223,19 +221,22 @@ def _build_policy(
                 network_destinations=(NetworkDestination(dest_host, dest_port),),
             )
         elif is_egress_node(plan, node, _LOCAL_CLI_TRANSPORTS):
-            if local_cli_decision.network_mode is not NetworkMode.OPEN:
-                # Unreachable today (refused earlier in build_execution_controller); defensive backstop.
+            mode = local_cli_decision.network_mode
+            if mode not in (NetworkMode.OPEN, NetworkMode.ALLOWLIST):
+                # Unreachable today (BROKER refused earlier in build_execution_controller);
+                # defensive backstop — also protects the facade's resume/approve (no preflight step).
                 raise GraphValidationError(
                     "egress_posture", f"/nodes/{node.node_id}",
-                    f"node {node.node_id!r} is local_cli under a non-OPEN egress decision "
-                    f"({local_cli_decision.posture.value}); only OPEN is supported today",
+                    f"node {node.node_id!r} is local_cli under an unsupported egress decision "
+                    f"({local_cli_decision.posture.value}); only open/allowlist is supported today",
                 )
+            allowlisted = mode is NetworkMode.ALLOWLIST
             envelopes[node.node_id] = ExecutionEnvelope(
-                isolation=node.isolation,
+                isolation=_https_isolation(node.isolation) if allowlisted else node.isolation,
                 transport=binding.transport if binding else None,
                 allowed_effects=node.required_effects,
-                network_mode=NetworkMode.OPEN,
-                network_destinations=(),
+                network_mode=mode,
+                network_destinations=local_cli_decision.network_destinations if allowlisted else (),
             )
         else:
             envelopes[node.node_id] = ExecutionEnvelope(
@@ -308,18 +309,16 @@ def build_execution_controller(
     approval_resolver: ApprovalResolverPort | None = None,
 ) -> tuple[GraphRunController, LocalArtifactStore, GraphEventLog]:
     """Shared controller-assembly helper for ``execute_graph_run`` and ``LocalGraphRuntimeFacade``.
-
-    Accepts an already-compiled plan and a known identity; builds the full wiring
-    (platform-caps enforcement check, artifact store, event log, workers, policy) and returns
-    a ready-to-use ``GraphRunController`` alongside the store and event log it owns.
+    Builds the full wiring (platform-caps check, artifact store, event log, workers, policy)
+    for an already-compiled plan; returns a ready-to-use ``GraphRunController`` plus the store
+    and event log it owns.
 
     Raises ``GraphValidationError`` if the platform cannot enforce required isolation for any
     non-egress node, OR if the resolved egress posture (Slice 2, read from *environ*) can't be
     honored by this plan's local_cli node(s) — both existing callers already wrap this call.
 
-    ``out_dir`` must already exist (call ``mkdir`` before ``build_execution_controller``).
-    ``approval_resolver`` continues an approval-node graph past human gates; ``capabilities``
-    defaults to a real platform probe (mirrors ``build_enforcer``'s convention).
+    ``out_dir`` must already exist. ``approval_resolver`` continues an approval-node graph past
+    human gates; ``capabilities`` defaults to a real platform probe (``build_enforcer``'s convention).
     """
     admitted = admitted_connections or {}
 
@@ -369,6 +368,7 @@ def build_execution_controller(
         organization_id=organization_id,
         project_id=project_id,
         environ=environ,
+        capabilities=caps,
     )
 
     if has_https:

@@ -44,6 +44,15 @@ for the allowlist:
     3. the egress config file       (below)
     4. default                      (``open`` / empty allowlist)
 
+The allowlist is parsed/validated ONLY when it is actually relevant — the resolved posture
+is ``allowlist``, or the caller explicitly passed allowlist hosts in this call (then any
+posture/allowlist mismatch is a genuine caller contradiction, caught by
+``EgressPostureConfig``'s own invariant). A stray or malformed ``BOUNDED_LOOPS_EGRESS_ALLOWLIST``
+left over from a different posture is never even looked at, and so can never fail an
+unrelated run (CRIT finding, fixed: an irrelevant, unused config value must never affect an
+unrelated run's outcome — see ``test_malformed_allowlist_env_var_is_never_parsed_*`` in
+``test_egress_posture.py``).
+
 A tier that is genuinely ABSENT (unset env var, missing config file, no explicit
 argument) falls through to the next tier. A tier that is PRESENT but INVALID (an
 unrecognized posture string, a malformed allowlist entry, a config file that
@@ -339,17 +348,17 @@ def resolve_egress_posture(
     env = environ if environ is not None else os.environ
     config_data = _read_config_file(_config_path(env))
     posture = _resolve_posture(explicit_posture, env, config_data)
-    allowlist = _resolve_allowlist(explicit_allowlist, env, config_data)
-    if posture is not EgressPosture.ALLOWLIST and allowlist and explicit_allowlist is None:
-        # The allowlist came from a LOWER-precedence tier (env var or config file) than
-        # whatever decided the posture away from ALLOWLIST — e.g. a shared config file
-        # keeps an "allowlist" section while an explicit-argument or env override sets
-        # posture=open/broker for this call. That leftover value is not relevant to the
-        # posture that actually won; discard it rather than raise on stale configuration
-        # the caller never asked to combine. A caller that explicitly passes BOTH a
-        # non-ALLOWLIST posture AND allowlist hosts in the SAME call is a genuine
-        # contradiction (checked below via EgressPostureConfig's own invariant) and is
-        # never silently discarded.
+    # Only parse/validate the allowlist when it is actually relevant: the resolved posture is
+    # ALLOWLIST, or the CALLER explicitly passed allowlist hosts in THIS call (a genuine
+    # caller-level contradiction if posture isn't ALLOWLIST too — caught below by
+    # EgressPostureConfig's own invariant). Otherwise skip parsing entirely: a stray/leftover
+    # BOUNDED_LOOPS_EGRESS_ALLOWLIST value (or a config-file "allowlist" section left over from
+    # a different posture) is not relevant to the posture that actually won, and must not be
+    # able to fail an unrelated run merely because it happens to be malformed (CRIT finding —
+    # an irrelevant, unused config value must never affect an unrelated run's outcome).
+    if posture is EgressPosture.ALLOWLIST or explicit_allowlist is not None:
+        allowlist = _resolve_allowlist(explicit_allowlist, env, config_data)
+    else:
         allowlist = ()
     return EgressPostureConfig(posture=posture, allowlist=allowlist)
 

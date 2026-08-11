@@ -176,6 +176,51 @@ def test_malformed_allowlist_entry_raises(tmp_path):
         ))
 
 
+def test_malformed_allowlist_env_var_is_never_parsed_when_posture_is_not_allowlist(tmp_path):
+    # CRIT regression: a stray/leftover BOUNDED_LOOPS_EGRESS_ALLOWLIST must not be parsed at all
+    # (never even looked at) when the resolved posture is not ALLOWLIST — it must not be able to
+    # fail an unrelated (open/broker, or no-local_cli) run at preflight.
+    config = resolve_egress_posture(environ=_env(
+        BOUNDED_LOOPS_EGRESS_POSTURE="open",
+        BOUNDED_LOOPS_EGRESS_ALLOWLIST="not::a:::valid,,,entry:::at:all",
+        BOUNDED_LOOPS_EGRESS_CONFIG=str(tmp_path / "absent.json"),
+    ))
+    assert config.posture is EgressPosture.OPEN
+    assert config.allowlist == ()
+
+
+def test_malformed_allowlist_env_var_is_never_parsed_under_the_default_posture(tmp_path):
+    # Same regression, default (unset) posture rather than an explicit "open".
+    config = resolve_egress_posture(environ=_env(
+        BOUNDED_LOOPS_EGRESS_ALLOWLIST="not::a:::valid,,,entry:::at:all",
+        BOUNDED_LOOPS_EGRESS_CONFIG=str(tmp_path / "absent.json"),
+    ))
+    assert config.posture is EgressPosture.OPEN
+    assert config.allowlist == ()
+
+
+def test_malformed_allowlist_env_var_still_raises_under_broker_posture(tmp_path):
+    # BROKER also carries no allowlist concept — a stray value must not be parsed for it either.
+    config = resolve_egress_posture(environ=_env(
+        BOUNDED_LOOPS_EGRESS_POSTURE="broker",
+        BOUNDED_LOOPS_EGRESS_ALLOWLIST="not::a:::valid,,,entry:::at:all",
+        BOUNDED_LOOPS_EGRESS_CONFIG=str(tmp_path / "absent.json"),
+    ))
+    assert config.posture is EgressPosture.BROKER
+    assert config.allowlist == ()
+
+
+def test_malformed_allowlist_env_var_still_raises_under_allowlist_posture(tmp_path):
+    # The fix must only skip parsing when posture ISN'T allowlist — a genuinely malformed
+    # value under allowlist posture (where it IS relevant) must still raise.
+    with pytest.raises(GraphValidationError, match="malformed allowlist entry"):
+        resolve_egress_posture(environ=_env(
+            BOUNDED_LOOPS_EGRESS_POSTURE="allowlist",
+            BOUNDED_LOOPS_EGRESS_ALLOWLIST="not::a:::valid,,,entry:::at:all",
+            BOUNDED_LOOPS_EGRESS_CONFIG=str(tmp_path / "absent.json"),
+        ))
+
+
 def test_ip_literal_allowlist_entry_raises(tmp_path):
     # NetworkDestination admits exact PUBLIC HOSTNAMES only; an IP literal must fail
     # closed here too, not be silently admitted as if it were a hostname.

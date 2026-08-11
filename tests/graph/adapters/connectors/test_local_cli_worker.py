@@ -1,12 +1,16 @@
-"""LocalCliConnectorWorker — run an admitted local-CLI connector's CLI freely (RC Mode 1).
+"""LocalCliConnectorWorker — run an admitted local-CLI connector's CLI freely, or CAGED
+under ALLOWLIST (RC Mode 1 + the ALLOWLIST caged path).
 
-Hermetic: a stand-in CLI (a tiny shell script) stands in for a real agent CLI, so the worker's
-mechanism — resolve, run with the child env, capture stdout as a content-addressed artifact — is
-proven deterministically with no subscription and no quota.
+Hermetic: a stand-in CLI (a tiny shell/python script) stands in for a real agent CLI, so the
+worker's mechanism — resolve, run with the child env, capture stdout as a content-addressed
+artifact — is proven deterministically with no subscription and no quota. The truly-live caged
+tests (which actually invoke `sandbox-exec`) are skipped unless this host has a real Seatbelt +
+the loopback egress proxy, mirroring `test_sandboxed_worker.py`'s own live-test idiom.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import types
@@ -19,14 +23,22 @@ from bounded_loops.graph.adapters.connectors.local_cli_worker import (
     LocalCliConnectorWorker,
     StaticCliResolver,
 )
+from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities, probe_platform
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
-from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, NetworkMode
+from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, NetworkDestination, NetworkMode
 from bounded_loops.graph.domain.artifacts import ArtifactAccess, ArtifactRef
 from bounded_loops.graph.domain.authoring import Effect, IsolationLevel
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.plan import ResolvedBinding
 
 _ORG, _PROJ = "o", "p"
+
+_NO_CAGE = PlatformCapabilities(platform="linux", docker_available=False, process_groups=True, rlimits=True)
+_LIVE = probe_platform()
+_needs_cage = pytest.mark.skipif(
+    not (_LIVE.seatbelt and _LIVE.egress_proxy),
+    reason="RC-LOCKDOWN loopback egress cage needs macOS Seatbelt",
+)
 
 
 def _plan(transport: str = "local_cli"):
@@ -49,13 +61,21 @@ def _envelope(mode: NetworkMode = NetworkMode.OPEN):
     return ExecutionEnvelope(IsolationLevel.PROCESS_RESTRICTED, "local_cli", frozenset({Effect.WORKSPACE_WRITE}), mode, ())
 
 
-def _worker(tmp_path, resolver, environ=None):
+def _allowlist_envelope(destinations: tuple[NetworkDestination, ...]):
+    return ExecutionEnvelope(
+        IsolationLevel.CONTAINER_RESTRICTED, "local_cli", frozenset({Effect.EXTERNAL_WRITE}),
+        NetworkMode.ALLOWLIST, destinations,
+    )
+
+
+def _worker(tmp_path, resolver, environ=None, capabilities=None):
     return LocalCliConnectorWorker(
         identity=types.SimpleNamespace(run_id="run-1"),
         artifact_store=LocalArtifactStore(tmp_path / "artifacts"),
         resolver=resolver, workspace_root=tmp_path / "work",
         organization_id=_ORG, project_id=_PROJ,
         environ=environ if environ is not None else {"PATH": os.environ.get("PATH", "")},
+        capabilities=capabilities,
     )
 
 
@@ -87,7 +107,10 @@ def test_rejects_a_non_local_cli_node(tmp_path):
         worker.execute(plan=_plan(transport="api_proxy"), node=_node(), envelope=_envelope())
 
 
-def test_requires_an_open_network_envelope(tmp_path):
+def test_a_deny_network_envelope_is_refused(tmp_path):
+    # OPEN and ALLOWLIST are the only two envelopes a local_cli connector supports; DENY (and
+    # anything else) is refused — the message names both supported modes ("open-network"
+    # remains a literal substring, so this also pins backward compat of the error text).
     worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(_standin(tmp_path, "#!/bin/sh\ncat\n")), prompt="x")))
     with pytest.raises(GraphIntegrityError, match="open-network"):
         worker.execute(plan=_plan(), node=_node(), envelope=_envelope(mode=NetworkMode.DENY))
@@ -135,3 +158,186 @@ def test_prompt_delivered_as_argument(tmp_path):
 def test_cli_profile_rejects_an_invalid_prompt_delivery():
     with pytest.raises(GraphValidationError):
         CliProfile("x", prompt_via="telepathy")
+
+
+# ── ALLOWLIST caged path (DECISION CHANGE: real cage, reusing sandbox.py/egress_proxy.py) ──
+
+
+def _python_standin(tmp_path: Path, code: str) -> str:
+    # Any python3 on PATH will do — the probes use stdlib only (json/os/socket/sys) — and a
+    # bare "python3" shebang avoids embedding a (possibly long) sys.executable path.
+    cli = tmp_path / "standin_cli.py"
+    cli.write_text(f"#!/usr/bin/env python3\n{code}")
+    cli.chmod(0o755)
+    return str(cli)
+
+
+def test_allowlist_envelope_without_the_cage_fails_closed_before_launching(tmp_path):
+    # Deterministic (injected capabilities): no Seatbelt/egress-proxy on this "host" -> refuse
+    # BEFORE anything is launched, never silently fall back to open egress. The stand-in CLI
+    # would print a tell-tale reply if it ran; it must not.
+    cli = _standin(tmp_path, "#!/bin/sh\nprintf 'SHOULD NOT RUN'\n")
+    worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(cli), prompt="x")), capabilities=_NO_CAGE)
+    dest = (NetworkDestination(hostname="api.anthropic.com", port=443),)
+    with pytest.raises(GraphIntegrityError, match="Seatbelt loopback-proxy cage"):
+        worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest))
+
+
+def test_caged_argv_builds_a_loopback_only_seatbelt_profile(tmp_path):
+    # Pure argv/profile-shape check — no subprocess launched, portable to any host. Exercises
+    # the SAME sandbox.py builder SandboxedNodeWorker/https already use, not a hand-rolled one.
+    worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile("/bin/true"), prompt="x")))
+    workdir = tmp_path / "work"
+    workdir.mkdir(exist_ok=True)
+    env = {"HOME": str(tmp_path / "home"), "TMPDIR": str(tmp_path / "tmp"), "PATH": "/usr/bin"}
+    (tmp_path / "home").mkdir(exist_ok=True)
+    (tmp_path / "tmp").mkdir(exist_ok=True)
+    argv = worker._caged_argv(
+        node=_node(), inner_argv=["/bin/true", "hello"], workdir=workdir, env=env, proxy_port=54321,
+    )
+    assert argv[0].endswith("sandbox-exec")
+    profile = argv[2]  # [sandbox-exec, -p, <profile>, *inner_argv]
+    assert "(deny network*)" in profile
+    assert '(allow network-outbound (remote ip "localhost:54321"))' in profile
+    assert '(deny file-write* (subpath "/"))' in profile
+    assert f'(allow file-write* (subpath "{workdir}"))' in profile
+    assert f'(allow file-write* (subpath "{tmp_path / "home"}"))' in profile  # real HOME writable
+    assert argv[-2:] == ["/bin/true", "hello"]
+
+
+def test_caged_argv_wires_the_proxy_env_vars(tmp_path):
+    worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile("/bin/true"), prompt="x")))
+    workdir = tmp_path / "work"
+    workdir.mkdir(exist_ok=True)
+    env = {"HOME": str(tmp_path / "home"), "PATH": "/usr/bin"}
+    (tmp_path / "home").mkdir(exist_ok=True)
+    worker._caged_argv(node=_node(), inner_argv=["/bin/true"], workdir=workdir, env=env, proxy_port=9999)
+    for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        assert env[var] == "http://127.0.0.1:9999"
+
+
+def test_caged_argv_wraps_a_profile_build_failure_closed(tmp_path):
+    # An unsafe HOME (quote/control characters _canonical() rejects) must fail closed with a
+    # clear GraphIntegrityError, never let a bare ValueError escape uncaught, and never leave a
+    # started proxy unaccounted for at this layer (the caller's `finally` owns that; this method
+    # itself must not swallow the failure).
+    worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile("/bin/true"), prompt="x")))
+    workdir = tmp_path / "work"
+    workdir.mkdir(exist_ok=True)
+    env = {"HOME": '/tmp/ev"il-home', "PATH": "/usr/bin"}
+    with pytest.raises(GraphIntegrityError, match="could not build the egress cage"):
+        worker._caged_argv(node=_node(), inner_argv=["/bin/true"], workdir=workdir, env=env, proxy_port=1111)
+
+
+def test_caged_argv_falls_back_to_real_home_when_env_lacks_it(tmp_path, monkeypatch):
+    # env may not carry HOME explicitly (e.g. a minimal PATH-only environ); the cage must still
+    # resolve a real, writable HOME rather than build a profile with no HOME entry at all.
+    monkeypatch.setenv("HOME", str(tmp_path / "real-home"))
+    (tmp_path / "real-home").mkdir(exist_ok=True)
+    worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile("/bin/true"), prompt="x")))
+    workdir = tmp_path / "work"
+    workdir.mkdir(exist_ok=True)
+    argv = worker._caged_argv(node=_node(), inner_argv=["/bin/true"], workdir=workdir, env={"PATH": "/usr/bin"}, proxy_port=1234)
+    assert f'(allow file-write* (subpath "{tmp_path / "real-home"}"))' in argv[2]
+
+
+@_needs_cage
+def test_live_allowlist_cages_the_cli_to_only_the_loopback_proxy(tmp_path):
+    code = (
+        "import json, os, socket, sys\n"
+        "sys.stdin.read()\n"
+        "proxy = os.environ.get('HTTPS_PROXY', '')\n"
+        "port = int(proxy.rsplit(':', 1)[1]) if proxy.count(':') >= 2 else 0\n"
+        "def _try(addr, p):\n"
+        "    try:\n"
+        "        s = socket.socket(); s.settimeout(2); s.connect((addr, p)); s.close(); return 'reachable'\n"
+        "    except PermissionError:\n"
+        "        return 'denied_by_sandbox'\n"
+        "    except OSError as e:\n"
+        "        return 'denied_by_sandbox' if e.errno == 1 else ('refused' if e.errno == 61 else 'err:%s' % e.errno)\n"
+        "res = {'proxy': proxy, 'to_proxy': _try('127.0.0.1', port), 'to_other': _try('127.0.0.1', 1),\n"
+        "       'home_readable': os.path.isdir(os.environ.get('HOME', ''))}\n"
+        "print(json.dumps(res))\n"
+    )
+    cli = _python_standin(tmp_path, code)
+    worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(cli), prompt="hello")))
+    dest = (NetworkDestination(hostname="api.example.com", port=443),)
+    result = worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest))
+    payload = json.loads(_read(worker._store, result.output_artifact_digests[0]))
+    assert payload["proxy"].startswith("http://127.0.0.1:"), payload
+    assert payload["to_proxy"] == "reachable", payload           # the loopback proxy IS reachable
+    assert payload["to_other"] == "denied_by_sandbox", payload   # every other egress is caged
+    # The whole point of ALLOWLIST-caged local_cli: the REAL HOME (login config) stays readable —
+    # never an isolated empty HOME, which would break the subscription login entirely.
+    assert payload["home_readable"] is True, payload
+
+
+@_needs_cage
+def test_live_allowlist_completes_a_real_connect_handshake_and_distinguishes_the_allowlist(tmp_path, caplog):
+    # Complements the raw-socket probe above with the FULL protocol: a real HTTP CONNECT
+    # request through the proxy, from inside the cage — proving a well-behaved HTTP client
+    # (not just a raw TCP probe) reaches the proxy's CONNECT handler over both IPv4 and the
+    # dual-bound ::1, and that the PROXY ITSELF (not just Seatbelt) evaluates the allowlist
+    # BEFORE ever resolving/dialing anywhere — never a real egress attempt to an unlisted host.
+    # Uses a non-resolving destination deliberately (no real external network call at all,
+    # per this host's egress policy) and distinguishes admitted-but-unresolvable from
+    # not-on-the-allowlist via the proxy's own decision log, not the wire response (both are
+    # 403 Forbidden on the wire — the proxy never reveals WHY over the tunnel itself).
+    code = (
+        "import json, socket, sys\n"
+        "sys.stdin.read()\n"
+        "port = int(__import__('os').environ.get('HTTPS_PROXY', '').rsplit(':', 1)[1])\n"
+        "def _connect(family, addr, target):\n"
+        "    try:\n"
+        "        s = socket.socket(family, socket.SOCK_STREAM); s.settimeout(3); s.connect((addr, port))\n"
+        "        s.sendall(('CONNECT %s HTTP/1.1\\r\\nHost: %s\\r\\n\\r\\n' % (target, target)).encode())\n"
+        "        head = s.recv(200); s.close(); return head.split(b'\\r\\n')[0].decode('ascii', 'replace')\n"
+        "    except OSError as e:\n"
+        "        return 'denied_by_sandbox' if e.errno == 1 else str(e)\n"
+        "res = {\n"
+        "    'admitted_v4': _connect(socket.AF_INET, '127.0.0.1', 'api.example.com:443'),\n"
+        "    'admitted_v6': _connect(socket.AF_INET6, '::1', 'api.example.com:443'),\n"
+        "    'unlisted_v4': _connect(socket.AF_INET, '127.0.0.1', 'evil.example.com:443'),\n"
+        "}\n"
+        "print(json.dumps(res))\n"
+    )
+    cli = _python_standin(tmp_path, code)
+    worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(cli), prompt="hello")))
+    dest = (NetworkDestination(hostname="api.example.com", port=443),)
+    with caplog.at_level("WARNING"):
+        result = worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest))
+    payload = json.loads(_read(worker._store, result.output_artifact_digests[0]))
+    # Both are refused on the wire (this fake domain resolves nowhere real) — the point is
+    # the CONNECT handshake itself reached the proxy over BOTH families, proving a real HTTP
+    # client (not just a raw socket) can drive the full protocol from inside the cage.
+    assert "403 Forbidden" in payload["admitted_v4"], payload
+    assert "403 Forbidden" in payload["admitted_v6"], payload
+    assert "403 Forbidden" in payload["unlisted_v4"], payload
+    # The proxy's OWN decision log proves it evaluated the allowlist distinctly per host:
+    # admitted-but-unresolvable reached resolution; the unlisted host never did.
+    messages = "\n".join(caplog.messages)
+    assert "api.example.com:443" in messages and "could not be resolved" in messages
+    assert "evil.example.com:443" in messages and "not on the admitted allowlist" in messages
+
+
+@_needs_cage
+def test_live_caged_cli_blocked_from_a_non_allowlisted_host_fails_closed_with_redacted_diagnostic(tmp_path):
+    code = (
+        "import socket, sys\n"
+        "sys.stdin.read()\n"
+        "try:\n"
+        "    s = socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 1)); s.close()\n"
+        "    print('UNEXPECTED: reached a non-allowlisted destination', file=sys.stderr)\n"
+        "except OSError:\n"
+        "    print('network error reaching vendor api key sk-ant-abcdefghijklmnopqrstuvwxyz012345', file=sys.stderr)\n"
+        "sys.exit(1)\n"
+    )
+    cli = _python_standin(tmp_path, code)
+    worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(cli), prompt="hello")))
+    dest = (NetworkDestination(hostname="api.example.com", port=443),)
+    with pytest.raises(GraphIntegrityError) as caught:
+        worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest))
+    message = str(caught.value)
+    assert "exited 1" in message
+    assert "sk-ant-abcdefghijklmnopqrstuvwxyz012345" not in message  # never a silent/leaked reply
+    assert "REDACTED" in message
