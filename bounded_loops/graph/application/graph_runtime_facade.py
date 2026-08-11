@@ -27,6 +27,23 @@ Run directory layout (``runs_root / org / project / run_id /``)
   controller-events.jsonl  — hash-chained event log
   approvals.json           — (written here) durable approval decision records
   artifacts/               — per-node artifact store
+
+Two addressing modes (0.4.0 — dual-audit reconciliation, design Q4/M2)
+-----------------------------------------------------------------------
+* ``LocalGraphRuntimeFacade(runs_root=..., arena_authorizer=...)`` — the ORIGINAL
+  hosted/multi-tenant mode above: every run lives at ``runs_root/org/project/run_id``,
+  and every segment is validated + containment-checked against ``runs_root`` before use
+  (``_run_dir`` / ``_safe_segment``). Unchanged; still the right mode for a deployment
+  that serves many tenants out of one root.
+* ``LocalGraphRuntimeFacade.for_run_dir(run_dir, ...)`` — ADDITIVE. Opens ONE run
+  directory LITERALLY: no org/project/run_id join, because there is no join — the
+  caller's own path IS the run root (the same contract ``bl graph status`` / ``arena`` /
+  ``artifacts`` already give their own ``--run <dir>``). It reuses
+  ``cli_graph._load_plan_from_run_dir`` for the SAME symlink guards and identity
+  reconstruction those commands already trust, so opening a flat run this way is no
+  weaker than the existing traversal discipline — there is simply nothing left to
+  traverse. ``bl graph run --execute --out <dir>`` writes flat (directly into ``<dir>``)
+  as of 0.4.0, and ``bl graph approve`` uses this classmethod to open it.
 """
 
 from __future__ import annotations
@@ -45,7 +62,12 @@ from typing import Mapping
 from bounded_loops.graph.adapters.connectors.admitted_connection_request import AdmittedConnectionRecord
 from bounded_loops.graph.adapters.connectors.local_cli_worker import CLI_PROFILES, CliProfile
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
-from bounded_loops.graph.application.approval_gate import RecordedApprovalResolver
+from bounded_loops.graph.application.approval_ledger import (
+    _approval_id,
+    _load_approvals,
+    _rehydrated_request,
+    build_durable_approval_resolver,
+)
 from bounded_loops.graph.application.approvals import (
     ApprovalAuthorizationPort,
     ApprovalCommand,
@@ -74,6 +96,12 @@ from bounded_loops.graph.domain.authoring import NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity, StoredGraphEvent
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
+
+# _approval_id, _load_approvals, and _rehydrated_request are RE-EXPORTED here (not just
+# used internally) because existing tests import them from this module path — see
+# tests/graph/application/test_graph_runtime_facade_security.py and
+# test_graph_runtime_facade.py::test_load_approvals_rejects_non_list_commits. The single
+# real implementation now lives in approval_ledger.py, shared with execute_graph.py.
 
 _ALL_EXECUTOR_TRANSPORTS = frozenset({"local_cli", "https"})
 
@@ -255,44 +283,10 @@ class _FileApprovalCommandPort:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
 
-def _load_approvals(path: Path) -> dict:
-    # A MISSING ledger is a legitimate fresh start; a CORRUPT/torn ledger must FAIL CLOSED — never
-    # silently reset to version 1 (that would wipe the idempotency/version guard and let a decision
-    # be re-committed). Dual-audit MAJOR.
-    if not path.is_file():
-        return {"resource_version": 1, "commits": [], "rejections": []}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        raise GraphIntegrityError(f"approval ledger is unreadable or corrupt: {path}") from exc
-    if not isinstance(data, dict):
-        raise GraphIntegrityError("approval ledger is malformed")
-    # Shape-validate every field the version guard + rehydration rely on, so a malformed ledger fails
-    # closed HERE (GraphIntegrityError) rather than leaking a raw KeyError/AttributeError downstream
-    # (dual-audit MAJOR: e.g. a non-list ``commits`` or a string ``resource_version``).
-    version = data.get("resource_version", 1)
-    if isinstance(version, bool) or not isinstance(version, int):
-        raise GraphIntegrityError("approval ledger resource_version must be an integer")
-    for key in ("commits", "rejections"):
-        entries = data.get(key, [])
-        if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
-            raise GraphIntegrityError(f"approval ledger {key} must be a list of objects")
-    return data
-
-
 def _atomic_write(path: Path, data: bytes) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_bytes(data)
     os.replace(str(tmp), str(path))
-
-
-def _approval_id(identity: GraphRunIdentity, node_id: str) -> str:
-    """Deterministic approval identity for a run+node — the SAME derivation on the commit path and
-    the durable-rehydration path, so a re-honored approval matches exactly the one that was persisted
-    (and a durable record whose id does not match this derivation is rejected as foreign)."""
-    return hashlib.sha256(
-        f"{identity.organization_id}:{identity.project_id}:{identity.run_id}:{node_id}".encode("utf-8")
-    ).hexdigest()
 
 
 # ── facade ────────────────────────────────────────────────────────────────────
@@ -322,6 +316,12 @@ class LocalGraphRuntimeFacade:
         BYOK/https admitted-connection records.  Pass ``None`` (default) for local-CLI-only runs.
     byok_egress_broker / byok_credential_resolver / byok_tls_context:
         Injectable BYOK infrastructure passed through to ``build_execution_controller``.
+
+    Do not set ``_literal_run_dir`` directly — construct via ``for_run_dir`` instead,
+    which validates the directory (symlink guard + identity load) before this field is
+    ever populated. When it is set, ``runs_root`` is inert (present only so the field
+    stays required/typed for the original mode) and every run-directory lookup returns
+    ``_literal_run_dir`` unchanged — see ``_run_dir``.
     """
 
     runs_root: Path
@@ -338,6 +338,80 @@ class LocalGraphRuntimeFacade:
     # and accept the MCP session as the authentication boundary (documented local posture).
     approval_authorizer: ApprovalAuthorizationPort | None = None
     approval_signature_verifier: ApprovalSignatureVerifierPort | None = None
+    # ADDITIVE flat-addressing mode (0.4.0 dual-audit reconciliation, design Q4/M2) — set
+    # ONLY by `for_run_dir`. `kw_only=True` (Python 3.10+ per-field option) slots this in
+    # WITHOUT disturbing the required-field ordering of `runs_root`/`arena_authorizer`
+    # above: existing callers' constructor calls are byte-for-byte unaffected.
+    _literal_run_dir: Path | None = field(default=None, kw_only=True)
+
+    # ── additive constructor: open ONE run directory literally ──────────────
+
+    @classmethod
+    def for_run_dir(
+        cls,
+        run_dir: Path,
+        *,
+        arena_authorizer: ArenaAuthorizationPort | None = None,
+        cli_profiles: Mapping[str, CliProfile] | None = None,
+        environ: Mapping[str, str] | None = None,
+        node_prompts: Mapping[str, str] | None = None,
+        admitted_connections: Mapping[str, AdmittedConnectionRecord] | None = None,
+        byok_egress_broker: EgressBroker | None = None,
+        byok_credential_resolver: object = None,
+        byok_tls_context: ssl.SSLContext | None = None,
+        approval_authorizer: ApprovalAuthorizationPort | None = None,
+        approval_signature_verifier: ApprovalSignatureVerifierPort | None = None,
+    ) -> "LocalGraphRuntimeFacade":
+        """Address a run by its LITERAL directory — no org/project/run_id join.
+
+        ``run_dir`` IS the run root: it must directly contain ``run-meta.json``,
+        ``manifest.yaml``, ``connections.json``, ``controller-events.jsonl`` — exactly
+        what ``bl graph run --execute --out <dir>`` writes as of 0.4.0 (flat, no
+        nesting). Validated fail-closed BEFORE the facade is constructed, not lazily on
+        first use:
+
+        1. ``run_dir`` itself must not be a symlink (checked on the path as GIVEN,
+           before ``resolve()`` — a symlink leaf is refused regardless of its target,
+           the same TOCTOU discipline ``_load_plan_from_run_dir`` already applies for
+           ``bl graph status`` / ``artifacts`` / ``arena``).
+        2. The resolved path must exist and be a directory.
+        3. ``cli_graph._load_plan_from_run_dir`` must be able to reconstruct an
+           identity from it — a missing/corrupt ``run-meta.json``, a manifest that
+           will not recompile, or a stored ``plan_id`` that does not match the
+           recompiled plan are all refused here (a directory that merely EXISTS is not
+           a run).
+
+        Every failure mode raises ``GraphIntegrityError`` — one exception type for
+        every "this is not a safely-openable run directory" case, so callers need only
+        one ``except`` clause.
+        """
+        if run_dir.is_symlink():
+            raise GraphIntegrityError(f"run directory '{run_dir}' is a symlink; refusing to open it")
+        resolved = run_dir.resolve()
+        if not resolved.is_dir():
+            raise GraphIntegrityError(
+                f"run directory '{run_dir}' does not exist or is not a directory"
+            )
+        try:
+            _load_plan_from_run_dir(resolved)
+        except FileNotFoundError as exc:
+            raise GraphIntegrityError(f"'{run_dir}' is not a run directory: {exc}") from exc
+        except (ValueError, OSError, GraphValidationError) as exc:
+            raise GraphIntegrityError(f"'{run_dir}' is not a valid run directory: {exc}") from exc
+        return cls(
+            runs_root=resolved,  # inert in this mode — every lookup returns _literal_run_dir
+            arena_authorizer=arena_authorizer or SameTenantArenaAuthorizer(),
+            cli_profiles=cli_profiles if cli_profiles is not None else dict(CLI_PROFILES),
+            environ=environ,
+            node_prompts=node_prompts or {},
+            admitted_connections=admitted_connections,
+            byok_egress_broker=byok_egress_broker,
+            byok_credential_resolver=byok_credential_resolver,
+            byok_tls_context=byok_tls_context,
+            approval_authorizer=approval_authorizer,
+            approval_signature_verifier=approval_signature_verifier,
+            _literal_run_dir=resolved,
+        )
 
     # ── GraphRuntimeFacade protocol ──────────────────────────────────────────
 
@@ -367,7 +441,7 @@ class LocalGraphRuntimeFacade:
         self._check_connector_prompts(plan, event_log)
         # Re-honor any human decision that was durably committed BEFORE the crash (approve-then-crash /
         # reject-then-crash edge): a bare resume must not re-pause a gate a human already decided.
-        resolver = self._durable_resolver(identity=identity, plan=plan, run_dir=run_dir)
+        resolver = build_durable_approval_resolver(identity=identity, plan=plan, run_dir=run_dir)
         try:
             controller, _store, event_log = build_execution_controller(
                 plan=plan,
@@ -442,7 +516,7 @@ class LocalGraphRuntimeFacade:
 
         # Rebuild the resolver from the DURABLE ledger — approve() and resume() now share one source
         # of truth, and the decision just written to approvals.json survives a crash before resume.
-        resolver = self._durable_resolver(identity=identity, plan=plan, run_dir=run_dir)
+        resolver = build_durable_approval_resolver(identity=identity, plan=plan, run_dir=run_dir)
         try:
             controller, _store, event_log = build_execution_controller(
                 plan=plan,
@@ -468,9 +542,15 @@ class LocalGraphRuntimeFacade:
     # ── private helpers ──────────────────────────────────────────────────────
 
     def _run_dir(self, request: ArenaReadRequest) -> Path:
-        # Validate every segment (no "/", no "..", no absolute) AND assert the resolved path stays
-        # inside runs_root — a crafted org/project/run_id must never escape the run root (dual-audit
-        # BLOCKER: a forged run-meta OUTSIDE runs_root would otherwise pass the later tenant check).
+        # ADDITIVE flat mode (set only by `for_run_dir`, already validated — symlink
+        # guard + identity load — at construction time): the run IS this exact
+        # directory, no join, nothing to traverse.
+        if self._literal_run_dir is not None:
+            return self._literal_run_dir
+        # Original hosted/multi-tenant mode: validate every segment (no "/", no "..", no
+        # absolute) AND assert the resolved path stays inside runs_root — a crafted
+        # org/project/run_id must never escape the run root (dual-audit BLOCKER: a
+        # forged run-meta OUTSIDE runs_root would otherwise pass the later tenant check).
         org = _safe_segment(request.organization_id, "organization_id")
         project = _safe_segment(request.project_id, "project_id")
         run_id = _safe_segment(request.run_id, "run_id")
@@ -539,7 +619,8 @@ class LocalGraphRuntimeFacade:
         """Run the full ``approvals.approve`` use case, DURABLY persisting the grant to approvals.json.
 
         The resolver is not recorded here — the caller rebuilds it from the durable ledger via
-        ``_durable_resolver`` so a crash between this commit and the resume still re-honors the grant."""
+        ``build_durable_approval_resolver`` so a crash between this commit and the resume still
+        re-honors the grant."""
         node = next((n for n in plan.nodes if n.node_id == node_id), None)
         if node is None:
             raise GraphIntegrityError(f"approval node {node_id!r} not found in plan")
@@ -632,94 +713,6 @@ class LocalGraphRuntimeFacade:
             now=now,
         )
 
-    def _durable_resolver(
-        self, *, identity: GraphRunIdentity, plan: ExecutionPlan, run_dir: Path,
-    ) -> RecordedApprovalResolver:
-        """Rebuild the approval resolver from the DURABLE approvals.json ledger (C-078 follow-up).
-
-        Crash-recovery: an approval or rejection that was durably committed BEFORE the process died is
-        re-honored on the next resume/approve, so the run never re-pauses a gate a human already decided.
-        Every entry is validated fail-closed: an unknown node, a malformed entry, a foreign ``approval_id``
-        (not the deterministic id for THIS run+node), or a node carrying BOTH a durable approval and a
-        rejection raises ``GraphIntegrityError`` (``_load_approvals`` fails closed first on a torn/mis-shaped
-        file).
-
-        LOCAL TRUST POSTURE — honest boundary, NOT a tamper-proof claim: ``approvals.json`` is a plain file,
-        not hash-chained like ``controller-events.jsonl``. The deterministic ``approval_id`` is a run-scoped
-        HANDLE derived from public identity — it corroborates that a record belongs to this run+node, but it
-        is NOT a credential. So anyone who can WRITE the run directory is trusted as the operator (the local
-        posture: the MCP session is the authentication boundary and the run dir is single-tenant local FS).
-        A HOSTED / multi-tenant deployment MUST make decisions tamper-EVIDENT — sign each record and
-        re-verify it here via the injected ``approval_signature_verifier``, or chain each decision into the
-        hash-chained receipt log — and MUST NOT treat run-dir writability as approval authority."""
-        resolver = RecordedApprovalResolver()
-        record = _load_approvals(run_dir / "approvals.json")
-        nodes_by_id = {n.node_id: n for n in plan.nodes}
-        approved: set[tuple[str, int]] = set()
-        rejected: set[tuple[str, int]] = set()
-
-        for stored in record.get("commits", []):
-            node_id = str(stored.get("node_id", ""))
-            node = nodes_by_id.get(node_id)
-            if node is None:
-                raise GraphIntegrityError(f"durable approval references unknown node {node_id!r}")
-            if stored.get("approval_id") != _approval_id(identity, node_id):
-                raise GraphIntegrityError(f"durable approval for node {node_id!r} has a foreign approval_id")
-            try:
-                commit = ApprovalCommit(
-                    approval_id=str(stored["approval_id"]),
-                    new_resource_version=int(stored["new_resource_version"]),
-                    idempotency_key=str(stored["idempotency_key"]),
-                )
-            except (KeyError, TypeError, ValueError) as exc:
-                raise GraphIntegrityError(f"durable approval record for node {node_id!r} is malformed") from exc
-            resolver.record_committed_approval(
-                identity=identity, request=self._rehydrated_request(identity, node), commit=commit,
-            )
-            approved.add((node_id, 1))
-
-        for stored in record.get("rejections", []):
-            node_id = str(stored.get("node_id", ""))
-            if node_id not in nodes_by_id:
-                raise GraphIntegrityError(f"durable rejection references unknown node {node_id!r}")
-            # Rejections carry the SAME deterministic-id guard as approvals — never a weaker forgery surface.
-            if stored.get("approval_id") != _approval_id(identity, node_id):
-                raise GraphIntegrityError(f"durable rejection for node {node_id!r} has a foreign approval_id")
-            try:
-                attempt = int(stored.get("attempt", 1))
-            except (TypeError, ValueError) as exc:
-                raise GraphIntegrityError(f"durable rejection record for node {node_id!r} is malformed") from exc
-            resolver.record_rejection(identity=identity, node_id=node_id, attempt=attempt)
-            rejected.add((node_id, attempt))
-
-        # Node-level conflict: a node must never carry BOTH decisions, regardless of attempt — a
-        # tamper that recorded them under different attempts must still fail closed (re-audit N2).
-        conflict_nodes = {node_id for node_id, _ in approved} & {node_id for node_id, _ in rejected}
-        if conflict_nodes:
-            raise GraphIntegrityError(
-                f"conflicting durable approve+reject decisions for nodes {sorted(conflict_nodes)!r}"
-            )
-        return resolver
-
-    @staticmethod
-    def _rehydrated_request(identity: GraphRunIdentity, node: PlannedNode) -> ApprovalRequest:
-        # record_committed_approval reads only approval_id + tenant + node_id + attempt; the remaining
-        # fields are reconstructed deterministically and are never re-validated on the rehydration path.
-        return ApprovalRequest(
-            approval_id=_approval_id(identity, node.node_id),
-            organization_id=identity.organization_id,
-            project_id=identity.project_id,
-            graph_digest=identity.graph_digest,
-            plan_digest=identity.plan_digest,
-            node_id=node.node_id,
-            attempt=1,
-            evidence_digest="sha256:" + "0" * 64,  # unused by the resolver guard
-            requested_effects=frozenset(node.required_effects),
-            required_role=str(node.approval_policy.get("required_role") or "reviewer"),
-            nonce=hashlib.sha256(f"{identity.run_id}:{node.node_id}:nonce".encode("utf-8")).hexdigest(),
-            expires_at="",
-        )
-
     def _require_approval_node(self, plan: ExecutionPlan, node_id: str) -> PlannedNode:
         """Return the APPROVAL node with ``node_id`` or fail closed — a bogus or non-approval node_id
         must never reach a durable write and wedge every future resume (dual-audit MAJOR)."""
@@ -748,7 +741,7 @@ class LocalGraphRuntimeFacade:
         SAME authority as an approval — not merely same-tenant (dual-audit: authorization asymmetry).
         The local default authorizes any same-tenant subject; a hosted deployment injects a
         role-checking authorizer, which now governs BOTH approve and reject."""
-        approval_request = self._rehydrated_request(identity, node)
+        approval_request = _rehydrated_request(identity, node)
         auth_ctx_raw = json.dumps(
             {
                 "organization_id": request.organization_id,

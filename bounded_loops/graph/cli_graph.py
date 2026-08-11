@@ -4,9 +4,14 @@ Honesty contract (never violate):
 - `run`  : compile a manifest (honest preview); `--execute --out <dir>` REALLY
            runs a graph inside a native OS sandbox (no Docker), proven by an
            independent gate. With NO manifest it runs the built-in demo; with an
-           admitted local-CLI manifest (+ --connections/--inputs) it runs that
-           graph's agent-CLI nodes for real. BYOK/HTTP and sandboxed tool nodes
-           stay refused until their later phases.
+           admitted local-CLI or BYOK/HTTP manifest (+ --connections/--inputs/
+           --admitted) it runs that graph's connector nodes for real. An
+           approval-checkpoint node PAUSES the run (durably, AWAITING_APPROVAL)
+           rather than being refused — sandboxed tool nodes stay refused until a
+           later phase.
+- `approve` : records a durable human decision (approved/rejected) for one
+           paused approval node and resumes the run past it, via
+           `LocalGraphRuntimeFacade.approve()` unchanged.
 - `demo` : PROMINENT banner labels the run as a DEMONSTRATION with no
            sandbox, isolation, or network enforcement.
 
@@ -54,9 +59,11 @@ from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.errors import GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
-# cmd_graph_artifacts lives in a sibling module to keep this file within budget;
-# re-exported here so `bl graph artifacts` and existing imports resolve unchanged.
+# cmd_graph_artifacts and cmd_graph_approve live in sibling modules to keep this file
+# within budget; re-exported here so `bl graph artifacts`/`bl graph approve` and existing
+# imports resolve unchanged.
 from bounded_loops.graph.cli_graph_artifacts import cmd_graph_artifacts
+from bounded_loops.graph.cli_graph_approve import cmd_graph_approve
 
 # ── bundled demonstration manifest ────────────────────────────────────────────
 
@@ -105,6 +112,21 @@ DEMO_CONNECTIONS_LIST: list[dict[str, object]] = [
 _DEMO_ORG = "demo-org"
 _DEMO_PROJECT = "demo-project"
 _DEMO_RUN_ID = "demo-run-1"
+
+# Identity for a `bl graph run --execute <manifest>` run. These are fixed identity
+# values for this CLI's single-tenant entry point — they shape the plan/event-log/
+# approval-ledger derivation (via GraphRunIdentity), NOT the physical directory layout.
+# `_execute_manifest` writes FLAT, directly into `--out <dir>` (0.4.0 — dual-audit
+# reconciliation, design Q4/M2): earlier in 0.4.0-beta this nested the run three levels
+# under `<dir>/<org>/<project>/<run_id>/` purely so `bl graph approve` could satisfy
+# `LocalGraphRuntimeFacade`'s hosted `runs_root/organization_id/project_id/run_id`
+# addressing convention; both the Grok and Muse adversarial audits flagged that as MAJOR
+# public-contract debt (it silently changed `--out`'s meaning and only existed to reuse
+# that path math). `bl graph approve` now opens `--out <dir>` literally via
+# `LocalGraphRuntimeFacade.for_run_dir`, so the nesting is gone.
+_CLI_EXECUTE_ORG = "local-org"
+_CLI_EXECUTE_PROJECT = "local-project"
+_CLI_EXECUTE_RUN_ID = "graph-run"
 
 # ── in-process demonstration collaborators ────────────────────────────────────
 
@@ -572,7 +594,13 @@ def cmd_graph_status(args: argparse.Namespace) -> int:
 
 
 def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) -> int:
-    """Read a user manifest (+ optional --connections/--inputs/--admitted) and run it for real."""
+    """Read a user manifest (+ optional --connections/--inputs/--admitted) and run it for real.
+
+    The run is written FLAT, directly into ``out_dir`` (0.4.0 flat addressing) — every
+    reported "out" path (human text, ``--json``) is exactly ``out_dir``, so a caller who
+    copies it verbatim into a later ``bl graph status/arena/artifacts/approve --run
+    <path>`` always gets the right directory, with no nesting to account for.
+    """
     manifest_path = Path(manifest)
     suffix = manifest_path.suffix.lower()
     if suffix not in (".json", ".yaml", ".yml"):
@@ -650,6 +678,9 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
         connections_raw=list(connections_raw),
         node_prompts=node_prompts,
         out_dir=out_dir,
+        organization_id=_CLI_EXECUTE_ORG,
+        project_id=_CLI_EXECUTE_PROJECT,
+        run_id=_CLI_EXECUTE_RUN_ID,
         json_out=getattr(args, "json", False),
         admitted_connections=admitted_connections,
         audit_plan_json=audit_plan_json_text,
@@ -834,6 +865,16 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     run_p = graph_subs.add_parser(
         "run",
         help="Compile a graph (preview), or --execute it (built-in demo, or an admitted local-CLI manifest) in a native sandbox.",
+        epilog=(
+            "Exit codes: 0 success, 2 refused or failed, 3 PAUSED — the run is durably\n"
+            "waiting on a human approval-checkpoint decision. Exit code 3 is NOT an error:\n"
+            "scripts using `set -e`, or any check of the form `$? -ne 0`, MUST handle it\n"
+            "explicitly, e.g.:\n\n"
+            "  bl graph run --execute <manifest> --out <dir>; rc=$?\n"
+            "  if [ \"$rc\" = 3 ]; then bl graph approve --run <dir> --node <id> \\\n"
+            "      --decision approved; fi\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     run_p.add_argument("manifest", nargs="?", default=None, metavar="<manifest.(yaml|json)>",
                        help="Path to the graph manifest file (omit with --execute for the built-in demo).")
@@ -865,6 +906,39 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     )
     run_p.add_argument("--json", action="store_true", help="Emit JSON output.")
     run_p.set_defaults(func=cmd_graph_run)
+
+    # approve (handler lives in cli_graph_approve.py to keep this file within budget)
+    approve_p = graph_subs.add_parser(
+        "approve",
+        help="Record a human decision for a paused approval-checkpoint node and resume the run.",
+        description=(
+            "Reads the paused-awaiting-approval status a `bl graph run --execute` reported "
+            "and records a durable approve/reject decision for one node, then resumes the "
+            "run past it (or fails it closed, for a rejection)."
+        ),
+        epilog=(
+            "Exit codes: 0 success, 2 refused or failed, 3 PAUSED — another\n"
+            "approval-checkpoint node (e.g. a later gate in a multi-gate DAG) is still\n"
+            "awaiting a decision. Exit code 3 is NOT an error: run this command again\n"
+            "for the next node named in its own output.\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    approve_p.add_argument("--run", required=True, metavar="<dir>",
+                           help="Run directory reported by `bl graph run --execute` (the 'out' path).")
+    approve_p.add_argument("--node", required=True, metavar="<node_id>",
+                           help="The approval-checkpoint node ID to decide.")
+    approve_p.add_argument("--decision", required=True, choices=["approved", "rejected"],
+                           help="The human decision to record for this node.")
+    approve_p.add_argument(
+        "--inputs", default=None, metavar="<json>",
+        help=(
+            "JSON object mapping node_id -> prompt. Prompts are NOT persisted (C-080); "
+            "re-supply one here if a pending connector node needs it to resume."
+        ),
+    )
+    approve_p.add_argument("--json", action="store_true", help="Emit JSON output.")
+    approve_p.set_defaults(func=cmd_graph_approve)
 
     # arena (handler lives in the arena package to keep this file within budget)
     from bounded_loops.graph.arena.cli_arena import cmd_graph_arena

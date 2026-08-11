@@ -75,6 +75,7 @@ from bounded_loops.graph.application.execution_policy import (
     NetworkMode,
 )
 from bounded_loops.graph.domain.authoring import AuthoringGraphSpec, IsolationLevel, NodeKind
+from bounded_loops.graph.application.approval_ledger import build_durable_approval_resolver
 from bounded_loops.graph.application.run_graph import (
     ApprovalResolverPort,
     GraphRunController,
@@ -246,22 +247,24 @@ def _preflight(
     * local_cli nodes: still allowed unchanged.
     * https nodes: allowed ONLY when a matching ``AdmittedConnectionRecord`` is present;
       fails closed if none supplied — never silently skips or fabricates a grant.
-    * Approval checkpoints: always refused (human-in-the-loop is a later phase).
+    * Approval checkpoints: ALLOWED (Slice 1) — the controller pauses the run at an
+      unapproved approval node (AWAITING_APPROVAL) rather than refusing it outright;
+      ``execute_graph_run`` wires a durable approval resolver so ``bl graph approve``
+      can later resume past it. An approval node has no connection binding, so it is
+      excluded from the "admitted connector node" check below rather than folded into
+      it — it is not a connector node at all, it is a human gate.
     * All other nodes (unbound, sandboxed tool, etc.): refused with a clear message.
     """
     admitted = admitted_connections or {}
     for node in plan.nodes:
         if node.kind == NodeKind.APPROVAL.value:
-            return (
-                f"node {node.node_id!r} is an approval checkpoint; human-approval execution "
-                "via --execute is a later phase. Remove it to run the graph."
-            )
+            continue
         if not is_egress_node(plan, node, _ALL_EXECUTOR_TRANSPORTS):
             return (
                 f"node {node.node_id!r} (kind {node.kind}) is not an admitted connector node; "
                 "`bl graph run --execute` runs graphs whose nodes bind a connection with "
-                "transport 'local_cli' (subscription CLI) or 'https' (BYOK/HTTP connector). "
-                "Sandboxed tool execution is a later phase."
+                "transport 'local_cli' (subscription CLI) or 'https' (BYOK/HTTP connector), "
+                "or are an 'approval' human checkpoint. Sandboxed tool execution is a later phase."
             )
         # https nodes require an admitted record — fail closed if absent.
         if is_egress_node(plan, node, _HTTPS_TRANSPORTS):
@@ -465,6 +468,24 @@ def execute_graph_run(
         "https" if has_https else "local_cli"
     )
 
+    # Wired unconditionally: harmless for a graph with no approval nodes (the controller
+    # only ever consults this port when it reaches an APPROVAL-kind node), and required
+    # for one that has them — a fresh run must be able to PAUSE at an unapproved gate
+    # (and to honor a decision durably recorded at this out_dir by an earlier attempt)
+    # rather than crash for lack of a resolver. Same function `LocalGraphRuntimeFacade`
+    # uses on resume/approve — one implementation, no logic fork.
+    #
+    # FAIL CLOSED, don't crash: a torn/corrupt approvals.json makes `_load_approvals`
+    # raise `GraphIntegrityError` (dual-audit MAJOR — Grok + Muse both flagged this as
+    # an uncaught exception, not the clean `rc=2` / `error:` contract every other
+    # refusal in this function honors).
+    try:
+        approval_resolver = build_durable_approval_resolver(
+            identity=identity, plan=plan, run_dir=out_dir,
+        )
+    except GraphIntegrityError as exc:
+        return _fail(json_out, f"approval ledger corrupt or unreadable — {exc}")
+
     try:
         controller, store, event_log = build_execution_controller(
             plan=plan,
@@ -477,11 +498,27 @@ def execute_graph_run(
             byok_egress_broker=byok_egress_broker,
             byok_credential_resolver=byok_credential_resolver,
             byok_tls_context=byok_tls_context,
+            approval_resolver=approval_resolver,
         )
     except GraphValidationError as exc:
         return _fail(json_out, f"execution enforcement refused before run: {exc.message}")
 
-    projection = controller.run()
+    # FAIL CLOSED, don't crash: re-running `execute_graph_run` at an `out_dir` that
+    # already holds a started run (e.g. a user who sees rc=3 PAUSED and just re-runs
+    # the same command, expecting a "resume") makes `GraphRunController.run()` raise
+    # `GraphIntegrityError("fresh controller refuses to resume a non-empty graph
+    # stream")` (dual-audit MAJOR — M1 in the Grok audit). The actionable fix is
+    # `bl graph approve`, not a second `run`, so say so instead of letting the
+    # exception escape as an uncaught traceback.
+    try:
+        projection = controller.run()
+    except GraphIntegrityError as exc:
+        return _fail(
+            json_out,
+            f"this --out already holds a run; to continue a paused run use "
+            f"`bl graph approve --run {out_dir} --node <node_id> --decision "
+            f"approved|rejected` — {exc}",
+        )
     _persist_run_dir(
         out_dir, plan, manifest_text, connections_raw, identity,
         mode=mode_label, audit_plan_json=audit_plan_json,
@@ -617,10 +654,42 @@ def _persist_run_dir(
         (out_dir / "audit-plan.json").write_text(audit_plan_json, encoding="utf-8")
 
 
+# A paused run is neither a success (0) nor a failure (2) — it is durably waiting on a
+# human decision, and the CLI must never let a caller (or a CI script checking for a
+# non-zero exit) mistake "paused" for "broken". Exit code 3 is otherwise unused across
+# the graph CLI (0/1/2 already carry meaning: 0=success, 1=CLI usage error, 2=refused
+# or failed run) so it cannot collide with an existing convention.
+_EXIT_PAUSED = 3
+
+
+def _awaiting_approval_nodes(arena: ArenaProjection) -> tuple[str, ...]:
+    """Node IDs currently paused at a human approval checkpoint, in plan order.
+
+    A non-empty result is the authoritative signal that the run is durably paused —
+    reused verbatim by `bl graph approve`'s own reporting so both commands agree on
+    what "still paused" means.
+    """
+    return tuple(node.node_id for node in arena.nodes if node.state == "AWAITING_APPROVAL")
+
+
+def approve_command_hint(out_dir: Path, node_id: str) -> str:
+    """The exact next command a human runs to decide one paused approval node."""
+    return f"bl graph approve --run {out_dir} --node {node_id} --decision approved|rejected"
+
+
 def _report(
     json_out: bool, out_dir: Path, run_state: str, arena: ArenaProjection,
     *, mode: str = "local_cli",
 ) -> int:
+    awaiting = _awaiting_approval_nodes(arena)
+    # A run whose authoritative run_state is FAILED must never be reported as merely
+    # paused, even if a node's LAST durable receipt still shows AWAITING_APPROVAL (e.g.
+    # a sibling node in the same wave failed before this node's decision was
+    # revisited — `_awaiting_approval_nodes` only looks at each node's latest state,
+    # not the run's own terminal outcome). PAUSED implies the run is still resumable;
+    # a FAILED run is not (dual-audit residual MINOR).
+    if awaiting and run_state != "FAILED":
+        return _report_paused(json_out, out_dir, run_state, arena, awaiting, mode=mode)
     succeeded = run_state == "SUCCEEDED"
     digests = [n.artifact_digests[0] for n in arena.nodes if n.artifact_digests]
     if json_out:
@@ -649,6 +718,51 @@ def _report(
     print()
     print("Run did not succeed; inspect the event log in the run directory.")
     return 2
+
+
+def _report_paused(
+    json_out: bool, out_dir: Path, run_state: str, arena: ArenaProjection,
+    awaiting: tuple[str, ...], *, mode: str = "local_cli",
+) -> int:
+    """Report a run durably PAUSED at one or more human approval checkpoints.
+
+    NOT an error: the run is exactly where it should be, waiting on a decision that
+    only a human (via `bl graph approve`) can make. Exit code is `_EXIT_PAUSED` (3) —
+    distinct from success (0) and failure (2) — in both the JSON and human paths.
+    """
+    next_commands = [approve_command_hint(out_dir, node_id) for node_id in awaiting]
+    if json_out:
+        print(json.dumps({
+            "execution": True,
+            "mode": mode,
+            "run_state": run_state,
+            "run_id": arena.run_id,
+            "out": str(out_dir),
+            "paused": True,
+            "awaiting_approval": list(awaiting),
+            "next_commands": next_commands,
+        }, sort_keys=True))
+        return _EXIT_PAUSED
+    label = "BYOK/HTTP" if mode == "https" else "Local-CLI"
+    print(f"{label} graph run — REAL execution")
+    print("=" * 62)
+    print(f"run_state : {run_state}")
+    for node in arena.nodes:
+        if node.state == "SUCCEEDED":
+            mark = "OK "
+        elif node.state == "AWAITING_APPROVAL":
+            mark = "?? "
+        else:
+            mark = "!! "
+        art = (node.artifact_digests[0][:24] + "...") if node.artifact_digests else "-"
+        print(f"  {mark}node {node.node_id!r}: {node.state}  artifact={art}")
+    print(f"out       : {out_dir}")
+    print()
+    print(f"Run is PAUSED — awaiting human approval on {len(awaiting)} node(s): {', '.join(awaiting)}")
+    print("To continue:")
+    for command in next_commands:
+        print(f"  {command}")
+    return _EXIT_PAUSED
 
 
 def _fail(json_out: bool, message: str) -> int:

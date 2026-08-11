@@ -297,6 +297,22 @@ def test_run_does_not_execute_nodes(
     assert not any(tmp_path.rglob("*.jsonl"))
 
 
+# ── fix 6a (dual-audit reconciliation, doc-only): `--help` documents exit code 3 ──
+# as PAUSED, not an error — both audits flagged that `set -e` / `$? -ne 0` CI checks
+# would otherwise misread a paused (not broken) run as a failure.
+
+def test_run_help_documents_exit_code_3_as_paused(capsys: pytest.CaptureFixture[str]) -> None:
+    parser = argparse.ArgumentParser()
+    subs = parser.add_subparsers(dest="cmd")
+    register(subs)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["graph", "run", "--help"])
+    out = capsys.readouterr().out
+    assert "3" in out
+    assert "PAUSED" in out.upper()
+    assert "not an error" in out.lower()
+
+
 # ── register ───────────────────────────────────────────────────────────────────
 
 def test_register_wires_graph_subcommands() -> None:
