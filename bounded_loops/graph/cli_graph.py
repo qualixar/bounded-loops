@@ -987,3 +987,45 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     console_p.add_argument("--port", type=int, default=0, metavar="<port>",
                            help="TCP port to bind on 127.0.0.1 (default: 0, an OS-assigned ephemeral port).")
     console_p.set_defaults(func=cmd_graph_console)
+
+    # init (handler lives in the init package to keep this file within budget)
+    from bounded_loops.graph.init.cli_init import cmd_graph_init
+
+    init_p = graph_subs.add_parser(
+        "init",
+        help="Interactively configure egress posture and connector mode (writes ~/.bounded-loops/egress.json).",
+        description=(
+            "Non-technical installer: prompts for egress posture (open/allowlist/broker) and "
+            "connector mode (subscription CLI vs BYOK), then writes the config file "
+            "resolve_egress_posture() consumes. Defaults to OPEN + subscription-CLI — the "
+            "frictionless, recommended path. Providing any of --posture/--connector/--allowlist "
+            "runs this non-interactively (fields you omit fall back to their defaults); --yes "
+            "additionally skips the confirmation prompt for overwriting an existing config (for "
+            "CI). Connector mode and credentials are never written to disk — only egress "
+            "posture is."
+        ),
+    )
+    init_p.add_argument(
+        "--posture", default=None, choices=["open", "allowlist", "broker"], metavar="<posture>",
+        help="Egress posture (default when unset: prompt interactively, or 'open' non-interactively).",
+    )
+    init_p.add_argument(
+        "--allowlist", action="append", default=None, metavar="<host[:port]>",
+        help=(
+            "Allowlist host (repeatable; each value may also be comma-separated). "
+            "Only meaningful with --posture allowlist."
+        ),
+    )
+    init_p.add_argument(
+        "--connector", default=None, choices=["local_cli", "byok"], metavar="<mode>",
+        help="Connector mode (default: local_cli — your subscription CLI; informational only, no file written).",
+    )
+    init_p.add_argument(
+        "--yes", action="store_true",
+        help="Skip confirmation prompts, including overwriting an existing config (for CI / non-interactive use).",
+    )
+    init_p.add_argument(
+        "--config", default=None, metavar="<path>",
+        help="Override the egress config file path (mirrors BOUNDED_LOOPS_EGRESS_CONFIG).",
+    )
+    init_p.set_defaults(func=cmd_graph_init)
