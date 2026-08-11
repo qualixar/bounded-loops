@@ -206,6 +206,34 @@ def test_non_interactive_local_cli_connector_is_the_default(tmp_path: Path) -> N
     assert rc == 0  # connector defaults to local_cli; no --connector needed for zero friction
 
 
+def test_written_confirmation_states_that_connector_mode_is_not_stored(tmp_path: Path, capsys) -> None:
+    target = tmp_path / "egress.json"
+    rc = cmd_graph_init(_ns(connector="byok", yes=True, config=str(target)))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Connector mode is not stored" in out
+
+
+# ── M1 (Grok, live-proven): the CLI's write must force 0600 on overwrite too ────
+
+
+def test_cli_forces_0600_even_when_overwriting_a_looser_existing_mode(tmp_path: Path) -> None:
+    # Grok's exact repro, driven through the real `bl graph init` command rather
+    # than the config_writer function directly: pre-create at 0o666 (the old
+    # in-place O_TRUNC write kept this mode after "overwriting"; content updated,
+    # mode silently unchanged), then overwrite via the installer.
+    target = tmp_path / "egress.json"
+    target.write_text(json.dumps({"posture": "broker"}), encoding="utf-8")
+    target.chmod(0o666)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o666  # sanity: the setup actually took
+
+    rc = cmd_graph_init(_ns(posture="open", yes=True, config=str(target)))
+
+    assert rc == 0
+    assert json.loads(target.read_text(encoding="utf-8")) == {"posture": "open"}
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
 # ── existing-config overwrite gate ──────────────────────────────────────────────
 
 

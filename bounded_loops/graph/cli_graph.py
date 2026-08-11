@@ -998,8 +998,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
             "Non-technical installer: prompts for egress posture (open/allowlist/broker) and "
             "connector mode (subscription CLI vs BYOK), then writes the config file "
             "resolve_egress_posture() consumes. Defaults to OPEN + subscription-CLI — the "
-            "frictionless, recommended path. Every prompt has a --flag for CI; --yes skips "
-            "confirmation. Never writes a credential to disk."
+            "frictionless, recommended path. Providing any of --posture/--connector/--allowlist "
+            "runs this non-interactively (fields you omit fall back to their defaults); --yes "
+            "additionally skips the confirmation prompt for overwriting an existing config (for "
+            "CI). Connector mode and credentials are never written to disk — only egress "
+            "posture is."
         ),
     )
     init_p.add_argument(

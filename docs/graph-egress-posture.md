@@ -206,6 +206,20 @@ Default path: `~/.bounded-loops/egress.json` (override via
   has an unknown key **raises** — it is never treated as "absent." A corrupt or
   tampered installer-written file must never silently downgrade resolution to a
   less-restrictive tier.
+- An `allowlist` posture with an **empty** allowlist is a valid, deliberate
+  configuration — it is maximally restrictive, not "no restriction": it denies
+  **all** outbound egress for `local_cli` connector nodes (see
+  `test_empty_allowlist_denies_every_destination` in
+  `test_egress_posture.py`). `bl graph init` prints a warning if you configure
+  this (non-interactively, `--posture allowlist` with no `--allowlist` host),
+  but does not block it — it is a legitimate lockdown state, just one worth
+  flagging.
+
+> **Note:** if your shell also exports `BOUNDED_LOOPS_EGRESS_POSTURE` and/or
+> `BOUNDED_LOOPS_EGRESS_ALLOWLIST`, those take precedence over this file at
+> runtime (env beats file — see the precedence order above). `bl graph init`
+> prints this exact warning after writing the file if either is set in the
+> environment it ran in.
 
 ## Consuming the resolved config
 

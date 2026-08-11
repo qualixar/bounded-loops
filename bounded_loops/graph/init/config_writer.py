@@ -6,21 +6,29 @@ modifies that reader, and every function here that writes or claims to
 validate config content is proven, in-process (``verify_round_trip``), to
 agree with what ``resolve_egress_posture()`` will actually accept.
 
-Security posture, mirroring ``trust_store.py::_save`` (the only other
-installer-style, security-relevant, user-home config writer in this project):
-parent directory ``0700``, file ``0600`` created with the mode from the start
-(never write-then-chmod, which leaves a race window), and ``O_NOFOLLOW`` at
-the exact syscall that opens the file so a symlink planted at the final path
-component is refused atomically, never followed and never silently replaced.
+Security posture — ATOMIC secure write (fix for a live-proven MAJOR, see
+``write_config_atomically``'s docstring): a fresh, uniquely-named temp file is
+created in the SAME directory as the target (0600 forced via ``fchmod``,
+never relying on the create-time ``mode`` argument alone), fsynced, verified
+through the SAME fail-closed reader `bl graph run` uses, and only THEN
+``os.replace()``d into place. This differs from — and improves on —
+``trust_store.py::_save``'s simpler in-place ``O_CREAT|O_TRUNC`` pattern
+specifically because ``trust_store.py`` never overwrites an EXISTING trust
+record file with a different mode in practice; this module's target is a
+user-facing, hand-editable config file that a previous run (or the user) may
+have left in an unexpected mode, so mode must be forced on every write, not
+just first creation. On any failure the temp file is removed and the target
+is left byte-for-byte and mode-for-mode untouched — a bad payload never
+reaches the live config.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import errno
 import json
 import os
 from pathlib import Path
+import secrets
 from typing import Mapping, Sequence
 
 from bounded_loops.graph.adapters.enforcement.egress_posture import (
@@ -131,16 +139,68 @@ def build_config_payload(posture: EgressPosture, allowlist: Sequence[str] = ()) 
     """Build the exact ``{"posture": ..., "allowlist": [...]}`` shape the reader
     accepts. The ``allowlist`` key is OMITTED entirely outside ALLOWLIST posture —
     the reader never inspects it there anyway (see egress_posture.py's precedence
-    skip), but leaving it out keeps the written file minimal and unambiguous."""
+    skip), but leaving it out keeps the written file minimal and unambiguous.
+
+    Canonicalizes + de-dupes *allowlist* itself (m3, defense-in-depth): a caller
+    of this MODULE's public API — not only ``cli_init.py``'s own flow, which
+    already canonicalizes before calling this — must never be able to emit a
+    uniqueness-violating allowlist the reader's own invariant would reject."""
     if posture is not EgressPosture.ALLOWLIST:
         return {"posture": posture.value}
-    return {"posture": posture.value, "allowlist": list(allowlist)}
+    return {"posture": posture.value, "allowlist": list(canonicalize_allowlist_entries(allowlist))}
 
 
-def write_config_atomically(path: Path, payload: Mapping[str, object]) -> None:
-    """Write *payload* as JSON at *path*: parent dir ``0700``, file ``0600``
-    created with that mode from the start, ``O_NOFOLLOW`` so a symlink at the
-    final path component is refused rather than followed or replaced."""
+def _unique_temp_path(path: Path) -> Path:
+    """A temp path in the SAME directory as *path* — ``os.replace`` requires the
+    source and destination to be on the same filesystem — with an unpredictable
+    suffix (pid + 16 hex chars of ``secrets.token_hex``), never a fixed name a
+    local attacker could pre-plant a symlink at ahead of time."""
+    return path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+
+
+def write_config_atomically(path: Path, payload: Mapping[str, object]) -> EgressPostureConfig:
+    """Write *payload* as the egress config at *path*, ATOMICALLY and SECURELY,
+    returning the verified ``EgressPostureConfig`` that now lives there.
+
+    Fixes a live-proven MAJOR: POSIX only applies the ``mode`` argument of
+    ``os.open()`` at file CREATION. The previous implementation opened *path*
+    directly with ``O_CREAT|O_TRUNC``, which truncates an EXISTING inode's
+    CONTENT but leaves that inode's OLD mode untouched — pre-creating the file
+    at ``0o666`` and then "overwriting" it via the installer left it ``0o666``
+    afterward too (content updated, mode silently unchanged). The fix below
+    never truncates the target's own inode at all:
+
+    1. Refuse a symlink AT *path* up front — a fast, friendly refusal for the
+       common case (never silently replaced). This check is a UX nicety, not
+       the security boundary: see step 5's note for why the real guarantee
+       against writing through a symlink holds even if this check is bypassed
+       or raced (TOCTOU) — proven directly by
+       ``test_write_config_atomically_never_writes_through_a_symlink_even_if_the_precheck_is_bypassed``.
+    2. Create the parent dir ``0700`` (best-effort ``chmod``, mirrors
+       ``trust_store.py::_save`` — not fatal on an odd filesystem).
+    3. Create a FRESH, uniquely-named temp file in the SAME directory as
+       *path* with ``O_EXCL|O_NOFOLLOW`` (never an existing or symlinked
+       path), then ``os.fchmod`` the open descriptor to force ``0o600`` —
+       belt-and-suspenders on top of the create-time mode, independent of
+       umask.
+    4. Write the JSON, ``flush`` + ``os.fsync`` before the temp file is ever
+       considered "done" — its content is durable before it can become live.
+    5. Read the TEMP file back through ``verify_round_trip`` — the SAME
+       fail-closed reader `bl graph run` uses — BEFORE it ever replaces the
+       real config. A bad payload is caught HERE and never reaches *path* at
+       all: the previous config (if any) is left completely untouched. THEN
+       ``os.replace(tmp, path)`` — atomic; the kernel repoints the directory
+       entry to the temp's fresh (0600) inode. ``rename(2)`` (what
+       ``os.replace`` calls) never opens or follows a symlink at *path* — if
+       *path* is a symlink it replaces the symlink ENTRY itself, so this step
+       is symlink-safe regardless of what step 1 observed or when.
+    6. On ANY failure at any step after the temp file is created, it is
+       unlinked (best-effort) — no litter on success (already consumed by
+       ``os.replace``) or on failure.
+    """
+    if os.path.islink(path):
+        raise GraphInitError(f"'{path}' is a symlink; refusing to write through it")
+
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -150,18 +210,42 @@ def write_config_atomically(path: Path, payload: Mapping[str, object]) -> None:
     except OSError:
         pass  # best-effort, mirrors trust_store._save — not fatal on odd filesystems
 
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    tmp_path = _unique_temp_path(path)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(path, flags, 0o600)
+        fd = os.open(tmp_path, flags, 0o600)
     except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            raise GraphInitError(f"'{path}' is a symlink; refusing to write through it") from exc
-        raise GraphInitError(f"could not write '{path}': {exc}") from exc
+        raise GraphInitError(f"could not create a temp file in '{path.parent}': {exc}") from exc
+
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)  # force the mode regardless of umask
             handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        try:
+            verified = verify_round_trip(tmp_path)
+        except GraphValidationError as exc:
+            raise GraphInitError(
+                "internal error — the newly written config failed its own reader before "
+                f"being committed; the previous config at '{path}' (if any) was left "
+                f"completely untouched: {exc}"
+            ) from exc
+
+        os.replace(tmp_path, path)
     except OSError as exc:
         raise GraphInitError(f"could not write '{path}': {exc}") from exc
+    finally:
+        # On success, os.replace() has already consumed tmp_path — unlink is then
+        # a harmless no-op (FileNotFoundError, swallowed). On ANY failure above,
+        # this is what guarantees no orphaned temp file is ever left behind.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    return verified
 
 
 # ── round-trip verification (the non-negotiable proof) ─────────────────────────

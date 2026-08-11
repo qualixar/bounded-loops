@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from bounded_loops.graph.adapters.enforcement.egress_posture import EgressPosture, EgressPostureConfig
-from bounded_loops.graph.domain.errors import GraphValidationError
 from bounded_loops.graph.init.config_writer import (
     ExistingConfig,
     build_config_payload,
@@ -32,7 +31,6 @@ from bounded_loops.graph.init.config_writer import (
     flatten_allowlist_flag,
     read_existing_snapshot,
     resolve_config_path,
-    verify_round_trip,
     write_config_atomically,
 )
 from bounded_loops.graph.init.connector import ConnectorMode, describe_byok_pointer, prompt_connector_mode
@@ -76,12 +74,7 @@ def _run_init(args: argparse.Namespace, *, input_fn: Callable[[str], str], envir
     non_interactive = yes or posture_flag is not None or connector_flag is not None or bool(allowlist_values)
 
     config_path = resolve_config_path(getattr(args, "config", None), environ)
-
-    try:
-        existing = read_existing_snapshot(config_path)
-    except GraphInitError as exc:
-        _err(str(exc))
-        return 2
+    existing = read_existing_snapshot(config_path)  # never raises — see its own docstring
 
     gate = _handle_existing_config(
         existing, config_path, non_interactive=non_interactive, yes=yes, input_fn=input_fn,
@@ -117,21 +110,16 @@ def _run_init(args: argparse.Namespace, *, input_fn: Callable[[str], str], envir
             return 1
 
     try:
-        write_config_atomically(config_path, payload)
+        # write_config_atomically verifies the write (against a temp file, through
+        # the SAME fail-closed reader `bl graph run` uses) BEFORE it ever replaces
+        # the live config — a bad payload never reaches config_path at all, and the
+        # returned value is already the proven-correct EgressPostureConfig for it.
+        verified = write_config_atomically(config_path, payload)
     except GraphInitError as exc:
         _err(str(exc))
         return 2
 
-    try:
-        verified = verify_round_trip(config_path)
-    except GraphValidationError as exc:
-        # Should be unreachable: build_config_payload only ever emits shapes this
-        # package's own writer produces. Treated as an internal bug, not a user
-        # input error, if it ever fires — never claim success on a bad write.
-        _err(f"internal error — the written config failed its own reader: {exc}")
-        return 2
-
-    _print_written_confirmation(config_path, verified, environ)
+    _print_written_confirmation(config_path, verified, connector_mode, environ)
     return 0
 
 
@@ -233,10 +221,13 @@ def _print_summary(
     print(f"  allowlist:      {', '.join(hosts) if hosts else '(none)'}")
 
 
-def _print_written_confirmation(config_path: Path, verified: EgressPostureConfig, environ: Mapping[str, str]) -> None:
+def _print_written_confirmation(
+    config_path: Path, verified: EgressPostureConfig, connector_mode: ConnectorMode, environ: Mapping[str, str],
+) -> None:
     print(f"Wrote {config_path}")
     detail = f", allowlist={_format_allowlist(verified)}" if verified.posture is EgressPosture.ALLOWLIST else ""
     print(f"Verified: bl graph run will resolve this file as posture={verified.posture.value}{detail}.")
+    print(f"Connector mode is not stored; only egress posture was written to {config_path}. (chosen mode: {connector_mode.value})")
     if config_path != default_config_path():
         print(
             f"NOTE: '{config_path}' is a NON-DEFAULT path — bl graph run only reads it if "

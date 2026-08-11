@@ -18,7 +18,8 @@ from pathlib import Path
 import pytest
 
 from bounded_loops.graph.adapters.enforcement import egress_posture
-from bounded_loops.graph.adapters.enforcement.egress_posture import EgressPosture
+from bounded_loops.graph.adapters.enforcement.egress_posture import EgressPosture, EgressPostureConfig
+from bounded_loops.graph.domain.errors import GraphValidationError
 from bounded_loops.graph.init import config_writer
 from bounded_loops.graph.init.errors import GraphInitError
 
@@ -147,6 +148,20 @@ def test_build_config_payload_allowlist_includes_hosts_as_a_list() -> None:
     assert payload == {"posture": "allowlist", "allowlist": ["api.anthropic.com"]}
 
 
+def test_build_config_payload_dedupes_and_canonicalizes_allowlist_defensively() -> None:
+    # m3: the package API alone (not just the cli_init caller) must never be able to
+    # emit a uniqueness-violating allowlist the reader would reject on read-back.
+    payload = config_writer.build_config_payload(
+        EgressPosture.ALLOWLIST, ["API.Anthropic.COM", "api.anthropic.com:443"],
+    )
+    assert payload == {"posture": "allowlist", "allowlist": ["api.anthropic.com"]}
+
+
+def test_build_config_payload_raises_on_an_invalid_allowlist_entry() -> None:
+    with pytest.raises(GraphInitError, match="invalid allowlist entry"):
+        config_writer.build_config_payload(EgressPosture.ALLOWLIST, ["203.0.113.5"])
+
+
 # ── write_config_atomically ───────────────────────────────────────────────────────
 
 
@@ -195,6 +210,158 @@ def test_write_config_atomically_refuses_a_dangling_symlinked_target(tmp_path: P
     link.symlink_to(tmp_path / "does-not-exist.json")
     with pytest.raises(GraphInitError, match="symlink"):
         config_writer.write_config_atomically(link, {"posture": "open"})
+
+
+def test_write_config_atomically_return_value_is_the_verified_egress_posture_config(tmp_path: Path) -> None:
+    target = tmp_path / "egress.json"
+    verified = config_writer.write_config_atomically(target, {"posture": "broker"})
+    assert isinstance(verified, EgressPostureConfig)
+    assert verified.posture is EgressPosture.BROKER
+
+
+# ── M1 (Grok, live-proven): mode 0600 must be FORCED on OVERWRITE too ──────────
+#
+# POSIX only applies the `mode` argument to os.open() at file CREATION. An
+# in-place O_CREAT|O_TRUNC open of an EXISTING inode keeps that inode's OLD
+# mode — truncating the CONTENT but silently leaving a looser mode (e.g. a
+# pre-existing 0o666) in place. Reproduced live before this fix: pre-create at
+# 0o666, overwrite via the installer, mode stayed 0o666 while content updated.
+# The fix writes a FRESH inode (a temp file, explicitly fchmod'd to 0600) and
+# os.replace()s it into place — the target's final mode is always the fresh
+# inode's mode, never the old inode's, regardless of what was there before.
+
+
+def test_write_config_atomically_forces_0600_even_when_overwriting_a_looser_existing_mode(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "egress.json"
+    target.write_text(json.dumps({"posture": "broker"}), encoding="utf-8")
+    target.chmod(0o666)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o666  # sanity: the setup actually took
+
+    config_writer.write_config_atomically(target, {"posture": "open"})
+
+    assert json.loads(target.read_text(encoding="utf-8")) == {"posture": "open"}
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_write_config_atomically_forces_0600_even_when_overwriting_a_tighter_existing_mode(
+    tmp_path: Path,
+) -> None:
+    # The other direction too: a previously-0400 (read-only) file must still end
+    # up exactly 0600 after overwrite, not "whatever was already narrower".
+    target = tmp_path / "egress.json"
+    target.write_text(json.dumps({"posture": "broker"}), encoding="utf-8")
+    target.chmod(0o400)
+
+    config_writer.write_config_atomically(target, {"posture": "allowlist", "allowlist": []})
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+# ── m1 + rollback: the temp is verified BEFORE it ever replaces the target ─────
+
+
+def test_write_config_atomically_rolls_back_on_a_verify_failure_leaving_the_old_config_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Its own subdirectory: tmp_path itself also holds the autouse HOME-redirect
+    # fixture's "home" dir (tests/conftest.py), which would otherwise pollute a
+    # "no litter" listing unrelated to this test's own target directory.
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    target = work_dir / "egress.json"
+    good_content = json.dumps({"posture": "broker"})
+    target.write_text(good_content, encoding="utf-8")
+    original_mode = stat.S_IMODE(target.stat().st_mode)
+
+    def _boom(_path: Path) -> EgressPostureConfig:
+        raise GraphValidationError("egress_posture", "/x", "forced failure for the test")
+
+    monkeypatch.setattr(config_writer, "verify_round_trip", _boom)
+    with pytest.raises(GraphInitError, match="internal error"):
+        config_writer.write_config_atomically(target, {"posture": "open"})
+
+    # the PREVIOUS good config must be byte-for-byte and mode-for-mode intact.
+    assert target.read_text(encoding="utf-8") == good_content
+    assert stat.S_IMODE(target.stat().st_mode) == original_mode
+    # ...and no temp litter left behind either.
+    assert {p.name for p in work_dir.iterdir()} == {"egress.json"}
+
+
+def test_write_config_atomically_rolls_back_when_the_target_did_not_exist_yet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "nested" / "egress.json"
+
+    def _boom(_path: Path) -> EgressPostureConfig:
+        raise GraphValidationError("egress_posture", "/x", "forced failure for the test")
+
+    monkeypatch.setattr(config_writer, "verify_round_trip", _boom)
+    with pytest.raises(GraphInitError, match="internal error"):
+        config_writer.write_config_atomically(target, {"posture": "open"})
+
+    assert not target.exists()
+    assert list(target.parent.iterdir()) == []  # no temp litter in the (created) parent dir
+
+
+# ── no temp-file litter, on success OR failure ──────────────────────────────────
+
+
+def test_write_config_atomically_leaves_no_temp_file_after_success(tmp_path: Path) -> None:
+    target = tmp_path / "a" / "b" / "egress.json"
+    config_writer.write_config_atomically(target, {"posture": "open"})
+    # the temp file was created in the SAME directory as the target (os.replace
+    # requires the same filesystem) and must not survive a successful replace.
+    assert {p.name for p in target.parent.iterdir()} == {"egress.json"}
+
+
+def test_write_config_atomically_leaves_no_temp_file_after_a_write_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Own subdirectory: see the rollback test above for why (tmp_path itself
+    # also holds the autouse HOME-redirect fixture's "home" dir).
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    target = work_dir / "egress.json"
+
+    def _boom(_fd: int) -> None:
+        raise OSError("disk full (simulated)")
+
+    monkeypatch.setattr(config_writer.os, "fsync", _boom)  # monkeypatch auto-restores at teardown
+    with pytest.raises(GraphInitError, match="could not write"):
+        config_writer.write_config_atomically(target, {"posture": "open"})
+
+    assert not target.exists()
+    assert list(work_dir.iterdir()) == []
+
+
+# ── symlink safety holds even if the early check is bypassed/raced (TOCTOU) ────
+
+
+def test_write_config_atomically_never_writes_through_a_symlink_even_if_the_precheck_is_bypassed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Simulates the TOCTOU window: the early islink() check is fooled/raced (made
+    # to report False) even though `target` really is a symlink at call time. The
+    # guarantee against writing THROUGH a symlink must hold unconditionally because
+    # of os.replace()'s own kernel-level "atomically repoint the directory entry,
+    # never open/follow the old target" semantics — not because of the early
+    # check, which is a fast, friendly-message nicety for the common case only.
+    important = tmp_path / "important.json"
+    important.write_text("do-not-touch", encoding="utf-8")
+    target = tmp_path / "egress.json"
+    target.symlink_to(important)
+
+    monkeypatch.setattr(config_writer.os.path, "islink", lambda _p: False)
+    config_writer.write_config_atomically(target, {"posture": "open"})
+
+    # important.json (the symlink's former target) must be COMPLETELY untouched...
+    assert important.read_text(encoding="utf-8") == "do-not-touch"
+    # ...while `target` now names a fresh, real, correct config file — the
+    # symlink ENTRY was atomically replaced, never written through.
+    assert not target.is_symlink()
+    assert json.loads(target.read_text(encoding="utf-8")) == {"posture": "open"}
 
 
 # ── verify_round_trip — the non-negotiable proof ────────────────────────────────
