@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+import threading
 import time
 
 from bounded_loops.adapters.runners.process_lifecycle import (
@@ -147,3 +148,77 @@ def test_wait_deadline_terminates_a_hanging_turn(tmp_path: Path) -> None:
 
     assert result.state is TurnState.TIMED_OUT
     assert result.returncode is not None
+
+
+# ── CON-04: cancel() must not be blocked by an in-flight wait() ───────────────
+
+
+def test_concurrent_cancel_is_not_blocked_by_in_flight_wait(tmp_path: Path) -> None:
+    """cancel() must not be serialised behind a blocking wait().
+
+    Two complementary assertions, from weakest to strongest:
+
+    STRUCTURAL (primary): self._lock must be acquirable from a third thread
+    while wait() is blocking on _process.wait().  With the old bug, wait()
+    held the lock across the entire blocking call, so this acquire would time
+    out.  With the fix, the lock is released before _process.wait() runs, so
+    the acquire returns immediately.  This is a structural proof that does not
+    depend on scheduling jitter.
+
+    TEMPORAL (secondary): cancel() must return in < 1.0s.  The wait timeout is
+    5.0s; if the lock were held (old code), cancel() would block for ≈ 5.0s.
+    1.0s is well below 5.0s (5× margin) and well above any realistic correct
+    cancel latency, so this threshold is simultaneously generous for correctness
+    and strict against the bug.  It is a backstop, not the primary proof.
+
+    Mutation proof: revert wait() to hold self._lock during _process.wait() →
+    the structural assertion fails (lock.acquire returns False after 0.5s).
+    """
+    wait_timeout_s = 5.0  # long enough that wait() won't time out on its own
+
+    turn = ProcessTurn.start(
+        _python("import time; time.sleep(60)"),
+        cwd=tmp_path,
+        env={"PATH": os.environ["PATH"]},
+        output_limit_bytes=1024,
+    )
+
+    wait_result: list[object] = []
+
+    def _run_wait() -> None:
+        wait_result.append(turn.wait(timeout_s=wait_timeout_s))
+
+    wait_thread = threading.Thread(target=_run_wait, daemon=True)
+    wait_thread.start()
+    # Give wait() enough time to enter the blocking _process.wait() section.
+    # 0.2s is ~1000× more than the brief with-lock section takes; even on a
+    # heavily loaded CI machine, wait() will be in _process.wait() by then.
+    time.sleep(0.2)
+
+    # ── Structural assertion (primary) ────────────────────────────────────────
+    # Old code: wait() holds self._lock here → acquire blocks for up to 0.5s,
+    # returns False → assertion fails.
+    # New code: lock is released before _process.wait() → acquire returns
+    # immediately → assertion passes.
+    lock_free = turn._lock.acquire(blocking=True, timeout=0.5)
+    if lock_free:
+        turn._lock.release()
+    assert lock_free, (
+        "self._lock is held while wait() blocks on _process.wait() — "
+        "CON-04 regression: cancel() will be starved for the full wait timeout"
+    )
+
+    # ── Temporal assertion (secondary backstop) ────────────────────────────────
+    t0 = time.monotonic()
+    turn.cancel("test-cancel")
+    cancel_elapsed = time.monotonic() - t0
+
+    wait_thread.join(timeout=_WAIT_TIMEOUT_S)
+    result = wait_result[0] if wait_result else None
+
+    assert cancel_elapsed < 1.0, (
+        f"cancel() took {cancel_elapsed:.3f}s — expected < 1.0s "
+        f"(wait_timeout_s={wait_timeout_s}; old bug serialises cancel behind full wait)"
+    )
+    assert result is not None, "wait_thread did not return within deadline"
+    assert result.state is TurnState.CANCELLED  # type: ignore[union-attr]
