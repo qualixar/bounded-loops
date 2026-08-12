@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -22,6 +23,55 @@ def _event(event_type: str, key: str, payload: dict[str, object]) -> UnsignedGra
         event_id=f"event-{key}", idempotency_key=key, event_type=event_type,
         timestamp="2026-08-08T00:00:00Z", actor="controller", payload=payload,
     )
+
+
+def test_concurrent_appends_cannot_fork_the_hash_chain(tmp_path):
+    """Two decisions landing at once must not fork the chain (CON-01 regression).
+
+    `append` is a read-check-write cycle. Before the stream lock existed, two concurrent
+    writers both observed the SAME head and both wrote an event claiming it; `replay`
+    then failed forever with a sequence/previous-hash mismatch and the run could never be
+    resumed. This is reachable in normal use — `bl graph approve`, a `bl graph console`
+    decision, and a programmatic/MCP `resume` are three entry points into one run dir.
+
+    Each thread builds its OWN log instance so every writer gets a distinct open-file
+    description; `flock` therefore serializes them exactly as it would separate processes.
+    """
+    path = tmp_path / "events.jsonl"
+    created = GraphEventLog(path, _identity()).append(
+        "0" * 64, _event("run.created", "created", {"state": "PENDING"}),
+    )
+
+    barrier = threading.Barrier(2)
+    errors: list[BaseException | None] = [None, None]
+
+    def _decide(slot: int) -> None:
+        log = GraphEventLog(path, _identity())
+        barrier.wait()  # maximize the overlap on the read-check-write cycle
+        try:
+            log.append(
+                created.event_hash,
+                _event("run.succeeded", f"decision-{slot}", {"state": "SUCCEEDED"}),
+            )
+        except BaseException as exc:  # noqa: BLE001 - recorded and asserted below
+            errors[slot] = exc
+
+    threads = [threading.Thread(target=_decide, args=(slot,)) for slot in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    # Exactly one writer may win; the loser must be TOLD it lost, not silently accepted.
+    assert sum(1 for error in errors if error is None) == 1, f"both writers succeeded: {errors}"
+    loser = next(error for error in errors if error is not None)
+    assert isinstance(loser, GraphIntegrityError), loser
+    assert "expected previous hash" in str(loser)
+
+    # The decisive assertion: the stream still verifies, so the run is still recoverable.
+    replayed = GraphEventLog(path, _identity()).replay()
+    assert len(replayed) == 2
+    assert replayed[1].previous_hash == created.event_hash
 
 
 def test_graph_event_log_requires_expected_head_and_replays_closed_projection(tmp_path):

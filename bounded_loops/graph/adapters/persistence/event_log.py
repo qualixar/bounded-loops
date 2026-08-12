@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
-from typing import Mapping
+from typing import Any, BinaryIO, Iterator, Mapping
 
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import (
@@ -21,6 +23,54 @@ from bounded_loops.graph.domain.events import (
 
 _GENESIS = "0" * 64
 _TERMINAL = frozenset({"SUCCEEDED", "FAILED", "HALTED", "CANCELLED", "EXPIRED"})
+
+# Cross-process advisory locking for the append-only stream. `append()` is a
+# read-check-write cycle (replay to find the head, verify the caller's expected head,
+# then write); without serialization two concurrent writers both observe the SAME head
+# and both write an event claiming it, which FORKS the hash chain and leaves the run
+# permanently unreplayable — `replay()` then fails with a sequence/previous-hash
+# mismatch and the run cannot be resumed. That is reachable in normal use: a CLI
+# `bl graph approve`, a `bl graph console` decision, and a programmatic/MCP `resume`
+# are three independent entry points into the same run directory.
+#
+# This mirrors `bounded_loops/adapters/io/hash_chain_events.py`, which already wraps the
+# identical cycle in the same primitives — the graph stream simply had not adopted it.
+_fcntl: Any | None = None
+_msvcrt: Any | None = None
+try:  # POSIX: shared/exclusive advisory locks.
+    _fcntl = importlib.import_module("fcntl")
+except ModuleNotFoundError:  # pragma: no cover - exercised on Windows.
+    pass
+try:  # Windows: exclusive-only fallback.
+    _msvcrt = importlib.import_module("msvcrt")
+except ModuleNotFoundError:  # pragma: no cover - exercised on POSIX.
+    pass
+
+
+def _acquire_stream_lock(handle: BinaryIO, *, exclusive: bool) -> None:
+    if _fcntl is not None:
+        _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX if exclusive else _fcntl.LOCK_SH)
+        return
+    if _msvcrt is not None:
+        # Windows offers only an exclusive byte-range lock here; correctness of the
+        # chain outranks reader concurrency on that platform.
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        _msvcrt.locking(handle.fileno(), _msvcrt.LK_LOCK, 1)
+        return
+    raise GraphIntegrityError("no supported file-lock implementation is available")
+
+
+def _release_stream_lock(handle: BinaryIO) -> None:
+    if _fcntl is not None:
+        _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+        return
+    if _msvcrt is not None:  # pragma: no cover - exercised on Windows.
+        handle.seek(0)
+        _msvcrt.locking(handle.fileno(), _msvcrt.LK_UNLCK, 1)
 _NODE_EVENTS = {
     "node.ready": "READY",
     "node.starting": "STARTING",
@@ -60,8 +110,45 @@ class GraphEventLog:
         """The immutable identity bound to every event in this stream."""
         return self._identity
 
+    def _lock_path(self) -> Path:
+        return self._path.with_name(self._path.name + ".lock")
+
+    @contextmanager
+    def _locked(self, *, exclusive: bool) -> Iterator[None]:
+        """Serialize this run's stream across processes via a sidecar lock file.
+
+        A sidecar (rather than locking the stream itself) keeps the lock independent of
+        the append handle's lifetime and matches ``hash_chain_events.py``. Never nest:
+        the exclusive holder must call ``_replay_unlocked``, not ``replay``, because
+        ``flock`` is held per open-file-description and a second acquisition from the
+        same process would block on itself.
+        """
+        lock_path = self._lock_path()
+        if lock_path.is_symlink():
+            raise GraphIntegrityError("event lock path must not be a symlink")
+        try:
+            with lock_path.open("a+b") as handle:
+                _acquire_stream_lock(handle, exclusive=exclusive)
+                try:
+                    yield
+                finally:
+                    _release_stream_lock(handle)
+        except OSError as exc:
+            raise GraphIntegrityError(f"cannot lock event stream: {exc}") from exc
+
     def append(self, expected_previous_hash: str, event: UnsignedGraphEvent) -> StoredGraphEvent:
-        events = self.replay()
+        """Append under an EXCLUSIVE stream lock.
+
+        The head check and the write must be one atomic step: see the module-level note
+        on why an unserialized read-check-write forks the hash chain.
+        """
+        with self._locked(exclusive=True):
+            return self._append_checked(expected_previous_hash, event)
+
+    def _append_checked(
+        self, expected_previous_hash: str, event: UnsignedGraphEvent
+    ) -> StoredGraphEvent:
+        events = self._replay_unlocked()
         head = events[-1].event_hash if events else _GENESIS
         if expected_previous_hash != head:
             raise GraphIntegrityError("expected previous hash does not match stream head")
@@ -98,6 +185,16 @@ class GraphEventLog:
         return stored
 
     def replay(self) -> tuple[StoredGraphEvent, ...]:
+        """Read and verify the whole stream under a SHARED lock.
+
+        The shared lock keeps a reader from observing the stream mid-append (a writer
+        holds it exclusively), so a concurrent decision can no longer surface as a
+        spurious "partial or empty event tail".
+        """
+        with self._locked(exclusive=False):
+            return self._replay_unlocked()
+
+    def _replay_unlocked(self) -> tuple[StoredGraphEvent, ...]:
         if self._path.is_symlink():
             raise GraphIntegrityError("event stream path must not be a symlink")
         try:
