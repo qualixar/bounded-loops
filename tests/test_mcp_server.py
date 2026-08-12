@@ -500,15 +500,18 @@ def test_bl_run_unexpected_exception_returns_error_dict(tmp_path):
             str(fake_manifest.loop_dir), confirm=False
         )
     assert preview_result["status"] == "not_confirmed"
-    run_sig = mcp_server._previewed[str(fake_manifest.loop_dir.resolve())]
 
-    # Step 2: confirm=True with wire() returning a mock whose run() raises
+    # Step 2: confirm=True with wire() returning a mock whose run() raises.
+    # No _run_signature patch: both calls use the same fake_manifest object and
+    # the same (empty) loop_dir tempdir so _content_hash is stable — the
+    # signature computed here naturally equals the one stored in step 1. Omitting
+    # the patch preserves the test's ability to detect a broken _content_hash
+    # (which is the actual TOCTOU property the signature binds).
     crashing_use_case = MagicMock()
     crashing_use_case.run.side_effect = RuntimeError("unexpected boom")
 
     with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
          patch("bounded_loops.mcp_server.wire", return_value=crashing_use_case), \
-         patch("bounded_loops.mcp_server._run_signature", return_value=run_sig), \
          patch("bounded_loops.mcp_server.record_trust"):
         result = mcp_server.bl_run(str(fake_manifest.loop_dir), confirm=True)
 

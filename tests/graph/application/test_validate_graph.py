@@ -135,7 +135,12 @@ def test_invalid_json_is_rejected():
             lambda g: g["nodes"][0].update({"kind": "oracle"}),
             "unknown_node_kind",
         ),
-        # on_failure: invalid on_failure value (line 168)
+        # on_failure: invalid on_failure value.
+        # validate_graph.py:167 rejects any value not in
+        # {"fail_graph", "continue", "repair", "await_human"}.
+        # The guard is node-kind-agnostic — it runs for loop, approval, and every
+        # other kind inside _validate_node(). nodes[0] is a 'loop' node; this
+        # confirms the branch fires for loop nodes (not just approval nodes).
         (
             lambda g: g["nodes"][0].update({"on_failure": "ignore_and_continue"}),
             "on_failure",
