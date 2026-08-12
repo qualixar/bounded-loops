@@ -22,7 +22,10 @@ def _graph() -> dict[str, object]:
                 "kind": "loop",
                 "inputs": {"question": "text"},
                 "outputs": {"evidence": "evidence_bundle"},
-                "budget": {"max_attempts": 2, "max_wallclock_s": 60},
+                # max_attempts is 1 and on_failure is fail_graph throughout this fixture
+                # because those are the only values the runtime actually routes; the
+                # validator now refuses the rest rather than accepting and ignoring them.
+                "budget": {"max_attempts": 1, "max_wallclock_s": 60},
                 "effects": ["read_only"],
                 "isolation": "process_restricted",
                 "connection_slot": "research-model",
@@ -37,7 +40,7 @@ def _graph() -> dict[str, object]:
                 "budget": {"max_attempts": 1, "max_wallclock_s": 30},
                 "effects": ["read_only"],
                 "isolation": "workspace_only",
-                "on_failure": "await_human",
+                "on_failure": "fail_graph",
                 "required_role": "reviewer",
             },
         ],
@@ -144,6 +147,30 @@ def test_invalid_json_is_rejected():
         (
             lambda g: g["nodes"][0].update({"on_failure": "ignore_and_continue"}),
             "on_failure",
+        ),
+        # on_failure_unimplemented: a value the SCHEMA declares but the RUNTIME does not
+        # route.  GraphRunController sends every failure to fail_graph, so accepting
+        # these would return a plan whose declared failure policy is silently discarded.
+        # Refusing is the same fail-closed rule this project applies to its connectors.
+        (
+            lambda g: g["nodes"][0].update({"on_failure": "repair"}),
+            "on_failure_unimplemented",
+        ),
+        (
+            lambda g: g["nodes"][0].update({"on_failure": "continue"}),
+            "on_failure_unimplemented",
+        ),
+        (
+            lambda g: g["nodes"][0].update({"on_failure": "await_human"}),
+            "on_failure_unimplemented",
+        ),
+        # max_attempts_unrouted: the controller never reads PlannedNode.budgets, so it
+        # performs exactly one attempt per node.  A budget above one is a promise the
+        # runtime does not keep — refuse it rather than ignore it.  This case is removed
+        # when retry is routed; until then it is the honest behaviour.
+        (
+            lambda g: g["nodes"][0]["budget"].update({"max_attempts": 5}),
+            "max_attempts_unrouted",
         ),
         # edge_condition: edge 'when' that is not a string or null (line 231)
         (

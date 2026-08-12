@@ -18,14 +18,15 @@ def _graph() -> dict[str, object]:
         "nodes": [
             {
                 "id": "research", "kind": "loop", "inputs": {}, "outputs": {"evidence": "bundle"},
-                "budget": {"max_attempts": 2, "max_wallclock_s": 60}, "effects": ["read_only"],
+                "budget": {"max_attempts": 1, "max_wallclock_s": 60}, "effects": ["read_only"],
                 "isolation": "process_restricted", "connection_slot": "research-model",
                 "on_failure": "fail_graph", "loop_package": "sha256:" + "a" * 64,
             },
             {
                 "id": "review", "kind": "approval", "inputs": {"evidence": "bundle"}, "outputs": {},
                 "budget": {"max_attempts": 1, "max_wallclock_s": 30}, "effects": ["read_only"],
-                "isolation": "workspace_only", "on_failure": "await_human", "required_role": "reviewer",
+                # fail_graph, not await_human: only the routed policy is accepted now.
+                "isolation": "workspace_only", "on_failure": "fail_graph", "required_role": "reviewer",
             },
         ],
         "edges": [{"from_node": "research", "from_port": "evidence", "to_node": "review", "to_port": "evidence", "when": None}],

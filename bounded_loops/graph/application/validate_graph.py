@@ -34,6 +34,15 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ABSOLUTE = re.compile(r"^(?:/|\\\\|[A-Za-z]:[\\/]|~[\\/])")
 _SECRET_WORDS = frozenset({"api_key", "credential", "password", "secret", "token"})
 _PROVIDERS = frozenset({"anthropic", "claude", "codex", "grok", "kimi", "muse", "openai", "openrouter", "qwen"})
+_ON_FAILURE_DECLARED = frozenset({"fail_graph", "continue", "repair", "await_human"})
+# Declared in the authoring schema but NOT routed by GraphRunController: every failure
+# currently becomes fail_graph.  Accepting these would silently discard the author's
+# declared policy, so validation refuses them until the runtime honours them.
+_ON_FAILURE_UNIMPLEMENTED = frozenset({"continue", "repair", "await_human"})
+# The controller performs exactly one attempt per node: it never reads
+# ``PlannedNode.budgets["max_attempts"]``.  Until it does, a budget above one is a
+# promise the runtime does not keep, so it is refused rather than ignored.
+_MAX_ATTEMPTS_ROUTED = 1
 _BASE_NODE_FIELDS = frozenset({
     "id", "kind", "inputs", "outputs", "budget", "effects", "isolation", "connection_slot", "on_failure",
 })
@@ -164,8 +173,18 @@ def _node(raw: object, index: int) -> AuthoringNode:
     isolation = _enum(IsolationLevel, node["isolation"], f"{pointer}/isolation", "isolation")
     connection_slot = _optional_identifier(node.get("connection_slot"), f"{pointer}/connection_slot")
     on_failure = node.get("on_failure")
-    if on_failure is not None and on_failure not in {"fail_graph", "continue", "repair", "await_human"}:
+    if on_failure is not None and on_failure not in _ON_FAILURE_DECLARED:
         raise _error("on_failure", f"{pointer}/on_failure", "must be a declared failure policy")
+    if on_failure in _ON_FAILURE_UNIMPLEMENTED:
+        # Refuse rather than accept-and-ignore.  The runtime routes every failure to
+        # fail_graph, so accepting these three would hand back a plan whose declared
+        # failure policy is silently discarded — exactly the silent no-op this project
+        # forbids of its connectors.  See LLD 01 §3.5 for why each is still deferred.
+        raise _error(
+            "on_failure_unimplemented", f"{pointer}/on_failure",
+            f"on_failure={on_failure!r} is declared but not yet routed by the runtime; "
+            "only 'fail_graph' (the default) is honoured today",
+        )
     details = {field: node[field] for field in _KIND_FIELDS[kind]}
     _validate_kind_details(kind, details, pointer)
     return AuthoringNode(
@@ -332,8 +351,16 @@ def _budget(raw: object, pointer: str) -> GraphBudget:
     budget = _mapping(raw, pointer)
     _closed(budget, {"max_attempts", "max_wallclock_s", "max_tokens", "max_cost_microunits"}, pointer)
     _required(budget, {"max_attempts", "max_wallclock_s"}, pointer)
+    max_attempts = _bounded_int(budget["max_attempts"], f"{pointer}/max_attempts", 1, 1000)
+    if max_attempts > _MAX_ATTEMPTS_ROUTED:
+        raise _error(
+            "max_attempts_unrouted", f"{pointer}/max_attempts",
+            f"max_attempts={max_attempts} was accepted but the runtime performs exactly "
+            f"{_MAX_ATTEMPTS_ROUTED} attempt per node; declare {_MAX_ATTEMPTS_ROUTED} until "
+            "retry is routed",
+        )
     return GraphBudget(
-        max_attempts=_bounded_int(budget["max_attempts"], f"{pointer}/max_attempts", 1, 1000),
+        max_attempts=max_attempts,
         max_wallclock_s=_bounded_int(budget["max_wallclock_s"], f"{pointer}/max_wallclock_s", 1, 86400),
         max_tokens=_optional_int(budget.get("max_tokens"), f"{pointer}/max_tokens", minimum=1),
         max_cost_microunits=_optional_int(budget.get("max_cost_microunits"), f"{pointer}/max_cost_microunits", minimum=0),
