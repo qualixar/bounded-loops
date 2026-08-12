@@ -49,6 +49,12 @@ class Effect(str, Enum):
 # Decide here whether it is network-bearing — never re-hardcode this frozenset elsewhere.
 NETWORK_EFFECTS = frozenset({Effect.EXTERNAL_WRITE, Effect.FINANCIAL, Effect.IRREVERSIBLE})
 
+# Null/unknown policy digest sentinel — used by the compiler and execution layer when
+# no real policy digest is available (e.g., a demo run with no deployed policy).
+# Defined here rather than inline so every caller imports the same value and a
+# search for ``_NULL_POLICY_DIGEST`` gives a single authoritative definition (ARCH-06).
+_NULL_POLICY_DIGEST = "sha256:" + "a" * 64
+
 
 class IsolationLevel(str, Enum):
     WORKSPACE_ONLY = "workspace_only"

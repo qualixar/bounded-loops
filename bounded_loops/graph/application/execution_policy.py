@@ -152,6 +152,26 @@ def _validate_isolation(node: PlannedNode, actual: IsolationLevel) -> None:
         raise GraphValidationError("execution_isolation", "/envelope/isolation", "envelope isolation is below the required policy floor")
 
 
+def network_mode_for_node(node: PlannedNode) -> NetworkMode:
+    """Return the ``NetworkMode`` a node requires based on its declared effects.
+
+    A node that declares any network-bearing effect (``EXTERNAL_WRITE``,
+    ``FINANCIAL``, or ``IRREVERSIBLE``) must be admitted on an ``ALLOWLIST``
+    (explicit destination list) or ``OPEN`` (local-CLI trust posture) — never
+    silently on ``DENY``.  All others get ``DENY``.
+
+    Replaces ``enforcer._network_mode_for`` (ARCH-02): that function was an
+    adapter-private 1-liner using only domain types, so the logic belongs in the
+    application layer where it can be imported directly without crossing the
+    application→adapter boundary.
+    """
+    return (
+        NetworkMode.ALLOWLIST
+        if (frozenset(node.required_effects) & NETWORK_EFFECTS)
+        else NetworkMode.DENY
+    )
+
+
 def _validate_network(node: PlannedNode, envelope: ExecutionEnvelope) -> None:
     destinations = envelope.network_destinations
     if len(set(destinations)) != len(destinations):

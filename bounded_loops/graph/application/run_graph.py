@@ -15,15 +15,19 @@ from bounded_loops.graph.application.execution_policy import (
     validate_execution_envelope,
 )
 from bounded_loops.graph.application.schedule_ready import NodeState, derive_ready_nodes, dispatch_node
-from bounded_loops.graph.domain.authoring import Effect, NodeKind
+from bounded_loops.graph.domain.authoring import NETWORK_EFFECTS, NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.events import GraphRunIdentity, GraphRunProjection, UnsignedGraphEvent
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
 # Effects whose real-world action cannot be safely repeated by an at-least-once
-# re-drive without a per-effect idempotency key (ADR-12 D7).
-_EFFECTFUL_EFFECTS = frozenset({Effect.EXTERNAL_WRITE, Effect.FINANCIAL, Effect.IRREVERSIBLE})
+# re-drive without a per-effect idempotency key (ADR-12 D7).  Aliased from
+# NETWORK_EFFECTS in authoring.py — the two sets name the same effects because
+# network-bearing effects are exactly those that cannot be safely retried without
+# an idempotency key.  They are kept as separate names to preserve the distinct
+# semantic axes (ARCH-03).
+_EFFECTFUL_EFFECTS = NETWORK_EFFECTS
 
 
 @dataclass(frozen=True)
@@ -360,6 +364,9 @@ class GraphRunController:
         try:
             outcome = self._approval_resolver.resolve(
                 identity=self.event_log.identity, node=node, attempt=1,
+                # attempt=1: approval nodes do not retry (ARCH-09); only the approval
+                # decision itself is durable.  Multi-attempt retry tracking would require
+                # a separate event kind and is not supported at this layer.
             )
         except Exception:
             # Consistent with worker/gate/policy failures: a resolver error fails the
