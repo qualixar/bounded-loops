@@ -170,16 +170,23 @@ else.
 
 ## What is not yet available
 
-- Approval nodes in `bl graph run --execute`: refused at preflight with a named
-  message.  MCP-driven approve/reject via `LocalGraphRuntimeFacade.approve` is
-  shipped, including durable persistence and rehydration on resume (C-080).
-- Cross-model audit controller and Arena wiring — write side: the read side
+- **Reject-path signature-gating for hosted deployments** — `bl graph approve
+  --decision rejected` is accepted on filesystem writability for local posture.
+  A hosted, multi-tenant deployment must supply a crypto `ApprovalSignatureVerifierPort`
+  to gate reject as well as approve.
+- **Cross-model audit controller and Arena wiring — write side**: the read side
   (coverage table + release verdict via `bl graph arena`) is shipped (C-079);
   structurally binding a coverage cell to the auditor's `model_id` and receipt
   route is still deferred.
-- Enterprise egress firewall — RC-LOCKDOWN as the default connector tier: the
-  `NetworkMode.ALLOWLIST` OS-cage mechanism is shipped and proven live on macOS
-  Seatbelt (C-081, fail-closed on Linux/docker), but connector nodes in
-  `--execute` do not use it yet.
-- Hosted `ArenaReceiptVerifierPort` — `bl graph status` outputs a
+- **ALLOWLIST as the default connector tier (RC-LOCKDOWN)**: the ALLOWLIST OS-cage
+  mechanism is shipped and opt-in for `local_cli` nodes (via `bl graph init` or env
+  var); making it the default for all connector nodes is deferred.
+- **Hosted `ArenaReceiptVerifierPort`** — `bl graph status` outputs a
   `LOCAL/UNVERIFIED` notice for all local runs.
+
+**Shipped in 0.4.0 (no longer deferred)**:
+- Approval nodes in `bl graph run --execute`: now PAUSE (exit code 3) instead of
+  refusing.  `bl graph approve` records the decision durably and resumes.
+- `bl graph console`: loopback click-to-approve HTTP UI (LOCAL posture).
+- `bl graph init`: interactive egress posture installer with atomic config write.
+- `local_cli` egress posture wiring: OPEN (default) or ALLOWLIST (opt-in).

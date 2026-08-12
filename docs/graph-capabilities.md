@@ -77,19 +77,22 @@ The connector invokes the user's own subscription-mode agent CLI as a subprocess
 | `agy` | `agy -p` | positional arg |
 
 The engine never reads, stores, or logs the user's credentials. The CLI
-authenticates out-of-band via its own login session. Network access is OPEN for
-admitted `local_cli` nodes so the CLI can reach its model and tools. An admitted
-`https` node gets its own network mode instead (`ALLOWLIST`, isolation lifted to
-`container_restricted` — see item 8). Any node that is neither is refused at
-preflight and never reaches a network-mode decision.
+authenticates out-of-band via its own login session. Network access for admitted
+`local_cli` nodes is resolved via the configurable egress posture (see item 11):
+OPEN by default (no cage), or ALLOWLIST (macOS Seatbelt cage, opt-in). An admitted
+`https` node gets its own network mode (`ALLOWLIST`, isolation lifted to
+`container_restricted` — see item 8). Any node that is neither `local_cli` nor
+`https` is refused at preflight and never reaches a network-mode decision.
 
 The run-time prompt (`inputs.json`: `node_id -> prompt string`) is not persisted in
 the run directory. A prompt may contain a secret; the content-addressed reply
 artifact is the durable receipt.
 
 **Fail-closed preflight** (checked before any node runs):
-- `approval` nodes are refused — human-approval execution via `--execute` is a later
-  phase (the facade/MCP path already supports it durably; see item 8 below).
+- `approval` nodes are **not refused at preflight** — they are skipped during
+  preflight and the run pauses (exit code 3) when execution reaches them.  Use
+  `bl graph approve` or `bl graph console` to record a decision and resume (see
+  items 12 and 13).
 - Any node whose binding is neither `local_cli` nor `https` (see item 8) is refused
   with an explicit message naming which phase will handle it — e.g. sandboxed tool
   execution.
@@ -228,6 +231,77 @@ and receipts remain authority.
 
 ---
 
+### 11. Egress posture configuration — `bl graph init`
+
+```bash
+bl graph init [--posture {open,allowlist,broker}] [--allowlist <host[:port]>] [--yes] [--config <path>]
+```
+
+Interactive installer that writes `~/.bounded-loops/egress.json` (or the path in
+`--config`).  Defaults: OPEN posture + local_cli connector (frictionless first run).
+
+Atomic write discipline: unique temp file (O_EXCL + O_NOFOLLOW) → `fchmod 0600` →
+`fsync` → `verify_round_trip()` (round-reads the temp through the resolver) → `os.replace`.
+Refuses symlinks at the config path in every mode.
+
+`--allowlist` is repeatable and comma-ok: `--allowlist api.anthropic.com,api.openai.com`.
+`--connector` is informational only — not written to disk (the connector binding lives in
+`connections.json`, not the egress config).
+
+Config precedence (highest wins): explicit arg to `decide_egress_posture()` → env var
+`BOUNDED_LOOPS_EGRESS_POSTURE` → config file `~/.bounded-loops/egress.json` → default OPEN.
+
+---
+
+### 12. Human approval checkpoints — `bl graph approve`
+
+```bash
+bl graph approve --run <dir> --node <id> --decision {approved,rejected} [--inputs <json>] [--json]
+```
+
+Records a durable human decision for an approval node and resumes the run.
+`LocalGraphRuntimeFacade.for_run_dir(run_dir)` addresses runs by flat path — no
+`runs_root` + org/project hierarchy needed.
+
+Durable machinery: `build_durable_approval_resolver` (shared between `execute_graph_run`
+and the facade) persists to `approvals.json` under `flock` + atomic `os.replace`.
+A bare `resume` after a crash never re-pauses a gate a human already decided.
+
+Exit codes: 0 = SUCCEEDED, 2 = FAILED, 3 = AWAITING_APPROVAL (more approval nodes remain).
+
+**Local posture caveats**: the approve command validates authority via the bundled
+`SameTenantApprovalAuthorizer` (same-tenant check, no role verification) and
+`SameTenantApprovalSignatureVerifier` (accepts any non-empty signature — the local run
+directory is the auth boundary). A hosted, multi-tenant deployment must supply a
+role-checking `ApprovalAuthorizationPort` and a crypto `ApprovalSignatureVerifierPort`.
+The reject path is not signature-gated locally — reject is accepted on filesystem
+writability alone for local posture.
+
+---
+
+### 13. Click-to-approve console — `bl graph console`
+
+```bash
+bl graph console --run <dir> [--port <n>]
+```
+
+Starts a loopback-only HTTP server (binds `127.0.0.1`, never `0.0.0.0`) that serves a
+single-page approval UI.  The port defaults to 0 (OS-assigned ephemeral port).
+
+Security properties: per-invocation `secrets.token_urlsafe(32)` token embedded in the
+URL; `hmac.compare_digest` (constant-time comparison); CSRF defense via Origin header
+check (falls back to Referer); 8 KB body cap; 30-second handler timeout; HTTP/1.0
+(no persistent connections); hardening headers (`Referrer-Policy`, `X-Content-Type-Options`,
+`Cache-Control: no-store`).  Auto-stops after the page is served (triggered from the GET
+handler, never from a POST).
+
+**LOCAL posture caveat**: the per-invocation token gates other local processes on the same
+host — it does not authenticate across a network.  A hosted deployment must add TLS,
+real authentication, and a role-checking authorizer before exposing the console to
+external traffic.
+
+---
+
 ## Documented seams — partial or narrower-than-production wiring
 
 Each of these has a real, tested mechanism in the codebase already. What is listed here
@@ -262,11 +336,20 @@ The mechanism — `NetworkMode.ALLOWLIST`, a loopback-only OS cage plus a destin
 allowlisted CONNECT proxy (`enforcer.py:25`, `providers/native.py`, `sandbox.py`,
 `egress_proxy.py`) — is shipped and proven live on macOS Seatbelt: a caged process can
 reach only the proxy; everything else comes back `denied_by_sandbox`. Linux/docker/bwrap
-fail closed today (authorized egress is refused, never faked) rather than caging. It is
-exercised today via the native-sandbox probe path (`sandbox_demo.py`), not by connector
-nodes: `bl graph run --execute` still runs `local_cli` nodes network-`OPEN` and `https`
-nodes broker-mediated, neither OS-caged. Making `ALLOWLIST` the default tier for
-connector nodes is the later-phase item — the cage itself is not.
+fail closed (authorized egress is refused, never faked) rather than caging.
+
+`local_cli` nodes are now wired to the configurable egress posture (Slice 2, C-081).
+OPEN is the default (subscription CLI unchanged). ALLOWLIST is opt-in via `bl graph init`,
+the `BOUNDED_LOOPS_EGRESS_POSTURE` env var, or `~/.bounded-loops/egress.json`.
+Fail-closed rule: ALLOWLIST without the Seatbelt cage present raises `GraphValidationError`
+at preflight — it never silently falls back to OPEN.
+
+**Caveat**: ALLOWLIST is a network-only cage. A compromised subprocess retains full read/write
+access to the filesystem (HOME, TMPDIR, workdir). It cannot make outbound TCP connections
+except via the loopback proxy, but it can still read or write local files.
+
+What remains deferred is making ALLOWLIST the **default** tier for connector nodes —
+today `open` remains the default. The cage and opt-in wiring are shipped.
 
 ### Hosted ArenaReceiptVerifierPort
 
