@@ -40,8 +40,14 @@ A client who installs `bounded-loops` and runs `bl graph` gets:
    - Fail-closed preflight before any node runs (approval nodes SKIP preflight and PAUSE
      at execution — exit code 3; see item 10b; unknown provider IDs fail the node, missing
      prompts fail the node, missing CLI binary fails the node).
-   - Independent structural acceptance gate per node.
+   - Independent structural acceptance gate per node. The gate verdict and
+     artifact digest are **co-recorded in the same hash-chained event** (structural
+     binding via co-location; the default `StructuralAcceptanceGate` does not
+     populate `GateVerdict.evidence_digest`).
    - Hash-chained `controller-events.jsonl` + content-addressed artifact store.
+     On every `resume`, the complete event log hash chain is re-verified in full,
+     and artifact bytes are re-verified on every `open()`. SUCCEEDED nodes are not
+     re-gated on resume — resume trusts recorded verdicts if the hash chain is intact.
    - Plan reconstruction verification before any status or arena read.
 
 4. **Native OS sandbox demo** — `bl graph run --execute --out <dir>` (no manifest)

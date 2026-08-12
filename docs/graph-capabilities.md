@@ -108,6 +108,21 @@ Every run writes a `controller-events.jsonl` event log tied to a `GraphRunIdenti
 (organization, project, run, graph digest, plan digest, policy digest). The event log
 is append-only; each entry is chained to the previous by digest.
 
+**Verdict and artifact digest binding:** The gate verdict and the node's artifact
+digest are **co-recorded in the same hash-chained event**. The binding is structural:
+both fields appear in the same immutable event record covered by the chain; neither
+field cross-references the other outside of that shared record. Specifically, the
+default `StructuralAcceptanceGate` does not populate `GateVerdict.evidence_digest` —
+the `evidence_digest` field is optional and is only populated when a gate is explicitly
+configured to do so.
+
+**Resume verification scope:** On every `resume` call, the complete event log hash
+chain is re-verified (`event_log.replay()` re-hashes every prior event), and artifact
+bytes are re-verified on every `open()` call against the stored digest. SUCCEEDED
+nodes are not re-driven through the gate on resume — the resume trusts recorded gate
+verdicts so long as the hash chain covering those events is intact. Incomplete nodes
+(those that did not reach SUCCEEDED in the prior run) are re-driven normally.
+
 The run directory contains `manifest.yaml`, `connections.json`, `plan.json`, and
 `run-meta.json`. `bl graph status` and `bl graph arena` reconstruct the full plan from
 these files and verify that the reconstructed `plan_id` matches the stored one before

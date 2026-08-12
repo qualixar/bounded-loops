@@ -164,7 +164,7 @@ The engine:
 Exit codes:
 - `0` — SUCCEEDED (all nodes passed their gates)
 - `2` — compile error, preflight refusal, or node failure
-- `3` — AWAITING_APPROVAL (the run has paused at an approval node; use `bl graph approve` to record a decision and resume)
+- `3` — PAUSED (the run has paused at an approval node; use `bl graph approve` to record a decision and resume)
 
 Sample terminal output on success:
 
@@ -188,13 +188,23 @@ reply) is content-addressed in `./my-run/artifacts/`.
 ## 6. Handle approval nodes (exit code 3)
 
 If your graph contains an `approval` node and the run pauses there, `bl graph run`
-exits with code 3 and prints a hint such as:
+exits with code 3 and prints output such as:
 
 ```
-run_state : AWAITING_APPROVAL
-  PAUSED node 'review': waiting for human decision
-  Resume:  bl graph approve --run ./my-run --node review --decision approved
+Local-CLI graph run — REAL execution
+==============================================================
+run_state : RUNNING
+pause_status : PAUSED — awaiting human decision on 1 node(s): review
+  ?? node 'review': AWAITING_APPROVAL  artifact=-
+out       : ./my-run
+
+To continue:
+  bl graph approve --run ./my-run --node review --decision approved|rejected
 ```
+
+`run_state` is `RUNNING` because the run-level projection has no AWAITING_APPROVAL
+state — the run is live but durably paused at a node. The `pause_status` line makes
+the paused state unambiguous: this is exit code 3, not success (0) or failure (2).
 
 To record a decision and resume:
 
@@ -204,7 +214,8 @@ bl graph approve --run ./my-run --node review --decision approved
 ```
 
 `bl graph approve` exits 0 if the run has now SUCCEEDED, 2 if it FAILED, and 3
-if it is still AWAITING_APPROVAL (more approval nodes remain).
+if the run is still PAUSED (more approval nodes remain — run `bl graph approve`
+again for the next node named in the output).
 
 **Click-to-approve in a browser:** If you prefer not to type the CLI command,
 start the loopback console in another terminal while the run is paused:

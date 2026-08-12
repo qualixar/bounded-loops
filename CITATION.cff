@@ -8,7 +8,7 @@ authors:
     given-names: "Varun Pratap"
     affiliation: "Qualixar"
 version: "0.4.0"
-date-released: "2026-07-13"
+date-released: "2026-08-12"
 license: Apache-2.0
 url: "https://github.com/qualixar/bounded-loops"
 repository-code: "https://github.com/qualixar/bounded-loops"
