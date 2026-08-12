@@ -186,7 +186,10 @@ class LocalCliConnectorWorker:
         # fixed PlatformCapabilities so the ALLOWLIST-without-a-cage path is deterministic.
         self._capabilities = capabilities if capabilities is not None else probe_platform()
 
-    def execute(self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope) -> WorkerResult:
+    def execute(
+        self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
+        attempt: int,
+    ) -> WorkerResult:
         route, transport = self._route_for(plan, node)
         if transport != _LOCAL_CLI_TRANSPORT:
             raise GraphIntegrityError(f"node {node.node_id!r} is not an admitted local-CLI connector")
@@ -257,7 +260,7 @@ class LocalCliConnectorWorker:
             )
 
         reply = (result.stdout or "").encode("utf-8")
-        digest = self._store.put(BytesIO(reply), self._policy()).digest
+        digest = self._store.put(BytesIO(reply), self._policy(attempt)).digest
         return WorkerResult((digest,), route, transport)
 
     def _caged_argv(
@@ -347,11 +350,11 @@ class LocalCliConnectorWorker:
         base.mkdir(parents=True, exist_ok=False)
         return base
 
-    def _policy(self) -> ArtifactPolicy:
+    def _policy(self, attempt: int) -> ArtifactPolicy:
         return ArtifactPolicy(
             organization_id=self._organization_id,
             project_id=self._project_id,
-            producer_attempt="1",
+            producer_attempt=str(attempt),
             media_type="text/plain",
             sensitivity=self._sensitivity,
             retention_class=self._retention_class,

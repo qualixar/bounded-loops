@@ -66,7 +66,7 @@ def _identity(plan) -> GraphRunIdentity:
 class _SpyWorker:
     calls: list
 
-    def execute(self, *, plan, node, envelope) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:
         self.calls.append(node.node_id)
         return WorkerResult((_DIGEST,), _ROUTE, "https")
 

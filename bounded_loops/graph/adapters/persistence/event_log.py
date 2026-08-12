@@ -354,9 +354,13 @@ def _validate_node_event(event_type: str, payload: Mapping[str, object]) -> None
     if event_type == "node.failed" and "verdict" in payload:
         _validate_verdict(payload["verdict"], False)
     if event_type == "node.failed" and "budget_exhausted" in payload:
-        if not isinstance(payload["budget_exhausted"], bool):
-            raise GraphIntegrityError("node.failed budget_exhausted must be a boolean")
-        if payload["budget_exhausted"] and payload["attempt"] < 2:
+        # The key is only ever WRITTEN as true, so a false value is not a legal receipt —
+        # a single-attempt failure omits the key entirely rather than declaring it false.
+        # Accepting false would leave two encodings for one fact and let a forged log pick
+        # whichever a given reader mishandles.
+        if payload["budget_exhausted"] is not True:
+            raise GraphIntegrityError("node.failed budget_exhausted must be true when present")
+        if payload["attempt"] < 2:
             # Exhausting a budget requires more than one attempt to have been available.
             raise GraphIntegrityError("node.failed budget_exhausted requires attempt above one")
 

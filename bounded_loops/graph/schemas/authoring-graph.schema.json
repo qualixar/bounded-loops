@@ -20,7 +20,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["max_attempts", "max_wallclock_s"],
       "properties": {
-        "max_attempts": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "max_attempts": {"type": "integer", "minimum": 1, "maximum": 100},
         "max_wallclock_s": {"type": "integer", "minimum": 1, "maximum": 86400},
         "max_tokens": {"type": ["integer", "null"], "minimum": 1},
         "max_cost_microunits": {"type": ["integer", "null"], "minimum": 0}

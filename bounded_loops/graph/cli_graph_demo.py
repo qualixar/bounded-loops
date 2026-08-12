@@ -97,13 +97,14 @@ class _DemoWorker:
     _project: str
 
     def execute(
-        self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope
+        self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
+        attempt: int,
     ) -> WorkerResult:
         content = f"DEMONSTRATION NODE: {node.node_id}".encode("utf-8")
         policy = ArtifactPolicy(
             organization_id=self._org,
             project_id=self._project,
-            producer_attempt="1",
+            producer_attempt=str(attempt),
             media_type="text/plain",
             sensitivity="public",
             retention_class="standard",

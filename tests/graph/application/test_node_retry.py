@@ -96,13 +96,15 @@ class _DenyingEnforcer:
 
 
 class _Worker:
-    """Succeeds every time, counting how often it was asked to work."""
+    """Succeeds every time, recording the attempt number it was handed."""
 
     def __init__(self) -> None:
         self.calls = 0
+        self.attempts: list[int] = []
 
-    def execute(self, *, plan, node, envelope) -> WorkerResult:  # noqa: ANN001, ARG002
+    def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
         self.calls += 1
+        self.attempts.append(attempt)
         return WorkerResult(output_artifact_digests=(_DIGEST,))
 
 
@@ -110,7 +112,7 @@ class _RaisingWorker:
     def __init__(self) -> None:
         self.calls = 0
 
-    def execute(self, *, plan, node, envelope) -> WorkerResult:  # noqa: ANN001, ARG002
+    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:  # noqa: ANN001, ARG002
         self.calls += 1
         raise RuntimeError("transient worker fault")
 
@@ -174,6 +176,10 @@ def test_a_node_retries_until_its_independent_gate_accepts(tmp_path: Path) -> No
     assert projection.state == "SUCCEEDED"
     assert worker.calls == 3, "the worker must be re-run on each attempt"
     assert gate.calls == 3
+    # The worker is TOLD which attempt it is on. Without this, artifact provenance and any
+    # per-attempt credential audience stay pinned to attempt 1 while the log says 3 — the
+    # workers previously hardcoded producer_attempt="1".
+    assert worker.attempts == [1, 2, 3]
     # Three attempts observable, two of them rejected.
     assert [payload["attempt"] for payload in _of_type(tmp_path, "node.running")] == [1, 2, 3]
     assert [payload["attempt"] for payload in _of_type(tmp_path, "node.attempt.failed")] == [1, 2]

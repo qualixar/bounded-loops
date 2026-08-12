@@ -120,6 +120,7 @@ class _UnsupportedNodeWorker:
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
+        attempt: int,
     ) -> WorkerResult:
         raise GraphIntegrityError(
             f"node {node.node_id!r} (kind {node.kind!r}) is not runnable via "
@@ -148,14 +149,15 @@ class _ByokDispatchWorker:
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
+        attempt: int,
     ) -> WorkerResult:
         transport = next(
             (b.transport for b in plan.connection_bindings if b.binding_id == node.binding_id),
             None,
         )
         if transport == "https":
-            return self._https.execute(plan=plan, node=node, envelope=envelope)
-        return self._local_cli.execute(plan=plan, node=node, envelope=envelope)
+            return self._https.execute(plan=plan, node=node, envelope=envelope, attempt=attempt)
+        return self._local_cli.execute(plan=plan, node=node, envelope=envelope, attempt=attempt)
 
 
 class _LocalAuthorizer:

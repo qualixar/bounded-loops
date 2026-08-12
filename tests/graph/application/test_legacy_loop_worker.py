@@ -83,7 +83,7 @@ def test_legacy_loop_worker_resolves_digest_and_emits_a_controller_owned_receipt
 
     node = _node()
     with pytest.raises(GraphIntegrityError, match="cannot enforce"):
-        worker.execute(plan=_plan(), node=node, envelope=_envelope(node))
+        worker.execute(plan=_plan(), node=node, envelope=_envelope(node), attempt=1)
 
     resolver.assert_not_called()
     wire.assert_not_called()
@@ -102,7 +102,7 @@ def test_legacy_loop_worker_rejects_a_legacy_loop_without_its_own_gate_pass(tmp_
 
     with pytest.raises(GraphIntegrityError, match="cannot enforce"):
         node = _node()
-        worker.execute(plan=_plan(), node=node, envelope=_envelope(node))
+        worker.execute(plan=_plan(), node=node, envelope=_envelope(node), attempt=1)
 
 
 def test_legacy_loop_composes_through_artifact_verification_and_outer_gate(tmp_path):

@@ -135,7 +135,7 @@ def test_live_sandbox_denies_network_and_isolates_home(tmp_path):
         declared_outputs={"result.json": "application/json"},
     )
     worker = _worker(tmp_path, _Resolver(spec), _LIVE)
-    result = worker.execute(plan=_plan(), node=_node(), envelope=_envelope())
+    result = worker.execute(plan=_plan(), node=_node(), envelope=_envelope(), attempt=1)
 
     assert len(result.output_artifact_digests) == 1
     assert result.observed_route is None and result.observed_transport is None
@@ -176,6 +176,7 @@ def test_live_allowlist_cages_egress_to_the_loopback_proxy(tmp_path):
         plan=_plan(),
         node=_node(level=IsolationLevel.CONTAINER_RESTRICTED, effects=(Effect.EXTERNAL_WRITE,)),
         envelope=envelope,
+        attempt=1,
     )
     payload = _read_artifact(worker.artifact_store, result.output_artifact_digests[0])
     assert payload["proxy"].startswith("http://127.0.0.1:"), payload  # proxy env injected
@@ -196,7 +197,7 @@ def test_live_sandbox_confines_writes_outside_workspace(tmp_path):
         declared_outputs={"result.json": "application/json"},
     )
     worker = _worker(tmp_path, _Resolver(spec), _LIVE)
-    result = worker.execute(plan=_plan(), node=_node(), envelope=_envelope())
+    result = worker.execute(plan=_plan(), node=_node(), envelope=_envelope(), attempt=1)
     payload = _read_artifact(worker.artifact_store, result.output_artifact_digests[0])
     assert payload["outside"] == "denied", payload
 
@@ -211,7 +212,7 @@ def test_fail_closed_when_no_mechanism_can_enforce(tmp_path):
     )
     worker = _worker(tmp_path, _Resolver(spec), caps)
     with pytest.raises(GraphIntegrityError):
-        worker.execute(plan=_plan(), node=_node(), envelope=_envelope())
+        worker.execute(plan=_plan(), node=_node(), envelope=_envelope(), attempt=1)
 
 
 @_needs_native
@@ -222,7 +223,7 @@ def test_missing_declared_output_fails_closed(tmp_path):
     )
     worker = _worker(tmp_path, _Resolver(spec), _LIVE)
     with pytest.raises(GraphIntegrityError):
-        worker.execute(plan=_plan(), node=_node(), envelope=_envelope())
+        worker.execute(plan=_plan(), node=_node(), envelope=_envelope(), attempt=1)
 
 
 @_needs_native
@@ -234,7 +235,7 @@ def test_undeclared_output_is_rejected(tmp_path):
     )
     worker = _worker(tmp_path, _Resolver(spec), _LIVE)
     with pytest.raises(GraphIntegrityError):
-        worker.execute(plan=_plan(), node=_node(), envelope=_envelope())
+        worker.execute(plan=_plan(), node=_node(), envelope=_envelope(), attempt=1)
 
 
 def test_spec_requires_argv_and_outputs():
@@ -265,7 +266,7 @@ def test_crafted_node_id_cannot_escape_workspace_root(tmp_path):
         isolation=IsolationLevel.CONTAINER_RESTRICTED,
         hard_deadline_ms=15000,
     )
-    result = worker.execute(plan=_plan(), node=evil, envelope=_envelope())
+    result = worker.execute(plan=_plan(), node=evil, envelope=_envelope(), attempt=1)
     assert len(result.output_artifact_digests) == 1
     # Nothing was created outside the workspace root.
     assert not (tmp_path / "etc").exists()

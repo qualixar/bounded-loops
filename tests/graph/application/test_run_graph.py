@@ -73,7 +73,7 @@ def _identity(plan) -> GraphRunIdentity:
 class _Worker:
     calls: list[str]
 
-    def execute(self, *, plan, node, envelope) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:
         self.calls.append(node.node_id)
         return WorkerResult(
             ("sha256:" + "d" * 64,),
@@ -104,17 +104,17 @@ class _Artifacts:
 
 
 class _ExplodingWorker:
-    def execute(self, *, plan, node, envelope) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:
         raise RuntimeError("provider output must not become a receipt reason")
 
 
 class _MismatchedRouteWorker:
-    def execute(self, *, plan, node, envelope) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:
         return WorkerResult(("sha256:" + "d" * 64,), ResolvedRoute("other", "codex", "in", False, "sha256:" + "c" * 64))
 
 
 class _TransportProofWorker:
-    def execute(self, *, plan, node, envelope) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:
         return WorkerResult(
             ("sha256:" + "d" * 64,),
             ResolvedRoute("openai", "codex", "in", False, "sha256:" + "c" * 64),
@@ -331,7 +331,7 @@ class _CrashWorker:
     def __init__(self, crash_on: str) -> None:
         self._crash_on = crash_on
 
-    def execute(self, *, plan, node, envelope) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:
         if node.node_id == self._crash_on:
             raise _SimulatedCrash("simulated process crash")
         return WorkerResult(

@@ -64,6 +64,7 @@ class ConnectorNodeWorker:
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
+        attempt: int,
     ) -> WorkerResult:
         if node.binding_id is None:
             raise GraphIntegrityError(
@@ -77,7 +78,7 @@ class ConnectorNodeWorker:
             invocation=call.invocation,
             run_id=self._run_id,
             node_id=node.node_id,
-            attempt=1,
+            attempt=attempt,
         )
         if not result.ok:
             raise GraphIntegrityError(f"connector node {node.node_id!r} failed: {result.reason}")

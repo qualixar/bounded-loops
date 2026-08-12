@@ -195,6 +195,7 @@ class SandboxedNodeWorker:
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
+        attempt: int,
     ) -> WorkerResult:
         validate_execution_envelope(plan, node, envelope)
 
@@ -314,7 +315,7 @@ class SandboxedNodeWorker:
         policy = WorkspacePromotionPolicy(
             organization_id=self.organization_id,
             project_id=self.project_id,
-            producer_attempt="1",
+            producer_attempt=str(attempt),
             declared_outputs=dict(spec.declared_outputs),
             max_file_bytes=self.max_file_bytes,
             sensitivity=self.sensitivity,

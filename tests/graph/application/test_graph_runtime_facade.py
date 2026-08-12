@@ -337,7 +337,7 @@ def _build_approval_run(tmp_path: Path, manifest: str = _APPROVAL_MANIFEST) -> P
 
     # Run the controller — it will pause at the approval node
     class _NoopWorker:
-        def execute(self, *, plan, node, envelope): raise AssertionError("no worker for approval")
+        def execute(self, *, plan, node, envelope, attempt=1): raise AssertionError("no worker for approval")
     class _NoopGate:
         def evaluate(self, *, plan, node, result): raise AssertionError("no gate for approval")
     class _NoopVerifier:

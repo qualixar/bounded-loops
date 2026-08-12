@@ -337,7 +337,7 @@
     b.appendChild(portEditor("Inputs",nd.inputs,nd));
     b.appendChild(portEditor("Outputs",nd.outputs,nd));
     // budget (advanced: more)
-    var ba=el("input",{type:"number",min:1,max:1000,value:nd.budget.max_attempts,oninput:function(){nd.budget.max_attempts=+this.value;}});
+    var ba=el("input",{type:"number",min:1,max:100,value:nd.budget.max_attempts,oninput:function(){nd.budget.max_attempts=+this.value;}});
     var bw=el("input",{type:"number",min:1,max:86400,value:nd.budget.max_wallclock_s,oninput:function(){nd.budget.max_wallclock_s=+this.value;}});
     b.appendChild(row2(field("Max attempts",ba),field("Max wall-clock (s)",bw)));
     if(S.mode==="advanced"){
@@ -495,7 +495,7 @@
       if(ids[n.id])add("error","Duplicate node id “"+n.id+"”.");ids[n.id]=1;
       if(!KINDS[n.kind])add("error","Node “"+n.id+"”: unknown kind “"+n.kind+"”.");
       var bg=n.budget||{};
-      if(!(bg.max_attempts>=1&&bg.max_attempts<=1000))add("error","Node “"+n.id+"”: max attempts must be 1–1000.");
+      if(!(bg.max_attempts>=1&&bg.max_attempts<=100))add("error","Node “"+n.id+"”: max attempts must be 1–100.");
       if(!(bg.max_wallclock_s>=1&&bg.max_wallclock_s<=86400))add("error","Node “"+n.id+"”: max wall-clock must be 1–86400 s.");
       (KINDS[n.kind]?KINDS[n.kind].fields:[]).forEach(function(f){
         var v=n[f.key];

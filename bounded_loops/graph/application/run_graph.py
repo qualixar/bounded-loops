@@ -141,10 +141,17 @@ def _max_attempts(node: PlannedNode) -> int:
 
 
 class NodeWorkerPort(Protocol):
-    """Executes a planned node without deciding whether its output is valid."""
+    """Executes a planned node without deciding whether its output is valid.
+
+    ``attempt`` is the 1-based attempt number of the bounded loop.  It is REQUIRED, with
+    no default: a worker that silently assumed 1 would stamp attempt-3 work as attempt 1,
+    which is what made per-attempt credential audiences and artifact provenance impossible
+    to scope once retry existed.
+    """
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
+        attempt: int,
     ) -> WorkerResult: ...
 
 
@@ -509,7 +516,9 @@ class GraphRunController:
                     states, node_id, "execution environment denied worker", attempt=attempt,
                 ))
         try:
-            result = worker.execute(plan=self.plan, node=node, envelope=envelope)
+            result = worker.execute(
+                plan=self.plan, node=node, envelope=envelope, attempt=attempt,
+            )
         except Exception:
             return _AttemptOutcome(failure="worker execution failed")
         expected_route = self._expected_route_for(node)
