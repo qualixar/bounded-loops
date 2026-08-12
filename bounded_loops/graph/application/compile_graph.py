@@ -15,6 +15,7 @@ from bounded_loops.graph.domain.authoring import (
     Effect,
     IsolationLevel,
     NodeKind,
+    PortableBindingSlot,
     canonical_json,
     digest,
 )
@@ -151,6 +152,68 @@ def _validate_packages(graph: AuthoringGraphSpec, packages: frozenset[str]) -> N
             raise GraphValidationError("package_unavailable", f"/nodes/{node.id}/{key}", "package digest is not admitted")
 
 
+def _why_no_candidate(
+    graph: AuthoringGraphSpec,
+    snapshot: CompileSnapshot,
+    node: AuthoringNode,
+    slot: PortableBindingSlot,
+) -> str:
+    """Return a human-readable explanation for why no connection candidate was found.
+
+    Walks the filter chain step-by-step (DX-09) so the user sees exactly which
+    constraint eliminated all candidates — rather than the generic "no admitted
+    connection satisfies policy" that previously offered no fix hint.
+    """
+    all_conns = list(snapshot.connections)
+    if not all_conns:
+        return (
+            "no connections were provided — pass a connections.json via --connections "
+            "or supply connections programmatically"
+        )
+    slot_matched = [c for c in all_conns if c.slot_id == slot.id]
+    if not slot_matched:
+        available = sorted({c.slot_id for c in all_conns})
+        return (
+            f"no connection targets slot '{slot.id}'; "
+            f"available slot_ids in connections.json: {available}"
+        )
+    admitted_only = [c for c in slot_matched if c.admitted]
+    if not admitted_only:
+        return f"connection for slot '{slot.id}' exists but is not marked admitted"
+    caps_ok = [c for c in admitted_only if slot.requires <= c.capabilities]
+    if not caps_ok:
+        missing = slot.requires - admitted_only[0].capabilities
+        return (
+            f"slot '{slot.id}' requires capabilities {sorted(missing)} "
+            "that the admitted connection does not advertise"
+        )
+    data_rank = _DATA_RANK[graph.policies.data_class]
+    data_ok = [c for c in caps_ok if data_rank <= _DATA_RANK[c.data_class_max]]
+    if not data_ok:
+        return (
+            f"graph data_class '{graph.policies.data_class.value}' exceeds the "
+            f"data_class_max '{caps_ok[0].data_class_max.value}' of the admitted connection for slot '{slot.id}'"
+        )
+    effects_ok = [c for c in data_ok if node.effects <= c.allowed_effects]
+    if not effects_ok:
+        extra = node.effects - data_ok[0].allowed_effects
+        return (
+            f"node '{node.id}' declares effects {sorted(e.value for e in extra)} "
+            f"that the admitted connection for slot '{slot.id}' does not permit"
+        )
+    iso_ok = [
+        c for c in effects_ok
+        if _ISOLATION_RANK[c.isolation] >= _ISOLATION_RANK[node.isolation]
+    ]
+    if not iso_ok:
+        return (
+            f"node '{node.id}' requires isolation '{node.isolation.value}' but the "
+            f"admitted connection for slot '{slot.id}' only provides '{effects_ok[0].isolation.value}'"
+        )
+    # Fallback — all known checks passed; something changed upstream.
+    return "no admitted connection satisfies policy (unknown constraint)"
+
+
 def _resolve_bindings(graph: AuthoringGraphSpec, snapshot: CompileSnapshot) -> dict[str, ResolvedBinding]:
     slots = {slot.id: slot for slot in graph.connection_slots}
     bindings: dict[str, ResolvedBinding] = {}
@@ -168,7 +231,11 @@ def _resolve_bindings(graph: AuthoringGraphSpec, snapshot: CompileSnapshot) -> d
             and _ISOLATION_RANK[candidate.isolation] >= _ISOLATION_RANK[node.isolation]
         ]
         if not candidates:
-            raise GraphValidationError("no_admitted_connection", f"/nodes/{node.id}/connection_slot", "no admitted connection satisfies policy")
+            raise GraphValidationError(
+                "no_admitted_connection",
+                f"/nodes/{node.id}/connection_slot",
+                _why_no_candidate(graph, snapshot, node, slot),
+            )
         selected = sorted(candidates, key=lambda candidate: (candidate.binding_id, candidate.connection_id))[0]
         bindings[node.id] = ResolvedBinding(
             binding_id=selected.binding_id,

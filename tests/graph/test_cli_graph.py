@@ -389,7 +389,9 @@ def test_demo_exits_2_on_failed_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """demo must return exit 2 when the run projection state is not SUCCEEDED."""
-    import bounded_loops.graph.cli_graph as _m
+    # After ARCH-05, demo helpers live in cli_graph_demo; patch there so the
+    # monkeypatch affects the name the running code actually looks up.
+    import bounded_loops.graph.cli_graph_demo as _m
 
     class _RejectGate:
         def evaluate(  # type: ignore[override]

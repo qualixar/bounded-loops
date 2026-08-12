@@ -19,7 +19,7 @@ from bounded_loops.graph.application.arena_projection import (
     read_arena_projection,
 )
 from bounded_loops.graph.application.execute_graph import execute_graph_run
-from bounded_loops.graph.cli_graph import _load_plan_from_run_dir
+from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir as _load_plan_from_run_dir
 from bounded_loops.graph.domain.artifacts import ArtifactAccess, ArtifactRef
 
 _ORG, _PROJECT = "local-org", "local-project"

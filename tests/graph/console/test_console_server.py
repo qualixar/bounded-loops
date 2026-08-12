@@ -528,19 +528,19 @@ def test_open_console_run_fails_closed_if_identity_reload_fails_after_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Defense in depth: `for_run_dir` already validates the run directory
-    internally (via its OWN pre-bound reference to `_load_plan_from_run_dir`,
+    internally (via its OWN pre-bound reference to `load_plan_from_run_dir`,
     untouched by this patch); `open_console_run` independently reloads identity a
     second time to build the ArenaReadRequest. If THAT second, independent call
     fails — e.g. a TOCTOU where the directory changed between the two calls — it
     must fail closed as `ConsoleOpenError`, never leak a raw exception."""
     run_dir = _paused_run(tmp_path)
 
-    import bounded_loops.graph.cli_graph as cli_graph_module
+    import bounded_loops.graph.console.server as server_module
 
     def _always_fails(path: Path) -> None:
         raise ValueError("simulated post-open identity reload failure")
 
-    monkeypatch.setattr(cli_graph_module, "_load_plan_from_run_dir", _always_fails)
+    monkeypatch.setattr(server_module, "load_plan_from_run_dir", _always_fails)
 
     with pytest.raises(ConsoleOpenError, match="simulated post-open identity reload failure"):
         open_console_run(run_dir)

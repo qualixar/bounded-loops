@@ -33,7 +33,7 @@ from bounded_loops.graph.application.arena_projection import ArenaReadRequest, r
 from bounded_loops.graph.application.audit_projection import read_audit_projection
 from bounded_loops.graph.application.execute_graph import execute_graph_run
 from bounded_loops.graph.arena.cli_arena import cmd_graph_arena
-from bounded_loops.graph.cli_graph import _load_plan_from_run_dir
+from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir as _load_plan_from_run_dir
 from bounded_loops.graph.domain.audits import AuditAssignment, AuditCell, AuditPlan
 
 _ORG = "local-org"

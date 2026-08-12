@@ -53,7 +53,6 @@ from bounded_loops.graph.adapters.connectors.node_cli_resolver import NodeCliRes
 from bounded_loops.graph.adapters.enforcement import ExecutionEnforcer, probe_platform
 from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
 from bounded_loops.graph.adapters.enforcement.egress_posture import EgressPostureDecision
-from bounded_loops.graph.adapters.enforcement.enforcer import _network_mode_for as _nmf_for_node
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.adapters.persistence.artifact_verifier import LocalArtifactVerifier
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
@@ -74,8 +73,9 @@ from bounded_loops.graph.application.execution_policy import (
     ExecutionEnvelope,
     NetworkDestination,
     NetworkMode,
+    network_mode_for_node,
 )
-from bounded_loops.graph.domain.authoring import AuthoringGraphSpec, IsolationLevel, NodeKind
+from bounded_loops.graph.domain.authoring import AuthoringGraphSpec, IsolationLevel, NodeKind, _NULL_POLICY_DIGEST
 from bounded_loops.graph.application.approval_ledger import build_durable_approval_resolver
 from bounded_loops.graph.application.run_graph import (
     ApprovalResolverPort,
@@ -98,7 +98,7 @@ from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 _LOCAL_CLI_TRANSPORTS = frozenset({"local_cli"})
 _HTTPS_TRANSPORTS = frozenset({"https"})
 _ALL_EXECUTOR_TRANSPORTS = _LOCAL_CLI_TRANSPORTS | _HTTPS_TRANSPORTS
-_DEFAULT_POLICY_DIGEST = "sha256:" + "a" * 64
+_DEFAULT_POLICY_DIGEST = _NULL_POLICY_DIGEST  # ARCH-06: canonical sentinel from authoring.py
 
 _ISO_RANK = {
     IsolationLevel.WORKSPACE_ONLY: 0,
@@ -333,7 +333,7 @@ def build_execution_controller(
     for node in plan.nodes:
         if node.node_id in egress_node_ids:
             continue
-        ok, reason = caps.can_enforce(node.isolation, _nmf_for_node(node))
+        ok, reason = caps.can_enforce(node.isolation, network_mode_for_node(node))
         if not ok:
             raise GraphValidationError(
                 "execution_enforcement",
@@ -780,7 +780,7 @@ def _report_paused(
         if node.state == "SUCCEEDED":
             mark = "OK "
         elif node.state == "AWAITING_APPROVAL":
-            mark = "?? "
+            mark = "~~ "  # DX-13: ~~ = "paused/pending" (less cryptic than ??);
         else:
             mark = "!! "
         art = (node.artifact_digests[0][:24] + "...") if node.artifact_digests else "-"

@@ -601,7 +601,7 @@ def test_resume_fails_closed_on_malformed_commit_entry(tmp_path):
 
 def test_load_approvals_rejects_non_list_commits(tmp_path):
     """A ledger whose commits is not a list must fail closed at load (dual-audit MAJOR)."""
-    from bounded_loops.graph.application.graph_runtime_facade import _load_approvals
+    from bounded_loops.graph.application.approval_ledger import _load_approvals
     _build_approval_run(tmp_path)
     run_dir = _approval_run_dir(tmp_path)
     (run_dir / "approvals.json").write_text('{"resource_version": 1, "commits": "oops"}', encoding="utf-8")

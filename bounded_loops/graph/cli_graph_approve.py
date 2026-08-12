@@ -54,23 +54,17 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
-
+from bounded_loops.graph.application.approval_ledger import _load_approvals
 from bounded_loops.graph.application.arena_projection import ArenaProjection, ArenaReadRequest
 from bounded_loops.graph.application.execute_graph import (
     _EXIT_PAUSED,
     _awaiting_approval_nodes,
     approve_command_hint,
 )
+from bounded_loops.graph.application.graph_runtime_facade import LocalGraphRuntimeFacade
+from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
-
-if TYPE_CHECKING:
-    # Type-checking ONLY — a module-level runtime import here would be circular
-    # (cli_graph.py imports cmd_graph_approve FROM this module; graph_runtime_facade.py
-    # imports _load_plan_from_run_dir FROM cli_graph.py). The real, runtime import stays
-    # deferred inside `_load_identity_and_facade`, exactly like the original code.
-    from bounded_loops.graph.application.graph_runtime_facade import LocalGraphRuntimeFacade
 
 
 def _err(msg: str) -> None:
@@ -102,7 +96,7 @@ def _load_node_prompts(inputs_path: object) -> tuple[dict[str, str] | None, str 
 
 def _load_identity_and_facade(
     run_dir: Path, node_prompts: dict[str, str],
-) -> tuple[GraphRunIdentity, "LocalGraphRuntimeFacade"] | tuple[None, None]:
+) -> tuple[GraphRunIdentity, LocalGraphRuntimeFacade] | tuple[None, None]:
     """Load the run's identity and construct a flat-addressed facade for *run_dir*.
 
     Returns ``(None, None)`` — with the reason already printed to stderr — if
@@ -110,19 +104,16 @@ def _load_identity_and_facade(
     ``run-meta.json``, a symlink, or a directory that is not a genuine run at all.
     ``LocalGraphRuntimeFacade.for_run_dir`` (0.4.0 flat addressing) owns every one of
     those checks; this function does not duplicate them.
-    """
-    from bounded_loops.graph.application.graph_runtime_facade import LocalGraphRuntimeFacade
 
+    Both imports are now module-level (ARCH-01 fix): the cycle that required lazy
+    imports here was broken when ``graph_runtime_facade.py`` stopped importing from
+    ``cli_graph.py``.
+    """
     try:
         facade = LocalGraphRuntimeFacade.for_run_dir(run_dir, node_prompts=node_prompts)
     except (GraphIntegrityError, GraphValidationError) as exc:
         _err(f"graph approve: {exc}")
         return None, None
-
-    # Deferred import: cli_graph.py imports cmd_graph_approve FROM this module (mirroring
-    # cmd_graph_artifacts), so a module-level import back would be circular. cli_graph.py
-    # itself uses this exact deferred-import technique for execute_graph_run/sandbox_demo.
-    from bounded_loops.graph.cli_graph import _load_plan_from_run_dir
 
     # `for_run_dir` already refused a symlinked run_dir and validated it as a genuine
     # run, so resolving here is safe; load identity from the RESOLVED path (not the raw
@@ -130,7 +121,7 @@ def _load_identity_and_facade(
     # already-validated view (dual-audit convergence MINOR — removes a redundant TOCTOU).
     resolved = run_dir.resolve()
     try:
-        _plan, identity, _meta = _load_plan_from_run_dir(resolved)
+        _plan, identity, _meta = load_plan_from_run_dir(resolved)
     except (FileNotFoundError, ValueError, GraphValidationError) as exc:
         _err(f"graph approve: cannot reconstruct plan — {exc}")
         return None, None
@@ -164,17 +155,44 @@ def cmd_graph_approve(args: argparse.Namespace) -> int:
         project_id=identity.project_id,
         run_id=identity.run_id,
     )
+
+    # DX-06: detect idempotent re-approval BEFORE calling approve so we can emit the
+    # "(already recorded — idempotent)" note.  Read-only ledger check; fail-open so a
+    # missing/unreadable ledger never blocks the approve command itself.
+    already_decided = _already_decided(run_dir.resolve(), args.node)
+
     try:
         projection = facade.approve(request, node_id=args.node, decision=args.decision)
     except (GraphIntegrityError, GraphValidationError) as exc:
         _err(f"graph approve: {exc}")
         return 2
 
-    return _report_approve(args, run_dir=run_dir, projection=projection)
+    return _report_approve(args, run_dir=run_dir, projection=projection, already_decided=already_decided)
+
+
+def _already_decided(run_dir: Path, node_id: str) -> bool:
+    """Return True if *node_id* already has a durable decision in the approval ledger.
+
+    Fail-open (returns False on any I/O or integrity error) so this read-only probe
+    never blocks the approve command from proceeding.
+    """
+    try:
+        ledger = _load_approvals(run_dir / "approvals.json")
+        commits = ledger.get("commits", [])
+        rejections = ledger.get("rejections", [])
+        return any(c.get("node_id") == node_id for c in commits) or any(
+            r.get("node_id") == node_id for r in rejections
+        )
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _report_approve(
-    args: argparse.Namespace, *, run_dir: Path, projection: ArenaProjection,
+    args: argparse.Namespace,
+    *,
+    run_dir: Path,
+    projection: ArenaProjection,
+    already_decided: bool = False,
 ) -> int:
     awaiting = _awaiting_approval_nodes(projection)
     succeeded = projection.run_state == "SUCCEEDED"
@@ -193,6 +211,7 @@ def _report_approve(
             "out": str(run_dir),
             "node_id": args.node,
             "decision": args.decision,
+            "idempotent": already_decided,
             "paused": still_paused,
             "awaiting_approval": list(awaiting),
             "next_commands": next_commands,
@@ -202,6 +221,8 @@ def _report_approve(
         return 0 if succeeded else 2
 
     print(f"node {args.node!r} decision : {args.decision}")
+    if already_decided:
+        print("  (already recorded — idempotent)")
     print(f"run_state : {projection.run_state}")
     for node in projection.nodes:
         print(f"  node {node.node_id!r}: {node.state}")

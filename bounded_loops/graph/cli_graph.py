@@ -24,13 +24,8 @@ import argparse
 import dataclasses
 import json
 import sys
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from io import BytesIO
 from pathlib import Path
 
-from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
-from bounded_loops.graph.adapters.persistence.artifact_verifier import LocalArtifactVerifier
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
 from bounded_loops.graph.application.arena_projection import (
     ArenaReadRequest,
@@ -40,78 +35,25 @@ from bounded_loops.graph.application.compile_graph import (
     CompileSnapshot,
     compile_graph,
 )
-from bounded_loops.graph.application.execution_policy import (
-    ConfiguredExecutionPolicy,
-    ExecutionEnvelope,
-    NetworkMode,
-)
-from bounded_loops.graph.application.run_graph import (
-    GateVerdict,
-    GraphRunController,
-    WorkerResult,
-)
+from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
 from bounded_loops.graph.application.validate_graph import (
     parse_authoring_graph_json,
     parse_authoring_graph_yaml,
 )
-from bounded_loops.graph.domain.artifacts import ArtifactPolicy
-from bounded_loops.graph.domain.connections import ResolvedRoute
+from bounded_loops.graph.domain.authoring import _NULL_POLICY_DIGEST
 from bounded_loops.graph.domain.errors import GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
-from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
-# cmd_graph_artifacts and cmd_graph_approve live in sibling modules to keep this file
-# within budget; re-exported here so `bl graph artifacts`/`bl graph approve` and existing
-# imports resolve unchanged.
+# cmd_graph_artifacts, cmd_graph_approve, and cmd_graph_demo live in sibling modules to
+# keep this file within the 800-line hard cap; re-exported here so `bl graph artifacts`,
+# `bl graph approve`, `bl graph demo`, and any existing imports resolve unchanged.
+# DEMO_MANIFEST_YAML and DEMO_CONNECTIONS_LIST are re-exported for the same reason.
 from bounded_loops.graph.cli_graph_artifacts import cmd_graph_artifacts
 from bounded_loops.graph.cli_graph_approve import cmd_graph_approve
-
-# ── bundled demonstration manifest ────────────────────────────────────────────
-
-DEMO_MANIFEST_YAML: str = """\
-api_version: "bounded-loops.dev/graph/v1"
-graph_id: one-node-run
-version: "1.0.0"
-nodes:
-  - id: research
-    kind: research_claim
-    inputs: {}
-    outputs: {claim: text}
-    budget: {max_attempts: 1, max_wallclock_s: 1}
-    effects: [read_only]
-    isolation: workspace_only
-    connection_slot: model
-edges: []
-connection_slots: [{id: model, requires: [text_generation], data_class_max: public}]
-policies: {data_class: public, fail_mode: fail_closed}
-"""
-
-# JSON-serialisable list; sets are stored as sorted lists so round-trip
-# through json.loads works.  CompileSnapshot converts via _candidate_from_raw.
-DEMO_CONNECTIONS_LIST: list[dict[str, object]] = [
-    {
-        "binding_id": "binding-1",
-        "slot_id": "model",
-        "connector_id": "codex-cli",
-        "connector_version": "1.0.0",
-        "connection_id": "conn-1",
-        "admission_digest": "sha256:" + "b" * 64,
-        "route_policy_digest": "sha256:" + "c" * 64,
-        "provider_id": "openai",
-        "model_target": "codex",
-        "region": "in",
-        "fallback": False,
-        "capabilities": ["text_generation"],
-        "data_class_max": "public",
-        "allowed_effects": ["read_only"],
-        "isolation": "workspace_only",
-        "transport": "local_cli",
-        "admitted": True,
-    }
-]
-
-_DEMO_ORG = "demo-org"
-_DEMO_PROJECT = "demo-project"
-_DEMO_RUN_ID = "demo-run-1"
+from bounded_loops.graph.cli_graph_demo import (
+    DEMO_CONNECTIONS_LIST,  # noqa: F401 — re-exported for test backward-compat (ARCH-05)
+    DEMO_MANIFEST_YAML,  # noqa: F401 — re-exported for test backward-compat (ARCH-05)
+    cmd_graph_demo,
+)
 
 # Identity for a `bl graph run --execute <manifest>` run. These are fixed identity
 # values for this CLI's single-tenant entry point — they shape the plan/event-log/
@@ -127,63 +69,6 @@ _DEMO_RUN_ID = "demo-run-1"
 _CLI_EXECUTE_ORG = "local-org"
 _CLI_EXECUTE_PROJECT = "local-project"
 _CLI_EXECUTE_RUN_ID = "graph-run"
-
-# ── in-process demonstration collaborators ────────────────────────────────────
-
-
-@dataclass
-class _DemoWorker:
-    """Writes one small in-memory artifact per node; returns the real digest."""
-
-    _store: LocalArtifactStore
-    _org: str
-    _project: str
-
-    def execute(
-        self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope
-    ) -> WorkerResult:
-        content = f"DEMONSTRATION NODE: {node.node_id}".encode("utf-8")
-        policy = ArtifactPolicy(
-            organization_id=self._org,
-            project_id=self._project,
-            producer_attempt="1",
-            media_type="text/plain",
-            sensitivity="public",
-            retention_class="standard",
-        )
-        records = self._store.put_many([(BytesIO(content), policy)])
-        digest = records[0].digest
-        binding = next(
-            (b for b in plan.connection_bindings if b.binding_id == node.binding_id), None
-        )
-        if binding is None:
-            return WorkerResult((digest,))
-        route = ResolvedRoute(
-            binding.provider_id,
-            binding.model_target,
-            binding.region,
-            binding.fallback,
-            binding.route_policy_digest,
-        )
-        return WorkerResult((digest,), route, binding.transport)
-
-
-class _DemoGate:
-    """Demonstration gate; always passes.  Distinct object from worker."""
-
-    def evaluate(
-        self, *, plan: ExecutionPlan, node: PlannedNode, result: WorkerResult
-    ) -> GateVerdict:
-        return GateVerdict(True, "demonstration gate: always passes")
-
-
-class _DemoEnforcer:
-    """No-op enforcer; the demo makes no isolation or network claims."""
-
-    def enforce(
-        self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope
-    ) -> None:
-        pass
 
 
 class _TrivialAuthorizer:
@@ -204,90 +89,6 @@ class _NoOpReceiptVerifier:
 
 def _err(msg: str) -> None:
     print(f"error: {msg}", file=sys.stderr)
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _build_demo_plan() -> ExecutionPlan:
-    graph = parse_authoring_graph_yaml(DEMO_MANIFEST_YAML)
-    snapshot = CompileSnapshot(
-        policy_digest="sha256:" + "a" * 64,
-        package_digests=frozenset(),
-        connections=tuple(DEMO_CONNECTIONS_LIST),  # type: ignore[arg-type]
-    )
-    return compile_graph(graph, snapshot)
-
-
-def _build_policy(plan: ExecutionPlan) -> ConfiguredExecutionPolicy:
-    envelopes: dict[str, ExecutionEnvelope] = {}
-    for node in plan.nodes:
-        binding = next(
-            (b for b in plan.connection_bindings if b.binding_id == node.binding_id), None
-        )
-        envelopes[node.node_id] = ExecutionEnvelope(
-            isolation=node.isolation,
-            transport=binding.transport if binding else None,
-            allowed_effects=node.required_effects,
-            network_mode=NetworkMode.DENY,
-            network_destinations=(),
-        )
-    return ConfiguredExecutionPolicy(envelopes)
-
-
-def _load_plan_from_run_dir(
-    run_dir: Path,
-) -> tuple[ExecutionPlan, GraphRunIdentity, dict[str, object]]:
-    """Reconstruct plan + identity + raw meta from a persisted run directory."""
-    # Symlink guards — reject TOCTOU-capable paths on the run dir and internal files.
-    if run_dir.is_symlink():
-        raise ValueError(f"run directory '{run_dir}' is a symlink; aborting")
-    for _n in ("run-meta.json", "manifest.yaml", "connections.json", "controller-events.jsonl"):
-        if (run_dir / _n).is_symlink():
-            raise ValueError(f"internal file '{_n}' is a symlink; aborting")
-
-    meta_path = run_dir / "run-meta.json"
-    if not meta_path.is_file():
-        raise FileNotFoundError(f"run-meta.json not found in {run_dir}")
-    try:
-        meta: dict[str, object] = json.loads(meta_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"run-meta.json is not valid JSON: {exc}") from exc
-    try:
-        policy_digest = str(meta["policy_digest"])
-        stored_plan_id = str(meta["plan_id"])
-        org_id = str(meta["organization_id"])
-        proj_id = str(meta["project_id"])
-        run_id_ = str(meta["run_id"])
-    except KeyError as exc:
-        raise ValueError(f"run-meta.json is missing required key {exc}") from exc
-
-    manifest_text = (run_dir / "manifest.yaml").read_text(encoding="utf-8")
-    graph = parse_authoring_graph_yaml(manifest_text)
-    raw_connections = json.loads(
-        (run_dir / "connections.json").read_text(encoding="utf-8")
-    )
-    snapshot = CompileSnapshot(
-        policy_digest=policy_digest,
-        package_digests=frozenset(),
-        connections=tuple(raw_connections),  # type: ignore[arg-type]
-    )
-    plan = compile_graph(graph, snapshot)
-
-    if plan.plan_id != stored_plan_id:
-        raise ValueError(
-            f"Reconstructed plan_id {plan.plan_id!r} != stored {stored_plan_id!r}"
-        )
-    identity = GraphRunIdentity(
-        organization_id=org_id,
-        project_id=proj_id,
-        run_id=run_id_,
-        graph_digest=plan.source_graph_digest,
-        plan_digest=plan.plan_id,
-        policy_digest=plan.policy_digest,
-    )
-    return plan, identity, meta
 
 
 # ── handlers ───────────────────────────────────────────────────────────────────
@@ -393,7 +194,7 @@ def cmd_graph_plan(args: argparse.Namespace) -> int:
 
     try:
         snapshot = CompileSnapshot(
-            policy_digest="sha256:" + "a" * 64,
+            policy_digest=_NULL_POLICY_DIGEST,
             package_digests=frozenset(),
             connections=tuple(connections_raw),  # type: ignore[arg-type]
         )
@@ -449,82 +250,6 @@ def cmd_graph_plan(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_graph_demo(args: argparse.Namespace) -> int:
-    """bl graph demo --out <dir> — DEMONSTRATION; no sandbox or E2 enforcement."""
-    out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    plan = _build_demo_plan()
-    identity = GraphRunIdentity(
-        organization_id=_DEMO_ORG,
-        project_id=_DEMO_PROJECT,
-        run_id=_DEMO_RUN_ID,
-        graph_digest=plan.source_graph_digest,
-        plan_digest=plan.plan_id,
-        policy_digest=plan.policy_digest,
-    )
-
-    store = LocalArtifactStore(out_dir / "artifacts")
-    event_log = GraphEventLog(out_dir / "controller-events.jsonl", identity)
-    worker = _DemoWorker(store, _DEMO_ORG, _DEMO_PROJECT)
-    gate = _DemoGate()
-    verifier = LocalArtifactVerifier(store)
-    policy = _build_policy(plan)
-    enforcer = _DemoEnforcer()
-
-    controller = GraphRunController(
-        plan=plan,
-        event_log=event_log,
-        worker=worker,
-        gate=gate,
-        artifact_verifier=verifier,
-        execution_policy=policy,
-        execution_enforcer=enforcer,
-        timestamp=_now_iso,
-        actor="graph-controller",
-    )
-    projection = controller.run()
-
-    # Persist artefacts needed for `status` reconstruction.
-    (out_dir / "plan.json").write_bytes(plan.canonical_json)
-    (out_dir / "manifest.yaml").write_text(DEMO_MANIFEST_YAML, encoding="utf-8")
-    (out_dir / "connections.json").write_text(
-        json.dumps(DEMO_CONNECTIONS_LIST, sort_keys=True), encoding="utf-8"
-    )
-    run_meta = {
-        "demonstration": True, "organization_id": _DEMO_ORG,
-        "plan_id": plan.plan_id, "policy_digest": plan.policy_digest,
-        "project_id": _DEMO_PROJECT, "run_id": _DEMO_RUN_ID,
-    }
-    (out_dir / "run-meta.json").write_text(
-        json.dumps(run_meta, sort_keys=True), encoding="utf-8")
-
-    if projection.state != "SUCCEEDED":
-        _err(f"graph demo: run ended with state {projection.state!r}; see event log")
-        return 2
-
-    _DEMO_NOTICE = "DEMONSTRATION — nodes are NOT executed in a sandbox; no isolation / network / E2 enforcement."
-    banner = "=" * 70 + "\n" + _DEMO_NOTICE + "\n" + "=" * 70
-
-    if getattr(args, "json", False):
-        print(json.dumps(
-            {
-                "demonstration": True,
-                "notice": _DEMO_NOTICE,
-                "out": str(out_dir),
-                "run_id": _DEMO_RUN_ID,
-                "run_state": projection.state,
-            },
-            sort_keys=True,
-        ))
-    else:
-        print(banner)
-        print(f"run_state : {projection.state}")
-        print(f"run_id    : {_DEMO_RUN_ID}")
-        print(f"out       : {out_dir}")
-    return 0
-
-
 _STATUS_NOTICE = "LOCAL/UNVERIFIED — status is read from a local event log; not verified by an Arena server."
 
 
@@ -536,7 +261,7 @@ def cmd_graph_status(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        plan, identity, run_meta = _load_plan_from_run_dir(run_dir)
+        plan, identity, run_meta = load_plan_from_run_dir(run_dir)
     except (FileNotFoundError, ValueError, GraphValidationError) as exc:
         _err(f"graph status: cannot reconstruct plan — {exc}")
         return 2
@@ -749,7 +474,7 @@ def cmd_graph_run(args: argparse.Namespace) -> int:
 
     try:
         snapshot = CompileSnapshot(
-            policy_digest="sha256:" + "a" * 64,
+            policy_digest=_NULL_POLICY_DIGEST,
             package_digests=frozenset(),
             connections=tuple(connections_raw),  # type: ignore[arg-type]
         )
