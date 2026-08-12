@@ -31,7 +31,7 @@ from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabi
 from bounded_loops.graph.adapters.enforcement.egress_posture import EgressPosture, EgressPostureDecision
 from bounded_loops.graph.application.arena_projection import ArenaReadRequest, read_arena_projection
 from bounded_loops.graph.application.execute_graph import _build_policy, execute_graph_run
-from bounded_loops.graph.cli_graph import _load_plan_from_run_dir
+from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir as _load_plan_from_run_dir
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
 from bounded_loops.graph.domain.artifacts import ArtifactAccess, ArtifactRef

@@ -39,7 +39,7 @@ Two addressing modes (0.4.0 — dual-audit reconciliation, design Q4/M2)
   directory LITERALLY: no org/project/run_id join, because there is no join — the
   caller's own path IS the run root (the same contract ``bl graph status`` / ``arena`` /
   ``artifacts`` already give their own ``--run <dir>``). It reuses
-  ``cli_graph._load_plan_from_run_dir`` for the SAME symlink guards and identity
+  ``plan_persistence.load_plan_from_run_dir`` for the SAME symlink guards and identity
   reconstruction those commands already trust, so opening a flat run this way is no
   weaker than the existing traversal discipline — there is simply nothing left to
   traverse. ``bl graph run --execute --out <dir>`` writes flat (directly into ``<dir>``)
@@ -88,23 +88,21 @@ from bounded_loops.graph.application.arena_projection import (
 )
 from bounded_loops.graph.application.egress_broker import EgressBroker
 from bounded_loops.graph.application.execute_graph import (
+    _ALL_EXECUTOR_TRANSPORTS,
     build_execution_controller,
 )
+from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
 from bounded_loops.graph.application.run_graph import is_egress_node
-from bounded_loops.graph.cli_graph import _load_plan_from_run_dir
 from bounded_loops.graph.domain.approvals import ApprovalDecision, ApprovalRequest
 from bounded_loops.graph.domain.authoring import NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity, StoredGraphEvent
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
-# _approval_id, _load_approvals, and _rehydrated_request are RE-EXPORTED here (not just
-# used internally) because existing tests import them from this module path — see
-# tests/graph/application/test_graph_runtime_facade_security.py and
-# test_graph_runtime_facade.py::test_load_approvals_rejects_non_list_commits. The single
-# real implementation now lives in approval_ledger.py, shared with execute_graph.py.
-
-_ALL_EXECUTOR_TRANSPORTS = frozenset({"local_cli", "https"})
+# _approval_id, _load_approvals, and _rehydrated_request are imported from approval_ledger
+# (the single canonical implementation) and used internally throughout this module.
+# Tests that previously imported them from this module path now import from approval_ledger
+# directly (ARCH-07 fix).
 
 # A run-dir path segment: no "/", no "..", no absolute — reject a traversal before it is joined.
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -432,7 +430,7 @@ class LocalGraphRuntimeFacade:
            the same TOCTOU discipline ``_load_plan_from_run_dir`` already applies for
            ``bl graph status`` / ``artifacts`` / ``arena``).
         2. The resolved path must exist and be a directory.
-        3. ``cli_graph._load_plan_from_run_dir`` must be able to reconstruct an
+        3. ``plan_persistence.load_plan_from_run_dir`` must be able to reconstruct an
            identity from it — a missing/corrupt ``run-meta.json``, a manifest that
            will not recompile, or a stored ``plan_id`` that does not match the
            recompiled plan are all refused here (a directory that merely EXISTS is not
@@ -450,7 +448,7 @@ class LocalGraphRuntimeFacade:
                 f"run directory '{run_dir}' does not exist or is not a directory"
             )
         try:
-            _load_plan_from_run_dir(resolved)
+            load_plan_from_run_dir(resolved)
         except FileNotFoundError as exc:
             raise GraphIntegrityError(f"'{run_dir}' is not a run directory: {exc}") from exc
         except (ValueError, OSError, GraphValidationError) as exc:
@@ -623,7 +621,7 @@ class LocalGraphRuntimeFacade:
         """Load plan + identity from the persisted run dir; raise ``GraphIntegrityError`` on any failure."""
         run_dir = self._run_dir(request)
         try:
-            return _load_plan_from_run_dir(run_dir)
+            return load_plan_from_run_dir(run_dir)
         except FileNotFoundError as exc:
             raise GraphIntegrityError(
                 f"run not found: {request.organization_id}/{request.project_id}/{request.run_id}"

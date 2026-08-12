@@ -31,16 +31,16 @@ def cmd_graph_arena(args: argparse.Namespace) -> int:
         read_arena_projection,
     )
     from bounded_loops.graph.arena.render import render_arena_html
+    from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
     from bounded_loops.graph.cli_graph import (
         _NoOpReceiptVerifier,
         _TrivialAuthorizer,
-        _load_plan_from_run_dir,
     )
     from bounded_loops.graph.domain.errors import GraphValidationError
 
     run_dir = Path(args.run)
     try:
-        plan, identity, run_meta = _load_plan_from_run_dir(run_dir)
+        plan, identity, run_meta = load_plan_from_run_dir(run_dir)
     except (FileNotFoundError, ValueError, GraphValidationError) as exc:
         _err(f"graph arena: {exc}")
         return 2
