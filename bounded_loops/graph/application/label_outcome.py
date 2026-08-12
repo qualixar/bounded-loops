@@ -76,6 +76,7 @@ def label_node_outcome(
         raise GraphIntegrityError("a label requires a labeller identity")
     if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
         raise GraphIntegrityError("a label requires a positive sequence")
+    _require_the_attempt_produced_that_artifact(event_log, node_id, attempt, artifact_digest)
 
     identity = event_log.identity
     key = f"{identity.run_id}:{node_id}:{_LABEL_EVENT}:{attempt}:{sequence}"
@@ -97,3 +98,45 @@ def label_node_outcome(
             },
         ),
     )
+
+
+def _require_the_attempt_produced_that_artifact(
+    event_log: GraphEventLog, node_id: str, attempt: int, artifact_digest: str,
+) -> None:
+    """Refuse a label that does not bind to real work in THIS run.
+
+    Checking the digest's FORMAT is not the same as checking the label describes output the
+    reviewer could have judged. Without this, a label can name a node that never ran, an
+    attempt that never happened, or an artifact that node never produced — and every one of
+    those pollutes the numerator of the false-accept rate this channel exists to compute.
+    An unconstrained oracle makes the measurement worthless.
+
+    Derived from the receipts rather than the plan: labelling happens after the fact, often
+    from nothing but a run directory, so requiring the plan would couple ground truth to a
+    plan the labeller may not have.
+    """
+    produced: set[str] = set()
+    seen_attempt = False
+    for stored in event_log.replay():
+        payload = stored.event.payload
+        if payload.get("node_id") != node_id:
+            continue
+        if payload.get("attempt") == attempt:
+            seen_attempt = True
+        if stored.event.event_type != "node.succeeded" or payload.get("attempt") != attempt:
+            continue
+        digests = payload.get("artifact_digests")
+        if isinstance(digests, (list, tuple)):
+            produced.update(str(digest) for digest in digests)
+    if not seen_attempt:
+        raise GraphIntegrityError(
+            f"cannot label node {node_id!r} attempt {attempt}: this run has no such attempt"
+        )
+    if artifact_digest not in produced:
+        # A failed attempt produces nothing, so it has no digest to bind to; that is
+        # reported as the same refusal rather than a special case, because a label on
+        # output that does not exist is meaningless either way.
+        raise GraphIntegrityError(
+            f"cannot label node {node_id!r} attempt {attempt}: it did not produce "
+            f"artifact {artifact_digest}"
+        )

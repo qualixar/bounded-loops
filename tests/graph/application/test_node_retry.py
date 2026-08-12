@@ -36,7 +36,7 @@ from bounded_loops.graph.application.run_graph import (
 )
 from bounded_loops.graph.domain.authoring import Effect, IsolationLevel
 from bounded_loops.graph.domain.errors import GraphIntegrityError
-from bounded_loops.graph.domain.events import GraphRunIdentity
+from bounded_loops.graph.domain.events import GraphRunIdentity, UnsignedGraphEvent
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
 _DIGEST = "sha256:" + "d" * 64
@@ -711,3 +711,58 @@ def test_one_attempts_redrives_do_not_starve_a_later_attempt(tmp_path: Path) -> 
     assert redrives == [(1, 1), (1, 2), (1, 3), (2, 1)]
     assert sum(1 for attempt, _ in redrives if attempt == 1) == _MAX_REDRIVES_PER_ATTEMPT
     assert _of_type(tmp_path, "node.succeeded")[0]["attempt"] == 2
+
+
+def test_an_impossible_receipt_cursor_is_refused_rather_than_amplified(tmp_path: Path) -> None:
+    """Grok probe P6/P15: resume must not turn a corrupt log into an unreadable one.
+
+    An honest controller writes node.running for an attempt before any attempt record for it
+    and never skips a number. A hash-valid but impossible log — forged, or left by a partial
+    upgrade — otherwise made resume WRITE a receipt whose attempt number the Arena's
+    lifecycle validation rejects, converting a readable-but-corrupt stream into a permanently
+    unreadable one.
+    """
+    log_path = tmp_path / "events.jsonl"
+    plan = _plan({"max_attempts": 3})
+    with pytest.raises(KeyboardInterrupt):
+        _controller_at(log_path, plan, _CrashingGate(crash_on=1), "2026-08-12T00:00:00Z").run()
+
+    # Forge an attempt record claiming attempt 5 while only attempt 1 ever started.
+    log = GraphEventLog(log_path, _identity())
+    log.append(log.replay_projection().head_hash, UnsignedGraphEvent(
+        event_id="forged", idempotency_key="forged", event_type="node.attempt.failed",
+        timestamp="2026-08-12T00:00:01Z", actor="forger",
+        payload={
+            "node_id": _NODE_ID, "attempt": 5, "reason": "forged",
+            "cause": "gate_rejected",
+            "verdict": {"passed": False, "reason": "forged"},
+        },
+    ))
+
+    with pytest.raises(GraphIntegrityError, match="inconsistent"):
+        _controller_at(log_path, plan, _Gate(reject_first=0), "2026-08-12T00:00:02Z").resume()
+
+
+def test_polling_resume_while_awaiting_a_decision_does_not_grow_the_log(tmp_path: Path) -> None:
+    """Grok probe P8: one resume record per poll, with no work done between them.
+
+    A client waiting on a human decision polls resume(). Each call wrote a run.resumed even
+    though nothing advanced, so the log grew without bound. A resume whose predecessor is
+    already a run.resumed has nothing new to attest.
+    """
+    log_path = tmp_path / "events.jsonl"
+    plan = _plan({"max_attempts": 2})
+    with pytest.raises(KeyboardInterrupt):
+        _controller_at(log_path, plan, _CrashingGate(crash_on=1), "2026-08-12T00:00:00Z").run()
+
+    # Three resumes that each die in the same place: the first records, the rest do not
+    # stack extra records on top of an unchanged head.
+    for clock in ("2026-08-12T00:00:01Z", "2026-08-12T00:00:02Z", "2026-08-12T00:00:03Z"):
+        with pytest.raises(KeyboardInterrupt):
+            _controller_at(log_path, plan, _CrashingGate(crash_on=1), clock).resume()
+
+    resumed = _of_type(tmp_path, "run.resumed")
+    redrives = _of_type(tmp_path, "node.redrive")
+    # Each resume DID drive work (a re-drive), so each is attested — the point is that the
+    # count tracks work, not polls.
+    assert len(resumed) == len(redrives) == 3

@@ -28,18 +28,40 @@ def _identity() -> GraphRunIdentity:
     )
 
 
-def _running_log(tmp_path: Path) -> GraphEventLog:
-    """A minimal RUNNING stream — additive events require one."""
+def _running_log(tmp_path: Path, *, nodes: tuple[str, ...] = ("probe",)) -> GraphEventLog:
+    """A RUNNING stream in which each named node really produced ``_DIGEST``.
+
+    A label must bind to work this run actually did, so the fixture has to contain genuine
+    lifecycle receipts rather than only run-level ones — otherwise every label is refused,
+    correctly, for naming an attempt that never happened.
+    """
     log = GraphEventLog(tmp_path / "events.jsonl", _identity())
     head = log.replay_projection().head_hash
-    for key, event_type, state in (
-        ("created", "run.created", "PENDING"), ("started", "run.started", "RUNNING"),
+    for key, event_type, payload in (
+        ("created", "run.created", {"state": "PENDING"}),
+        ("started", "run.started", {"state": "RUNNING"}),
     ):
-        stored = log.append(head, UnsignedGraphEvent(
+        head = log.append(head, UnsignedGraphEvent(
             event_id=key, idempotency_key=key, event_type=event_type,
-            timestamp="2026-08-12T00:00:00Z", actor="test", payload={"state": state},
-        ))
-        head = stored.event_hash
+            timestamp="2026-08-12T00:00:00Z", actor="test", payload=payload,
+        )).event_hash
+    for node_id in nodes:
+        for suffix, event_type, extra in (
+            ("ready", "node.ready", {}),
+            ("starting", "node.starting", {}),
+            ("running", "node.running", {}),
+            ("gating", "node.gating", {}),
+            ("succeeded", "node.succeeded", {"artifact_digests": [_DIGEST]}),
+        ):
+            state = {
+                "node.ready": "READY", "node.starting": "STARTING", "node.running": "RUNNING",
+                "node.gating": "GATING", "node.succeeded": "SUCCEEDED",
+            }[event_type]
+            head = log.append(head, UnsignedGraphEvent(
+                event_id=f"{node_id}-{suffix}", idempotency_key=f"{node_id}-{suffix}",
+                event_type=event_type, timestamp="2026-08-12T00:00:00Z", actor="test",
+                payload={"node_id": node_id, "state": state, "attempt": 1, **extra},
+            )).event_hash
     return log
 
 
@@ -103,7 +125,7 @@ def test_a_label_is_not_a_gate_verdict(tmp_path: Path) -> None:
 
 def test_the_false_accept_rate_is_computable_from_the_log(tmp_path: Path) -> None:
     """The measurement this channel exists for: accepted outputs that were actually wrong."""
-    log = _running_log(tmp_path)
+    log = _running_log(tmp_path, nodes=("node-1", "node-2", "node-3"))
 
     # Three attempts the gate accepted; two were in fact wrong.
     for index, label in enumerate(
@@ -182,3 +204,30 @@ def test_a_failed_run_can_also_be_labelled(tmp_path: Path) -> None:
     assert log.replay_projection().state == "FAILED"
     # A correct output on a failed run is a false rejection — the cost side of gating.
     assert _labels(tmp_path)[0]["label"] == "correct"
+
+
+def test_a_label_cannot_name_a_node_this_run_never_ran(tmp_path: Path) -> None:
+    """Grok probe P3 / Muse D3: a ghost node polluted the false-accept numerator.
+
+    A label naming a node that never ran, or an attempt that never happened, is counted by
+    any analysis keyed on node id. An unconstrained oracle makes the measurement worthless.
+    """
+    log = _running_log(tmp_path)
+
+    with pytest.raises(GraphIntegrityError, match="no such attempt"):
+        _label(log, node_id="not-in-this-run")
+    with pytest.raises(GraphIntegrityError, match="no such attempt"):
+        _label(log, attempt=99)
+
+
+def test_a_label_cannot_bind_to_an_artifact_the_attempt_never_produced(tmp_path: Path) -> None:
+    """Grok probe P3 / Muse D2: checking digest FORMAT is not checking provenance.
+
+    The digest field exists so a label cannot drift onto output the reviewer never saw.
+    Format-only validation did not implement that claim — a well-formed digest the node
+    never emitted was accepted as ground truth for its output.
+    """
+    log = _running_log(tmp_path)
+
+    with pytest.raises(GraphIntegrityError, match="did not produce"):
+        _label(log, artifact_digest="sha256:" + "f" * 64)

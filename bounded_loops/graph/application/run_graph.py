@@ -339,10 +339,15 @@ class GraphRunController:
         # Record the resume itself before doing any work. Previously a resume left no trace
         # at all, so neither an operator nor the Arena could tell a run had been resumed —
         # let alone how often.
-        resumes = sum(1 for stored in receipts if stored.event.event_type == "run.resumed")
-        self._append(
-            f"run.resumed:{resumes + 1}", "run.resumed", {"resume_ordinal": resumes + 1},
-        )
+        # Skip the record when the PREVIOUS event is already a run.resumed: that resume
+        # advanced nothing, so this one has nothing new to attest either. A client polling
+        # resume() while waiting for a human approval decision would otherwise grow the log
+        # without bound, one event per poll, with no work done between them.
+        if receipts and receipts[-1].event.event_type != "run.resumed":
+            resumes = sum(1 for stored in receipts if stored.event.event_type == "run.resumed")
+            self._append(
+                f"run.resumed:{resumes + 1}", "run.resumed", {"resume_ordinal": resumes + 1},
+            )
         receipts = self.event_log.replay()
         latest = latest_node_states(self.plan, receipts)
         # A crash between node.failed and run.failed leaves a RUNNING stream with a
@@ -408,6 +413,20 @@ class GraphRunController:
                 started[node_id] = max(started[node_id], attempt)
             else:
                 redrives[(node_id, attempt)] = redrives.get((node_id, attempt), 0) + 1
+        for node_id, spent_attempt in spent.items():
+            started_attempt = started[node_id]
+            # An honest controller writes node.running for attempt n before any attempt
+            # record for it, and never skips a number: so started is n or n+1 relative to
+            # spent, never more and never less. A hash-valid but impossible log — forged, or
+            # left by a partial upgrade — otherwise makes resume WRITE a receipt whose
+            # attempt number the Arena's lifecycle validation rejects, turning a readable
+            # (if corrupt) stream into a permanently unreadable one. Fail closed instead of
+            # amplifying it.
+            if started_attempt > spent_attempt + 1 or spent_attempt > started_attempt:
+                raise GraphIntegrityError(
+                    f"node {node_id!r} receipts are inconsistent: {spent_attempt} attempt(s) "
+                    f"recorded a failure but the highest started attempt is {started_attempt}"
+                )
         return _ResumeCursor(spent=spent, started=started, redrives=redrives)
 
     def _states_from(self, latest: dict[str, dict[str, object]]) -> dict[str, NodeState]:
