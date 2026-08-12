@@ -237,3 +237,88 @@ def test_read_gate_command_duplicate_key_treated_as_parse_failure(tmp_path):
     # (signalling: "don't try to execute anything from this ambiguous manifest").
     assert gate_kind is None
     assert gate_run is None
+
+
+# ── TEST-09: uncovered error and edge-case branches ───────────────────────────
+# The audit found 14% of the hook uncovered — all error-handling paths.
+# These branches are the operator-visible surface for security decisions.
+
+def test_check_loop_yaml_with_yaml_parse_error_allows(tmp_path):
+    """A loop.yaml that cannot be parsed (YAML error) must allow session-stop.
+    The hook should never block based on a WIP or malformed config file.
+    Covers lines 94-95 of verify_bounded_loop.py (_read_gate_command's OSError/YAMLError branch)."""
+    (tmp_path / "loop.yaml").write_text(":\n  bad: [unclosed", encoding="utf-8")
+    passed, reason = _check(tmp_path)
+    assert passed is True
+    assert "did not parse" in reason
+
+
+def test_check_loop_yaml_with_missing_gate_section_allows(tmp_path):
+    """A loop.yaml with no 'gate' key returns (None, None) from _read_gate_command.
+    _check maps this to 'did not parse — skipping' (line 112).
+    Covers the 'gate_kind is None' branch."""
+    (tmp_path / "loop.yaml").write_text("name: test-loop\nrunner: stub\n", encoding="utf-8")
+    passed, reason = _check(tmp_path)
+    assert passed is True
+    assert "did not parse" in reason
+
+
+def test_check_command_gate_with_no_run_field_allows(tmp_path):
+    """gate.kind=command with no gate.run must allow: there's nothing to check.
+    Covers line 120 of verify_bounded_loop.py."""
+    (tmp_path / "loop.yaml").write_text("gate:\n  kind: command\n", encoding="utf-8")
+    passed, reason = _check(tmp_path)
+    assert passed is True
+    assert "requires gate.run" in reason or "nothing to check" in reason
+
+
+def test_check_gate_with_unbalanced_quotes_allows_without_crashing(tmp_path, monkeypatch):
+    """A trusted gate command with unbalanced shell quotes (shlex.split raises ValueError)
+    must allow rather than crash. Covers lines 135-136 of verify_bounded_loop.py.
+    The trust store must be patched because an unbalanced-quote string would never
+    match a stored key — we use monkeypatch to simulate a trusted record."""
+    monkeypatch.setenv("BOUNDED_LOOPS_TRUST_STORE", str(tmp_path / "trust.json"))
+    bad_cmd = "echo 'unbalanced"
+    (tmp_path / "loop.yaml").write_text(
+        f'gate:\n  kind: command\n  run: "{bad_cmd}"\n', encoding="utf-8"
+    )
+    # Patch is_trusted to return True for this command so we reach the shlex path.
+    monkeypatch.setattr(
+        "bounded_loops.hooks.verify_bounded_loop.is_trusted",
+        lambda cwd, cmd: True,
+    )
+    passed, reason = _check(tmp_path)
+    assert passed is True
+    assert "could not be parsed" in reason
+
+
+def test_check_gate_returning_unexpected_exit_code_allows(tmp_path, monkeypatch):
+    """A gate process that exits with a code other than 0, 1, or 5 (e.g. 2=interrupt,
+    3=internal pytest error) must allow rather than block. Covers line 166.
+    This avoids false blocks from transient environment errors.
+    NOTE: loop.yaml is written BEFORE record_trust so the content hash matches."""
+    monkeypatch.setenv("BOUNDED_LOOPS_TRUST_STORE", str(tmp_path / "trust.json"))
+    # 'exit 2' is a shell built-in — use python3 -c for a portable subprocess exit
+    cmd = "python3 -c 'import sys; sys.exit(2)'"
+    (tmp_path / "loop.yaml").write_text(
+        f"gate:\n  kind: command\n  run: \"{cmd}\"\n",
+        encoding="utf-8",
+    )
+    record_trust(tmp_path, cmd)  # AFTER writing loop.yaml so content hash matches
+    passed, reason = _check(tmp_path)
+    assert passed is True
+    assert "could not run cleanly" in reason
+
+
+def test_main_malformed_json_stdin_allows(monkeypatch):
+    """Malformed JSON on stdin must return 0 (allow). Covers line 177 of main().
+    A buggy hook invoker sending corrupt JSON must never cause a false block."""
+    monkeypatch.setattr(sys, "stdin", type("F", (), {"read": lambda self: "not json {"})())
+    assert main(["verify_bounded_loop.py", "claude-code"]) == 0
+
+
+def test_validate_cwd_raises_on_non_string_input():
+    """_validate_cwd must return None (not crash) when given input that Path()
+    rejects — e.g. None. Covers line 70-71 (the TypeError path)."""
+    result = _validate_cwd(None)  # type: ignore[arg-type]
+    assert result is None

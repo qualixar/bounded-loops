@@ -495,3 +495,66 @@ def test_status_exits_2_on_malformed_run_meta(
     rc = cmd_graph_status(_ns(run=str(out_dir)))
     assert rc == 2
     assert capsys.readouterr().err
+
+
+# ── TEST-13: cli_graph_artifacts.py uncovered display branches (76% → higher) ──
+# Covers: no-artifacts text message, table-format display, symlinked metadata entry.
+
+def test_artifacts_no_records_prints_no_artifacts_found(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An artifacts directory that exists but has no valid metadata files must
+    print 'No artifacts found.' (text mode) and return 0.
+    Covers the 'if not records: print(...)' branch at line 62."""
+    # Create a minimal run directory with an empty metadata dir
+    run_dir = tmp_path / "empty-run"
+    meta_dir = run_dir / "artifacts" / "metadata"
+    meta_dir.mkdir(parents=True)
+
+    rc = cmd_graph_artifacts(_ns(run=str(run_dir)))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "No artifacts found." in out
+
+
+def test_artifacts_table_format_shows_header_and_rows(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """In text mode (no --json), artifacts with records must display a table
+    with DIGEST/MEDIA_TYPE/SIZE/STATE columns. Covers lines 64-71."""
+    out_dir = tmp_path / "artifacts-table"
+    cmd_graph_demo(_ns(out=str(out_dir)))
+    capsys.readouterr()
+
+    # Text mode (json=False is the default)
+    rc = cmd_graph_artifacts(_ns(run=str(out_dir), json=False))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "DIGEST" in out
+    assert "MEDIA_TYPE" in out
+    assert "SIZE" in out
+    assert "STATE" in out
+    assert "sha256:" in out
+
+
+def test_artifacts_skips_symlinked_metadata_entry_and_returns_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A symlinked file inside artifacts/metadata/ must be skipped and reported
+    as an error, returning exit code 2. Covers the 'if path.is_symlink()' branch
+    at line 42 and the errors reporting block at lines 73-76."""
+    out_dir = tmp_path / "artifacts-sym"
+    cmd_graph_demo(_ns(out=str(out_dir)))
+    capsys.readouterr()
+
+    meta_dir = out_dir / "artifacts" / "metadata"
+    # Plant a symlink with a sha256-shaped name pointing at an unrelated file
+    target = tmp_path / "target.json"
+    target.write_text("{}", encoding="utf-8")
+    link_name = "b" * 64 + ".json"
+    (meta_dir / link_name).symlink_to(target)
+
+    rc = cmd_graph_artifacts(_ns(run=str(out_dir)))
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "symlink" in err.lower()

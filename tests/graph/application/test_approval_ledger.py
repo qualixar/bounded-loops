@@ -197,6 +197,92 @@ def test_load_approvals_corrupt_json_fails_closed(tmp_path: Path) -> None:
         _load_approvals(path)
 
 
+# ── TEST-05: rejection-path error branches (unknown node, malformed attempt) ─
+# These mirror the approval-path tests above (test_unknown_node_in_ledger_fails_closed,
+# test_foreign_approval_id_fails_closed). The rejection path was added alongside
+# approvals but its GraphIntegrityError branches were not mirrored in tests.
+# Mutation proof: deleting lines 174 or 181-182 of approval_ledger.py causes
+# these tests to NOT raise, making pytest fail on the `pytest.raises` context.
+
+def test_rejection_with_unknown_node_fails_closed(tmp_path: Path) -> None:
+    """A rejection record referencing a node not in the plan must raise
+    GraphIntegrityError, not silently proceed (fail-closed tamper guard)."""
+    from bounded_loops.graph.application.approval_ledger import build_durable_approval_resolver
+
+    plan = _plan()
+    identity = _identity(plan)
+    aid = _approval_id("ghost-node")
+    _write_ledger(tmp_path, {
+        "resource_version": 1,
+        "commits": [],
+        "rejections": [{
+            "node_id": "ghost-node",  # not in the plan
+            "attempt": 1,
+            "approval_id": aid,
+            "actor_id": _ORG,
+            "decided_at": "2026-08-11T00:00:00Z",
+        }],
+    })
+    with pytest.raises(GraphIntegrityError, match="unknown node"):
+        build_durable_approval_resolver(identity=identity, plan=plan, run_dir=tmp_path)
+
+
+def test_rejection_with_malformed_attempt_fails_closed(tmp_path: Path) -> None:
+    """A rejection record with a non-integer attempt field must raise
+    GraphIntegrityError. Without this guard a tampered ledger could skip the
+    attempt-tracking and bypass the conflict-detection logic."""
+    from bounded_loops.graph.application.approval_ledger import build_durable_approval_resolver
+
+    plan = _plan()
+    identity = _identity(plan)
+    aid = _approval_id("checkpoint")
+    _write_ledger(tmp_path, {
+        "resource_version": 1,
+        "commits": [],
+        "rejections": [{
+            "node_id": "checkpoint",
+            "attempt": "not-an-integer",  # malformed — should be int
+            "approval_id": aid,
+            "actor_id": _ORG,
+            "decided_at": "2026-08-11T00:00:00Z",
+        }],
+    })
+    with pytest.raises(GraphIntegrityError, match="malformed"):
+        build_durable_approval_resolver(identity=identity, plan=plan, run_dir=tmp_path)
+
+
+# ── TEST-11: _load_approvals non-dict root and boolean resource_version ──────
+# The existing test covers JSONDecodeError. These two cover the shape-validation
+# branches at lines 83 and 90 of approval_ledger.py.
+# Mutation proof: removing `if not isinstance(data, dict)` or the bool guard causes
+# `_load_approvals` to return the raw data without raising, failing the assertions.
+
+def test_load_approvals_with_array_root_fails_closed(tmp_path: Path) -> None:
+    """A ledger whose root is a JSON array (not an object) must raise
+    GraphIntegrityError — a valid JSON non-dict should not silently reset state."""
+    from bounded_loops.graph.application.approval_ledger import _load_approvals
+
+    path = tmp_path / "approvals.json"
+    path.write_text("[]", encoding="utf-8")  # valid JSON, wrong type
+    with pytest.raises(GraphIntegrityError, match="malformed"):
+        _load_approvals(path)
+
+
+def test_load_approvals_with_boolean_resource_version_fails_closed(tmp_path: Path) -> None:
+    """A ledger with resource_version: true must raise GraphIntegrityError.
+    Python's isinstance(True, int) is True, so the bool guard is the only
+    protection against a boolean slipping through the integer check."""
+    from bounded_loops.graph.application.approval_ledger import _load_approvals
+
+    path = tmp_path / "approvals.json"
+    path.write_text(
+        '{"resource_version": true, "commits": [], "rejections": []}',
+        encoding="utf-8",
+    )
+    with pytest.raises(GraphIntegrityError, match="resource_version"):
+        _load_approvals(path)
+
+
 # ── re-export surface: graph_runtime_facade must still expose the same names ─
 
 def test_graph_runtime_facade_reexports_load_approvals() -> None:

@@ -108,3 +108,73 @@ def test_authoring_graph_rejects_cycles_and_duplicate_json_keys():
     with pytest.raises(GraphValidationError) as raised:
         parse_authoring_graph_json(duplicate)
     assert raised.value.code == "duplicate_key"
+
+
+# ── TEST-08: uncovered validation error codes ─────────────────────────────────
+# The existing parametrized test covers 7 of ~30 error codes. These cover the
+# nine codes confirmed missing from coverage. A regression that silently stops
+# raising on an invalid input would cause these assertions to fail.
+
+def test_invalid_json_is_rejected():
+    """parse_authoring_graph_json raises GraphValidationError with code
+    'invalid_json' on syntactically malformed input (line 68 of validate_graph.py)."""
+    with pytest.raises(GraphValidationError) as raised:
+        parse_authoring_graph_json("{ not valid json }")
+    assert raised.value.code == "invalid_json"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "code"),
+    [
+        # api_version: wrong API version string (line 86)
+        (lambda g: g.update({"api_version": "bounded-loops.dev/graph/v2"}), "api_version"),
+        # version: non-semver string like a branch name (line 90)
+        (lambda g: g.update({"version": "main"}), "version"),
+        # unknown_node_kind: a node kind that is not in the NodeKind enum (line 156)
+        (
+            lambda g: g["nodes"][0].update({"kind": "oracle"}),
+            "unknown_node_kind",
+        ),
+        # on_failure: invalid on_failure value.
+        # validate_graph.py:167 rejects any value not in
+        # {"fail_graph", "continue", "repair", "await_human"}.
+        # The guard is node-kind-agnostic — it runs for loop, approval, and every
+        # other kind inside _validate_node(). nodes[0] is a 'loop' node; this
+        # confirms the branch fires for loop nodes (not just approval nodes).
+        (
+            lambda g: g["nodes"][0].update({"on_failure": "ignore_and_continue"}),
+            "on_failure",
+        ),
+        # edge_condition: edge 'when' that is not a string or null (line 231)
+        (
+            lambda g: g["edges"][0].update({"when": 42}),
+            "edge_condition",
+        ),
+        # duplicate_slot_id: two connection slots with the same id (line 256)
+        (
+            lambda g: g["connection_slots"].append(dict(g["connection_slots"][0])),
+            "duplicate_slot_id",
+        ),
+        # fail_mode: invalid fail_mode value in policies (line 266)
+        (
+            lambda g: g["policies"].update({"fail_mode": "best_effort"}),
+            "fail_mode",
+        ),
+        # audit_profile: non-string required_audit_profile (line 269)
+        (
+            lambda g: g["policies"].update({"required_audit_profile": 99}),
+            "audit_profile",
+        ),
+    ],
+)
+def test_additional_graph_validation_error_codes(mutate, code):
+    """Regression guard for validation error codes not covered by the original
+    parametrized test. Each mutation exercises a specific error-code branch in
+    validate_graph.py that was confirmed 0% covered by the audit."""
+    graph = _graph()
+    mutate(graph)
+    with pytest.raises(GraphValidationError) as raised:
+        validate_authoring_graph(graph)
+    assert raised.value.code == code, (
+        f"expected code={code!r}, got code={raised.value.code!r}"
+    )
