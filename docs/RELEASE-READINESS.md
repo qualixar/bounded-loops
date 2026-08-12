@@ -1,7 +1,7 @@
 # Graph Engine — Release Readiness Assessment
 
-**Version:** 0.3.1  
-**Assessment date:** 2026-08-11 (updated post-RE/RF/C-079/C-080/C-081 shipping)  
+**Version:** 0.4.0  
+**Assessment date:** 2026-08-12 (updated post-Slice1/Slice2/Slice3/Slice4 shipping)  
 **Scope:** `bl graph` subcommand group and supporting application/adapter layers
 
 ---
@@ -29,16 +29,17 @@ A client who installs `bounded-loops` and runs `bl graph` gets:
    - `bl graph run --execute <manifest> --connections <json> --inputs <json> --out <dir>`
    - Local-CLI: works with `claude`, `codex`, `grok`, `muse`, `agy` (user's own
      subscription login). Engine never reads or logs credentials; the CLI authenticates
-     out-of-band. Network access is OPEN for admitted `local_cli` nodes.
+     out-of-band. Network access for `local_cli` nodes uses the configurable egress
+     posture: OPEN (default) or ALLOWLIST (opt-in via `bl graph init` — see item 10a).
    - BYOK/https: pass `--admitted <json>` (a map of `connection_id` → endpoint + ENV-VAR
      name record). The engine routes https-transport nodes through `HttpConnectorForwarder`
      + `EgressBroker` (no-secret, single-use, time-bound leases, SSRF/DNS-rebind denied).
      Isolation floor for https nodes is `container_restricted`. Preflight fails closed if
      an https node has no matching admitted record.
    - A single graph may mix both transports; a `_ByokDispatchWorker` routes by binding.
-   - Fail-closed preflight before any node runs (approval nodes refused with a named
-     message, unknown provider IDs fail the node, missing prompts fail the node, missing
-     CLI binary fails the node).
+   - Fail-closed preflight before any node runs (approval nodes SKIP preflight and PAUSE
+     at execution — exit code 3; see item 10b; unknown provider IDs fail the node, missing
+     prompts fail the node, missing CLI binary fails the node).
    - Independent structural acceptance gate per node.
    - Hash-chained `controller-events.jsonl` + content-addressed artifact store.
    - Plan reconstruction verification before any status or arena read.
@@ -86,6 +87,30 @@ A client who installs `bounded-loops` and runs `bl graph` gets:
    and the next resume is recovered from the ledger, not re-asked. See
    `examples/graph_runtime_reference.py` and `docs/graph-reference-composition.md`.
 
+10a. **Egress posture configuration — `bl graph init`**: interactive installer that writes
+    `~/.bounded-loops/egress.json` atomically (unique temp + O_EXCL + O_NOFOLLOW + fchmod
+    0600 + fsync + round-trip verify + os.replace). OPEN is the default (no cage, no config
+    file required). ALLOWLIST (macOS Seatbelt cage for `local_cli` nodes) is opt-in.
+    Fail-closed: ALLOWLIST without Seatbelt raises `GraphValidationError` at preflight,
+    never silently falls back to OPEN. BROKER is refused for `local_cli` nodes
+    (architecturally incoherent). ALLOWLIST is a network-only cage — filesystem access
+    (HOME/TMPDIR/workdir) is unchanged.
+
+10b. **Human-approval checkpoint via `bl graph run --execute`**: approval nodes now PAUSE the
+    run (exit code 3 AWAITING_APPROVAL) instead of refusing at preflight. Use `bl graph
+    approve --run <dir> --node <id> --decision {approved,rejected}` to record the decision
+    and resume. `LocalGraphRuntimeFacade.for_run_dir(run_dir)` addresses runs by flat path.
+    Shared `build_durable_approval_resolver` provides the same durable persistence and
+    rehydration as the MCP path. Local posture: same-tenant authorizer + non-crypto signature
+    verifier; hosted deployments must inject their own ports.
+
+10c. **Click-to-approve console — `bl graph console --run <dir>`**: loopback-only HTTP server
+    (127.0.0.1, never 0.0.0.0) serving a single-page approval UI. Per-invocation
+    `secrets.token_urlsafe(32)` token; CSRF defense via Origin header check; 8 KB body cap;
+    30-second handler timeout; HTTP/1.0. Auto-stops after the page is served (from GET
+    handler, not POST). LOCAL posture: the token gates other local processes on the same host
+    — a hosted deployment needs TLS + real auth + role-checking authorizer.
+
 ---
 
 ## What requires the client's own configuration
@@ -109,9 +134,9 @@ A client who installs `bounded-loops` and runs `bl graph` gets:
 
 | Capability | Status |
 |---|---|
-| Human-approval checkpoint via `bl graph run --execute` | `approval` nodes are refused at preflight in `execute_graph_run` with a named message. MCP-driven approve via `LocalGraphRuntimeFacade.approve` IS shipped (RF), and both approve and reject decisions are now durable with rehydration on resume (C-080) — see above. |
+| Reject-path signature-gating for hosted deployments | `bl graph approve --decision rejected` is accepted on filesystem writability for local posture. A hosted multi-tenant deployment must inject a crypto `ApprovalSignatureVerifierPort` to gate reject identically to approve. |
 | Cross-model audit controller + Arena wiring — write side | Audit plan service, reconciliation, and the read-side controller→Arena wiring (coverage table + release verdict via `bl graph arena`) are implemented and shipped (C-079). Structurally binding a coverage cell to the auditor's `model_id` and receipt route — write-side independence, beyond today's receipt-asserted independence — is still deferred. |
-| Enterprise egress firewall (RC-LOCKDOWN) as the default connector tier | The `NetworkMode.ALLOWLIST` OS-cage mechanism is shipped and proven live on macOS Seatbelt (C-081); Linux/docker fail closed rather than caging. Connector nodes in `--execute` do not use it yet — `local_cli` stays network-OPEN and `https` stays broker-mediated. Making ALLOWLIST their default tier is the later-phase item. |
+| ALLOWLIST as the default connector tier (RC-LOCKDOWN) | ALLOWLIST is shipped and opt-in for `local_cli` nodes via `bl graph init` or env var (C-081). Making it the default tier for all connector nodes is deferred. |
 | Hosted `ArenaReceiptVerifierPort` | `LocalGraphRuntimeFacade` uses `_NoopArenaReceiptVerifier` for all local runs. `bl graph status` outputs a `LOCAL/UNVERIFIED` notice. Remote hash-chain verification is a later phase. |
 | Sandboxed arbitrary-tool node execution (package broker) | Refused at preflight with a named message. |
 
@@ -136,13 +161,14 @@ A client who installs `bounded-loops` and runs `bl graph` gets:
 
 **Ready for:** local development, CI/CD integration, graph authoring + linting + compilation,
 Local-CLI and BYOK/https connector execution with any of the five supported agent CLIs or an
-admitted https endpoint, MCP-driven run status/resume/approve via `LocalGraphRuntimeFacade`,
-Arena review of run artifacts, in-process demonstration of the run-directory structure.
+admitted https endpoint, human-approval checkpoints via `bl graph approve` or `bl graph console`,
+opt-in ALLOWLIST egress posture via `bl graph init`, MCP-driven run status/resume/approve via
+`LocalGraphRuntimeFacade`, Arena review of run artifacts, in-process demonstration of the
+run-directory structure.
 
 **Not ready for production without:** hosted authorization ports (`ApprovalAuthorizationPort`,
-`ApprovalSignatureVerifierPort`, `ArenaReceiptVerifierPort`) replacing the local defaults, an
-`AuditStorePort` wiring, and a durable memory adapter. Human-approval execution via `bl graph
-run --execute` (the CLI path — the facade/MCP path already ships durable approve/reject),
-write-side structural independence for the cross-model audit controller, and the enterprise
-egress firewall (RC-LOCKDOWN) as the default connector tier are later phases with clear seam
-boundaries already defined in the codebase.
+`ApprovalSignatureVerifierPort` — reject-path gating for hosted deployments — and
+`ArenaReceiptVerifierPort`) replacing the local defaults, an `AuditStorePort` wiring, and a
+durable memory adapter. Write-side structural independence for the cross-model audit controller
+and the enterprise egress firewall (RC-LOCKDOWN) as the default connector tier are later phases
+with clear seam boundaries already defined in the codebase.

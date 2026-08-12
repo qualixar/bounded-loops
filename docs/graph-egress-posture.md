@@ -183,10 +183,22 @@ Naming follows this project's real env-reading precedent (`trust_store.py` /
 `os.environ.get` on every call). `adapters/_env.py` is unrelated — it is the
 subprocess env ALLOWLIST, not an app-config-reading convention.
 
-## Config file (installer-written)
+## Config file — written by `bl graph init`
 
 Default path: `~/.bounded-loops/egress.json` (override via
 `BOUNDED_LOOPS_EGRESS_CONFIG`).
+
+To write this file interactively:
+
+```bash
+bl graph init                                                  # interactive; defaults to OPEN
+bl graph init --posture allowlist --allowlist api.anthropic.com   # opt-in cage
+bl graph init --posture allowlist --allowlist api.anthropic.com --yes  # non-interactive
+```
+
+`bl graph init` writes the config atomically: unique temp file (O_EXCL + O_NOFOLLOW) →
+`fchmod 0600` → `fsync` → round-trip verify → `os.replace`. Refuses symlinks at the
+config path in every mode. See `bounded_loops/graph/init/config_writer.py`.
 
 ```json
 {

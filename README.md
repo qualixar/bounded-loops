@@ -53,9 +53,13 @@ hash-chained event log plus content-addressed artifacts, and the read-only Arena
 renders that record without executing anything.
 
 ```bash
+bl graph init                                         # configure egress posture (optional)
 bl graph lint graph.yaml                              # validate the DAG offline
 bl graph run graph.yaml --execute \
-    --connections connections.json --out ./run        # run each node under its gate
+    --connections connections.json --out ./run        # run — pauses at approval nodes (exit 3)
+bl graph approve --run ./run --node <id> \
+    --decision approved                               # record a decision and resume
+bl graph console --run ./run                          # click-to-approve in a browser
 bl graph arena --run ./run --out arena.html           # receipt-derived, read-only view
 ```
 
@@ -86,8 +90,9 @@ is — no capability is claimed beyond what the shipped code does.
 | No-secret egress broker (single-use leases; SSRF / DNS-rebind denied) | Shipped |
 | Receipt-derived, non-executing Arena (hash-chained log, content-addressed artifacts) | Shipped — local runs are marked `LOCAL/UNVERIFIED` |
 | Cross-model audit-coverage gate (`--audit-plan` → Arena verdict) | Shipped — read-side; independence is receipt-asserted |
-| Durable human approvals (persisted, rehydrated on resume) | Shipped via the runtime facade / MCP; the `--execute` CLI refuses approval nodes |
-| OS egress firewall — `ALLOWLIST` loopback-proxy cage | macOS Seatbelt: real, proven live. Linux/docker: fail-closed (refused, not faked). Not yet the default connector tier |
+| Durable approvals — `bl graph run` pauses at approval nodes (exit 3); `bl graph approve --run --node --decision` records the decision and resumes; facade / MCP path unchanged | Shipped |
+| Click-to-approve console — `bl graph console --run <dir>` serves a loopback-only, token-gated HTML page; same durable machinery as `bl graph approve` | Shipped — local posture only (no TLS / role auth; a hosted deployment must supply those) |
+| Egress posture for `local_cli` nodes — `bl graph init` writes `~/.bounded-loops/egress.json`; OPEN is the default (subscription CLI unchanged); ALLOWLIST is opt-in: real macOS Seatbelt cage + loopback proxy, fail-closed without the cage | Shipped — OPEN default; ALLOWLIST selectable; not yet the default tier |
 | Hosted receipt verification · tamper-evident approvals ledger · sandboxed arbitrary-tool nodes | Deployment-provided seams / roadmap |
 
 Full detail, run-directory layout, and the deploying-engineer checklist live in
@@ -217,11 +222,11 @@ session, never an LLM tool argument.
 
 ## Known limitations
 
-- The `bl graph run --execute` CLI runs connector nodes; approval nodes execute
-  through the runtime facade / MCP path, and sandboxed arbitrary-tool nodes are a
-  later phase.
-- The `ALLOWLIST` OS egress cage is real on macOS Seatbelt and fail-closed
-  elsewhere; it is not yet the default tier for connector nodes.
+- `bl graph run --execute` pauses at approval nodes (exit code 3 AWAITING_APPROVAL) and
+  resumes via `bl graph approve`; sandboxed arbitrary-tool nodes are a later phase.
+- The `ALLOWLIST` egress cage is wired for `local_cli` nodes on macOS Seatbelt
+  (opt-in via `bl graph init` or `BOUNDED_LOOPS_EGRESS_POSTURE`; fail-closed without the
+  cage); it is not yet the default tier — `open` remains the default.
 - Framework example glue uses deterministic edits and currently reports
   `changed: true`; production glue should compute a before/after diff.
 - `content-fact-gate` and OSV scans require network access; the quick start

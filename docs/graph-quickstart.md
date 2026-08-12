@@ -25,7 +25,23 @@ bl graph --help
 
 ---
 
-## 2. Prerequisites
+## 2. Configure egress posture (optional)
+
+By default the engine runs connector nodes with `OPEN` egress — the subprocess can
+reach any host.  To opt into the macOS Seatbelt ALLOWLIST cage (network-only; a
+compromised subprocess still has full filesystem access):
+
+```bash
+bl graph init --posture allowlist --allowlist api.anthropic.com
+```
+
+`bl graph init` writes `~/.bounded-loops/egress.json` atomically (temp file +
+`fchmod 0600` + `fsync` + round-trip verify + `os.replace`).  Pass `--yes` to skip
+the interactive prompts.  Skip this step entirely to keep the default OPEN posture.
+
+---
+
+## 3. Prerequisites
 
 The Local-CLI connector runs **your already-logged-in agent CLI** as a subprocess.
 The engine never reads, stores, or logs your credentials. Authentication happens
@@ -50,7 +66,7 @@ The supported provider IDs and their subscription-mode invocations are:
 
 ---
 
-## 3. Create the three input files
+## 4. Create the three input files
 
 These files come directly from the engine's own test suite. Copy them verbatim
 and they will pass the compiler.
@@ -126,7 +142,7 @@ the portable graph; they are supplied here at execute time:
 
 ---
 
-## 4. Run the graph
+## 5. Run the graph
 
 ```bash
 bl graph run --execute manifest.yaml \
@@ -137,15 +153,18 @@ bl graph run --execute manifest.yaml \
 
 The engine:
 1. Compiles the manifest against `connections.json` (compile errors exit early with a clear message).
-2. Runs a preflight check — refuses approval nodes and any node whose binding is
-   neither `local_cli` nor `https` (with a matching admitted connection), with a
-   specific error.
+2. Runs a preflight check — refuses any node whose binding is neither `local_cli`
+   nor `https` (with a matching admitted connection).  Approval nodes are **not**
+   refused; they are skipped at preflight and the run pauses when they are reached.
 3. Probes the platform for native sandbox support (macOS Seatbelt / Linux bubblewrap).
 4. Runs each admitted `local_cli` node: invokes `claude -p`, pipes the prompt to stdin, captures stdout as the content-addressed output artifact.
 5. Gates each node with an independent structural acceptance gate.
 6. Writes a hash-chained run directory to `./my-run`.
 
-Exit code `0` = SUCCEEDED. Exit code `2` = compile error, preflight refusal, or node failure.
+Exit codes:
+- `0` — SUCCEEDED (all nodes passed their gates)
+- `2` — compile error, preflight refusal, or node failure
+- `3` — AWAITING_APPROVAL (the run has paused at an approval node; use `bl graph approve` to record a decision and resume)
 
 Sample terminal output on success:
 
@@ -166,7 +185,42 @@ reply) is content-addressed in `./my-run/artifacts/`.
 
 ---
 
-## 5. Inspect the run
+## 6. Handle approval nodes (exit code 3)
+
+If your graph contains an `approval` node and the run pauses there, `bl graph run`
+exits with code 3 and prints a hint such as:
+
+```
+run_state : AWAITING_APPROVAL
+  PAUSED node 'review': waiting for human decision
+  Resume:  bl graph approve --run ./my-run --node review --decision approved
+```
+
+To record a decision and resume:
+
+```bash
+bl graph approve --run ./my-run --node review --decision approved
+# or: --decision rejected
+```
+
+`bl graph approve` exits 0 if the run has now SUCCEEDED, 2 if it FAILED, and 3
+if it is still AWAITING_APPROVAL (more approval nodes remain).
+
+**Click-to-approve in a browser:** If you prefer not to type the CLI command,
+start the loopback console in another terminal while the run is paused:
+
+```bash
+bl graph console --run ./my-run
+# Prints: http://127.0.0.1:<port>/  token=<token>
+# Open the printed URL in any browser on this host.
+```
+
+The console is local-only (127.0.0.1, never 0.0.0.0), per-invocation token,
+and auto-closes after the page is served.
+
+---
+
+## 7. Inspect the run
 
 **Arena — a self-contained, read-only HTML page:**
 
@@ -188,7 +242,7 @@ expected posture for a local run.
 
 ---
 
-## 6. Lint and plan (authoring workflow)
+## 8. Lint and plan (authoring workflow)
 
 Before running, validate the manifest in isolation:
 
@@ -206,7 +260,7 @@ Both commands accept `--json` for machine-readable output.
 
 ---
 
-## 7. Run the built-in native-sandbox demo
+## 9. Run the built-in native-sandbox demo
 
 To prove native OS sandbox isolation without any agent CLI or credentials:
 
@@ -221,7 +275,7 @@ node itself — decides SUCCEEDED or FAILED.
 
 ---
 
-## 8. In-process demonstration (no sandbox, no execution)
+## 10. In-process demonstration (no sandbox, no execution)
 
 ```bash
 bl graph demo --out ./demo-run
@@ -234,7 +288,7 @@ and exercise `bl graph status` / `bl graph arena` without any agent CLI installe
 
 ---
 
-## 9. Visual authoring
+## 11. Visual authoring
 
 ```bash
 bl graph studio --out ./graph-studio.html
