@@ -292,6 +292,16 @@ role-checking `ApprovalAuthorizationPort` and a crypto `ApprovalSignatureVerifie
 The reject path is not signature-gated locally — reject is accepted on filesystem
 writability alone for local posture.
 
+**A decision may be recorded before the node asks for it.** `approve` does not require the
+target node to be sitting at `AWAITING_APPROVAL` yet: a decision recorded ahead of time is
+persisted and honoured when the run reaches that gate. This is deliberate — it is what lets
+a scripted or unattended run carry its approvals with it, and it is how the durable resolver
+is exercised end to end. It does mean the approver may not have seen the node's evidence at
+the moment they decided, so treat it as a convenience of the local, single-operator posture
+rather than a human-in-the-loop guarantee. A hosted, multi-tenant deployment that needs
+"the human saw this exact evidence before deciding" must bind each decision to the node's
+current hold evidence and reject a decision that arrives early.
+
 ---
 
 ### 13. Click-to-approve console — `bl graph console`
