@@ -221,4 +221,4 @@ def test_concurrent_cancel_is_not_blocked_by_in_flight_wait(tmp_path: Path) -> N
         f"(wait_timeout_s={wait_timeout_s}; old bug serialises cancel behind full wait)"
     )
     assert result is not None, "wait_thread did not return within deadline"
-    assert result.state is TurnState.CANCELLED  # type: ignore[union-attr]
+    assert getattr(result, "state") is TurnState.CANCELLED

@@ -448,7 +448,7 @@ def test_restart_lifecycle_produces_no_background_thread_exceptions():
     original_hook = threading.excepthook
 
     def _capture(args: threading.ExceptHookArgs) -> None:
-        if args.thread and "egress-proxy" in (args.thread.name or ""):
+        if args.thread and "egress-proxy" in (args.thread.name or "") and args.exc_value:
             exceptions.append(args.exc_value)
 
     threading.excepthook = _capture
