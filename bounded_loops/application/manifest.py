@@ -24,6 +24,7 @@ class). No network, no subprocess.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from collections.abc import Mapping
@@ -93,8 +94,18 @@ AGENT_CMD_ALLOWLIST: frozenset[str] = frozenset({
     "muse",      # Muse CLI
     "python",    # Python interpreter
     "python3",   # Python 3 interpreter
+    "true",      # POSIX no-op (exits 0, ignores all args — zero attack surface;
+                 # admitted so trivial no-op test fixtures need no grant)
     "uv",        # uv run (Python project runner)
 })
+
+# Enterprise extension: operators that run their own internal agent CLIs can
+# add basenames here via the environment rather than a code PR. Each entry added
+# this way should carry a review note inside the adopting organisation's deployment
+# configuration — the env var is the operator-level gate.
+# Format: BOUNDED_LOOPS_EXTRA_AGENT_CMDS=acn-run,corp-agent
+# Same shape as BOUNDED_LOOPS_CLI_ENV_GRANT (explicit opt-in, safe default of ∅).
+_EXTRA_AGENT_CMDS_ENV = "BOUNDED_LOOPS_EXTRA_AGENT_CMDS"
 
 _LOOP_KEYS = frozenset({
     "name", "description", "pattern", "role", "rung", "runner", "gate",
@@ -510,9 +521,11 @@ def _validate_composite_gate(gate_block: dict) -> None:
 def _validate_agent_cmd(agent_cmd: object) -> None:
     """M-1 fix: constrain runner.agent_cmd to AGENT_CMD_ALLOWLIST binaries.
 
-    Checks the basename of the first token (the binary) against
-    AGENT_CMD_ALLOWLIST. Absolute paths are permitted as long as their
-    basename is in the allowlist (e.g. /usr/local/bin/claude → 'claude').
+    Checks the basename of the first token (the binary) against the effective
+    allowlist (AGENT_CMD_ALLOWLIST union any operator-supplied extensions from
+    BOUNDED_LOOPS_EXTRA_AGENT_CMDS). Absolute paths are permitted as long as
+    their basename is in the effective set (e.g. /usr/local/bin/claude → 'claude').
+
     Shell metacharacters in the full string are not a concern here because
     ShellRunner already uses shlex.split + shell=False, preventing shell
     reinterpretation; this check is specifically about which binary is launched.
@@ -528,13 +541,21 @@ def _validate_agent_cmd(agent_cmd: object) -> None:
     if not tokens:
         raise ManifestError("runner.agent_cmd is empty after parsing")
     binary_basename = Path(tokens[0]).name
-    if binary_basename not in AGENT_CMD_ALLOWLIST:
+    extra_raw = os.environ.get(_EXTRA_AGENT_CMDS_ENV, "")
+    extra: frozenset[str] = frozenset(
+        name.strip() for name in extra_raw.split(",") if name.strip()
+    )
+    effective = AGENT_CMD_ALLOWLIST | extra
+    if binary_basename not in effective:
         raise ManifestError(
             f"runner.agent_cmd first token {binary_basename!r} is not in the "
             f"agent_cmd allowlist ({sorted(AGENT_CMD_ALLOWLIST)}). "
-            f"To allow a new binary, open a PR to extend AGENT_CMD_ALLOWLIST "
-            f"in bounded_loops/application/manifest.py — the code review is "
-            f"the human gate."
+            f"To allow a new binary: open a PR to extend AGENT_CMD_ALLOWLIST "
+            f"in bounded_loops/application/manifest.py (the code review is "
+            f"the human gate), OR set "
+            f"{_EXTRA_AGENT_CMDS_ENV}={binary_basename} in your deployment "
+            f"environment for an enterprise-local extension (document the review "
+            f"decision in your deployment configuration)."
         )
 
 

@@ -9,7 +9,7 @@ import tempfile
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from bounded_loops import mcp_server
 from bounded_loops.application.loop_audit import LoopAuditResult
@@ -478,6 +478,26 @@ def test_bl_run_no_ctx_falls_back_to_shared_previewed(tmp_path):
         mcp_server.bl_run(str(tmp_path), confirm=False)  # no ctx — legacy path
     # The recorded preview must land in the shared _previewed dict
     assert str(tmp_path.resolve()) in mcp_server._previewed
+
+
+def test_session_state_logs_warning_on_bad_ctx(tmp_path, caplog):
+    """L-3 / CRIT-2: when ctx.session raises (bad mock / integration gap),
+    _session_state falls back to the shared dict AND emits a logging.WARNING
+    so the regression is observable in production logs rather than invisible."""
+    import logging
+
+    ctx = MagicMock()
+    # Simulate ctx.session raising ValueError (real FastMCP raises this when
+    # request_context is None, e.g. in a misconfigured integration).
+    type(ctx).session = PropertyMock(side_effect=ValueError("no request context"))
+
+    with caplog.at_level(logging.WARNING, logger="bounded_loops.mcp_server"):
+        result = mcp_server._session_state(ctx)
+
+    # Must fall back to shared dict (not raise)
+    assert result is mcp_server._previewed
+    # Must emit a warning naming the module so ops can filter on it
+    assert any("bounded-loops-mcp" in r.message for r in caplog.records)
 
 
 def test_server_survives_multiple_sequential_tool_calls(tmp_path):

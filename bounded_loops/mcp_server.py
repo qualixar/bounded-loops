@@ -18,6 +18,7 @@ JSON-RPC framing.
 """
 from __future__ import annotations
 
+import logging
 import weakref
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from bounded_loops.domain.errors import BoundedLoopsError, ManifestError
 from bounded_loops.trust_store import _content_hash, record_trust
 
 mcp = FastMCP("bounded-loops")
+_log = logging.getLogger(__name__)
 
 # Module-level, per-server-process session state: maps an
 # absolute loop_dir string to the exact gate-command string most recently
@@ -82,7 +84,18 @@ def _session_state(ctx: "Context | None") -> dict[str, str]:
     except (AttributeError, ValueError):
         # ctx.session raises ValueError if request_context is None (e.g. a
         # mock or test double that didn't wire a real request context).
-        # Fall back to the shared dict rather than crashing.
+        # Fall back to the shared dict rather than crashing — fail-open is the
+        # right call here (do not abort a live session over preview-state lookup).
+        # The warning makes the regression observable in production logs so an
+        # integration problem with the FastMCP context is not silently invisible.
+        _log.warning(
+            "bounded-loops-mcp: _session_state could not resolve ctx.session "
+            "(ctx type=%s); falling back to process-global preview dict — "
+            "MCP session isolation is inactive for this call. If this appears "
+            "in production logs, check that the FastMCP request context is "
+            "properly wired.",
+            type(ctx).__name__,
+        )
         return _previewed
     if session not in _previewed_by_session:
         _previewed_by_session[session] = {}

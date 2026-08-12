@@ -644,3 +644,55 @@ def test_agent_cmd_empty_string_raises_manifest_error(tmp_path):
     )
     with pytest.raises(ManifestError):
         load(loop_dir)
+
+
+# ── BOUNDED_LOOPS_EXTRA_AGENT_CMDS enterprise extension (M-1 follow-up) ──
+
+def test_agent_cmd_extra_env_allows_unlisted_binary(tmp_path, monkeypatch):
+    """An operator-supplied binary in BOUNDED_LOOPS_EXTRA_AGENT_CMDS is accepted
+    even though it is not in the core AGENT_CMD_ALLOWLIST."""
+    monkeypatch.setenv("BOUNDED_LOOPS_EXTRA_AGENT_CMDS", "acn-run")
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "acn-run --loop"}},
+    )
+    manifest = load(loop_dir)
+    assert manifest.runner_kind == "shell"
+
+
+def test_agent_cmd_extra_env_multi_entry(tmp_path, monkeypatch):
+    """Comma-separated entries in BOUNDED_LOOPS_EXTRA_AGENT_CMDS are each accepted."""
+    monkeypatch.setenv("BOUNDED_LOOPS_EXTRA_AGENT_CMDS", "corp-a,corp-b")
+    for binary in ("corp-a", "corp-b"):
+        sub = tmp_path / binary
+        sub.mkdir()
+        loop_dir = write_loop(
+            sub,
+            {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": binary}},
+        )
+        manifest = load(loop_dir)
+        assert manifest.runner_kind == "shell"
+
+
+def test_agent_cmd_extra_env_does_not_weaken_core_allowlist(tmp_path, monkeypatch):
+    """An unlisted binary is still rejected when BOUNDED_LOOPS_EXTRA_AGENT_CMDS
+    names a DIFFERENT binary — the extra set is additive, not a wildcard."""
+    monkeypatch.setenv("BOUNDED_LOOPS_EXTRA_AGENT_CMDS", "corp-a")
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "bash"}},
+    )
+    with pytest.raises(ManifestError, match="agent_cmd.*allowlist"):
+        load(loop_dir)
+
+
+def test_agent_cmd_error_message_names_extra_env_var(tmp_path, monkeypatch):
+    """The ManifestError for a blocked binary names BOUNDED_LOOPS_EXTRA_AGENT_CMDS
+    so blocked users immediately know the remedy."""
+    monkeypatch.delenv("BOUNDED_LOOPS_EXTRA_AGENT_CMDS", raising=False)
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "bash"}},
+    )
+    with pytest.raises(ManifestError, match="BOUNDED_LOOPS_EXTRA_AGENT_CMDS"):
+        load(loop_dir)
