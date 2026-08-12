@@ -35,6 +35,7 @@ import tempfile
 from typing import Callable, Mapping, Protocol
 from uuid import uuid4
 
+from bounded_loops.adapters._env import ENV_ALLOWLIST, sanitize_path
 from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn
 from bounded_loops.domain.models import TurnState
 from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities, probe_platform
@@ -58,6 +59,16 @@ _UNSAFE_PATH_COMPONENT = re.compile(r"[^A-Za-z0-9._-]")
 # leaving human-readable diagnostics ("OAuth session expired") intact.
 _SECRET_TOKEN = re.compile(r"(?i)(?:bearer\s+)?[A-Za-z0-9_\-]{24,}")
 _PROXY_ENV_VARS = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
+# The environment an admitted CLI receives. Starts from the loop engine's single source of
+# truth (`adapters/_env.py::ENV_ALLOWLIST`) so both engines share one boundary, plus three
+# identity variables an agent CLI needs to resolve its own user-scoped config. Verified on
+# a real host: `claude`/`grok`/`muse`/`agy` all succeed with exactly this set — and `claude`
+# in fact succeeds ONLY with it, because inheriting a parent Claude Code session's
+# `CLAUDE_CODE_*` variables made it try (and fail) to reuse that session's expired OAuth.
+_CLI_ENV_ALLOWLIST = ENV_ALLOWLIST | {"USER", "LOGNAME", "TERM"}
+# Operator escape hatch: comma-separated NAMES (never values) of extra variables to forward.
+# Needed for a CLI whose own tooling reads a key from the environment.
+_ENV_GRANT_VAR = "BOUNDED_LOOPS_CLI_ENV_GRANT"
 
 
 def _redact_secrets(text: str) -> str:
@@ -92,6 +103,10 @@ class CliProfile:
     prompt_via: str = "stdin"
     unset_env: tuple[str, ...] = ()
     set_env: Mapping[str, str] = field(default_factory=dict)
+    # NAMES (never values) of extra environment variables this CLI is permitted to receive
+    # on top of the base allowlist — for a CLI whose own tooling reads a key from the
+    # environment. Deliberately empty by default: a grant is an explicit operator decision.
+    env_grant: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.prompt_via not in ("stdin", "arg"):
@@ -235,7 +250,10 @@ class LocalCliConnectorWorker:
             combined = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
             hint = next((line for line in combined.splitlines() if line.strip()), "no output")
             raise GraphIntegrityError(
-                f"local-CLI node {node.node_id!r} exited {result.returncode}: {_redact_secrets(hint[:200])}"
+                f"local-CLI node {node.node_id!r} exited {result.returncode}: "
+                f"{_redact_secrets(hint[:200])} "
+                f"(the CLI runs with a minimal environment; if it needs a variable from your "
+                f"shell, forward it by NAME via {_ENV_GRANT_VAR}=VAR1,VAR2)"
             )
 
         reply = (result.stdout or "").encode("utf-8")
@@ -288,10 +306,36 @@ class LocalCliConnectorWorker:
         return seatbelt_argv(profile, inner_argv)
 
     def _child_env(self, profile: CliProfile) -> dict[str, str]:
-        # Run freely: the CLI inherits the operator's real environment so its subscription and
-        # tools work, minus any keys the profile clears (e.g. CLAUDE_CONFIG_DIR so `claude`
-        # uses the default subscription login), plus any the profile sets.
-        env = dict(self._environ if self._environ is not None else os.environ)
+        """Build the child environment from an ALLOWLIST, never the whole parent env.
+
+        Previously this inherited all of ``os.environ`` and removed a few named keys, so
+        every credential the operator happened to have exported — cloud keys, provider
+        tokens — was handed to the CLI subprocess. That inverted the rule the loop engine
+        already enforces, where ``ENV_ALLOWLIST`` is called "the PRIMARY
+        secret-exfiltration defense". An agent CLI is a capable, network-connected process
+        acting on data the operator did not necessarily write, so a prompt injection in
+        that data could enumerate and exfiltrate whatever the environment held. Post-hoc
+        output redaction cannot help: by then the value has already left the machine.
+
+        Some CLIs genuinely need more than the base set, so a variable can be granted
+        EXPLICITLY — per profile (``CliProfile.env_grant``) or by the operator via
+        ``BOUNDED_LOOPS_CLI_ENV_GRANT`` (comma-separated names). Verified empirically on
+        this host: ``claude``, ``grok``, ``muse`` and ``agy`` all work on the base set
+        alone, while ``codex`` needs one granted key because the MCP servers it launches
+        read it. A grant is deliberately a NAME, never a value — the engine still never
+        reads, stores or logs a credential; it only decides which names to forward.
+        """
+        source = self._environ if self._environ is not None else os.environ
+        granted = set(profile.env_grant)
+        raw_grant = source.get(_ENV_GRANT_VAR, "")
+        granted.update(name.strip() for name in raw_grant.split(",") if name.strip())
+        allowed = _CLI_ENV_ALLOWLIST | granted
+
+        env = {key: value for key, value in source.items() if key in allowed}
+        if "PATH" in env:
+            # Drop relative PATH entries: this subprocess runs with cwd=workdir, so a
+            # relative entry could resolve a binary the workdir happens to contain.
+            env["PATH"] = sanitize_path(env["PATH"])
         for key in profile.unset_env:
             env.pop(key, None)
         env.update(profile.set_env)

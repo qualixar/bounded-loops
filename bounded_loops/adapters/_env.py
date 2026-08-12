@@ -28,7 +28,7 @@ SENSITIVE_ENV_MARKERS = (
 )
 
 
-def _sanitize_path(path_value: str) -> str:
+def sanitize_path(path_value: str) -> str:  # public: also used by the graph local-CLI connector
     """Keep only ABSOLUTE directory entries. Drops "", ".", and any relative
     entry — the vectors by which a `cwd=workspace` subprocess could resolve a
     workspace-local binary shadow."""
@@ -42,7 +42,7 @@ def build_subprocess_env(ctx_env: dict[str, str] | None = None) -> dict[str, str
     merged over the top. Never leaks the full parent environment."""
     base = {k: v for k, v in os.environ.items() if k in ENV_ALLOWLIST}
     if "PATH" in base:
-        base["PATH"] = _sanitize_path(base["PATH"])
+        base["PATH"] = sanitize_path(base["PATH"])
     if ctx_env:
         return {**base, **ctx_env}
     return base
