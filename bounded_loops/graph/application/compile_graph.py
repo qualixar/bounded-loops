@@ -274,6 +274,9 @@ def _planned_node(node: AuthoringNode, bindings: Mapping[str, ResolvedBinding]) 
         binding_id=binding.binding_id if binding else None,
         required_effects=node.effects,
         isolation=node.isolation,
+        # PER ATTEMPT, not per node: the workers apply this as a subprocess deadline on each
+        # attempt, so a node's total wall time is up to max_attempts * max_wallclock_s.  A
+        # node-total wallclock ceiling is a separate budget and does not exist yet.
         hard_deadline_ms=node.budget.max_wallclock_s * 1000,
         budgets={
             "max_attempts": node.budget.max_attempts,

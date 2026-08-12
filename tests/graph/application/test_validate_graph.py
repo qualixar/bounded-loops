@@ -164,6 +164,25 @@ def test_invalid_json_is_rejected():
             lambda g: g["nodes"][0].update({"on_failure": "await_human"}),
             "on_failure_unimplemented",
         ),
+        # budget_unenforced: token and cost caps are validated and compiled into the plan
+        # but NOTHING meters them, and WorkerResult has no field through which a worker
+        # could report spend.  The failure direction is what makes refusal mandatory: an
+        # ignored attempt budget grants fewer attempts, an ignored token cap grants no
+        # limit at all.  Refused until spend accounting is real.
+        # max_tokens hits a DIFFERENT, pre-existing guard first: _reject_nonportable
+        # substring-matches _SECRET_WORDS, and "max_tokens" contains "token". So the field
+        # has never been authorable at all — it is in the JSON schema, the closed
+        # allowed-set, GraphBudget, and the compiled plan, yet no manifest naming it can
+        # validate. Asserted truthfully here; the false positive is fixed in the budget
+        # phase, at which point budget_unenforced becomes the reason instead.
+        (
+            lambda g: g["nodes"][0]["budget"].update({"max_tokens": 50_000}),
+            "secret_field",
+        ),
+        (
+            lambda g: g["nodes"][0]["budget"].update({"max_cost_microunits": 1_000_000}),
+            "budget_unenforced",
+        ),
         # max_attempts: above the ceiling the controller enforces.  Narrowed from 1000
         # because the retry budget multiplies the gate's per-attempt false-accept
         # probability, so an over-large budget erodes the gate's own guarantee.
