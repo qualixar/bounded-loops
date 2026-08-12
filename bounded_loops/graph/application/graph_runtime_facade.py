@@ -53,6 +53,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import ssl
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -284,9 +285,52 @@ class _FileApprovalCommandPort:
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
-    tmp = path.with_suffix(".tmp")
-    tmp.write_bytes(data)
-    os.replace(str(tmp), str(path))
+    """Durably replace *path* with *data* — the approvals ledger is an authority file.
+
+    Three defects were fixed here together, because they are one write:
+
+    * **No fsync (CON-02).** `write_bytes` + `os.replace` makes the rename atomic but
+      leaves the CONTENT in the page cache, so a power loss could resurrect the file
+      with the rename applied and the bytes missing. Every other durable writer in this
+      repository (`hash_chain_events`, `event_log`, `run_store`, `config_writer`) fsyncs;
+      this one did not, which falsified "the decision is durably persisted BEFORE the run
+      continues". The directory is fsynced too, so the rename itself survives a crash.
+    * **Predictable temp path (M-4).** `path.with_suffix(".tmp")` is a fixed name, so a
+      local process could pre-create or symlink it. `O_EXCL | O_NOFOLLOW` on a
+      randomly-named temp refuses both, and the temp is created 0600 from the start
+      rather than inheriting the umask.
+    * The temp is always cleaned up, so a failed write cannot litter the run directory.
+
+    The temp lives in the target's own directory because `os.replace` cannot cross a
+    filesystem boundary.
+    """
+    tmp = path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(tmp, flags, 0o600)
+    except OSError as exc:
+        raise GraphIntegrityError(f"cannot create a temp file beside {path}: {exc}") from exc
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)  # force the mode regardless of umask
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        # Fsync the DIRECTORY so the rename entry itself is durable, not just the bytes.
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError as exc:
+        raise GraphIntegrityError(f"cannot durably write {path}: {exc}") from exc
+    finally:
+        # No-op on success (os.replace consumed it); real cleanup on any failure.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 # ── facade ────────────────────────────────────────────────────────────────────
