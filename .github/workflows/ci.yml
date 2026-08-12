@@ -58,6 +58,45 @@ jobs:
       - name: Audit loop catalog
         run: uv run python -m bounded_loops.cli audit-loops --json
 
+  macos-egress-cage:
+    name: macOS OS egress cage (live) / py${{ matrix.python-version }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - name: Sync locked development environment
+        run: uv sync --frozen --group dev
+      # The ALLOWLIST egress tests are skipif-gated on a REAL Seatbelt cage. On a runner
+      # that cannot enforce one they would SKIP, and this job would report success while
+      # proving nothing — the exact blind spot this job exists to close. So assert the
+      # capability first, with the engine's own probe, and fail loudly if it is absent.
+      - name: Assert this runner can enforce the OS egress cage
+        run: |
+          uv run python - <<'PY'
+          from bounded_loops.graph.adapters.enforcement.capabilities import probe_platform
+
+          caps = probe_platform()
+          print(f"seatbelt={caps.seatbelt} egress_proxy={caps.egress_proxy}")
+          if not (caps.seatbelt and caps.egress_proxy):
+              raise SystemExit(
+                  "this macOS runner cannot enforce the loopback egress cage, so the live "
+                  "ALLOWLIST tests would silently skip - failing instead of passing blind"
+              )
+          PY
+      - name: Run the deterministic suite with the cage live
+        run: uv run pytest -q -rs
+
   optional-python-gates:
     name: optional Python gate E2E
     runs-on: ubuntu-latest

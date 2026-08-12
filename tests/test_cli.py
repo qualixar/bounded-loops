@@ -32,7 +32,7 @@ def test_version_flag_reports_release_version(capsys):
         main(["--version"])
 
     assert exc_info.value.code == 0
-    assert capsys.readouterr().out.strip() == "bl 0.3.1"
+    assert capsys.readouterr().out.strip() == "bl 0.4.0"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

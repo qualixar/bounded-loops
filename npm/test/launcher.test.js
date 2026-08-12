@@ -8,6 +8,10 @@ const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
 const launcher = path.resolve(__dirname, '..', 'bin', 'bounded-loops.js');
+// Read the expected version from package.json rather than hardcoding it: this test's whole
+// claim is that the launcher installs the version this package declares, so deriving it is
+// what actually proves parity — and it cannot silently rot on the next release bump.
+const { version: packageVersion } = require('../package.json');
 
 test('npx launcher pins the Python engine to the npm package version', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'bounded-loops-npm-test-'));
@@ -39,6 +43,9 @@ test('npx launcher pins the Python engine to the npm package version', () => {
 
   assert.equal(result.status, 0, result.stderr);
   const calls = fs.readFileSync(log, 'utf8');
-  assert.match(calls, /pip install --quiet bounded-loops==0\.3\.1/);
+  assert.ok(
+    calls.includes(`pip install --quiet bounded-loops==${packageVersion}`),
+    `launcher must pin the Python engine to the npm package version ${packageVersion}; got:\n${calls}`
+  );
   assert.match(calls, /-m bounded_loops\.cli doctor/);
 });
