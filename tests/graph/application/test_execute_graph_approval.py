@@ -21,6 +21,8 @@ from pathlib import Path
 from bounded_loops.graph.application.execute_graph import execute_graph_run
 from bounded_loops.graph.cli_graph import _load_plan_from_run_dir
 from bounded_loops.graph.application.arena_projection import (
+    ArenaNodeProjection,
+    ArenaProjection,
     ArenaReadRequest,
     read_arena_projection,
 )
@@ -299,12 +301,7 @@ def test_reexecute_on_paused_run_fails_closed_with_actionable_message(
 # controller only returns this specific combination via a rare multi-node race the
 # unit boundary makes trivial and deterministic to construct).
 
-def _arena_with_failed_run_and_awaiting_node() -> object:
-    from bounded_loops.graph.application.arena_projection import (
-        ArenaNodeProjection,
-        ArenaProjection,
-    )
-
+def _arena_with_failed_run_and_awaiting_node() -> ArenaProjection:
     node = ArenaNodeProjection(
         node_id="checkpoint", kind="approval", state="AWAITING_APPROVAL", attempt=1,
         required_effects=(), isolation="workspace_only", hard_deadline_ms=30_000,
