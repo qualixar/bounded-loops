@@ -30,3 +30,6 @@ audit/
 
 # historical engineering notes — live in the private audit repo, never public
 .backup/
+
+# npm pack output — build artifact, never committed
+*.tgz
