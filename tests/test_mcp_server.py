@@ -9,7 +9,7 @@ import tempfile
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from bounded_loops import mcp_server
 from bounded_loops.application.loop_audit import LoopAuditResult
@@ -409,6 +409,96 @@ def test_bl_run_l2_with_require_approval_false_explicit_override_runs(tmp_path):
 
 
 # ── Session-longevity smoke test ──────────────────────────────────────────────
+
+# ── L-3: per-session _previewed scoping ──────────────────────────────────────
+
+def _make_ctx(session_obj=None):
+    """Build a minimal Context-like mock that bl_run can use for session-keying.
+
+    Note: the session must be an object that supports weak references (any
+    regular Python class instance does; plain object() does not). MagicMock()
+    works fine here and matches the type the real FastMCP session object would
+    be at runtime.
+    """
+    ctx = MagicMock()
+    ctx.session = session_obj if session_obj is not None else MagicMock()
+    return ctx
+
+
+def test_bl_run_session_a_preview_not_confirmable_by_session_b(tmp_path):
+    """L-3 fix proof: session A's preview must be invisible to session B.
+    Session B calling confirm=True (without its own preview) must be rejected
+    even if session A previewed the exact same loop with matching arguments.
+    """
+    (tmp_path / "loop.yaml").write_text("name: t\n")
+    fake_manifest = _make_runnable_manifest()
+
+    ctx_a = _make_ctx()   # distinct session objects
+    ctx_b = _make_ctx()   # a different session
+
+    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
+         patch("bounded_loops.mcp_server.wire") as mock_wire:
+        # Session A previews
+        mcp_server.bl_run(str(tmp_path), confirm=False, ctx=ctx_a)
+        # Session B tries to confirm without its own preview — must be rejected
+        result = mcp_server.bl_run(str(tmp_path), confirm=True, ctx=ctx_b)
+
+    assert result["status"] == "not_confirmed"
+    assert "no matching preview" in result["error"]
+    mock_wire.assert_not_called()
+
+
+def test_bl_run_same_session_preview_then_confirm_succeeds(tmp_path):
+    """L-3 fix: the same session object correctly threads preview to confirm."""
+    (tmp_path / "loop.yaml").write_text("name: t\n")
+    fake_manifest = _make_runnable_manifest()
+    fake_manifest.loop_dir = tmp_path
+    fake_use_case = MagicMock()
+    fake_use_case.run.return_value = MagicMock(
+        status=MagicMock(value="DONE"), reason="gate-passed", laps=1,
+        ledger_path=tmp_path / ".ledger.jsonl",
+    )
+    ctx = _make_ctx()   # same session for both calls
+
+    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
+         patch("bounded_loops.mcp_server.wire", return_value=fake_use_case):
+        mcp_server.bl_run(str(tmp_path), confirm=False, ctx=ctx)
+        result = mcp_server.bl_run(str(tmp_path), confirm=True, ctx=ctx)
+
+    assert result["status"] == "DONE"
+
+
+def test_bl_run_no_ctx_falls_back_to_shared_previewed(tmp_path):
+    """When ctx is not supplied (direct call / tests), the shared _previewed dict
+    is used — existing test behaviour is preserved unchanged."""
+    (tmp_path / "loop.yaml").write_text("name: t\n")
+    fake_manifest = _make_runnable_manifest()
+
+    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest):
+        mcp_server.bl_run(str(tmp_path), confirm=False)  # no ctx — legacy path
+    # The recorded preview must land in the shared _previewed dict
+    assert str(tmp_path.resolve()) in mcp_server._previewed
+
+
+def test_session_state_logs_warning_on_bad_ctx(tmp_path, caplog):
+    """L-3 / CRIT-2: when ctx.session raises (bad mock / integration gap),
+    _session_state falls back to the shared dict AND emits a logging.WARNING
+    so the regression is observable in production logs rather than invisible."""
+    import logging
+
+    ctx = MagicMock()
+    # Simulate ctx.session raising ValueError (real FastMCP raises this when
+    # request_context is None, e.g. in a misconfigured integration).
+    type(ctx).session = PropertyMock(side_effect=ValueError("no request context"))
+
+    with caplog.at_level(logging.WARNING, logger="bounded_loops.mcp_server"):
+        result = mcp_server._session_state(ctx)
+
+    # Must fall back to shared dict (not raise)
+    assert result is mcp_server._previewed
+    # Must emit a warning naming the module so ops can filter on it
+    assert any("bounded-loops-mcp" in r.message for r in caplog.records)
+
 
 def test_server_survives_multiple_sequential_tool_calls(tmp_path):
     """

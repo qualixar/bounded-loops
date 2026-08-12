@@ -148,6 +148,22 @@ class GraphEventLog:
     def _append_checked(
         self, expected_previous_hash: str, event: UnsignedGraphEvent
     ) -> StoredGraphEvent:
+        # CON-05 note: _replay_unlocked() reads and hash-verifies the ENTIRE
+        # file on every append — O(n) per append, O(n²) total for a run with n
+        # events.  This is deliberate: we do NOT cache the head hash in memory
+        # and check only the last line, because the full chain re-read is the
+        # integrity guarantee.  A cached-head approach would skip verifying the
+        # middle of the chain on each append, allowing a hand-crafted partial
+        # corruption (e.g. a forged event inserted at sequence k where k < n)
+        # to go undetected until an explicit replay() call.  The append path's
+        # full re-read keeps the integrity check continuous.
+        #
+        # For typical graph runs (tens to low hundreds of events) the O(n²)
+        # cost is acceptable.  If a future use-case accumulates thousands of
+        # events in a single run, the right fix is to keep an in-memory cache
+        # that tracks (head_hash, sequence, idempotency_key_set) AND to add a
+        # periodic full-replay cross-check against the on-disk state — not to
+        # drop the per-append verification silently.
         events = self._replay_unlocked()
         head = events[-1].event_hash if events else _GENESIS
         if expected_previous_hash != head:
