@@ -12,7 +12,7 @@ from enum import Enum
 import re
 from typing import Mapping, Protocol
 
-from bounded_loops.graph.domain.authoring import Effect, IsolationLevel
+from bounded_loops.graph.domain.authoring import Effect, IsolationLevel, NETWORK_EFFECTS
 from bounded_loops.graph.domain.errors import GraphValidationError
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
@@ -31,7 +31,6 @@ _EFFECT_MINIMUM = {
     Effect.FINANCIAL: IsolationLevel.CONTAINER_RESTRICTED,
     Effect.IRREVERSIBLE: IsolationLevel.CONTAINER_RESTRICTED,
 }
-_NETWORK_EFFECTS = frozenset({Effect.EXTERNAL_WRITE, Effect.FINANCIAL, Effect.IRREVERSIBLE})
 # The compiler-admitted transport of a local-CLI connector node (a sandboxed subprocess
 # that runs the user's own authenticated agent CLI). It is the ONLY node that may open
 # the network under NetworkMode.OPEN (a trusted-local posture), and only when a deployment
@@ -167,7 +166,7 @@ def _validate_network(node: PlannedNode, envelope: ExecutionEnvelope) -> None:
         if destinations:
             raise GraphValidationError("execution_network", "/envelope/network_destinations", "open network takes no destination allowlist")
         return
-    needs_network = bool(node.required_effects & _NETWORK_EFFECTS)
+    needs_network = bool(node.required_effects & NETWORK_EFFECTS)
     if needs_network:
         if envelope.network_mode is not NetworkMode.ALLOWLIST or not destinations:
             raise GraphValidationError("execution_network", "/envelope/network_destinations", "network effects require a specific network allowlist")

@@ -14,15 +14,13 @@ from bounded_loops.graph.adapters.enforcement.capabilities import (
     probe_platform,
 )
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, NetworkMode
-from bounded_loops.graph.domain.authoring import Effect
+from bounded_loops.graph.domain.authoring import NETWORK_EFFECTS
 from bounded_loops.graph.domain.errors import GraphValidationError
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
-_NETWORK_EFFECTS = frozenset({Effect.EXTERNAL_WRITE, Effect.FINANCIAL, Effect.IRREVERSIBLE})
-
 
 def _network_mode_for(node: PlannedNode) -> NetworkMode:
-    return NetworkMode.ALLOWLIST if (frozenset(node.required_effects) & _NETWORK_EFFECTS) else NetworkMode.DENY
+    return NetworkMode.ALLOWLIST if (frozenset(node.required_effects) & NETWORK_EFFECTS) else NetworkMode.DENY
 
 
 class ExecutionEnforcer:

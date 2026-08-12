@@ -59,7 +59,7 @@ connection_slots: [{id: model, requires: [text_generation], data_class_max: publ
 policies: {data_class: public, fail_mode: fail_closed}
 """
 
-# ALLOWLIST requires validate_execution_envelope's network-effect floor (_NETWORK_EFFECTS) —
+# ALLOWLIST requires validate_execution_envelope's network-effect floor (NETWORK_EFFECTS) —
 # a local_cli node must declare external_write/financial/irreversible to be envelope-eligible
 # for ALLOWLIST, exactly like an https node already must. This manifest is ONLY for the
 # ALLOWLIST-success live test; the plain _MANIFEST above (workspace_write only) keeps testing

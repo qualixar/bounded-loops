@@ -100,7 +100,7 @@ def test_explicit_open_env_yields_open_for_a_local_cli_plan(tmp_path):
 
 def test_allowlist_with_cage_available_succeeds_for_a_local_cli_plan(tmp_path):
     # A network effect is required (see the effect-floor tests below) — mirrors the SAME
-    # _NETWORK_EFFECTS floor validate_execution_envelope already applies to https.
+    # NETWORK_EFFECTS floor validate_execution_envelope already applies to https.
     plan = _plan(_node(transport="local_cli", effects=frozenset({Effect.EXTERNAL_WRITE})))
     decision = resolve_local_cli_egress_decision(
         plan,

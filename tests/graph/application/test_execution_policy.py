@@ -3,12 +3,13 @@ from __future__ import annotations
 import pytest
 
 from bounded_loops.graph.application.execution_policy import (
+    _EFFECT_MINIMUM,
     ExecutionEnvelope,
     NetworkDestination,
     NetworkMode,
     validate_execution_envelope,
 )
-from bounded_loops.graph.domain.authoring import Effect, IsolationLevel
+from bounded_loops.graph.domain.authoring import NETWORK_EFFECTS, Effect, IsolationLevel
 from bounded_loops.graph.domain.errors import GraphValidationError
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode, ResolvedBinding
 
@@ -106,3 +107,29 @@ def test_exact_effect_transport_isolation_and_allowlist_produces_immutable_envel
 
     assert accepted.network_destinations == (NetworkDestination("publish.example", 443),)
     assert accepted.allowed_effects == frozenset({Effect.EXTERNAL_WRITE})
+
+
+def test_network_bearing_and_container_restricted_effect_sets_coincide_today():
+    """TRIPWIRE, not a constraint — these two sets answer DIFFERENT questions.
+
+    ``NETWORK_EFFECTS`` answers "may this node egress at all?"; ``_EFFECT_MINIMUM``
+    answers "how isolated must this node run?". They happen to name the same three
+    effects today, and that coincidence is load-bearing for reviewers reading either
+    one in isolation. They are deliberately NOT derived from each other: an effect
+    could legitimately be network-bearing without requiring container isolation (or
+    the reverse), and deriving one from the other would silently return the wrong
+    answer for one axis the moment that happens.
+
+    So if this test fails, nothing is broken — you have made a real policy decision.
+    Confirm BOTH axes are right for the new effect, then update this test's expected
+    sets and say in the commit message why they now differ.
+    """
+    container_restricted_effects = frozenset(
+        effect for effect, floor in _EFFECT_MINIMUM.items()
+        if floor is IsolationLevel.CONTAINER_RESTRICTED
+    )
+
+    assert NETWORK_EFFECTS == frozenset(
+        {Effect.EXTERNAL_WRITE, Effect.FINANCIAL, Effect.IRREVERSIBLE}
+    )
+    assert container_restricted_effects == NETWORK_EFFECTS

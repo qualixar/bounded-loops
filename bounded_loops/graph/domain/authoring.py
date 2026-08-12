@@ -40,6 +40,16 @@ class Effect(str, Enum):
     IRREVERSIBLE = "irreversible"
 
 
+# Canonical network-effect floor: the effects whose presence forces a node off
+# NetworkMode.DENY (the node must be allowed to egress). Single source of truth for every
+# network-posture decision across layers — the mid-run envelope check
+# (application/execution_policy.py), the pre-run host-capability gate
+# (adapters/enforcement/enforcer.py), and the local_cli egress preflight
+# (application/egress_posture_policy.py) all import THIS set. Adding a new Effect above?
+# Decide here whether it is network-bearing — never re-hardcode this frozenset elsewhere.
+NETWORK_EFFECTS = frozenset({Effect.EXTERNAL_WRITE, Effect.FINANCIAL, Effect.IRREVERSIBLE})
+
+
 class IsolationLevel(str, Enum):
     WORKSPACE_ONLY = "workspace_only"
     PROCESS_RESTRICTED = "process_restricted"
