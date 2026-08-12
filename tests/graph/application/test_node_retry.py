@@ -378,3 +378,69 @@ def test_a_gate_rejection_on_the_final_attempt_is_still_counted(tmp_path: Path) 
     assert gate_evaluations == 2
     assert rejections == 2, "the rejection that exhausted the budget must be counted too"
     assert rejections / gate_evaluations == 1.0
+
+
+class _CrashingGate:
+    """Rejects, then crashes mid-attempt on the call given by ``crash_on``.
+
+    Raises ``KeyboardInterrupt`` — a BaseException — so the controller's ``except
+    Exception`` handlers do not catch it and the stream is left genuinely interrupted,
+    exactly as a killed process would leave it.
+    """
+
+    def __init__(self, crash_on: int) -> None:
+        self._crash_on = crash_on
+        self.calls = 0
+
+    def evaluate(self, *, plan, node, result) -> GateVerdict:  # noqa: ANN001, ARG002
+        self.calls += 1
+        if self.calls == self._crash_on:
+            raise KeyboardInterrupt("killed mid-attempt")
+        return GateVerdict(False, f"rejected on call {self.calls}")
+
+
+def test_resume_continues_the_attempt_count_instead_of_restarting_it(tmp_path: Path) -> None:
+    """The budget must bound attempts across resumes, not per resume.
+
+    Restarting at attempt 1 on resume is wrong twice: it re-grants the whole budget every
+    time a run is resumed, and it appends a LOWER attempt number after a higher one, which
+    makes the finished run permanently unreadable to the lifecycle validation shared by the
+    Arena and the resume path.
+    """
+    log_path = tmp_path / "events.jsonl"
+    plan = _plan({"max_attempts": 2})
+    crashing = _CrashingGate(crash_on=2)
+    first = GraphRunController(
+        plan=plan, event_log=GraphEventLog(log_path, _identity()),
+        worker=_Worker(), gate=crashing, artifact_verifier=_PassingVerifier(),
+        execution_policy=_policy(plan), execution_enforcer=_Enforcer(),
+        timestamp=lambda: "2026-08-12T00:00:00Z",
+    )
+    with pytest.raises(KeyboardInterrupt):
+        first.run()
+
+    # Attempt 1 was rejected and attempt 2 was interrupted before its verdict.
+    assert [p["attempt"] for p in _of_type(tmp_path, "node.running")] == [1, 2]
+
+    resumed = GraphRunController(
+        plan=plan, event_log=GraphEventLog(log_path, _identity()),
+        worker=_Worker(), gate=_Gate(reject_first=0), artifact_verifier=_PassingVerifier(),
+        execution_policy=_policy(plan), execution_enforcer=_Enforcer(),
+        timestamp=lambda: "2026-08-12T00:00:01Z",
+    ).resume()
+
+    assert resumed.state == "SUCCEEDED"
+    # The interrupted attempt is re-driven under ITS OWN number, so the winning receipt is
+    # attempt 2. Under a restart-at-1 resume this would read 1 — a lower number after a
+    # higher one, and the budget silently re-granted.
+    succeeded = _of_type(tmp_path, "node.succeeded")
+    assert len(succeeded) == 1
+    assert succeeded[0]["attempt"] == 2
+
+    # Distinct attempts never exceed the budget, no matter how often the run is resumed.
+    assert sorted({p["attempt"] for p in _of_type(tmp_path, "node.running")}) == [1, 2]
+
+    # And the resumed run is still readable by the Arena and the resume path.
+    states = latest_node_states(plan, GraphEventLog(log_path, _identity()).replay())
+    assert states[_NODE_ID]["state"] == "SUCCEEDED"
+    assert states[_NODE_ID]["attempt"] == 2

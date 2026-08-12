@@ -82,6 +82,10 @@ class _AttemptOutcome:
     terminal: GraphRunProjection | None = None
 
 
+# Receipt states meaning an attempt actually BEGAN executing, so it counts against the
+# budget on resume.  READY and STARTING mean the node was dispatched but never ran.
+_ATTEMPT_STARTED = frozenset({"RUNNING", "GATING"})
+
 _DEFAULT_MAX_ATTEMPTS = 1
 # A ceiling exists so a typo in a manifest cannot request an effectively unbounded
 # loop.  It is deliberately far below the authoring schema's own 1..1000 range: the
@@ -261,7 +265,7 @@ class GraphRunController:
         self._append("run.created", "run.created", {"state": "PENDING"})
         self._append("run.started", "run.started", {"state": "RUNNING"})
         states = {node.node_id: NodeState.PENDING for node in self.plan.nodes}
-        return self._run_loop(states)
+        return self._run_loop(states, {node.node_id: 0 for node in self.plan.nodes})
 
     def resume(self) -> GraphRunProjection:
         """Resume an interrupted run from its durable event log (at-least-once).
@@ -295,7 +299,42 @@ class GraphRunController:
         if any(observed["state"] == "FAILED" for observed in latest.values()):
             self._append("run.failed", "run.failed", {"state": "FAILED"})
             return self.event_log.replay_projection()
-        return self._run_loop(self._states_from(latest))
+        return self._run_loop(self._states_from(latest), self._consumed_from(latest))
+
+    def _consumed_from(self, latest: dict[str, dict[str, object]]) -> dict[str, int]:
+        """How many attempts each node has ALREADY spent, so a resume continues the count.
+
+        Without this the retry loop restarts at attempt 1 on every resume, which is wrong
+        twice over: it re-grants the whole budget each time a run is resumed (so total
+        attempts are bounded only by the number of resumes, not by the budget), and it can
+        append a LOWER attempt number after a higher one, which makes the finished run
+        permanently unreadable to the lifecycle validation in ``latest_node_states``.
+
+        An attempt interrupted mid-flight (RUNNING/GATING) counts as ``attempt - 1``: that
+        attempt is RE-DRIVEN under its own number rather than treated as spent, which keeps
+        the documented at-least-once resume contract intact. Re-driving it is safe for the
+        log because its prefix events re-append as head-safe no-ops (identical key AND
+        payload), and every event it writes afterwards is new — so no lower attempt number
+        is ever appended after a higher one. A node at READY or STARTING was dispatched but
+        never ran, so it has consumed nothing.
+
+        What this bounds is the number of DISTINCT attempts, which is the quantity that
+        multiplies the gate's false-accept probability. What it does not bound is repeated
+        re-driving of the SAME attempt across many resumes: a node that crashes before
+        reaching its gate can be re-driven once per resume without ever advancing the
+        attempt number. That residual is a spend concern, and it belongs to the run-level
+        budget with its pause-for-approval gate — not to the retry budget, which counts
+        gate evaluations.
+        """
+        consumed: dict[str, int] = {}
+        for node in self.plan.nodes:
+            observed = latest[node.node_id]
+            attempt = observed["attempt"]
+            if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 0:
+                raise GraphIntegrityError("receipt attempt count is invalid")
+            started = observed["state"] in _ATTEMPT_STARTED
+            consumed[node.node_id] = max(attempt - 1, 0) if started else 0
+        return consumed
 
     def _states_from(self, latest: dict[str, dict[str, object]]) -> dict[str, NodeState]:
         """Map rebuilt receipt states to controller states: a SUCCEEDED node stays
@@ -328,7 +367,9 @@ class GraphRunController:
             states[node.node_id] = NodeState.PENDING
         return states
 
-    def _run_loop(self, states: dict[str, NodeState]) -> GraphRunProjection:
+    def _run_loop(
+        self, states: dict[str, NodeState], consumed: Mapping[str, int],
+    ) -> GraphRunProjection:
         while True:
             ready = derive_ready_nodes(self.plan, states)
             if not ready:
@@ -373,7 +414,10 @@ class GraphRunController:
                     # the subprocess worker — that would run egress work on the wrong (sandboxed)
                     # path, and the enforcer was already skipped for this node.
                     return self._fail_node(states, node_id, "no connector worker configured for egress node")
-                terminal = self._run_node_loop(states, node_id, node, envelope, egress, worker)
+                terminal = self._run_node_loop(
+                    states, node_id, node, envelope, egress, worker,
+                    consumed.get(node_id, 0),
+                )
                 if terminal is not None:
                     return terminal
                 continue
@@ -386,6 +430,7 @@ class GraphRunController:
         envelope: ExecutionEnvelope,
         egress: bool,
         worker: NodeWorkerPort,
+        consumed: int,
     ) -> GraphRunProjection | None:
         """Attempt one node until its independent gate accepts, or the budget runs out.
 
@@ -397,7 +442,18 @@ class GraphRunController:
         ``run.failed`` and ends the run — a retry must leave the node in flight.
         """
         budget = _max_attempts(node)
-        for attempt in range(1, budget + 1):
+        if consumed >= budget:
+            # A resume found the budget already spent.  Fail closed rather than run with
+            # no remaining attempts: re-granting the budget here would make total attempts
+            # a function of how many times the run was resumed rather than of the budget.
+            return self._fail_node(
+                states, node_id, "retry budget was already spent before this resume",
+                attempt=consumed, budget_exhausted=budget > 1,
+            )
+        # Starts at consumed + 1, so every attempt number written is strictly greater than
+        # any already recorded.  A lower number appended after a higher one would make the
+        # finished run unreadable to the lifecycle validation in latest_node_states.
+        for attempt in range(consumed + 1, budget + 1):
             states[node_id] = NodeState.RUNNING
             self._append_node(node_id, "node.running", NodeState.RUNNING, attempt=attempt)
             outcome = self._attempt_node(states, node_id, node, envelope, egress, worker, attempt)
