@@ -87,6 +87,33 @@ class _AttemptOutcome:
     terminal: GraphRunProjection | None = None
 
 
+@dataclass(frozen=True)
+class _ResumeCursor:
+    """What the receipts say about work already done, per node.
+
+    ``spent`` — attempts that RECORDED their own failure; those are consumed.
+    ``started`` — the highest attempt with a ``node.running`` receipt, so the controller can
+    tell a fresh attempt from a re-drive of one that never completed.
+    ``redrives`` — how many re-drives have already been recorded for that node.
+    """
+
+    spent: Mapping[str, int]
+    started: Mapping[str, int]
+    redrives: Mapping[str, int]
+
+    @classmethod
+    def empty(cls, node_ids: tuple[str, ...]) -> "_ResumeCursor":
+        zeros = {node_id: 0 for node_id in node_ids}
+        return cls(spent=zeros, started=dict(zeros), redrives=dict(zeros))
+
+
+# An attempt that never completes can be re-driven once per resume, and the prefix events
+# de-duplicate, so nothing in the log advances.  This caps that: an external loop killing
+# the worker before it reaches its gate can no longer buy unbounded executions against a
+# bounded attempt count.  Fails closed on exhaustion; the pause-for-approval upgrade
+# belongs with the run-level spend budget.
+_MAX_REDRIVES_PER_ATTEMPT = 3
+
 _DEFAULT_MAX_ATTEMPTS = 1
 # A ceiling exists so a typo in a manifest cannot request an effectively unbounded
 # loop.  It is deliberately far below the authoring schema's own 1..1000 range: the
@@ -273,7 +300,9 @@ class GraphRunController:
         self._append("run.created", "run.created", {"state": "PENDING"})
         self._append("run.started", "run.started", {"state": "RUNNING"})
         states = {node.node_id: NodeState.PENDING for node in self.plan.nodes}
-        return self._run_loop(states, {node.node_id: 0 for node in self.plan.nodes})
+        return self._run_loop(
+            states, _ResumeCursor.empty(tuple(node.node_id for node in self.plan.nodes)),
+        )
 
     def resume(self) -> GraphRunProjection:
         """Resume an interrupted run from its durable event log (at-least-once).
@@ -301,6 +330,14 @@ class GraphRunController:
         if projection.state == "PENDING":
             self._append("run.started", "run.started", {"state": "RUNNING"})
         receipts = self.event_log.replay()
+        # Record the resume itself before doing any work. Previously a resume left no trace
+        # at all, so neither an operator nor the Arena could tell a run had been resumed —
+        # let alone how often.
+        resumes = sum(1 for stored in receipts if stored.event.event_type == "run.resumed")
+        self._append(
+            f"run.resumed:{resumes + 1}", "run.resumed", {"resume_ordinal": resumes + 1},
+        )
+        receipts = self.event_log.replay()
         latest = latest_node_states(self.plan, receipts)
         # A crash between node.failed and run.failed leaves a RUNNING stream with a
         # FAILED node; finalize the terminal deterministically rather than re-drive a
@@ -310,7 +347,7 @@ class GraphRunController:
             return self.event_log.replay_projection()
         return self._run_loop(self._states_from(latest), self._consumed_from(receipts))
 
-    def _consumed_from(self, receipts: tuple[StoredGraphEvent, ...]) -> dict[str, int]:
+    def _consumed_from(self, receipts: tuple[StoredGraphEvent, ...]) -> _ResumeCursor:
         """How many attempts each node has ALREADY spent, so a resume continues the count.
 
         Without this the retry loop restarts at attempt 1 on every resume, which is wrong
@@ -345,18 +382,27 @@ class GraphRunController:
         it reaches the gate can re-drive forever. There is no run-level spend budget yet, so
         that residual is currently unbounded, not merely deferred.
         """
-        consumed = {node.node_id: 0 for node in self.plan.nodes}
+        node_ids = tuple(node.node_id for node in self.plan.nodes)
+        spent = {node_id: 0 for node_id in node_ids}
+        started = {node_id: 0 for node_id in node_ids}
+        redrives = {node_id: 0 for node_id in node_ids}
         for stored in receipts:
-            if stored.event.event_type != "node.attempt.failed":
+            event_type = stored.event.event_type
+            if event_type not in ("node.attempt.failed", "node.running", "node.redrive"):
                 continue
             node_id = stored.event.payload["node_id"]
-            if node_id not in consumed:
-                raise GraphIntegrityError("attempt receipt references a node outside the plan")
+            if node_id not in spent:
+                raise GraphIntegrityError("receipt references a node outside the plan")
             attempt = stored.event.payload["attempt"]
             if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
                 raise GraphIntegrityError("receipt attempt count is invalid")
-            consumed[node_id] = max(consumed[node_id], attempt)
-        return consumed
+            if event_type == "node.attempt.failed":
+                spent[node_id] = max(spent[node_id], attempt)
+            elif event_type == "node.running":
+                started[node_id] = max(started[node_id], attempt)
+            else:
+                redrives[node_id] += 1
+        return _ResumeCursor(spent=spent, started=started, redrives=redrives)
 
     def _states_from(self, latest: dict[str, dict[str, object]]) -> dict[str, NodeState]:
         """Map rebuilt receipt states to controller states: a SUCCEEDED node stays
@@ -390,7 +436,7 @@ class GraphRunController:
         return states
 
     def _run_loop(
-        self, states: dict[str, NodeState], consumed: Mapping[str, int],
+        self, states: dict[str, NodeState], cursor: _ResumeCursor,
     ) -> GraphRunProjection:
         while True:
             ready = derive_ready_nodes(self.plan, states)
@@ -424,7 +470,7 @@ class GraphRunController:
                 # carry it: defaulting to 1 would append a lower attempt number after a
                 # higher one on any resume that fails re-authorization, which is the same
                 # unreadable-stream corruption the attempt cursor exists to prevent.
-                at = consumed.get(node_id, 0) + 1
+                at = cursor.spent.get(node_id, 0) + 1
                 try:
                     envelope = validate_execution_envelope(
                         self.plan, node,
@@ -447,8 +493,7 @@ class GraphRunController:
                         attempt=at,
                     )
                 terminal = self._run_node_loop(
-                    states, node_id, node, envelope, egress, worker,
-                    consumed.get(node_id, 0),
+                    states, node_id, node, envelope, egress, worker, cursor,
                 )
                 if terminal is not None:
                     return terminal
@@ -462,7 +507,7 @@ class GraphRunController:
         envelope: ExecutionEnvelope,
         egress: bool,
         worker: NodeWorkerPort,
-        consumed: int,
+        cursor: _ResumeCursor,
     ) -> GraphRunProjection | None:
         """Attempt one node until its independent gate accepts, or the budget runs out.
 
@@ -475,6 +520,7 @@ class GraphRunController:
         the run — a retry must leave the node in flight.
         """
         budget = _max_attempts(node)
+        consumed = cursor.spent.get(node_id, 0)
         if consumed >= budget:
             # A resume found the budget already spent.  Fail closed rather than run with
             # no remaining attempts: re-granting the budget here would make total attempts
@@ -487,6 +533,21 @@ class GraphRunController:
         # any already recorded.  A lower number appended after a higher one would make the
         # finished run unreadable to the lifecycle validation in latest_node_states.
         for attempt in range(consumed + 1, budget + 1):
+            if attempt <= cursor.started.get(node_id, 0):
+                # This attempt already has a node.running receipt, so a previous run started
+                # it and died before it completed. Its prefix events de-duplicate on
+                # re-append, meaning nothing in the log would otherwise advance — so without
+                # this record a resume loop could re-execute the worker forever against a
+                # bounded attempt count.
+                redrive = cursor.redrives.get(node_id, 0) + 1
+                if redrive > _MAX_REDRIVES_PER_ATTEMPT:
+                    return self._fail_node(
+                        states, node_id,
+                        f"attempt {attempt} was re-driven {redrive - 1} times without "
+                        "completing; refusing to re-execute it again",
+                        attempt=attempt,
+                    )
+                self._append_redrive(node_id, attempt, redrive)
             states[node_id] = NodeState.RUNNING
             self._append_node(node_id, "node.running", NodeState.RUNNING, attempt=attempt)
             outcome = self._attempt_node(states, node_id, node, envelope, egress, worker, attempt)
@@ -609,6 +670,18 @@ class GraphRunController:
         if verdict is not None:
             payload["verdict"] = verdict
         self._append(f"{node_id}:node.attempt.failed:{attempt}", "node.attempt.failed", payload)
+
+    def _append_redrive(self, node_id: str, attempt: int, redrive: int) -> None:
+        """Record that an incomplete attempt is being re-executed by a resume.
+
+        The key includes the ordinal so successive re-drives are distinct events rather than
+        one de-duplicated no-op — which is precisely what makes them countable, and so
+        boundable.
+        """
+        self._append(
+            f"{node_id}:node.redrive:{attempt}:{redrive}", "node.redrive",
+            {"node_id": node_id, "attempt": attempt, "redrive": redrive},
+        )
 
     def _resolve_approval(
         self, states: dict[str, NodeState], node_id: str, node: PlannedNode,

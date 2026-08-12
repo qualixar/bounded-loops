@@ -27,6 +27,7 @@ from bounded_loops.graph.application.execution_policy import (
     NetworkMode,
 )
 from bounded_loops.graph.application.run_graph import (
+    _MAX_REDRIVES_PER_ATTEMPT,
     GateVerdict,
     GraphRunController,
     IndependentGatePort,
@@ -559,3 +560,54 @@ def test_a_resume_denied_by_policy_does_not_write_a_lower_attempt(tmp_path: Path
     # The stream is still readable by the Arena and any later resume.
     states = latest_node_states(plan, GraphEventLog(log_path, _identity()).replay())
     assert states[_NODE_ID]["state"] == "FAILED"
+
+
+def test_re_driving_one_attempt_forever_is_refused(tmp_path: Path) -> None:
+    """N3: distinct attempts were bounded, executions were not.
+
+    An attempt that never reaches its gate records nothing, so it is re-driven — correctly,
+    to preserve at-least-once. But its prefix events de-duplicate, so nothing in the log
+    advanced and an external loop that killed the worker before the gate could re-execute it
+    without limit against a bounded attempt count. Each re-drive is now recorded, which is
+    what makes it countable, and the count is capped.
+    """
+    log_path = tmp_path / "events.jsonl"
+    plan = _plan({"max_attempts": 2})
+
+    # Attempt 1 is started and then killed before its gate, over and over.
+    with pytest.raises(KeyboardInterrupt):
+        _controller_at(log_path, plan, _CrashingGate(crash_on=1), "2026-08-12T00:00:00Z").run()
+    for _ in range(_MAX_REDRIVES_PER_ATTEMPT):
+        with pytest.raises(KeyboardInterrupt):
+            _controller_at(
+                log_path, plan, _CrashingGate(crash_on=1), "2026-08-12T00:00:00Z",
+            ).resume()
+
+    redrives = _of_type(tmp_path, "node.redrive")
+    assert [p["redrive"] for p in redrives] == [1, 2, 3], "each re-drive is recorded"
+    assert all(p["attempt"] == 1 for p in redrives), "all of them re-drove attempt 1"
+
+    # One more resume must refuse rather than re-execute a fourth time.
+    final = _controller_at(
+        log_path, plan, _CrashingGate(crash_on=1), "2026-08-12T00:00:00Z",
+    ).resume()
+
+    assert final.state == "FAILED"
+    failed = _of_type(tmp_path, "node.failed")
+    assert len(failed) == 1
+    assert "re-driven" in failed[0]["reason"]
+    # Still readable by the Arena and any later resume.
+    states = latest_node_states(plan, GraphEventLog(log_path, _identity()).replay())
+    assert states[_NODE_ID]["state"] == "FAILED"
+
+
+def test_a_resume_is_recorded_in_the_log(tmp_path: Path) -> None:
+    """A resume used to leave no trace at all, so it could not be counted or audited."""
+    log_path = tmp_path / "events.jsonl"
+    plan = _plan({"max_attempts": 2})
+    with pytest.raises(KeyboardInterrupt):
+        _controller_at(log_path, plan, _CrashingGate(crash_on=1), "2026-08-12T00:00:00Z").run()
+
+    _controller_at(log_path, plan, _Gate(reject_first=0), "2026-08-12T00:00:01Z").resume()
+
+    assert [p["resume_ordinal"] for p in _of_type(tmp_path, "run.resumed")] == [1]

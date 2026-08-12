@@ -408,9 +408,11 @@ def test_resume_redrives_a_node_interrupted_mid_execution(tmp_path):
     assert resumed.resume().state == "SUCCEEDED"
     assert worker.calls == ["research"]  # re-driven exactly once
     # No duplicated events — the deterministic prefix re-appended as head-safe no-ops.
+    # run.resumed and node.redrive are the two records a resume DOES add: without them a
+    # resume left no trace, so re-executing an incomplete attempt was unobservable.
     assert [e.event.event_type for e in resumed.event_log.replay()] == [
         "run.created", "run.started", "node.ready", "node.starting", "node.running",
-        "node.gating", "node.succeeded", "run.succeeded",
+        "run.resumed", "node.redrive", "node.gating", "node.succeeded", "run.succeeded",
     ]
 
 
@@ -478,7 +480,7 @@ def test_resume_tolerates_a_live_clock_different_from_the_crashed_run(tmp_path):
     assert worker.calls == ["research"]
     assert [e.event.event_type for e in resumed.event_log.replay()] == [
         "run.created", "run.started", "node.ready", "node.starting", "node.running",
-        "node.gating", "node.succeeded", "run.succeeded",
+        "run.resumed", "node.redrive", "node.gating", "node.succeeded", "run.succeeded",
     ]
 
 

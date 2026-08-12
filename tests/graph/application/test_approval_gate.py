@@ -283,7 +283,7 @@ def test_resume_completes_the_run_once_the_approval_is_granted(tmp_path):
     assert projection.state == "SUCCEEDED"
     assert [event.event.event_type for event in resumed.event_log.replay()] == [
         "run.created", "run.started", "node.ready", "node.awaiting_approval",
-        "node.succeeded", "run.succeeded",
+        "run.resumed", "node.succeeded", "run.succeeded",
     ]
 
 
@@ -301,7 +301,7 @@ def test_resume_fails_closed_after_a_recorded_rejection(tmp_path):
     events = resumed.event_log.replay()
     assert [event.event.event_type for event in events] == [
         "run.created", "run.started", "node.ready", "node.awaiting_approval",
-        "node.failed", "run.failed",
+        "run.resumed", "node.failed", "run.failed",
     ]
     assert events[-2].event.payload["reason"] == "human approval was rejected"
 
@@ -316,9 +316,11 @@ def test_resume_without_a_decision_stays_paused_and_appends_no_duplicate_events(
     projection = resumed.resume()
 
     assert projection.state == "RUNNING"
-    # Idempotent re-pause: the re-driven prefix re-appends as head-safe no-ops.
+    # Idempotent re-pause: the re-driven prefix re-appends as head-safe no-ops. The one
+    # genuinely new record is run.resumed — an approval node runs no worker, so there is no
+    # attempt to re-drive.
     assert [event.event.event_type for event in resumed.event_log.replay()] == [
-        "run.created", "run.started", "node.ready", "node.awaiting_approval",
+        "run.created", "run.started", "node.ready", "node.awaiting_approval", "run.resumed",
     ]
 
 

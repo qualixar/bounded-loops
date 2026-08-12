@@ -96,6 +96,14 @@ _AUDIT_EVENTS = frozenset({
     # node.succeeded carry the outcome.  Unrelated to "repair.attempt.created"
     # above, which is audit-reconciliation lineage despite the shared word.
     "node.attempt.failed",
+    # A resume happened.  Without this a resume left NO trace at all, so repeated
+    # re-driving of the same attempt was not merely unbounded but unobservable.
+    "run.resumed",
+    # One attempt was re-driven by a resume without having completed.  The prefix
+    # lifecycle events de-duplicate on re-append, so this is the only record that a
+    # re-drive occurred — and the only thing that makes it countable and therefore
+    # boundable.
+    "node.redrive",
 })
 
 
@@ -436,7 +444,25 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
     matching the node-event pattern — so a malformed audit event is caught
     before it is durably written AND when re-reading an existing stream.
     """
-    if event_type == "node.attempt.failed":
+    if event_type == "run.resumed":
+        if set(payload) != {"resume_ordinal"}:
+            raise GraphIntegrityError("run.resumed payload has an invalid shape")
+        ordinal = payload["resume_ordinal"]
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 1:
+            raise GraphIntegrityError("run.resumed resume_ordinal must be a positive integer")
+
+    elif event_type == "node.redrive":
+        required = {"node_id", "attempt", "redrive"}
+        if set(payload) != required:
+            raise GraphIntegrityError("node.redrive payload has an invalid shape")
+        if not isinstance(payload["node_id"], str) or not payload["node_id"]:
+            raise GraphIntegrityError("node.redrive node_id must be a non-empty string")
+        for field in ("attempt", "redrive"):
+            value = payload[field]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise GraphIntegrityError(f"node.redrive {field} must be a positive integer")
+
+    elif event_type == "node.attempt.failed":
         # ``verdict`` is present EXACTLY when the attempt failed at the independent
         # gate, and absent when it failed in the worker or artifact verification.
         # Its presence is therefore the machine-readable discriminator between a
