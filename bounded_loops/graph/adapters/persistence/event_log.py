@@ -105,6 +105,11 @@ _AUDIT_EVENTS = frozenset({
     # re-drive occurred — and the only thing that makes it countable and therefore
     # boundable.
     "node.redrive",
+    # Ground truth for one node attempt, recorded after the fact by a human or an oracle.
+    # Additive and strictly separate from the gate's verdict: the gate's opinion and what was
+    # actually true are different facts, and conflating them would make the gate's own error
+    # rate uncomputable.
+    "node.outcome.labeled",
 })
 
 
@@ -462,7 +467,25 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
     matching the node-event pattern — so a malformed audit event is caught
     before it is durably written AND when re-reading an existing stream.
     """
-    if event_type == "run.resumed":
+    if event_type == "node.outcome.labeled":
+        required = {"node_id", "attempt", "label", "labeller", "artifact_digest", "sequence"}
+        if set(payload) != required:
+            raise GraphIntegrityError("node.outcome.labeled payload has an invalid shape")
+        for field in ("node_id", "labeller"):
+            if not isinstance(payload[field], str) or not payload[field]:
+                raise GraphIntegrityError(f"node.outcome.labeled {field} must be a non-empty string")
+        for field in ("attempt", "sequence"):
+            value = payload[field]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise GraphIntegrityError(f"node.outcome.labeled {field} must be a positive integer")
+        if payload["label"] not in ("correct", "incorrect", "unknown"):
+            raise GraphIntegrityError("node.outcome.labeled label is not a declared outcome label")
+        if not _is_digest(payload["artifact_digest"]):
+            # The label must name the exact content judged, or it can drift onto a different
+            # output than the reviewer actually saw.
+            raise GraphIntegrityError("node.outcome.labeled artifact_digest must be a SHA-256 digest")
+
+    elif event_type == "run.resumed":
         if set(payload) != {"resume_ordinal"}:
             raise GraphIntegrityError("run.resumed payload has an invalid shape")
         ordinal = payload["resume_ordinal"]
