@@ -214,7 +214,7 @@ The prompt is intentionally not persisted in the run directory. After a successf
 run the directory contains:
 
 ```
-artifacts/                   ← content-addressed node outputs (subdirs: objects/, metadata/)
+artifacts/                   ← content-addressed node outputs
 connections.json
 controller-events.jsonl      ← the append-only hash-chained event log
 controller-events.jsonl.lock
@@ -280,8 +280,8 @@ The console is local-only (127.0.0.1, never 0.0.0.0) with a per-invocation token
 
 - **Auto-close:** once every pending approval node in the run is decided (whether via
   the browser or a concurrent `bl graph approve` call), the console server stops on
-  its own. The terminal prints `Approval console closed.` There is no automatic
-  resume step; check the run state with `bl graph status --run <dir>`.
+  its own. There is no automatic resume step; check the run state with
+  `bl graph status --run <dir>`.
 - **URL not opened:** if you start the console but never open the printed URL in a
   browser, the server keeps running and waiting. Press `Ctrl-C` to stop it, then use
   `bl graph approve` on the command line instead.
