@@ -38,12 +38,15 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env
+from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env, output_redactions
+from bounded_loops.adapters.runners._prompt import with_memory_snapshot
+from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn, TurnState
 from bounded_loops.domain.errors import RunnerError
 from bounded_loops.domain.models import LoopContext, RunResult, Spec
 
 # ── Security fix: environment allowlist ───────────────────────────
 _ENV_ALLOWLIST = ENV_ALLOWLIST  # single source: adapters/_env.py
+_MAX_AGENT_OUTPUT_BYTES = 64 * 1024
 
 
 def _build_subprocess_env(ctx_env: dict[str, str]) -> dict[str, str]:
@@ -90,7 +93,7 @@ class ShellRunner:
         # for loop folders).
         prompt_file = ctx.workspace / "PROMPT.md"
         if prompt_file.exists():
-            return prompt_file.read_text(encoding="utf-8")
+            return with_memory_snapshot(prompt_file.read_text(encoding="utf-8"), ctx)
 
         # Fallback: assemble from Spec fields.
         lines = [
@@ -105,7 +108,7 @@ class ShellRunner:
             lines.append("# Forbidden actions")
             for f in spec.forbid:
                 lines.append(f"- {f}")
-        return "\n".join(lines)
+        return with_memory_snapshot("\n".join(lines), ctx)
 
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
         prompt_text = self._build_prompt(spec, ctx)
@@ -119,29 +122,30 @@ class ShellRunner:
             ) from exc
 
         try:
-            proc = subprocess.run(
+            turn = ProcessTurn.start(
                 argv,
-                input=prompt_text,
-                cwd=str(ctx.workspace),
-                shell=False,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_s,
+                cwd=ctx.workspace,
                 env=_build_subprocess_env(ctx.env),  # allowlisted — security fix
+                input_text=prompt_text,
+                output_limit_bytes=_MAX_AGENT_OUTPUT_BYTES,
+                redactions=output_redactions(ctx.env),
             )
-        except subprocess.TimeoutExpired as exc:
-            raise RunnerError(
-                f"ShellRunner: agent command timed out after "
-                f"{self.timeout_s}s. cmd={self.agent_cmd!r}"
-            ) from exc
+            completed = turn.wait(timeout_s=self.timeout_s)
         except OSError as exc:
             raise RunnerError(
                 f"ShellRunner: could not launch agent command "
                 f"{self.agent_cmd!r}: {exc}"
             ) from exc
+        if completed.state is TurnState.TIMED_OUT:
+            raise RunnerError(
+                f"ShellRunner: agent command timed out after "
+                f"{self.timeout_s}s. cmd={self.agent_cmd!r}"
+            )
+        if completed.state is TurnState.CANCELLED:
+            raise RunnerError(f"ShellRunner: agent command was cancelled. cmd={self.agent_cmd!r}")
 
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
+        stdout = completed.stdout
+        stderr = completed.stderr
 
         # Non-zero exit from the agent is NOT a RunnerError — the agent
         # may exit non-zero while still having produced output. The gate
@@ -159,9 +163,11 @@ class ShellRunner:
         done_signal = ctx.env.get("DONE_SIGNAL", "")
         agent_claimed_done = bool(done_signal and done_signal in stdout)
 
-        log_parts = [f"[ShellRunner] cmd={self.agent_cmd!r} exit={proc.returncode}"]
+        log_parts = [f"[ShellRunner] cmd={self.agent_cmd!r} exit={completed.returncode}"]
         if stderr.strip():
             log_parts.append(f"[stderr] {stderr[:1000]}")
+        if completed.output_truncated:
+            log_parts.append("[output truncated to bounded tail]")
         log_parts.append(stdout)
 
         return RunResult(

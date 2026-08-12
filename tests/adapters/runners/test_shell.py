@@ -55,6 +55,20 @@ def test_shell_falls_back_to_spec_when_no_prompt_md(tmp_path):
     assert "step B" in result.log
 
 
+def test_shell_includes_controller_memory_snapshot_in_prompt(tmp_path):
+    runner = ShellRunner(agent_cmd="cat")
+    ctx = _ctx(tmp_path)
+    ctx = LoopContext(
+        workspace=ctx.workspace, lap=ctx.lap, rung=ctx.rung, trace_id=ctx.trace_id,
+        env=ctx.env, memory_snapshot="controller memory",
+    )
+
+    result = runner.run_once(_spec(), ctx)
+
+    assert "# Controller memory snapshot" in result.log
+    assert "controller memory" in result.log
+
+
 def test_shell_agent_nonzero_exit_is_not_exception(tmp_path):
     runner = ShellRunner(agent_cmd="bash -c 'echo done; exit 1'")
     result = runner.run_once(_spec(), _ctx(tmp_path))

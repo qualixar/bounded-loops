@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import shutil
 import shlex
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
 
 from bounded_loops.adapters._env import build_subprocess_env
+from bounded_loops.adapters.runners._prompt import with_memory_snapshot
+from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn, TurnState
 from bounded_loops.domain.errors import RunnerError
 from bounded_loops.domain.models import LoopContext, RunResult, Spec
 
+
+_MAX_PROMOTED_FILE_BYTES = 16 * 1024 * 1024
+_MAX_AGENT_OUTPUT_BYTES = 64 * 1024
 
 class WorktreeRunner:
     def __init__(self, agent_cmd: str = "true", timeout_s: int = 300) -> None:
@@ -25,16 +31,20 @@ class WorktreeRunner:
         worktree = worktree_parent / "worktree"
         try:
             _run_git(["worktree", "add", "--detach", str(worktree), "HEAD"], ctx.workspace)
-            proc = subprocess.run(
-                shlex.split(self.agent_cmd), input=_build_prompt(spec, ctx), cwd=str(worktree),
-                shell=False, capture_output=True, text=True, timeout=self.timeout_s,
+            completed = ProcessTurn.start(
+                shlex.split(self.agent_cmd),
+                cwd=worktree,
                 env=build_subprocess_env(ctx.env),
-            )
+                input_text=_build_prompt(spec, ctx),
+                output_limit_bytes=_MAX_AGENT_OUTPUT_BYTES,
+            ).wait(timeout_s=self.timeout_s)
+            if completed.state is TurnState.TIMED_OUT:
+                raise RunnerError(f"WorktreeRunner: timed out after {self.timeout_s}s")
+            if completed.state is TurnState.CANCELLED:
+                raise RunnerError("WorktreeRunner: cancelled before completion")
             _copy_back(worktree, ctx.workspace)
-            (ctx.workspace / "agent_output.txt").write_text(proc.stdout or "", encoding="utf-8")
-            return RunResult(changed=_workspace_changed(ctx.workspace), agent_claimed_done=False, tokens=0, log=(proc.stdout or "")[-2000:])
-        except subprocess.TimeoutExpired as exc:
-            raise RunnerError(f"WorktreeRunner: timed out after {self.timeout_s}s") from exc
+            (ctx.workspace / "agent_output.txt").write_text(completed.stdout, encoding="utf-8")
+            return RunResult(changed=_workspace_changed(ctx.workspace), agent_claimed_done=False, tokens=0, log=completed.stdout[-2000:])
         except OSError as exc:
             raise RunnerError(f"WorktreeRunner: could not launch agent command: {exc}") from exc
         finally:
@@ -54,18 +64,27 @@ def _copy_back(src: Path, dest: Path) -> None:
         if rel.parts and rel.parts[0] == ".git":
             continue
         target = dest / rel
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            raise RunnerError(f"WorktreeRunner: refusing symlink promotion: {rel}")
         if path.is_dir():
             target.mkdir(parents=True, exist_ok=True)
-        elif path.is_file():
+        elif stat.S_ISREG(mode):
+            if path.stat().st_size > _MAX_PROMOTED_FILE_BYTES:
+                raise RunnerError(
+                    f"WorktreeRunner: refusing oversized promotion ({path.stat().st_size} bytes): {rel}"
+                )
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, target)
+        else:
+            raise RunnerError(f"WorktreeRunner: refusing special-file promotion: {rel}")
 
 
 def _build_prompt(spec: Spec, ctx: LoopContext) -> str:
     prompt_file = ctx.workspace / "PROMPT.md"
     if prompt_file.exists():
-        return prompt_file.read_text(encoding="utf-8")
-    return "\n".join([spec.goal, *spec.steps])
+        return with_memory_snapshot(prompt_file.read_text(encoding="utf-8"), ctx)
+    return with_memory_snapshot("\n".join([spec.goal, *spec.steps]), ctx)
 
 
 def _workspace_changed(workspace: Path) -> bool:

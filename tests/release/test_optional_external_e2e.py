@@ -16,6 +16,9 @@ from bounded_loops.adapters.runners.worktree import WorktreeRunner
 from bounded_loops.domain.models import LoopContext, Rung, Spec
 
 
+pytestmark = pytest.mark.external_tool
+
+
 def _ctx(tmp_path: Path) -> LoopContext:
     return LoopContext(workspace=tmp_path, lap=1, rung=Rung.L1, trace_id="release")
 
@@ -39,12 +42,14 @@ def test_gitleaks_gate_e2e_clean_workspace(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("semgrep") is None, reason="semgrep not installed")
+@pytest.mark.network
 def test_semgrep_gate_e2e_clean_workspace(tmp_path):
     (tmp_path / "app.py").write_text("print('hello')\n", encoding="utf-8")
     assert SemgrepGate(config="auto").check(_ctx(tmp_path)).passed is True
 
 
 @pytest.mark.skipif(shutil.which("trivy") is None, reason="trivy not installed")
+@pytest.mark.network
 def test_trivy_gate_e2e_clean_workspace(tmp_path):
     (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
     verdict = TrivyGate().check(_ctx(tmp_path))
@@ -52,6 +57,7 @@ def test_trivy_gate_e2e_clean_workspace(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("promptfoo") is None, reason="promptfoo not installed")
+@pytest.mark.network
 def test_promptfoo_gate_e2e_minimal_config(tmp_path):
     (tmp_path / "promptfooconfig.yaml").write_text(
         "prompts:\n  - 'Return hello'\nproviders:\n  - echo\ntests:\n  - assert:\n      - type: contains\n        value: hello\n",
@@ -68,6 +74,7 @@ def test_great_expectations_gate_e2e_reports_failure_without_project(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="docker not installed")
+@pytest.mark.network
 def test_docker_runner_e2e_if_docker_daemon_available(tmp_path):
     probe = subprocess.run(["docker", "info"], capture_output=True, text=True, timeout=10)
     if probe.returncode != 0:

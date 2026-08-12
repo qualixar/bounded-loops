@@ -39,6 +39,7 @@ from bounded_loops.application.ports import (
 from bounded_loops.application.run_store import run_ledger, run_workspace, validate_run_id
 from bounded_loops.application.run_loop import RunLoopDeps, RunLoopUseCase
 from bounded_loops.application.manifest import LoopManifest
+from bounded_loops.application.memory_snapshot import SnapshotMemory
 
 # Concrete runner adapters — P0/P1 keyless (stub/shell/python_callable)
 # plus the three credentialed runners landed by  (claude-code/codex/
@@ -177,6 +178,8 @@ def wire(
     keep_workspace: bool = False,
     run_id: str | None = None,
     resume: bool = False,
+    controller_root: Path | None = None,
+    memory_snapshot: str | None = None,
 ) -> RunLoopUseCase:
     """
     Given a loaded+validated LoopManifest, instantiate and wire all concrete
@@ -277,6 +280,7 @@ def wire(
             manifest.loop_dir, run_id,
             quarantine_inputs=bounds.quarantine_inputs,
             resume=resume,
+            controller_root=controller_root,
         )
     else:
         workspace = _make_scratch_workspace(
@@ -310,7 +314,12 @@ def wire(
     # and STATE.md honest even against an adversarial or buggy agent.
     clock: ClockPort = UtcClock()
     memory: MemoryPort = FileMemory(manifest.loop_dir / manifest.memory_path, clock=clock)
-    ledger_path = run_ledger(manifest.loop_dir, run_id) if run_id else manifest.loop_dir / ".ledger.jsonl"
+    if memory_snapshot is not None:
+        memory = SnapshotMemory(memory_snapshot)
+    ledger_path = (
+        run_ledger(manifest.loop_dir, run_id, storage_root=controller_root)
+        if run_id else manifest.loop_dir / ".ledger.jsonl"
+    )
     ledger: LedgerPort = FileLedger(ledger_path)
 
     tracer: TracerPort = (
@@ -593,9 +602,10 @@ def _make_persistent_run_workspace(
     run_id: str,
     quarantine_inputs: bool = True,
     resume: bool = False,
+    controller_root: Path | None = None,
 ) -> Path:
     validate_run_id(run_id)
-    workspace = run_workspace(loop_dir, run_id)
+    workspace = run_workspace(loop_dir, run_id, storage_root=controller_root)
     if resume:
         if not workspace.is_dir():
             raise ManifestError(

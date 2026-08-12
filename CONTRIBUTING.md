@@ -37,13 +37,31 @@ role/task it makes sense for, a new loop under `loops/` is a welcome PR.
 
 4. Run the checks before opening a PR:
    ```bash
+   uv sync --frozen --group dev    # reproducible contributor environment
    bl doctor                        # core harness + optional tool availability
    bl lint loops/my-loop --contrib  # manifest + catalog contribution bar
    bl run loops/my-loop --yes       # reaches ✓ [DONE]
-   pytest -q                        # existing suite still green
-   mypy bounded_loops               # if you touched any Python
-   ruff check .
+   uv run pytest -q                 # deterministic, offline default suite
+   uv run mypy bounded_loops tests   # if you touched any Python
+   uv run ruff check --no-cache bounded_loops tests
    ```
+
+   The default suite deliberately excludes tests marked `external_tool`,
+   `network`, `provider_smoke`, or `clean_install`; installing a scanner,
+   Docker, or a CLI must never change what `uv run pytest -q` does. Run a
+   capability lane only when you intentionally provisioned its tools:
+
+   ```bash
+   uv run pytest -q --override-ini='addopts=' -m external_tool
+   uv run pytest -q --override-ini='addopts=' -m network
+   uv run pytest -q --override-ini='addopts=' -m provider_smoke
+   uv run pytest -q --override-ini='addopts=' -m clean_install
+   uv run python scripts/verify_clean_room.py
+   ```
+
+   A capability-lane result is evidence about that provisioned environment,
+   not a substitute for the deterministic suite. Never add a real provider
+   call to the default lane.
 
 ## Adding a gate or runner adapter
 

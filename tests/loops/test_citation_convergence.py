@@ -5,34 +5,32 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+from tests.loops._copied_loop import copy_loop
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOOP_DIR = REPO_ROOT / "loops" / "citation-existence-check"
 
-
-@pytest.fixture(autouse=True)
-def _clean_ledger() -> Iterator[None]:
-    ledger = LOOP_DIR / ".ledger.jsonl"
-    if ledger.exists():
-        ledger.unlink()
-    yield
-    if ledger.exists():
-        ledger.unlink()
+pytestmark = pytest.mark.external_tool
 
 
-def test_citation_loop_corrects_real_case_then_removes_fabrication() -> None:
+@pytest.fixture
+def loop_dir(tmp_path: Path) -> Path:
+    return copy_loop(LOOP_DIR, tmp_path)
+
+
+def test_citation_loop_corrects_real_case_then_removes_fabrication(loop_dir: Path) -> None:
     result = subprocess.run(
         [
             sys.executable,
             "-m",
             "bounded_loops.cli",
             "run",
-            str(LOOP_DIR),
+            str(loop_dir),
             "--yes",
         ],
         cwd=REPO_ROOT,
@@ -45,7 +43,7 @@ def test_citation_loop_corrects_real_case_then_removes_fabrication() -> None:
     assert "laps: 2" in result.stdout
     entries = [
         json.loads(line)
-        for line in (LOOP_DIR / ".ledger.jsonl").read_text(encoding="utf-8").splitlines()
+        for line in (loop_dir / ".ledger.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert [entry["decision"] for entry in entries] == ["continue", "done"]
     assert [entry["verdict"]["passed"] for entry in entries] == [False, True]

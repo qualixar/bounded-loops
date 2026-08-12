@@ -41,6 +41,16 @@ MINIMAL_VALID = {
 }
 
 
+def write_loop_yaml(tmp_path: Path, loop_yaml: str, bounds_yaml: str) -> Path:
+    """Write raw YAML when a test needs syntax that a dict cannot express."""
+    loop_dir = tmp_path / "test-loop"
+    loop_dir.mkdir()
+    (loop_dir / "loop.yaml").write_text(loop_yaml, encoding="utf-8")
+    (loop_dir / "bounds.yaml").write_text(bounds_yaml, encoding="utf-8")
+    (loop_dir / "PROMPT.md").write_text("Fix the bug.", encoding="utf-8")
+    return loop_dir
+
+
 # ── Happy path ──
 
 def test_load_valid_loop_returns_manifest_with_spec_and_bounds(tmp_path):
@@ -50,6 +60,116 @@ def test_load_valid_loop_returns_manifest_with_spec_and_bounds(tmp_path):
     assert manifest.bounds.max_iterations == 5
     assert manifest.gate_kind == "pytest"
     assert manifest.runner_kind == "stub"
+
+
+def test_shipped_catalog_manifests_remain_compatible():
+    """F0.1 contracts must continue to load every shipped 0.3.1 loop."""
+    repo_root = Path(__file__).resolve().parents[2]
+    loop_paths = sorted((repo_root / "loops").glob("*/loop.yaml"))
+    assert loop_paths
+    for loop_yaml in loop_paths:
+        load(loop_yaml.parent)
+
+
+# ── F0.1: duplicate-key and closed-shape contracts ──
+
+def test_duplicate_loop_yaml_key_raises_manifest_error(tmp_path):
+    loop_dir = write_loop_yaml(
+        tmp_path,
+        """\
+name: test-loop
+name: duplicate-loop
+description: A test loop
+pattern: evaluator-optimizer
+role: [backend]
+rung: L1
+runner:
+  default: stub
+gate:
+  kind: pytest
+""",
+        "max_iterations: 5\n",
+    )
+    with pytest.raises(ManifestError, match="loop.yaml: duplicate key 'name'"):
+        load(loop_dir)
+
+
+def test_duplicate_bounds_yaml_key_raises_manifest_error(tmp_path):
+    loop_dir = write_loop_yaml(
+        tmp_path,
+        yaml.safe_dump(MINIMAL_VALID),
+        "max_iterations: 5\nmax_iterations: 6\n",
+    )
+    with pytest.raises(ManifestError, match="bounds.yaml: duplicate key 'max_iterations'"):
+        load(loop_dir)
+
+
+@pytest.mark.parametrize(
+    ("section", "key"),
+    [("loop", "unrecognized"), ("bounds", "unrecognized"), ("runner", "unrecognized")],
+)
+def test_unknown_manifest_key_raises_manifest_error(tmp_path, section, key):
+    loop_manifest = {**MINIMAL_VALID}
+    bounds_manifest = {"max_iterations": 5}
+    if section == "loop":
+        loop_manifest[key] = True
+    elif section == "bounds":
+        bounds_manifest[key] = True
+    else:
+        loop_manifest[section] = {**loop_manifest[section], key: True}
+
+    loop_dir = write_loop(tmp_path, loop_manifest, bounds_manifest)
+    with pytest.raises(ManifestError, match=rf"{section}.*unknown key.*{key}"):
+        load(loop_dir)
+
+
+# ── F0.1: exact bound types and semantic ranges ──
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("max_iterations", True, "max_iterations must be an integer"),
+        ("max_iterations", 1.5, "max_iterations must be an integer"),
+        ("max_iterations", "5", "max_iterations must be an integer"),
+        ("max_iterations", 0, "max_iterations must be at least 1"),
+        ("no_progress_window", True, "no_progress_window must be an integer"),
+        ("no_progress_window", 1.5, "no_progress_window must be an integer"),
+        ("no_progress_window", 0, "no_progress_window must be at least 1"),
+        ("max_tokens", True, "max_tokens must be an integer or null"),
+        ("max_tokens", 1.5, "max_tokens must be an integer or null"),
+        ("max_tokens", "100", "max_tokens must be an integer or null"),
+        ("max_tokens", 0, "max_tokens must be at least 1"),
+        ("max_tokens", -1, "max_tokens must be at least 1"),
+        ("max_wallclock_s", True, "max_wallclock_s must be an integer or null"),
+        ("max_wallclock_s", 1.5, "max_wallclock_s must be an integer or null"),
+        ("max_wallclock_s", "30", "max_wallclock_s must be an integer or null"),
+        ("max_wallclock_s", 0, "max_wallclock_s must be at least 1"),
+        ("max_wallclock_s", -1, "max_wallclock_s must be at least 1"),
+    ],
+)
+def test_bounds_numeric_fields_require_exact_types_and_valid_ranges(tmp_path, field, value, message):
+    loop_dir = write_loop(tmp_path, MINIMAL_VALID, {"max_iterations": 5, field: value})
+    with pytest.raises(ManifestError, match=message):
+        load(loop_dir)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("sandbox", 1, "sandbox must be a boolean"),
+        ("sandbox", "true", "sandbox must be a boolean"),
+        ("quarantine_inputs", None, "quarantine_inputs must be a boolean"),
+        ("trace", 0, "trace must be a boolean"),
+        ("require_approval", "false", "require_approval must be a boolean or null"),
+        ("require_approval", 1, "require_approval must be a boolean or null"),
+        ("schema", 5, "schema must be a non-empty string or null"),
+        ("schema", "", "schema must be a non-empty string or null"),
+    ],
+)
+def test_bounds_boolean_and_schema_fields_require_exact_types(tmp_path, field, value, message):
+    loop_dir = write_loop(tmp_path, MINIMAL_VALID, {"max_iterations": 5, field: value})
+    with pytest.raises(ManifestError, match=message):
+        load(loop_dir)
 
 
 def test_load_with_shell_runner_passes(tmp_path):
@@ -449,3 +569,130 @@ def test_manifest_itself_is_still_frozen_with_new_field(tmp_path):
     manifest = load(loop_dir)
     with pytest.raises((AttributeError, TypeError)):
         manifest.env_passthrough = ("SOMETHING",)  # type: ignore
+
+
+# ── M-1: agent_cmd allowlist ───────────────────────────────────────────────────
+
+def test_agent_cmd_allowlisted_basename_accepted(tmp_path):
+    """M-1 fix: a shell runner whose agent_cmd first token is in AGENT_CMD_ALLOWLIST
+    must load without error."""
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "claude -p"}},
+    )
+    manifest = load(loop_dir)
+    assert manifest.runner_kind == "shell"
+
+
+def test_agent_cmd_allowlisted_basename_with_flags_accepted(tmp_path):
+    """Flag-bearing commands are fine: the allowlist check applies only to the
+    first token (the binary name), not the full command string."""
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "python3 -u run.py"}},
+    )
+    manifest = load(loop_dir)
+    assert manifest.runner_kind == "shell"
+
+
+def test_agent_cmd_allowlisted_absolute_path_accepted(tmp_path):
+    """An absolute path whose basename is in the allowlist must be accepted:
+    /usr/local/bin/claude → basename 'claude' → in allowlist."""
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "/usr/local/bin/claude --no-pager"}},
+    )
+    manifest = load(loop_dir)
+    assert manifest.runner_kind == "shell"
+
+
+def test_agent_cmd_unlisted_binary_raises_manifest_error(tmp_path):
+    """M-1 fix: a loop whose agent_cmd names a binary outside the allowlist is
+    rejected at manifest-load time — it cannot reach the shell runner."""
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "bash run_analysis.sh"}},
+    )
+    with pytest.raises(ManifestError, match="agent_cmd.*allowlist"):
+        load(loop_dir)
+
+
+def test_agent_cmd_unlisted_absolute_path_rejected(tmp_path):
+    """Absolute path to an unlisted binary is also rejected: the check is on
+    the basename, not the full path."""
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "/usr/bin/curl evil.com"}},
+    )
+    with pytest.raises(ManifestError, match="agent_cmd.*allowlist"):
+        load(loop_dir)
+
+
+def test_agent_cmd_missing_imposes_no_constraint(tmp_path):
+    """When agent_cmd is absent (e.g., runner.default: stub), no allowlist check
+    fires — the constraint only applies when the field is present."""
+    loop_dir = write_loop(tmp_path, {**MINIMAL_VALID, "runner": {"default": "stub"}})
+    manifest = load(loop_dir)
+    assert manifest.runner_kind == "stub"
+
+
+def test_agent_cmd_empty_string_raises_manifest_error(tmp_path):
+    """An explicit empty string for agent_cmd must be rejected."""
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": ""}},
+    )
+    with pytest.raises(ManifestError):
+        load(loop_dir)
+
+
+# ── BOUNDED_LOOPS_EXTRA_AGENT_CMDS enterprise extension (M-1 follow-up) ──
+
+def test_agent_cmd_extra_env_allows_unlisted_binary(tmp_path, monkeypatch):
+    """An operator-supplied binary in BOUNDED_LOOPS_EXTRA_AGENT_CMDS is accepted
+    even though it is not in the core AGENT_CMD_ALLOWLIST."""
+    monkeypatch.setenv("BOUNDED_LOOPS_EXTRA_AGENT_CMDS", "acn-run")
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "acn-run --loop"}},
+    )
+    manifest = load(loop_dir)
+    assert manifest.runner_kind == "shell"
+
+
+def test_agent_cmd_extra_env_multi_entry(tmp_path, monkeypatch):
+    """Comma-separated entries in BOUNDED_LOOPS_EXTRA_AGENT_CMDS are each accepted."""
+    monkeypatch.setenv("BOUNDED_LOOPS_EXTRA_AGENT_CMDS", "corp-a,corp-b")
+    for binary in ("corp-a", "corp-b"):
+        sub = tmp_path / binary
+        sub.mkdir()
+        loop_dir = write_loop(
+            sub,
+            {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": binary}},
+        )
+        manifest = load(loop_dir)
+        assert manifest.runner_kind == "shell"
+
+
+def test_agent_cmd_extra_env_does_not_weaken_core_allowlist(tmp_path, monkeypatch):
+    """An unlisted binary is still rejected when BOUNDED_LOOPS_EXTRA_AGENT_CMDS
+    names a DIFFERENT binary — the extra set is additive, not a wildcard."""
+    monkeypatch.setenv("BOUNDED_LOOPS_EXTRA_AGENT_CMDS", "corp-a")
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "bash"}},
+    )
+    with pytest.raises(ManifestError, match="agent_cmd.*allowlist"):
+        load(loop_dir)
+
+
+def test_agent_cmd_error_message_names_extra_env_var(tmp_path, monkeypatch):
+    """The ManifestError for a blocked binary names BOUNDED_LOOPS_EXTRA_AGENT_CMDS
+    so blocked users immediately know the remedy."""
+    monkeypatch.delenv("BOUNDED_LOOPS_EXTRA_AGENT_CMDS", raising=False)
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "bash"}},
+    )
+    with pytest.raises(ManifestError, match="BOUNDED_LOOPS_EXTRA_AGENT_CMDS"):
+        load(loop_dir)

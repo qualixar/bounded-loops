@@ -173,6 +173,26 @@ def test_revoke_trust_removes_record(tmp_path, monkeypatch):
     assert revoke_trust(loop_dir, "pytest -q") is False  # already gone
 
 
+# ── TEST-12: trust_store._ttl_seconds() invalid env var fallback ────────────
+# Line 71-72 of trust_store.py handles BOUNDED_LOOPS_TRUST_TTL_DAYS set to a
+# non-float string by falling back to _DEFAULT_TTL_DAYS (30 days).
+# Mutation proof: removing the except-ValueError clause would cause _ttl_seconds()
+# to propagate a ValueError, crashing is_trusted() — the test would then ERROR
+# rather than pass.
+
+def test_invalid_ttl_env_var_falls_back_to_default(tmp_path, monkeypatch):
+    """BOUNDED_LOOPS_TRUST_TTL_DAYS set to a non-float string (e.g. 'banana')
+    must silently fall back to the 30-day default and NOT crash is_trusted().
+    A fresh trust record should still be trusted immediately after recording."""
+    monkeypatch.setenv("BOUNDED_LOOPS_TRUST_TTL_DAYS", "banana")
+    loop_dir = _trust_env(tmp_path, monkeypatch)
+    record_trust(loop_dir, "pytest -q")
+    # Default 30 days applies — the record was just written so it is fresh.
+    assert is_trusted(loop_dir, "pytest -q") is True, (
+        "invalid TTL env var crashed or incorrectly expired a fresh record"
+    )
+
+
 # ── bl list discovers loops under an explicit dir ─────────────
 
 def test_discover_loops_in_explicit_dir(tmp_path):

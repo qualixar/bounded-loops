@@ -121,6 +121,24 @@ including the budget check.
 
 > Editable source: [`diagrams/lap-outcomes-state.mmd`](diagrams/lap-outcomes-state.mmd) · regenerate with `mmdc -i diagrams/lap-outcomes-state.mmd -o diagrams/lap-outcomes-state.svg`
 
+## The graph engine: the same invariant, composed across a DAG
+
+The hexagonal, ports-and-adapters design above is not limited to a single
+loop. The **bounded-loops graph engine** (`bl graph`) composes independently
+gated nodes into a DAG, and the identical invariant `run_loop.py` enforces
+for one loop — a worker never grades its own output (worker≠gate) — is
+controller-enforced (`GraphRunController`; `acceptance_gate.py`;
+`approval_gate.py`) once per node instead of once per run. Every run's
+activity is captured in an append-only, hash-chained receipt log
+(`controller-events.jsonl`) that `bl graph arena` renders as a read-only
+projection — an audit trail a human inspects, not a node's self-report.
+
+Start with [graph-quickstart.md](./graph-quickstart.md) to run the built-in
+demo, see [graph-capabilities.md](./graph-capabilities.md) for the full
+shipped-vs-deferred capability breakdown, and
+[graph-reference-composition.md](./graph-reference-composition.md) for how
+graph nodes compose against this same ports-and-adapters engine.
+
 ## See also
 
 - [NINE-BOUNDS.md](./NINE-BOUNDS.md) — each bound, its `bounds.yaml` field,

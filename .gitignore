@@ -24,3 +24,9 @@ htmlcov/
 
 # internal engineering audit — tracked in a separate private repo, never public
 audit/
+
+# local scratch databases from dev runs — never publish
+*.db
+
+# historical engineering notes — live in the private audit repo, never public
+.backup/

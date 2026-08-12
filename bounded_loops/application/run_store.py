@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import tempfile
 import time
 from pathlib import Path
 
@@ -23,21 +25,74 @@ def validate_run_id(run_id: str) -> str:
     return run_id
 
 
-def run_dir(loop_dir: Path, run_id: str) -> Path:
+def run_dir(loop_dir: Path, run_id: str, *, storage_root: Path | None = None) -> Path:
     safe = validate_run_id(run_id)
-    return loop_dir.resolve() / ".bounded-loops" / "runs" / safe
+    return _runs_root(loop_dir, storage_root) / safe
 
 
-def run_workspace(loop_dir: Path, run_id: str) -> Path:
-    return run_dir(loop_dir, run_id) / "workspace"
+def run_workspace(loop_dir: Path, run_id: str, *, storage_root: Path | None = None) -> Path:
+    return run_dir(loop_dir, run_id, storage_root=storage_root) / "workspace"
 
 
-def run_ledger(loop_dir: Path, run_id: str) -> Path:
-    return run_dir(loop_dir, run_id) / "ledger.jsonl"
+def run_ledger(loop_dir: Path, run_id: str, *, storage_root: Path | None = None) -> Path:
+    return run_dir(loop_dir, run_id, storage_root=storage_root) / "ledger.jsonl"
 
 
-def run_db(loop_dir: Path) -> Path:
-    return loop_dir.resolve() / ".bounded-loops" / "runs.sqlite"
+def run_db(loop_dir: Path, *, storage_root: Path | None = None) -> Path:
+    return _runs_root(loop_dir, storage_root).parent / "runs.sqlite"
+
+
+def _runs_root(loop_dir: Path, storage_root: Path | None) -> Path:
+    package_root = loop_dir.resolve()
+    if storage_root is None:
+        return package_root / ".bounded-loops" / "runs"
+    root = storage_root.resolve()
+    if root == package_root or root.is_relative_to(package_root):
+        raise ManifestError("controller storage root must be outside the loop package")
+    return root / "runs"
+
+
+def begin_run(
+    *,
+    loop_dir: Path,
+    run_id: str,
+    workspace: Path,
+    ledger_path: Path,
+    storage_root: Path | None = None,
+) -> Path:
+    """Persist a run record before any runner or gate can execute.
+
+    The operation is idempotent for an existing run, which lets a controller
+    resume after a crash without rewriting its original creation evidence.
+    """
+    directory = run_dir(loop_dir, run_id, storage_root=storage_root)
+    directory.mkdir(parents=True, exist_ok=True)
+    metadata_path = directory / "metadata.json"
+    if metadata_path.exists():
+        return metadata_path
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.touch(exist_ok=True)
+    metadata = {
+        "run_id": run_id,
+        "loop_dir": str(loop_dir.resolve()),
+        "workspace": str(workspace.resolve()),
+        "ledger_path": str(ledger_path.resolve()),
+        "status": "STARTING",
+        "reason": "controller-created-before-execution",
+        "laps": 0,
+    }
+    _write_json_atomically(metadata_path, metadata)
+    _upsert_run_values(
+        db_path=run_db(loop_dir, storage_root=storage_root),
+        run_id=run_id,
+        loop_dir=loop_dir,
+        workspace=workspace,
+        ledger_path=ledger_path,
+        status="STARTING",
+        reason="controller-created-before-execution",
+        laps=0,
+    )
+    return metadata_path
 
 
 def write_run_metadata(
@@ -46,45 +101,44 @@ def write_run_metadata(
     run_id: str,
     outcome: Outcome,
     workspace: Path,
+    storage_root: Path | None = None,
 ) -> Path:
-    directory = run_dir(loop_dir, run_id)
+    directory = run_dir(loop_dir, run_id, storage_root=storage_root)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "metadata.json"
-    path.write_text(
-        json.dumps(
-            {
-                "run_id": run_id,
-                "loop_dir": str(loop_dir.resolve()),
-                "workspace": str(workspace.resolve()),
-                "ledger_path": str(outcome.ledger_path),
-                "status": outcome.status.value,
-                "reason": outcome.reason,
-                "laps": outcome.laps,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    _write_json_atomically(
+        path,
+        {
+            "run_id": run_id,
+            "loop_dir": str(loop_dir.resolve()),
+            "workspace": str(workspace.resolve()),
+            "ledger_path": str(outcome.ledger_path),
+            "status": outcome.status.value,
+            "reason": outcome.reason,
+            "laps": outcome.laps,
+        },
     )
-    _upsert_run_db(
-        db_path=run_db(loop_dir),
+    _upsert_run_values(
+        db_path=run_db(loop_dir, storage_root=storage_root),
         run_id=run_id,
         loop_dir=loop_dir,
         workspace=workspace,
-        outcome=outcome,
+        ledger_path=outcome.ledger_path,
+        status=outcome.status.value,
+        reason=outcome.reason,
+        laps=outcome.laps,
     )
     return path
 
 
-def list_runs(loop_dir: Path) -> list[dict]:
-    db_path = run_db(loop_dir)
+def list_runs(loop_dir: Path, *, storage_root: Path | None = None) -> list[dict]:
+    db_path = run_db(loop_dir, storage_root=storage_root)
     if db_path.is_file():
         try:
             return _list_runs_from_db(db_path)
         except sqlite3.Error:
             pass
-    base = loop_dir.resolve() / ".bounded-loops" / "runs"
+    base = _runs_root(loop_dir, storage_root)
     if not base.is_dir():
         return []
     results: list[dict] = []
@@ -98,10 +152,15 @@ def list_runs(loop_dir: Path) -> list[dict]:
     return results
 
 
-def read_run_receipt(loop_dir: Path, run_id: str) -> dict:
+def read_run_receipt(
+    loop_dir: Path,
+    run_id: str,
+    *,
+    storage_root: Path | None = None,
+) -> dict:
     """Read one persisted run without allowing run-id or symlink escapes."""
-    directory = run_dir(loop_dir, run_id)
-    runs_root = (loop_dir.resolve() / ".bounded-loops" / "runs").resolve()
+    directory = run_dir(loop_dir, run_id, storage_root=storage_root)
+    runs_root = _runs_root(loop_dir, storage_root).resolve()
     resolved_directory = directory.resolve()
     if not resolved_directory.is_relative_to(runs_root):
         raise ManifestError("run directory resolves outside .bounded-loops/runs")
@@ -167,13 +226,31 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _upsert_run_db(
+def _write_json_atomically(path: Path, value: dict) -> None:
+    """Durably replace one controller-owned JSON record without a torn file."""
+    fd, temp_name = tempfile.mkstemp(prefix=".metadata-", suffix=".tmp", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def _upsert_run_values(
     *,
     db_path: Path,
     run_id: str,
     loop_dir: Path,
     workspace: Path,
-    outcome: Outcome,
+    ledger_path: Path,
+    status: str,
+    reason: str,
+    laps: int,
 ) -> None:
     with _connect(db_path) as conn:
         conn.execute(
@@ -194,10 +271,10 @@ def _upsert_run_db(
                 run_id,
                 str(loop_dir.resolve()),
                 str(workspace.resolve()),
-                str(outcome.ledger_path),
-                outcome.status.value,
-                outcome.reason,
-                outcome.laps,
+                str(ledger_path.resolve()),
+                status,
+                reason,
+                laps,
                 time.time(),
             ),
         )

@@ -193,6 +193,7 @@ def test_env_is_allowlisted_not_full_parent(tmp_path, monkeypatch):
     __import__("shutil").which("checkov") is None,
     reason="checkov not installed on this machine",
 )
+@pytest.mark.external_tool
 def test_real_checkov_on_a_clean_workspace(tmp_path):
     """Real, unmocked proof: a workspace with no IaC files
     scans zero resources, so the gate fails CLOSED with a GateError rather than

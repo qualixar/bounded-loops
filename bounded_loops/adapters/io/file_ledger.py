@@ -11,7 +11,7 @@ corrupt lines 0..N-1 (https://jsonlines.org best practice).
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from collections.abc import Mapping
 from pathlib import Path
 
 from bounded_loops.domain.models import LedgerEntry, Verdict
@@ -46,8 +46,29 @@ class FileLedger:
 
 def _serialise(entry: LedgerEntry) -> str:
     """Convert LedgerEntry -> compact JSON string (one line, no indent)."""
-    d = asdict(entry)  # dataclasses.asdict handles nested frozen dataclasses
+    d = {
+        "lap": entry.lap,
+        "ts": entry.ts,
+        "verdict": {
+            "passed": entry.verdict.passed,
+            "detail": entry.verdict.detail,
+            "evidence": _json_value(entry.verdict.evidence),
+        },
+        "decision": entry.decision,
+        "budget_spent": _json_value(entry.budget_spent),
+    }
     return json.dumps(d, ensure_ascii=False, separators=(",", ":"))
+
+
+def _json_value(value: object) -> object:
+    """Convert immutable domain metadata back to JSON-compatible primitives."""
+    if isinstance(value, Mapping):
+        return {key: _json_value(child) for key, child in value.items()}
+    if isinstance(value, tuple):
+        return [_json_value(child) for child in value]
+    if isinstance(value, frozenset):
+        return sorted((_json_value(child) for child in value), key=repr)
+    return value
 
 
 def _deserialise(line: str) -> LedgerEntry:

@@ -9,7 +9,7 @@ import tempfile
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from bounded_loops import mcp_server
 from bounded_loops.application.loop_audit import LoopAuditResult
@@ -275,13 +275,21 @@ def test_bl_run_with_run_id_writes_metadata(tmp_path):
         status=Status.DONE, reason="gate-passed", laps=1,
         ledger_path=tmp_path / ".bounded-loops" / "runs" / "r1" / "ledger.jsonl",
     )
+    fake_use_case._deps.ledger.path.return_value = fake_use_case.run.return_value.ledger_path
     with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
          patch("bounded_loops.mcp_server.wire", return_value=fake_use_case), \
+         patch("bounded_loops.mcp_server.begin_run") as mock_begin, \
          patch("bounded_loops.mcp_server.write_run_metadata") as mock_metadata:
         mcp_server.bl_run(str(tmp_path), confirm=False, run_id="r1")
         result = mcp_server.bl_run(str(tmp_path), confirm=True, run_id="r1")
     assert result["status"] == "DONE"
     assert result["run_id"] == "r1"
+    mock_begin.assert_called_once_with(
+        loop_dir=tmp_path,
+        run_id="r1",
+        workspace=fake_use_case._workspace,
+        ledger_path=fake_use_case.run.return_value.ledger_path,
+    )
     mock_metadata.assert_called_once()
 
 
@@ -402,6 +410,96 @@ def test_bl_run_l2_with_require_approval_false_explicit_override_runs(tmp_path):
 
 # ── Session-longevity smoke test ──────────────────────────────────────────────
 
+# ── L-3: per-session _previewed scoping ──────────────────────────────────────
+
+def _make_ctx(session_obj=None):
+    """Build a minimal Context-like mock that bl_run can use for session-keying.
+
+    Note: the session must be an object that supports weak references (any
+    regular Python class instance does; plain object() does not). MagicMock()
+    works fine here and matches the type the real FastMCP session object would
+    be at runtime.
+    """
+    ctx = MagicMock()
+    ctx.session = session_obj if session_obj is not None else MagicMock()
+    return ctx
+
+
+def test_bl_run_session_a_preview_not_confirmable_by_session_b(tmp_path):
+    """L-3 fix proof: session A's preview must be invisible to session B.
+    Session B calling confirm=True (without its own preview) must be rejected
+    even if session A previewed the exact same loop with matching arguments.
+    """
+    (tmp_path / "loop.yaml").write_text("name: t\n")
+    fake_manifest = _make_runnable_manifest()
+
+    ctx_a = _make_ctx()   # distinct session objects
+    ctx_b = _make_ctx()   # a different session
+
+    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
+         patch("bounded_loops.mcp_server.wire") as mock_wire:
+        # Session A previews
+        mcp_server.bl_run(str(tmp_path), confirm=False, ctx=ctx_a)
+        # Session B tries to confirm without its own preview — must be rejected
+        result = mcp_server.bl_run(str(tmp_path), confirm=True, ctx=ctx_b)
+
+    assert result["status"] == "not_confirmed"
+    assert "no matching preview" in result["error"]
+    mock_wire.assert_not_called()
+
+
+def test_bl_run_same_session_preview_then_confirm_succeeds(tmp_path):
+    """L-3 fix: the same session object correctly threads preview to confirm."""
+    (tmp_path / "loop.yaml").write_text("name: t\n")
+    fake_manifest = _make_runnable_manifest()
+    fake_manifest.loop_dir = tmp_path
+    fake_use_case = MagicMock()
+    fake_use_case.run.return_value = MagicMock(
+        status=MagicMock(value="DONE"), reason="gate-passed", laps=1,
+        ledger_path=tmp_path / ".ledger.jsonl",
+    )
+    ctx = _make_ctx()   # same session for both calls
+
+    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
+         patch("bounded_loops.mcp_server.wire", return_value=fake_use_case):
+        mcp_server.bl_run(str(tmp_path), confirm=False, ctx=ctx)
+        result = mcp_server.bl_run(str(tmp_path), confirm=True, ctx=ctx)
+
+    assert result["status"] == "DONE"
+
+
+def test_bl_run_no_ctx_falls_back_to_shared_previewed(tmp_path):
+    """When ctx is not supplied (direct call / tests), the shared _previewed dict
+    is used — existing test behaviour is preserved unchanged."""
+    (tmp_path / "loop.yaml").write_text("name: t\n")
+    fake_manifest = _make_runnable_manifest()
+
+    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest):
+        mcp_server.bl_run(str(tmp_path), confirm=False)  # no ctx — legacy path
+    # The recorded preview must land in the shared _previewed dict
+    assert str(tmp_path.resolve()) in mcp_server._previewed
+
+
+def test_session_state_logs_warning_on_bad_ctx(tmp_path, caplog):
+    """L-3 / CRIT-2: when ctx.session raises (bad mock / integration gap),
+    _session_state falls back to the shared dict AND emits a logging.WARNING
+    so the regression is observable in production logs rather than invisible."""
+    import logging
+
+    ctx = MagicMock()
+    # Simulate ctx.session raising ValueError (real FastMCP raises this when
+    # request_context is None, e.g. in a misconfigured integration).
+    type(ctx).session = PropertyMock(side_effect=ValueError("no request context"))
+
+    with caplog.at_level(logging.WARNING, logger="bounded_loops.mcp_server"):
+        result = mcp_server._session_state(ctx)
+
+    # Must fall back to shared dict (not raise)
+    assert result is mcp_server._previewed
+    # Must emit a warning naming the module so ops can filter on it
+    assert any("bounded-loops-mcp" in r.message for r in caplog.records)
+
+
 def test_server_survives_multiple_sequential_tool_calls(tmp_path):
     """
     Not a hypothetical: a stdio-transport bug causing crashes on the SECOND
@@ -424,3 +522,89 @@ def test_server_survives_multiple_sequential_tool_calls(tmp_path):
         assert "results" in r3
     finally:
         os.chdir(old_cwd)
+
+
+# ── TEST-15: MCP server error-branch coverage ─────────────────────────────────
+# Lines 138-139, 191-196, 417, 444 are confirmed uncovered by the audit.
+# These are response-formatting paths — no security impact, but needed for
+# regression protection against schema drift.
+
+def test_bl_list_with_invalid_manifest_includes_error_entry(tmp_path, monkeypatch):
+    """bl_list must include an error entry (not crash) when manifest_load raises
+    ManifestError for a loop directory. Covers lines 138-139 of mcp_server.py."""
+    # Create a loop directory with an invalid loop.yaml
+    loop_dir = tmp_path / "bad-loop"
+    loop_dir.mkdir()
+    (loop_dir / "loop.yaml").write_text("not: a: valid: manifest", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    # Write a pyproject.toml so the repo-root search terminates here
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (tmp_path / "loops").mkdir(exist_ok=True)
+    # Move the bad loop under loops/ so bl_list discovers it
+    import shutil
+    shutil.copytree(loop_dir, tmp_path / "loops" / "bad-loop")
+
+    result = mcp_server.bl_list()
+    assert "loops" in result
+    error_entries = [entry for entry in result["loops"] if entry.get("error")]
+    assert error_entries, "ManifestError loop must appear as an error entry, not be silently skipped"
+    assert error_entries[0]["rung"] == "?"
+    assert error_entries[0]["gate_kind"] == "?"
+
+
+def test_bl_show_with_invalid_manifest_returns_error_dict(tmp_path):
+    """bl_show must return an error dict (not crash) when the directory exists
+    but the manifest is invalid. Covers the ManifestError branch at line 196."""
+    loop_dir = tmp_path / "bad-loop"
+    loop_dir.mkdir()
+    (loop_dir / "loop.yaml").write_text("not: a: valid: manifest", encoding="utf-8")
+
+    result = mcp_server.bl_show(str(loop_dir))
+    assert result["status"] == "error"
+    assert result["error_type"] == "ManifestError"
+    assert isinstance(result["message"], str) and len(result["message"]) > 0
+
+
+def test_bl_runs_with_nonexistent_dir_returns_error_dict(tmp_path):
+    """bl_runs must return an error dict when given a non-existent directory.
+    Covers line 444 of mcp_server.py."""
+    result = mcp_server.bl_runs(str(tmp_path / "does-not-exist"))
+    assert result["status"] == "error"
+    assert result["error_type"] == "ManifestError"
+
+
+def test_bl_run_unexpected_exception_returns_error_dict(tmp_path):
+    """bl_run must catch unexpected exceptions from use_case.run() and return
+    an error dict rather than propagating. Covers the bare-Exception branch
+    at line 417 of mcp_server.py.
+
+    Pattern mirrors the established test style: mock manifest_load with a
+    real-dir manifest, do confirm=False to register the preview signature,
+    then confirm=True with wire patched to return a mock whose run() raises.
+    """
+    fake_manifest = _make_runnable_manifest()
+
+    # Step 1: register the preview signature via confirm=False
+    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest):
+        preview_result = mcp_server.bl_run(
+            str(fake_manifest.loop_dir), confirm=False
+        )
+    assert preview_result["status"] == "not_confirmed"
+
+    # Step 2: confirm=True with wire() returning a mock whose run() raises.
+    # No _run_signature patch: both calls use the same fake_manifest object and
+    # the same (empty) loop_dir tempdir so _content_hash is stable — the
+    # signature computed here naturally equals the one stored in step 1. Omitting
+    # the patch preserves the test's ability to detect a broken _content_hash
+    # (which is the actual TOCTOU property the signature binds).
+    crashing_use_case = MagicMock()
+    crashing_use_case.run.side_effect = RuntimeError("unexpected boom")
+
+    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
+         patch("bounded_loops.mcp_server.wire", return_value=crashing_use_case), \
+         patch("bounded_loops.mcp_server.record_trust"):
+        result = mcp_server.bl_run(str(fake_manifest.loop_dir), confirm=True)
+
+    assert result["status"] == "error"
+    assert result["error_type"] == "unexpected"
+    assert "RuntimeError" in result["message"] or "unexpected boom" in result["message"]

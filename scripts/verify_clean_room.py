@@ -6,12 +6,21 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+_RUNTIME_ARTIFACT_PATTERNS = (
+    ".bounded-loops",
+    ".ledger.jsonl",
+    ".STATE.md.runtime",
+    "__pycache__",
+    ".pytest_cache",
+    "*.pyc",
+)
 
 
 def _run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
@@ -29,6 +38,19 @@ def _run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) ->
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)
     return result.stdout
+
+
+def _copy_sample_loop(repo_root: Path, loop_name: str, scratch: Path) -> Path:
+    """Return a writable sample-loop copy below the clean-room scratch root."""
+
+    source = repo_root / "loops" / loop_name
+    destination = scratch / "sample-loops" / loop_name
+    shutil.copytree(
+        source,
+        destination,
+        ignore=shutil.ignore_patterns(*_RUNTIME_ARTIFACT_PATTERNS),
+    )
+    return destination
 
 
 def verify(repo_root: Path) -> None:
@@ -62,8 +84,9 @@ def verify(repo_root: Path) -> None:
             ("bug-fix-red-green", "laps: 1"),
             ("convergence-demo", "laps: 3"),
         ):
+            loop_dir = _copy_sample_loop(repo_root, loop_name, scratch)
             output = _run(
-                [str(bl), "run", str(repo_root / "loops" / loop_name), "--yes"],
+                [str(bl), "run", str(loop_dir), "--yes"],
                 cwd=scratch,
                 env=clean_env,
             )

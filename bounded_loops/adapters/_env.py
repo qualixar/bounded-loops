@@ -23,9 +23,12 @@ import os
 # The six variables a subprocess genuinely needs. NEVER widen this without a
 # security review — every entry is a potential exfiltration channel.
 ENV_ALLOWLIST = frozenset({"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SHELL"})
+SENSITIVE_ENV_MARKERS = (
+    "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "API_KEY", "AUTH",
+)
 
 
-def _sanitize_path(path_value: str) -> str:
+def sanitize_path(path_value: str) -> str:  # public: also used by the graph local-CLI connector
     """Keep only ABSOLUTE directory entries. Drops "", ".", and any relative
     entry — the vectors by which a `cwd=workspace` subprocess could resolve a
     workspace-local binary shadow."""
@@ -39,7 +42,16 @@ def build_subprocess_env(ctx_env: dict[str, str] | None = None) -> dict[str, str
     merged over the top. Never leaks the full parent environment."""
     base = {k: v for k, v in os.environ.items() if k in ENV_ALLOWLIST}
     if "PATH" in base:
-        base["PATH"] = _sanitize_path(base["PATH"])
+        base["PATH"] = sanitize_path(base["PATH"])
     if ctx_env:
         return {**base, **ctx_env}
     return base
+
+
+def output_redactions(ctx_env: dict[str, str]) -> tuple[str, ...]:
+    """Values explicitly configured as secrets that must never reach logs."""
+    return tuple(
+        value
+        for name, value in ctx_env.items()
+        if value and any(marker in name.upper() for marker in SENSITIVE_ENV_MARKERS)
+    )

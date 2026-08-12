@@ -6,7 +6,7 @@ folder IS the flagship demo, so its tests exercise the real run.sh,
 wreck.sh, cassettes, and the real `bl` CLI end to end, not mocks.
 
 Fixtures:
-  loop_dir            — the real, checked-in loops/bug-fix-red-green folder.
+  loop_dir            — a per-test copy of loops/bug-fix-red-green.
   tmp_seed            — resets loop_dir/seed/slugify.py to the BUGGY version
                         before the test and restores it after (run.sh's
                         stub agent fixes it in place during the test).
@@ -16,10 +16,7 @@ Fixtures:
   seed_dir_with_buggy_slug / seed_dir_with_fixed_slug
                         — isolated tmp_path copies of seed/, so these tests
                           never touch the real checked-in folder at all.
-  tmp_workspace       — cleans up loop_dir/.ledger.jsonl after `bl run`
-                        (composition.py writes the ledger at
-                        manifest.loop_dir / ".ledger.jsonl" — the real loop
-                        folder itself — not a scratch dir).
+  tmp_workspace       — removes the copied loop ledger after `bl run`.
 """
 from __future__ import annotations
 
@@ -32,6 +29,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+from tests.loops._copied_loop import copy_loop
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOOP_DIR = REPO_ROOT / "loops" / "bug-fix-red-green"
@@ -70,10 +69,10 @@ def slugify(text: str) -> str:
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def loop_dir() -> Path:
-    """The real, checked-in loop folder — this loop IS the artifact under test."""
+def loop_dir(tmp_path: Path) -> Path:
+    """Return a writable loop copy without mutating the repository fixture."""
     assert LOOP_DIR.is_dir(), f"loop folder missing: {LOOP_DIR}"
-    return LOOP_DIR
+    return copy_loop(LOOP_DIR, tmp_path)
 
 
 @pytest.fixture
@@ -82,7 +81,7 @@ def tmp_seed(loop_dir: Path):
 
     run.sh's stub agent overwrites seed/slugify.py with the fix as a side
     effect of a real subprocess run — this fixture guarantees a clean,
-    buggy starting point every time and never leaves the repo dirty.
+    buggy starting point every time inside its temporary loop copy.
     """
     target = loop_dir / "seed" / "slugify.py"
     original = target.read_text(encoding="utf-8")
@@ -127,11 +126,8 @@ def seed_dir_with_fixed_slug(tmp_path: Path, loop_dir: Path) -> Path:
 def tmp_workspace(loop_dir: Path):
     """Guarantee loop_dir/.ledger.jsonl is removed after a `bl run` test.
 
-    composition._make_scratch_workspace() copies seed/ elsewhere for the
-    agent to operate in, but FileLedger/FileMemory are deliberately wired
-    at loop_dir level (security fix) — so `bl run` writes
-    the real ledger straight into the checked-in loop folder. This fixture
-    keeps that side effect from polluting the repo across test runs.
+    FileLedger/FileMemory are wired at loop_dir level, so this fixture
+    removes the copied ledger before pytest removes the temporary directory.
     """
     ledger_path = loop_dir / ".ledger.jsonl"
     try:
@@ -206,6 +202,7 @@ def test_fixed_slugify_passes_gate(seed_dir_with_fixed_slug):
 
 # ── 5.5 Engine path — `bl run` exits 0 + ledger entry ─────────────────────────
 
+@pytest.mark.external_tool
 def test_bl_run_exits_zero_with_ledger(loop_dir, tmp_workspace):
     result = subprocess.run(
         [*BL, "run", str(loop_dir), "--yes"],

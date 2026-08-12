@@ -9,8 +9,19 @@ from pathlib import Path
 
 import yaml
 
+from bounded_loops import __version__ as _PACKAGE_VERSION
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Single canonical source for the expected version used in cross-surface checks.
+# Reading from pyproject at module load time means the next bump never leaves a
+# stale literal here — only pyproject.toml (and the surfaces that must agree with
+# it) need updating.  All cross-surface assertions below use this constant so that
+# a disagreement still causes a failure, just not from a hardcoded literal.
+_PYPROJECT_VERSION = tomllib.loads(
+    (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+)["project"]["version"]
 
 
 def _project() -> dict:
@@ -23,8 +34,18 @@ def test_default_install_includes_pytest_for_shipped_pytest_gates() -> None:
     assert any(dependency.lower().startswith("pytest>=") for dependency in dependencies)
 
 
-def test_patch_release_contains_version_probe_fix() -> None:
-    assert _project()["version"] == "0.3.1"
+def test_pyproject_version_matches_package_runtime_version() -> None:
+    """pyproject.toml version and bounded_loops.__version__ must agree.
+
+    This is a cross-surface check: a bump that updates pyproject but forgets
+    bounded_loops/__init__.py (or vice versa) will fail here.  It replaces the
+    old literal-comparison test that would silently rot on the next release.
+    """
+    assert _PYPROJECT_VERSION == _PACKAGE_VERSION, (
+        f"pyproject.toml version ({_PYPROJECT_VERSION!r}) and "
+        f"bounded_loops.__version__ ({_PACKAGE_VERSION!r}) are out of sync — "
+        "update both together on every release"
+    )
 
 
 def test_pypi_project_urls_are_declared() -> None:
@@ -90,7 +111,10 @@ def test_codex_plugin_uses_current_manifest_contract() -> None:
         (plugin_root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
     assert manifest["name"] == "bounded-loops"
-    assert manifest["version"] == "0.3.1"
+    assert manifest["version"] == _PYPROJECT_VERSION, (
+        f"codex plugin version ({manifest['version']!r}) must match "
+        f"pyproject.toml ({_PYPROJECT_VERSION!r})"
+    )
     assert manifest["skills"] == "./skills/"
     assert manifest["mcpServers"] == "./.mcp.json"
     assert not (plugin_root / "plugin.toml").exists()
@@ -107,7 +131,10 @@ def test_claude_plugin_has_a_package_manifest() -> None:
         ).read_text(encoding="utf-8")
     )
     assert manifest["name"] == "bounded-loops"
-    assert manifest["version"] == "0.3.1"
+    assert manifest["version"] == _PYPROJECT_VERSION, (
+        f"claude plugin version ({manifest['version']!r}) must match "
+        f"pyproject.toml ({_PYPROJECT_VERSION!r})"
+    )
 
 
 def test_plugin_installation_and_mcp_extra_are_documented() -> None:
@@ -162,10 +189,16 @@ def test_release_metadata_uses_the_canonical_catalog_count_and_version() -> None
 
     assert len(loop_dirs) == 68
     assert len(loop_dirs) - len(framework_loops) == 64
-    assert citation["version"] == "0.3.1"
+    assert citation["version"] == _PYPROJECT_VERSION, (
+        f"CITATION.cff version ({citation['version']!r}) must match "
+        f"pyproject.toml ({_PYPROJECT_VERSION!r})"
+    )
     assert citation["url"] == "https://github.com/qualixar/bounded-loops"
     assert "68 loop folders" in citation["abstract"]
-    assert npm["version"] == "0.3.1"
+    assert npm["version"] == _PYPROJECT_VERSION, (
+        f"npm package.json version ({npm['version']!r}) must match "
+        f"pyproject.toml ({_PYPROJECT_VERSION!r})"
+    )
     assert "68" in _project()["description"] and "64" in _project()["description"]
     assert "68 loop folders" in npm["description"]
     assert "64 keyless" in npm["description"]

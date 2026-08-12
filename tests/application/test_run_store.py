@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from bounded_loops.application.run_store import (
+    begin_run,
     list_runs,
     read_run_receipt,
     run_db,
@@ -33,6 +34,46 @@ def test_write_and_list_run_metadata(tmp_path):
     runs = list_runs(tmp_path)
     assert runs[0]["run_id"] == "r1"
     assert runs[0]["status"] == "DONE"
+
+
+def test_begin_run_creates_a_recoverable_starting_record_before_execution(tmp_path):
+    workspace = run_workspace(tmp_path, "r1")
+    workspace.mkdir(parents=True)
+
+    metadata_path = begin_run(
+        loop_dir=tmp_path,
+        run_id="r1",
+        workspace=workspace,
+        ledger_path=run_ledger(tmp_path, "r1"),
+    )
+
+    receipt = read_run_receipt(tmp_path, "r1")
+    assert metadata_path.exists()
+    assert receipt["metadata"]["status"] == "STARTING"
+    assert receipt["metadata"]["laps"] == 0
+    assert receipt["entries"] == []
+    assert list_runs(tmp_path)[0]["reason"] == "controller-created-before-execution"
+
+
+def test_external_controller_root_owns_the_starting_record_and_receipt(tmp_path):
+    loop_dir = tmp_path / "loop"
+    loop_dir.mkdir()
+    controller_root = tmp_path / "controller"
+    workspace = run_workspace(loop_dir, "r1", storage_root=controller_root)
+    workspace.mkdir(parents=True)
+
+    metadata_path = begin_run(
+        loop_dir=loop_dir,
+        run_id="r1",
+        workspace=workspace,
+        ledger_path=run_ledger(loop_dir, "r1", storage_root=controller_root),
+        storage_root=controller_root,
+    )
+
+    receipt = read_run_receipt(loop_dir, "r1", storage_root=controller_root)
+    assert metadata_path.is_relative_to(controller_root)
+    assert receipt["metadata"]["workspace"] == str(workspace.resolve())
+    assert list_runs(loop_dir, storage_root=controller_root)[0]["run_id"] == "r1"
 
 
 def test_write_run_metadata_creates_sqlite_index(tmp_path):

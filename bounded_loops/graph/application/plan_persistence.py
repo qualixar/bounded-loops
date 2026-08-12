@@ -1,0 +1,92 @@
+"""Application-layer helpers for reconstructing a run's plan from a persisted directory.
+
+This module holds the logic that was previously embedded in ``cli_graph.py`` as the
+private function ``_load_plan_from_run_dir``.  It belongs in the **application** layer
+because it uses only application- and domain-level types (``compile_graph``,
+``ExecutionPlan``, ``GraphRunIdentity``, ``GraphValidationError``) and performs no
+CLI-specific I/O.  Moving it here breaks the ``application → cli_graph → application``
+import cycle that existed in 0.4.0-pre (ARCH-01 in the architecture audit).
+
+Both callers — ``LocalGraphRuntimeFacade`` and the CLI handlers — now import from here.
+The console server's lazy-import workaround comment in ``server.py`` is no longer needed
+and has been removed.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
+from bounded_loops.graph.application.validate_graph import parse_authoring_graph_yaml
+from bounded_loops.graph.domain.events import GraphRunIdentity
+from bounded_loops.graph.domain.plan import ExecutionPlan
+
+
+def load_plan_from_run_dir(
+    run_dir: Path,
+) -> tuple[ExecutionPlan, GraphRunIdentity, dict[str, object]]:
+    """Reconstruct plan + identity + raw meta from a persisted run directory.
+
+    Performs symlink guards on the run directory and each critical internal file
+    (TOCTOU mitigation) before reading any content.  Raises on any structural
+    problem so every caller gets a typed failure they can catch cleanly:
+
+    * ``FileNotFoundError`` — ``run-meta.json`` is absent.
+    * ``ValueError`` — JSON is malformed or a required key is missing, or the
+      recompiled plan_id does not match the stored one.
+    * ``GraphValidationError`` — the stored manifest fails authoring validation or
+      compilation (connection bindings do not satisfy the graph's slots).
+
+    The caller is responsible for resolving ``run_dir`` to an absolute path before
+    calling this function (e.g. via ``run_dir.resolve()``) so that symlink detection
+    on the directory itself is meaningful.
+    """
+    # Symlink guards — reject TOCTOU-capable paths on the run dir and internal files.
+    if run_dir.is_symlink():
+        raise ValueError(f"run directory '{run_dir}' is a symlink; aborting")
+    for _n in ("run-meta.json", "manifest.yaml", "connections.json", "controller-events.jsonl"):
+        if (run_dir / _n).is_symlink():
+            raise ValueError(f"internal file '{_n}' is a symlink; aborting")
+
+    meta_path = run_dir / "run-meta.json"
+    if not meta_path.is_file():
+        raise FileNotFoundError(f"run-meta.json not found in {run_dir}")
+    try:
+        meta: dict[str, object] = json.loads(meta_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"run-meta.json is not valid JSON: {exc}") from exc
+    try:
+        policy_digest = str(meta["policy_digest"])
+        stored_plan_id = str(meta["plan_id"])
+        org_id = str(meta["organization_id"])
+        proj_id = str(meta["project_id"])
+        run_id_ = str(meta["run_id"])
+    except KeyError as exc:
+        raise ValueError(f"run-meta.json is missing required key {exc}") from exc
+
+    manifest_text = (run_dir / "manifest.yaml").read_text(encoding="utf-8")
+    graph = parse_authoring_graph_yaml(manifest_text)
+    raw_connections = json.loads(
+        (run_dir / "connections.json").read_text(encoding="utf-8")
+    )
+    snapshot = CompileSnapshot(
+        policy_digest=policy_digest,
+        package_digests=frozenset(),
+        connections=tuple(raw_connections),  # type: ignore[arg-type]
+    )
+    plan = compile_graph(graph, snapshot)
+
+    if plan.plan_id != stored_plan_id:
+        raise ValueError(
+            f"Reconstructed plan_id {plan.plan_id!r} != stored {stored_plan_id!r}"
+        )
+    identity = GraphRunIdentity(
+        organization_id=org_id,
+        project_id=proj_id,
+        run_id=run_id_,
+        graph_digest=plan.source_graph_digest,
+        plan_digest=plan.plan_id,
+        policy_digest=plan.policy_digest,
+    )
+    return plan, identity, meta

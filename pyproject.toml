@@ -1,10 +1,23 @@
 [project]
 name = "bounded-loops"
-version = "0.3.1"
-description = "68 bounded agent-loop folders, 64 keyless, with independent gates and auditable receipts."
+version = "0.4.0"
+description = "A graph engine for reliable AI agents: a DAG of independently-gated bounded loops (68-loop catalog, 64 keyless) with no-secret connectors and receipt-backed audit trails."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "pyyaml>=6.0",
     "jsonschema>=4.0",
@@ -27,11 +40,25 @@ otel = [
     "opentelemetry-api>=1.27",
 ]
 dev = [
+    "build>=1.2",
     "mypy>=1.10",
-    "ruff>=0.5",
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "ruff>=0.5,<0.16",
     "types-PyYAML",
 ]
 mcp = [
+    "mcp>=1.27,<2",
+]
+
+[dependency-groups]
+dev = [
+    "build>=1.2",
+    "mypy>=1.10",
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "ruff>=0.5,<0.16",
+    "types-PyYAML",
     "mcp>=1.27,<2",
 ]
 
@@ -43,11 +70,25 @@ bounded-loops-mcp = "bounded_loops.mcp_server:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.sdist]
+# Hatchling's default sdist ships every git-tracked file. Internal engineering material
+# must never reach a published artifact — the same rule .gitignore already states for
+# `audit/` ("tracked in a separate private repo, never public").
+exclude = [".backup/", "audit/", "*.db"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["bounded_loops"]
+artifacts = ["bounded_loops/graph/schemas/*.json", "bounded_loops/graph/arena/*.html", "bounded_loops/graph/studio/*.html", "bounded_loops/graph/console/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m \"not network and not external_tool and not provider_smoke and not clean_install\""
+markers = [
+    "network: test may contact a network endpoint or invoke a tool that can do so",
+    "external_tool: test requires an optional dependency, binary, daemon, or externally managed runtime",
+    "provider_smoke: test contacts a real model or provider account and is always opt-in",
+    "clean_install: test builds or installs the package in a fresh environment and is always opt-in",
+]
 
 [tool.ruff]
 # Loop `seed/` directories hold DELIBERATELY-broken fixtures (dead imports,
@@ -59,3 +100,4 @@ extend-exclude = ["loops/*/seed", "loops/*/*/seed"]
 # pytest.importorskip() must run before the guarded imports that follow it —
 # E402 is a false positive for this well-known optional-dependency test pattern.
 "tests/adapters/io/test_otel_tracer.py" = ["E402"]
+"tests/graph/adapters/test_slm_client.py" = ["E402"]

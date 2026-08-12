@@ -49,12 +49,15 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env
+from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env, output_redactions
+from bounded_loops.adapters.runners._prompt import with_memory_snapshot
+from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn, TurnState
 from bounded_loops.domain.errors import RunnerError
 from bounded_loops.domain.models import LoopContext, RunResult, Spec
 
 # Single source in adapters/_env.py.
 _ENV_ALLOWLIST = ENV_ALLOWLIST
+_MAX_AGENT_OUTPUT_BYTES = 64 * 1024
 
 
 def _build_subprocess_env(ctx_env: dict[str, str]) -> dict[str, str]:
@@ -65,7 +68,7 @@ def _build_prompt(spec: Spec, ctx: LoopContext) -> str:
     """Verbatim copy of ShellRunner._build_prompt's body."""
     prompt_file = ctx.workspace / "PROMPT.md"
     if prompt_file.exists():
-        return prompt_file.read_text(encoding="utf-8")
+        return with_memory_snapshot(prompt_file.read_text(encoding="utf-8"), ctx)
     lines = [f"# Goal\n{spec.goal}", "", "# Steps"]
     for i, step in enumerate(spec.steps, 1):
         lines.append(f"{i}. {step}")
@@ -74,7 +77,7 @@ def _build_prompt(spec: Spec, ctx: LoopContext) -> str:
         lines.append("# Forbidden actions")
         for f in spec.forbid:
             lines.append(f"- {f}")
-    return "\n".join(lines)
+    return with_memory_snapshot("\n".join(lines), ctx)
 
 
 def _write_agent_output(workspace: Path, stdout: str) -> None:
@@ -136,32 +139,38 @@ class ClaudeCodeRunner:
         argv = shlex.split(self.agent_cmd) + ["-p", "--output-format", "json", "--bare"]
         env = _build_subprocess_env({**ctx.env, **self.extra_env})
         try:
-            proc = subprocess.run(
-                argv, input=prompt_text, cwd=str(ctx.workspace), shell=False,
-                capture_output=True, text=True, timeout=self.timeout_s, env=env,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RunnerError(f"ClaudeCodeRunner: timed out after {self.timeout_s}s") from exc
+            completed = ProcessTurn.start(
+                argv,
+                cwd=ctx.workspace,
+                env=env,
+                input_text=prompt_text,
+                output_limit_bytes=_MAX_AGENT_OUTPUT_BYTES,
+                redactions=output_redactions({**ctx.env, **self.extra_env}),
+            ).wait(timeout_s=self.timeout_s)
         except OSError as exc:
             raise RunnerError(f"ClaudeCodeRunner: could not launch {self.agent_cmd!r}: {exc}") from exc
+        if completed.state is TurnState.TIMED_OUT:
+            raise RunnerError(f"ClaudeCodeRunner: timed out after {self.timeout_s}s")
+        if completed.state is TurnState.CANCELLED:
+            raise RunnerError("ClaudeCodeRunner: cancelled before completion")
 
         changed = _workspace_changed(ctx.workspace)
 
         tokens = 0
-        log = proc.stdout
+        log = completed.stdout
         try:
-            payload = json.loads(proc.stdout)
+            payload = json.loads(completed.stdout)
             if isinstance(payload, dict):
                 cost = payload.get("total_cost_usd")
                 if cost is not None:
-                    log = f"[cost: ${cost}] {proc.stdout}"
+                    log = f"[cost: ${cost}] {completed.stdout}"
                 usage = payload.get("usage")
                 if isinstance(usage, dict):
                     tokens = _sum_usage_tokens(usage)   # bound #7 made real
         except (json.JSONDecodeError, AttributeError):
             pass  # non-JSON output — degrade gracefully, don't crash
 
-        _write_agent_output(ctx.workspace, proc.stdout)
+        _write_agent_output(ctx.workspace, completed.stdout)
 
         return RunResult(changed=changed, agent_claimed_done=False, tokens=tokens, log=log)
         # agent_claimed_done is ALWAYS False here — this runner never

@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.loops._copied_loop import copy_loop
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BL = [sys.executable, "-m", "bounded_loops.cli"]
 
@@ -78,33 +80,34 @@ def test_loop_catalog_represents_all_anthropic_patterns():
     assert all(patterns[pattern] >= 1 for pattern in expected)
 
 
-@pytest.mark.parametrize("name", KEYLESS_LOOPS)
-def test_keyless_loop_reaches_done(name):
-    loop_dir = _loop_dir(name)
-    ledger = loop_dir / ".ledger.jsonl"
-    if ledger.exists():
-        ledger.unlink()
-    try:
-        result = _run_bl("run", str(loop_dir), "--yes")
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "DONE" in result.stdout
-    finally:
-        if ledger.exists():
-            ledger.unlink()
+@pytest.mark.parametrize(
+    "name",
+    [pytest.param(name, marks=pytest.mark.external_tool) for name in KEYLESS_LOOPS],
+)
+def test_keyless_loop_reaches_done(name, tmp_path):
+    loop_dir = copy_loop(_loop_dir(name), tmp_path)
+    result = _run_bl("run", str(loop_dir), "--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "DONE" in result.stdout
 
 
-@pytest.mark.parametrize("name,binary", list(TOOL_LOOPS.items()))
-def test_tool_loop_reaches_done_when_binary_present(name, binary):
+@pytest.mark.parametrize(
+    "name,binary",
+    [
+        pytest.param(name, binary, marks=pytest.mark.external_tool)
+        if name != "content-fact-gate"
+        else pytest.param(
+            name,
+            binary,
+            marks=[pytest.mark.external_tool, pytest.mark.network],
+        )
+        for name, binary in TOOL_LOOPS.items()
+    ],
+)
+def test_tool_loop_reaches_done_when_binary_present(name, binary, tmp_path):
     if shutil.which(binary) is None:
         pytest.skip(f"{binary} not installed on this machine")
-    loop_dir = _loop_dir(name)
-    ledger = loop_dir / ".ledger.jsonl"
-    if ledger.exists():
-        ledger.unlink()
-    try:
-        result = _run_bl("run", str(loop_dir), "--yes")
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "DONE" in result.stdout
-    finally:
-        if ledger.exists():
-            ledger.unlink()
+    loop_dir = copy_loop(_loop_dir(name), tmp_path)
+    result = _run_bl("run", str(loop_dir), "--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "DONE" in result.stdout
