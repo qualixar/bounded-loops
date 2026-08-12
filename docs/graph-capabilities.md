@@ -386,3 +386,25 @@ is the honest statement of this posture.
 | Durable memory adapters | An SLM-backed `GraphMemoryStorePort` and `SemanticMemoryStorePort` for cross-run memory persistence |
 | `AuditStorePort` | A concrete audit store (e.g., `LocalAuditStore`) for persisting audit plans |
 | Hosted receipt verifier | A `ArenaReceiptVerifierPort` implementation if you want the Arena to verify hash chains against a remote server |
+
+---
+
+## Runtime dependencies — why pytest ships with the package
+
+`pip install bounded-loops` installs `pytest>=8.0` as a core runtime dependency.
+This is intentional, not a packaging error.
+
+The engine ships a built-in `pytest` gate kind. When a graph node declares
+`kind: loop` with a pytest gate, the engine invokes `python -m pytest` as a
+subprocess at run time — not as a test framework for this project's own test suite,
+but as the independent gate that checks the node's output. Because that subprocess
+call is part of the engine's runtime path (not just a development or CI tool), pytest
+must be present in the same environment as the engine itself.
+
+A test (`test_default_install_includes_pytest_for_shipped_pytest_gates`) asserts this
+dependency is present and reachable, specifically to prevent well-meaning packaging
+cleanup from moving pytest to a dev-only optional group and silently breaking the
+pytest gate for users who install only `bounded-loops`.
+
+If you install `bounded-loops` and never use the pytest gate, pytest is an unused
+runtime dependency in your environment. That is the accepted tradeoff.

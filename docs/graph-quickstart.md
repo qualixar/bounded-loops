@@ -27,17 +27,44 @@ bl graph --help
 
 ## 2. Configure egress posture (optional)
 
-By default the engine runs connector nodes with `OPEN` egress — the subprocess can
-reach any host.  To opt into the macOS Seatbelt ALLOWLIST cage (network-only; a
-compromised subprocess still has full filesystem access):
+**Default:** OPEN — your subscription CLI subprocess can reach any host, unchanged
+from running it directly. No configuration is needed to start; skip this step to
+keep the default.
+
+To opt into the macOS Seatbelt ALLOWLIST cage (restricts network egress to a declared
+list; note that a compromised subprocess still has full filesystem access):
 
 ```bash
 bl graph init --posture allowlist --allowlist api.anthropic.com
 ```
 
+**Before choosing ALLOWLIST, read these two facts:**
+
+- List every hostname your CLI actually contacts. An incomplete allowlist blocks any
+  connection you did not name — including telemetry endpoints, update checks, or
+  fallback hosts the CLI reaches without advertising it. The engine does not warn
+  you about connections that get blocked; they simply fail.
+- ALLOWLIST requires the OS sandbox (macOS Seatbelt or Linux bubblewrap). On any
+  platform where the cage is unavailable, the engine refuses to run — it fails
+  closed rather than silently falling back to OPEN egress.
+
 `bl graph init` writes `~/.bounded-loops/egress.json` atomically (temp file +
-`fchmod 0600` + `fsync` + round-trip verify + `os.replace`).  Pass `--yes` to skip
-the interactive prompts.  Skip this step entirely to keep the default OPEN posture.
+`fchmod 0600` + `fsync` + round-trip verify + `os.replace`).
+
+**Interactive mode — three prompts:**
+
+Running `bl graph init` without flags opens an interactive session with exactly three
+prompts in order:
+
+| # | Prompt | Options | Default |
+|---|---|---|---|
+| 1 | Connector mode | `local_cli` (subscription CLI) / `byok_https` (bring-your-own key) | `local_cli` |
+| 2 | Egress posture | `open` / `allowlist` / `broker` | `open` |
+| 3 | Confirm write | `Y` / `n` | `Y` |
+
+Connector mode is informational only — it is not stored in `egress.json`; only the
+posture and allowlist are written. To skip all prompts and accept the defaults in
+one command: `bl graph init --yes`.
 
 ---
 
@@ -144,6 +171,11 @@ the portable graph; they are supplied here at execute time:
 
 ## 5. Run the graph
 
+> **Subscription required.** This step invokes your logged-in `claude` CLI and sends
+> the prompt to Anthropic's API. It counts against your Claude subscription or API
+> quota. If you do not have a subscription, skip to step 9 (built-in sandbox demo)
+> or step 10 (in-process demonstration — no credentials required).
+
 ```bash
 bl graph run --execute manifest.yaml \
   --connections connections.json \
@@ -178,10 +210,21 @@ out       : ./my-run
 Open the visual Arena:  bl graph arena --run ./my-run
 ```
 
-The prompt is intentionally not persisted in the run directory. The run directory
-contains `manifest.yaml`, `connections.json`, `plan.json`, `run-meta.json`, and
-`controller-events.jsonl` (the append-only event log). The artifact (the node's
-reply) is content-addressed in `./my-run/artifacts/`.
+The prompt is intentionally not persisted in the run directory. After a successful
+run the directory contains:
+
+```
+artifacts/                   ← content-addressed node outputs (subdirs: objects/, metadata/)
+connections.json
+controller-events.jsonl      ← the append-only hash-chained event log
+controller-events.jsonl.lock
+manifest.yaml
+plan.json
+run-meta.json
+```
+
+If the run contained an approval node and you ran `bl graph approve`, two additional
+files appear: `approvals.json` and `approvals.lock`.
 
 ---
 
@@ -206,11 +249,16 @@ To continue:
 state — the run is live but durably paused at a node. The `pause_status` line makes
 the paused state unambiguous: this is exit code 3, not success (0) or failure (2).
 
-To record a decision and resume:
+In the hint line above, `approved|rejected` uses `|` as notation for "or" — it is
+not a shell pipe. Do not type that string literally. Pick one value and run the
+command with only that value:
 
 ```bash
+# Accept the node's output:
 bl graph approve --run ./my-run --node review --decision approved
-# or: --decision rejected
+
+# Reject it:
+bl graph approve --run ./my-run --node review --decision rejected
 ```
 
 `bl graph approve` exits 0 if the run has now SUCCEEDED, 2 if it FAILED, and 3
@@ -226,8 +274,17 @@ bl graph console --run ./my-run
 # Open the printed URL in any browser on this host.
 ```
 
-The console is local-only (127.0.0.1, never 0.0.0.0), per-invocation token,
-and auto-closes after the page is served.
+The console is local-only (127.0.0.1, never 0.0.0.0) with a per-invocation token.
+
+**Console lifecycle — two things to know:**
+
+- **Auto-close:** once every pending approval node in the run is decided (whether via
+  the browser or a concurrent `bl graph approve` call), the console server stops on
+  its own. The terminal prints `Approval console closed.` There is no automatic
+  resume step; check the run state with `bl graph status --run <dir>`.
+- **URL not opened:** if you start the console but never open the printed URL in a
+  browser, the server keeps running and waiting. Press `Ctrl-C` to stop it, then use
+  `bl graph approve` on the command line instead.
 
 ---
 
@@ -294,8 +351,15 @@ bl graph demo --out ./demo-run
 
 This is a DEMONSTRATION. A prominent banner in the output and in `run-meta.json`
 marks it explicitly: nodes are **not** executed in a sandbox; no isolation,
-network, or E2 enforcement applies. Use it to inspect the run-directory structure
-and exercise `bl graph status` / `bl graph arena` without any agent CLI installed.
+network, or execution-isolation enforcement (E2 — the native OS sandbox gate)
+applies. Use it to inspect the run-directory structure and exercise
+`bl graph status` / `bl graph arena` without any agent CLI installed.
+
+E2 also appears in `bl graph --help` ("E2 required for run"). It refers to the
+admission check that the engine runs before executing any node: a node must have
+an admitted connector record, and the native OS sandbox must be available. The demo
+command deliberately bypasses both checks so you can try the run-directory tools
+without credentials or a supported sandbox platform.
 
 ---
 
