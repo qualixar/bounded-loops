@@ -611,3 +611,61 @@ def test_a_resume_is_recorded_in_the_log(tmp_path: Path) -> None:
     _controller_at(log_path, plan, _Gate(reject_first=0), "2026-08-12T00:00:01Z").resume()
 
     assert [p["resume_ordinal"] for p in _of_type(tmp_path, "run.resumed")] == [1]
+
+
+def test_failure_cause_separates_a_gate_rejection_from_a_worker_fault(tmp_path: Path) -> None:
+    """The gate's error rate must be computable by CAUSE, never by parsing prose.
+
+    Both a rejected attempt and a crashed worker produce a failed attempt record. Only the
+    first belongs in the gate's denominator: an attempt that never reached the gate cannot
+    tell you anything about the gate. Before the cause existed, telling them apart meant
+    matching on free text.
+    """
+    # A worker that raises on the first attempt and succeeds afterwards, so one run yields
+    # one worker fault and one gate rejection.
+    class _FlakyWorker:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("transient worker fault")
+            return WorkerResult(output_artifact_digests=(_DIGEST,))
+
+    _controller(
+        tmp_path, worker=_FlakyWorker(), gate=_Gate(reject_first=99),
+        budgets={"max_attempts": 2},
+    ).run()
+
+    attempts = _of_type(tmp_path, "node.attempt.failed")
+    causes = [payload["cause"] for payload in attempts]
+    assert causes == ["worker_fault", "gate_rejected"]
+
+    gate_evaluations = len(_of_type(tmp_path, "node.gating"))
+    rejections = sum(1 for payload in attempts if payload["cause"] == "gate_rejected")
+    assert gate_evaluations == 1, "the crashed attempt never reached the gate"
+    assert rejections == 1
+    # The denominator is gate evaluations, not attempts: counting attempts would report a
+    # rejection rate of 1/2 for a gate that was consulted exactly once and rejected once.
+    assert rejections / gate_evaluations == 1.0
+
+    # And a verdict rides exactly the gate rejection, never the worker fault.
+    assert [("verdict" in payload) for payload in attempts] == [False, True]
+
+
+def test_every_terminal_failure_declares_a_declared_cause(tmp_path: Path) -> None:
+    """No failure path may omit the cause or invent one outside the domain's closed set."""
+    from bounded_loops.graph.domain.events import NodeFailureCause
+
+    declared = {member.value for member in NodeFailureCause}
+    for enforcer, budget in ((_DenyingEnforcer(), 1), (None, 2)):
+        run_dir = tmp_path / f"case-{budget}-{enforcer is None}"
+        run_dir.mkdir()
+        _controller(
+            run_dir, worker=_Worker(), gate=_Gate(reject_first=99),
+            budgets={"max_attempts": budget}, enforcer=enforcer,
+        ).run()
+        failed = _of_type(run_dir, "node.failed")
+        assert failed, "the run must have failed"
+        assert failed[0]["cause"] in declared

@@ -177,7 +177,13 @@ def test_node_succeeded_rejects_isolation_without_provider(tmp_path):
 # ── externalized gate verdict (F2 slice 3) ──────────────────────────────────────
 
 def _failed_payload(**extra: object) -> dict[str, object]:
-    return {"node_id": "probe", "state": "FAILED", "attempt": 1, "reason": "gate rejected", **extra}
+    # ``cause`` is required on a failure receipt: the free-text reason is for humans, and
+    # distinguishing a gate rejection from a worker crash by parsing it is how an attempt
+    # that never reached the gate ends up in the gate's error denominator.
+    return {
+        "node_id": "probe", "state": "FAILED", "attempt": 1, "reason": "gate rejected",
+        "cause": "gate_rejected", **extra,
+    }
 
 
 def test_node_succeeded_accepts_a_passed_gate_verdict(tmp_path):

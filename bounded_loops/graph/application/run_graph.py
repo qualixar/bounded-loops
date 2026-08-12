@@ -20,6 +20,7 @@ from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.events import (
     GraphRunIdentity,
+    NodeFailureCause,
     GraphRunProjection,
     StoredGraphEvent,
     UnsignedGraphEvent,
@@ -83,6 +84,7 @@ class _AttemptOutcome:
 
     succeeded: bool = False
     failure: str | None = None
+    cause: NodeFailureCause | None = None
     verdict: dict[str, object] | None = None
     terminal: GraphRunProjection | None = None
 
@@ -479,6 +481,7 @@ class GraphRunController:
                 except Exception:
                     return self._fail_node(
                         states, node_id, "execution policy denied worker", attempt=at,
+                        cause=NodeFailureCause.POLICY_DENIED,
                     )
                 # ONE classification drives BOTH the enforcer skip and the worker choice, so
                 # they can never drift into an unsandboxed subprocess (single source of truth).
@@ -490,7 +493,7 @@ class GraphRunController:
                     # path, and the enforcer was already skipped for this node.
                     return self._fail_node(
                         states, node_id, "no connector worker configured for egress node",
-                        attempt=at,
+                        attempt=at, cause=NodeFailureCause.NO_WORKER,
                     )
                 terminal = self._run_node_loop(
                     states, node_id, node, envelope, egress, worker, cursor,
@@ -528,6 +531,7 @@ class GraphRunController:
             return self._fail_node(
                 states, node_id, "retry budget was already spent before this resume",
                 attempt=consumed, budget_exhausted=budget > 1,
+                cause=NodeFailureCause.BUDGET_SPENT,
             )
         # Starts at consumed + 1, so every attempt number written is strictly greater than
         # any already recorded.  A lower number appended after a higher one would make the
@@ -545,7 +549,7 @@ class GraphRunController:
                         states, node_id,
                         f"attempt {attempt} was re-driven {redrive - 1} times without "
                         "completing; refusing to re-execute it again",
-                        attempt=attempt,
+                        attempt=attempt, cause=NodeFailureCause.REDRIVE_EXHAUSTED,
                     )
                 self._append_redrive(node_id, attempt, redrive)
             states[node_id] = NodeState.RUNNING
@@ -561,11 +565,12 @@ class GraphRunController:
             # only the non-final failures would systematically undercount: whenever the
             # budget runs out ON a gate rejection, that rejection would appear solely on
             # the terminal node.failed and be missed.
-            self._append_attempt_failed(node_id, attempt, reason, outcome.verdict)
+            cause = outcome.cause or NodeFailureCause.WORKER_FAULT
+            self._append_attempt_failed(node_id, attempt, reason, cause, outcome.verdict)
             if attempt < budget:
                 continue
             return self._fail_node(
-                states, node_id, reason, attempt=attempt,
+                states, node_id, reason, attempt=attempt, cause=cause,
                 verdict=outcome.verdict,
                 # Only meaningful when a retry was actually available: a single-attempt
                 # node did not "exhaust" anything, it simply failed.
@@ -601,13 +606,16 @@ class GraphRunController:
             except Exception:
                 return _AttemptOutcome(terminal=self._fail_node(
                     states, node_id, "execution environment denied worker", attempt=attempt,
+                    cause=NodeFailureCause.ENVIRONMENT_DENIED,
                 ))
         try:
             result = worker.execute(
                 plan=self.plan, node=node, envelope=envelope, attempt=attempt,
             )
         except Exception:
-            return _AttemptOutcome(failure="worker execution failed")
+            return _AttemptOutcome(
+                failure="worker execution failed", cause=NodeFailureCause.WORKER_FAULT,
+            )
         expected_route = self._expected_route_for(node)
         expected_transport = self._expected_transport_for(node)
         try:
@@ -619,7 +627,10 @@ class GraphRunController:
                 digests=result.output_artifact_digests,
             )
         except Exception:
-            return _AttemptOutcome(failure="worker output artifact verification failed")
+            return _AttemptOutcome(
+                failure="worker output artifact verification failed",
+                cause=NodeFailureCause.ARTIFACT_UNVERIFIED,
+            )
         states[node_id] = NodeState.GATING
         self._append_node(node_id, "node.gating", NodeState.GATING, attempt=attempt)
         try:
@@ -627,6 +638,7 @@ class GraphRunController:
         except Exception:
             return _AttemptOutcome(terminal=self._fail_node(
                 states, node_id, "independent gate evaluation failed", attempt=attempt,
+                cause=NodeFailureCause.GATE_BROKEN,
             ))
         if not isinstance(verdict, GateVerdict) or not self._verdict_is_wellformed(verdict):
             # A broken gate, not a failed attempt: retrying would spend the budget
@@ -634,6 +646,7 @@ class GraphRunController:
             # defect behind an eventual budget-exhausted failure.
             return _AttemptOutcome(terminal=self._fail_node(
                 states, node_id, "independent gate returned an invalid verdict", attempt=attempt,
+                cause=NodeFailureCause.GATE_BROKEN,
             ))
         if verdict.passed:
             states[node_id] = NodeState.SUCCEEDED
@@ -651,11 +664,13 @@ class GraphRunController:
             return _AttemptOutcome(succeeded=True)
         return _AttemptOutcome(
             failure="independent gate rejected output",
+            cause=NodeFailureCause.GATE_REJECTED,
             verdict=self._verdict_body(verdict),
         )
 
     def _append_attempt_failed(
-        self, node_id: str, attempt: int, reason: str, verdict: dict[str, object] | None,
+        self, node_id: str, attempt: int, reason: str, cause: NodeFailureCause,
+        verdict: dict[str, object] | None,
     ) -> None:
         """Record one failed attempt without transitioning run state.
 
@@ -666,7 +681,9 @@ class GraphRunController:
         Writing this record is also what marks the attempt SPENT for a later resume — see
         ``_consumed_from`` — so it must be appended before the node's terminal receipt.
         """
-        payload: dict[str, object] = {"node_id": node_id, "attempt": attempt, "reason": reason}
+        payload: dict[str, object] = {
+            "node_id": node_id, "attempt": attempt, "reason": reason, "cause": cause.value,
+        }
         if verdict is not None:
             payload["verdict"] = verdict
         self._append(f"{node_id}:node.attempt.failed:{attempt}", "node.attempt.failed", payload)
@@ -703,7 +720,10 @@ class GraphRunController:
         states[node_id] = NodeState.AWAITING_APPROVAL
         self._append_node(node_id, "node.awaiting_approval", NodeState.AWAITING_APPROVAL)
         if self._approval_resolver is None:
-            return self._fail_node(states, node_id, "approval node reached without an approval resolver")
+            return self._fail_node(
+                states, node_id, "approval node reached without an approval resolver",
+                cause=NodeFailureCause.APPROVAL_UNRESOLVED,
+            )
         try:
             outcome = self._approval_resolver.resolve(
                 identity=self.event_log.identity, node=node, attempt=1,
@@ -714,15 +734,24 @@ class GraphRunController:
         except Exception:
             # Consistent with worker/gate/policy failures: a resolver error fails the
             # run closed (durable FAILED) rather than escaping as an uncaught exception.
-            return self._fail_node(states, node_id, "approval resolver evaluation failed")
+            return self._fail_node(
+                states, node_id, "approval resolver evaluation failed",
+                cause=NodeFailureCause.APPROVAL_UNRESOLVED,
+            )
         if outcome is ApprovalOutcome.APPROVED:
             states[node_id] = NodeState.SUCCEEDED
             self._append_node(node_id, "node.succeeded", NodeState.SUCCEEDED, artifact_digests=[])
             return None
         if outcome is ApprovalOutcome.REJECTED:
-            return self._fail_node(states, node_id, "human approval was rejected")
+            return self._fail_node(
+                states, node_id, "human approval was rejected",
+                cause=NodeFailureCause.APPROVAL_REJECTED,
+            )
         if outcome is not ApprovalOutcome.PENDING:
-            return self._fail_node(states, node_id, "approval resolver returned an invalid outcome")
+            return self._fail_node(
+                states, node_id, "approval resolver returned an invalid outcome",
+                cause=NodeFailureCause.APPROVAL_UNRESOLVED,
+            )
         # PENDING: no decision yet — stay paused; the hold receipt is already durable.
         return self.event_log.replay_projection()
 
@@ -816,11 +845,16 @@ class GraphRunController:
 
     def _fail_node(
         self, states: dict[str, NodeState], node_id: str, reason: str,
-        *, verdict: dict[str, object] | None = None, attempt: int = 1,
-        budget_exhausted: bool = False,
+        *, cause: NodeFailureCause, verdict: dict[str, object] | None = None,
+        attempt: int = 1, budget_exhausted: bool = False,
     ) -> GraphRunProjection:
         states[node_id] = NodeState.FAILED
-        extra: dict[str, object] = {"verdict": verdict} if verdict is not None else {}
+        # ``cause`` is required, not defaulted: the free-text reason is for humans, and any
+        # default here would silently mislabel some failure — which is exactly how an
+        # attempt that never reached the gate could end up in the gate's error denominator.
+        extra: dict[str, object] = {"cause": cause.value}
+        if verdict is not None:
+            extra["verdict"] = verdict
         if budget_exhausted:
             # Present only when a retry budget was actually available and spent, so a
             # reader can tell "ran out of attempts" from "failed on its only attempt".

@@ -13,6 +13,7 @@ from typing import Any, BinaryIO, Iterator, Mapping
 
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import (
+    NodeFailureCause,
     GraphRunIdentity,
     GraphRunProjection,
     StoredGraphEvent,
@@ -329,6 +330,10 @@ def _validate_node_event(event_type: str, payload: Mapping[str, object]) -> None
         required.add("artifact_digests")
     elif event_type == "node.failed":
         required.add("reason")
+        # A machine-readable cause is REQUIRED on a failure receipt. The free-text reason
+        # is for humans, and telling a gate rejection from a worker crash by parsing it is
+        # how an attempt that never reached the gate ends up in the gate error denominator.
+        required.add("cause")
     if event_type == "node.succeeded":
         allowed = required | {"route", "transport", "isolation", "verdict"}
     elif event_type == "node.failed":
@@ -359,6 +364,11 @@ def _validate_node_event(event_type: str, payload: Mapping[str, object]) -> None
             _validate_verdict(payload["verdict"], True)
     if event_type == "node.failed" and (not isinstance(payload["reason"], str) or not payload["reason"]):
         raise GraphIntegrityError("node.failed requires a non-empty reason")
+    if event_type == "node.failed":
+        _validate_cause(payload["cause"], "node.failed")
+        if payload["cause"] == NodeFailureCause.GATE_REJECTED.value and "verdict" not in payload:
+            # A gate rejection without the verdict it rejected on is not auditable.
+            raise GraphIntegrityError("node.failed gate_rejected requires the gate verdict")
     if event_type == "node.failed" and "verdict" in payload:
         _validate_verdict(payload["verdict"], False)
     if event_type == "node.failed" and "budget_exhausted" in payload:
@@ -420,6 +430,14 @@ def _validate_isolation(value: object) -> None:
             raise GraphIntegrityError("node.succeeded isolation control value is invalid")
 
 
+def _validate_cause(value: object, event_type: str) -> None:
+    """The cause must be one of the domain's closed set, so readers can switch on it."""
+    if not isinstance(value, str):
+        raise GraphIntegrityError(f"{event_type} cause must be a string")
+    if value not in {member.value for member in NodeFailureCause}:
+        raise GraphIntegrityError(f"{event_type} cause {value!r} is not a declared failure cause")
+
+
 def _validate_verdict(value: object, expected_passed: bool) -> None:
     """The externalized independent-gate verdict: the gate's boolean decision and a
     non-empty reason, optionally bound to a content-addressed evidence digest. The
@@ -468,9 +486,10 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
         # Its presence is therefore the machine-readable discriminator between a
         # gate rejection and a worker fault — which is what makes the per-attempt
         # gate error rate computable without parsing the free-text ``reason``.
-        required = {"node_id", "attempt", "reason"}
+        required = {"node_id", "attempt", "reason", "cause"}
         if set(payload) - {"verdict"} != required:
             raise GraphIntegrityError("node.attempt.failed payload has an invalid shape")
+        _validate_cause(payload["cause"], "node.attempt.failed")
         if not isinstance(payload["node_id"], str) or not payload["node_id"]:
             raise GraphIntegrityError("node.attempt.failed node_id must be a non-empty string")
         attempt = payload["attempt"]
@@ -478,6 +497,13 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
             raise GraphIntegrityError("node.attempt.failed attempt must be a positive integer")
         if not isinstance(payload["reason"], str) or not payload["reason"]:
             raise GraphIntegrityError("node.attempt.failed reason must be a non-empty string")
+        if (payload["cause"] == NodeFailureCause.GATE_REJECTED.value) != ("verdict" in payload):
+            # The two must agree, in both directions: a gate rejection is the only cause that
+            # carries a verdict, and a verdict without that cause would be counted as a
+            # rejection by any reader keying on its presence.
+            raise GraphIntegrityError(
+                "node.attempt.failed verdict must be present exactly for a gate rejection"
+            )
         if "verdict" in payload:
             # The SAME closed-shape validation node.failed gets: {passed, reason} with an
             # optional evidence_digest, a non-empty reason, and passed=False to match the
