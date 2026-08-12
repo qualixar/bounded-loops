@@ -18,10 +18,11 @@ JSON-RPC framing.
 """
 from __future__ import annotations
 
+import weakref
 from pathlib import Path
 
 try:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.fastmcp import FastMCP, Context
 except ImportError as _exc:  # pragma: no cover - only hit when the extra is absent
     raise SystemExit(
         "bounded-loops-mcp requires the optional 'mcp' dependency.\n"
@@ -44,7 +45,48 @@ mcp = FastMCP("bounded-loops")
 # shown to a confirm=False preview call for that path, in THIS server
 # process's lifetime. Not persisted across server restarts — that's fine,
 # a fresh server means a fresh trust decision is required again anyway.
+#
+# L-3 fix: two dicts instead of one:
+#   _previewed — shared fallback for callers that don't supply a session
+#                context (direct calls, tests, CLI wrappers). Used when
+#                ctx=None.
+#   _previewed_by_session — per-MCP-session preview state.  The key is the
+#                FastMCP session object (stable across all calls in one
+#                client connection). WeakKeyDictionary ensures the entry is
+#                GC'd automatically when a session ends, with no manual
+#                cleanup required.
+#
+# Why this matters: with a single global dict, concurrent MCP sessions
+# (e.g. Claude Code + another client both connected) share preview state
+# keyed only by loop path. Session A's preview could be confirmed by
+# session B — or B's preview overwrites A's, causing A's confirm to fail
+# with a confusing "no matching preview" error on a loop A did preview.
 _previewed: dict[str, str] = {}
+_previewed_by_session: weakref.WeakKeyDictionary[object, dict[str, str]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _session_state(ctx: "Context | None") -> dict[str, str]:
+    """Return the preview dict scoped to this session (or the shared fallback).
+
+    When ctx is supplied by FastMCP (a real MCP client call), returns a
+    per-session dict keyed by the session object — invisible to other
+    concurrent sessions.  When ctx is None (direct test calls, CLI wrappers)
+    returns the shared _previewed dict, preserving existing behaviour.
+    """
+    if ctx is None:
+        return _previewed
+    try:
+        session = ctx.session  # stable object for the lifetime of a connection
+    except (AttributeError, ValueError):
+        # ctx.session raises ValueError if request_context is None (e.g. a
+        # mock or test double that didn't wire a real request context).
+        # Fall back to the shared dict rather than crashing.
+        return _previewed
+    if session not in _previewed_by_session:
+        _previewed_by_session[session] = {}
+    return _previewed_by_session[session]
 
 
 def _resolve_gate_preview(manifest, gate_override: str | None) -> str:
@@ -279,6 +321,7 @@ def bl_run(
     max_iterations: int | None = None,
     run_id: str | None = None,
     resume: bool = False,
+    ctx: "Context | None" = None,
 ) -> dict:
     """
     Run a bounded loop via the engine (manifest.load + composition.wire +
@@ -362,10 +405,10 @@ def bl_run(
     }
 
     if not confirm:
-        _previewed[path_key] = run_sig
+        _session_state(ctx)[path_key] = run_sig
         return {"status": "not_confirmed", "preview": preview}
 
-    if _previewed.get(path_key) != run_sig:
+    if _session_state(ctx).get(path_key) != run_sig:
         return {
             "status": "not_confirmed",
             "error": "no matching preview — call with confirm=false first, "

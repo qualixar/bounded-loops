@@ -78,7 +78,7 @@ def test_cli_yes_flag_does_not_record_trust(tmp_path, monkeypatch):
         "rung: L1\n"
         "runner:\n"
         "  default: shell\n"
-        "  agent_cmd: \"true\"\n"
+        "  agent_cmd: \"python3\"\n"  # M-1: must be in AGENT_CMD_ALLOWLIST; "true" removed
         "gate:\n"
         "  kind: command\n"
         "  run: \"true\"\n",

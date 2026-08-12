@@ -31,6 +31,7 @@ from pathlib import Path
 import yaml
 
 from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env
+from bounded_loops.application.manifest import _UniqueKeySafeLoader
 from bounded_loops.trust_store import is_trusted
 
 _SUPPORTED_GATE_KINDS = {"command", "pytest"}
@@ -90,7 +91,14 @@ def _read_gate_command(loop_yaml: Path) -> tuple[str | None, str | None]:
     without requiring the FULL manifest to be valid.
     """
     try:
-        raw = yaml.safe_load(loop_yaml.read_text(encoding="utf-8"))
+        # L-2 fix: use the same _UniqueKeySafeLoader that manifest.py uses, so
+        # a loop.yaml with duplicate keys is treated as unparseable here too
+        # (returns (None, None) → hook no-ops). With plain yaml.safe_load,
+        # duplicate keys resolve last-wins, meaning the manifest loader and this
+        # hook could read the same file as carrying different values — a
+        # manifest-integrity gap. _UniqueKeySafeLoader raises _DuplicateYamlKeyError
+        # (a yaml.YAMLError subclass) on duplicates, caught by the except below.
+        raw = yaml.load(loop_yaml.read_text(encoding="utf-8"), Loader=_UniqueKeySafeLoader)
     except (yaml.YAMLError, OSError):
         return None, None
     if not isinstance(raw, dict):

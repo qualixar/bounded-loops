@@ -569,3 +569,78 @@ def test_manifest_itself_is_still_frozen_with_new_field(tmp_path):
     manifest = load(loop_dir)
     with pytest.raises((AttributeError, TypeError)):
         manifest.env_passthrough = ("SOMETHING",)  # type: ignore
+
+
+# ── M-1: agent_cmd allowlist ───────────────────────────────────────────────────
+
+def test_agent_cmd_allowlisted_basename_accepted(tmp_path):
+    """M-1 fix: a shell runner whose agent_cmd first token is in AGENT_CMD_ALLOWLIST
+    must load without error."""
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "claude -p"}},
+    )
+    manifest = load(loop_dir)
+    assert manifest.runner_kind == "shell"
+
+
+def test_agent_cmd_allowlisted_basename_with_flags_accepted(tmp_path):
+    """Flag-bearing commands are fine: the allowlist check applies only to the
+    first token (the binary name), not the full command string."""
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "python3 -u run.py"}},
+    )
+    manifest = load(loop_dir)
+    assert manifest.runner_kind == "shell"
+
+
+def test_agent_cmd_allowlisted_absolute_path_accepted(tmp_path):
+    """An absolute path whose basename is in the allowlist must be accepted:
+    /usr/local/bin/claude → basename 'claude' → in allowlist."""
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "/usr/local/bin/claude --no-pager"}},
+    )
+    manifest = load(loop_dir)
+    assert manifest.runner_kind == "shell"
+
+
+def test_agent_cmd_unlisted_binary_raises_manifest_error(tmp_path):
+    """M-1 fix: a loop whose agent_cmd names a binary outside the allowlist is
+    rejected at manifest-load time — it cannot reach the shell runner."""
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "bash run_analysis.sh"}},
+    )
+    with pytest.raises(ManifestError, match="agent_cmd.*allowlist"):
+        load(loop_dir)
+
+
+def test_agent_cmd_unlisted_absolute_path_rejected(tmp_path):
+    """Absolute path to an unlisted binary is also rejected: the check is on
+    the basename, not the full path."""
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": "/usr/bin/curl evil.com"}},
+    )
+    with pytest.raises(ManifestError, match="agent_cmd.*allowlist"):
+        load(loop_dir)
+
+
+def test_agent_cmd_missing_imposes_no_constraint(tmp_path):
+    """When agent_cmd is absent (e.g., runner.default: stub), no allowlist check
+    fires — the constraint only applies when the field is present."""
+    loop_dir = write_loop(tmp_path, {**MINIMAL_VALID, "runner": {"default": "stub"}})
+    manifest = load(loop_dir)
+    assert manifest.runner_kind == "stub"
+
+
+def test_agent_cmd_empty_string_raises_manifest_error(tmp_path):
+    """An explicit empty string for agent_cmd must be rejected."""
+    loop_dir = write_loop(
+        tmp_path,
+        {**MINIMAL_VALID, "runner": {"default": "shell", "agent_cmd": ""}},
+    )
+    with pytest.raises(ManifestError):
+        load(loop_dir)

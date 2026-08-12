@@ -2,7 +2,7 @@
 import json
 import sys
 
-from bounded_loops.hooks.verify_bounded_loop import main, _check, _extract_cwd, _validate_cwd
+from bounded_loops.hooks.verify_bounded_loop import main, _check, _extract_cwd, _validate_cwd, _read_gate_command
 from bounded_loops.trust_store import record_trust
 
 
@@ -212,3 +212,28 @@ def test_main_defaults_to_claude_code_tool_when_argv_missing(monkeypatch):
 def test_main_empty_stdin_treated_as_empty_json(monkeypatch):
     monkeypatch.setattr(sys, "stdin", type("F", (), {"read": lambda self: ""})())
     assert main(["verify_bounded_loop.py", "claude-code"]) == 0
+
+
+# ── L-2: _read_gate_command uses _UniqueKeySafeLoader ─────────────────────────
+
+def test_read_gate_command_duplicate_key_treated_as_parse_failure(tmp_path):
+    """L-2 fix proof: the stop hook MUST use the same duplicate-key-rejecting
+    loader as the manifest. A loop.yaml with a duplicate gate.kind key must be
+    treated as unparseable (returns (None, None) → no-op / allow), not silently
+    last-wins.
+
+    With plain yaml.safe_load: 'kind' resolves to 'pytest' (last wins) and the
+    hook reads gate_kind='pytest'.
+    With _UniqueKeySafeLoader: a YAMLError is raised → returns (None, None).
+    """
+    (tmp_path / "loop.yaml").write_text(
+        "gate:\n"
+        "  kind: command\n"
+        "  kind: pytest\n",   # duplicate key — tests the loader, not the hook logic
+        encoding="utf-8",
+    )
+    gate_kind, gate_run = _read_gate_command(tmp_path / "loop.yaml")
+    # The unique-key loader must have caught the duplicate: both should be None
+    # (signalling: "don't try to execute anything from this ambiguous manifest").
+    assert gate_kind is None
+    assert gate_run is None
