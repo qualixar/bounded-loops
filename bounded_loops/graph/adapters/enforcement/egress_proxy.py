@@ -105,6 +105,13 @@ class LoopbackEgressProxy:
     _port: int = field(default=0, init=False, repr=False)
     _live: set[socket.socket] = field(default_factory=set, init=False, repr=False)
     _live_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    # TEST-04 fix: wakeup socket pair lets stop() interrupt _serve()'s
+    # selector.select() immediately instead of waiting up to 0.5s for the
+    # select timeout.  stop() writes one byte to _wakeup_w; _serve() detects
+    # the event on _wakeup_r and exits promptly.  stop() then joins the thread
+    # BEFORE closing server sockets, eliminating the FD-reuse race that caused
+    # "ValueError: Invalid file descriptor: -1" in _serve's selector.register().
+    _wakeup_w: socket.socket | None = field(default=None, init=False, repr=False)
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -115,13 +122,39 @@ class LoopbackEgressProxy:
                 raise RuntimeError("proxy already started")
             self._stop = threading.Event()  # fresh, so a restart is not dead-on-arrival
             self._sem = threading.BoundedSemaphore(self.max_connections)
-            servers, port = self._bind_dual_stack()
-            self._servers = servers
-            self._port = port
-            self._thread = threading.Thread(
-                target=self._serve, args=(list(servers), self._stop, self._sem), name="egress-proxy", daemon=True,
-            )
-            self._thread.start()
+            # Create the wakeup socket pair before binding the server sockets.
+            # stop() writes one byte to _wakeup_w; _serve() detects the event
+            # on wakeup_r (passed as an argument) and exits the select loop
+            # immediately rather than waiting for the 0.5s select timeout.
+            wakeup_r, wakeup_w = socket.socketpair()
+            # CRIT-3 guard: if anything between socketpair() and thread.start()
+            # raises, close BOTH ends of the wakeup pair and leave the proxy in a
+            # clean "never started" state so stop() remains a no-op and start()
+            # can be retried.  self._wakeup_w is stored only after a successful
+            # bind, so a partially-initialised proxy never exposes a dangling fd.
+            servers: list[socket.socket] = []
+            try:
+                servers, port = self._bind_dual_stack()
+                self._servers = servers
+                self._port = port
+                self._wakeup_w = wakeup_w  # stored only after successful bind
+                self._thread = threading.Thread(
+                    target=self._serve,
+                    args=(list(servers), self._stop, self._sem, wakeup_r),
+                    name="egress-proxy",
+                    daemon=True,
+                )
+                self._thread.start()
+            except BaseException:
+                _close(wakeup_r)
+                _close(wakeup_w)
+                for server in servers:
+                    _close(server)
+                self._servers = []
+                self._port = 0
+                self._wakeup_w = None
+                self._thread = None
+                raise
             return self._port
 
     def _bind_dual_stack(self) -> tuple[list[socket.socket], int]:
@@ -132,28 +165,57 @@ class LoopbackEgressProxy:
         ``[::1]:<port>`` and catch a compromised child's egress, bypassing the allowlist under a
         claimed ``egress=ENFORCED`` (dual-audit MAJOR-1). Binding both families ourselves closes that
         hole: every loopback address the cage permits is this proxy. If the host has no usable IPv6
-        (``::1`` unbindable by anyone), IPv4-only is safe and we proceed."""
+        (``::1`` unbindable by anyone), IPv4-only is safe and we proceed.
+
+        CON-06 — TOCTOU window and residual risk
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        There is an inherent race between the v4 bind (which allocates the ephemeral port) and the
+        subsequent v6 bind on the same port.  In that window — roughly one ``getsockname()`` syscall
+        wide — a racing adversary could bind ``[::1]:<port>`` and intercept the IPv6 path.
+
+        To minimise the window the v6 socket is created and configured (``socket()``,
+        ``setsockopt()`` × 2) BEFORE the v4 bind, so the only operation between
+        ``v4.getsockname()`` and ``v6.bind()`` is the bind syscall itself.  This reduces the
+        TOCTOU window to the minimum achievable without OS-level atomic dual-bind support (which
+        POSIX does not provide).
+
+        If the v6 bind fails with EADDRINUSE the loop retries with a fresh ephemeral port (up to
+        eight attempts).  Winning all eight races simultaneously requires a dedicated local adversary
+        and is astronomically unlikely; the alternative (SO_REUSEPORT) would introduce its own
+        sharing complexity on the v4 side.  The residual risk is accepted and documented here.
+        """
         last: OSError | None = None
         for _ in range(8):
-            v4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            v4.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                v4.bind(("127.0.0.1", 0))  # loopback ONLY — never a routable interface
-            except OSError as exc:
-                v4.close()
-                last = exc
-                continue
-            port = v4.getsockname()[1]
+            # Pre-create and configure v6 socket BEFORE the v4 bind so the
+            # TOCTOU window between getsockname() and v6.bind() is minimised
+            # to a single bind syscall (CON-06 hardening).
             v6: socket.socket | None = None
             if socket.has_ipv6:
                 try:
                     v6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
                     v6.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     v6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-                    v6.bind(("::1", port))
-                except OSError as exc:
+                except OSError:
                     if v6 is not None:
                         v6.close()
+                    v6 = None
+            v4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            v4.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                v4.bind(("127.0.0.1", 0))  # loopback ONLY — never a routable interface
+            except OSError as exc:
+                v4.close()
+                if v6 is not None:
+                    v6.close()
+                last = exc
+                continue
+            port = v4.getsockname()[1]
+            # TOCTOU window: minimal — only v6.bind() between here and end of window.
+            if v6 is not None:
+                try:
+                    v6.bind(("::1", port))
+                except OSError as exc:
+                    v6.close()
                     v6 = None
                     if exc.errno == errno.EADDRINUSE:
                         # Free on v4 but taken on v6 — retry a fresh port so BOTH families are ours.
@@ -173,17 +235,37 @@ class LoopbackEgressProxy:
         return self._port
 
     def stop(self) -> None:
+        """Stop the proxy, cleanly retiring the _serve thread before closing sockets.
+
+        TEST-04 fix — ordering matters:
+
+        OLD order: close server sockets → drain live → join thread
+          Race: if the new _serve thread hadn't yet called selector.register(server, ...)
+          when stop() closed the sockets, fileno() returns -1 and selector.register()
+          raises ValueError in the background thread.
+
+        NEW order: signal wakeup → drain live → join thread → close server sockets
+          The wakeup socket wakes _serve() from selector.select() immediately so
+          the thread exits within microseconds.  Only after join() returns (thread
+          fully exited, selector.close() already called) do we close the server
+          sockets — at that point no thread can ever see those FDs again.
+        """
         with self._lock:
             self._stop.set()
             thread, servers = self._thread, list(self._servers)
             self._thread = None
             self._servers = []
             self._port = 0
-        for server in servers:
+            wakeup_w, self._wakeup_w = self._wakeup_w, None
+        # Signal _serve() to wake up immediately from selector.select().
+        # Writing one byte to the write end triggers a readable event on the
+        # read end (registered in _serve's selector), causing prompt exit.
+        if wakeup_w is not None:
             try:
-                server.close()
+                wakeup_w.send(b"\x00")
             except OSError:
                 pass
+            _close(wakeup_w)
         # Drain in-flight tunnels: closing the live sockets interrupts their blocking recv so the
         # handler threads finish promptly instead of lingering until idle_timeout (dual-audit m2).
         with self._live_lock:
@@ -191,8 +273,17 @@ class LoopbackEgressProxy:
             self._live.clear()
         for sock in live:
             _close(sock)
+        # Join BEFORE closing server sockets.  _serve() exits as soon as it
+        # observes the wakeup event (effectively immediate).  Closing sockets
+        # after the join guarantees the thread has fully exited (including its
+        # finally: selector.close()) before we invalidate the FDs it was using.
         if thread is not None:
             thread.join(timeout=5.0)
+        for server in servers:
+            try:
+                server.close()
+            except OSError:
+                pass
 
     def __enter__(self) -> LoopbackEgressProxy:
         self.start()
@@ -203,13 +294,30 @@ class LoopbackEgressProxy:
 
     # ── accept loop ──────────────────────────────────────────────────────────
 
-    def _serve(self, servers: list[socket.socket], stop: threading.Event, sem: threading.BoundedSemaphore) -> None:
+    def _serve(
+        self,
+        servers: list[socket.socket],
+        stop: threading.Event,
+        sem: threading.BoundedSemaphore,
+        wakeup_r: socket.socket,
+    ) -> None:
+        """Accept loop.  Exits when ``stop`` is set OR a wakeup byte arrives on ``wakeup_r``.
+
+        ``wakeup_r`` is the read end of the socketpair created in ``start()``.  Registering
+        it in the selector lets ``stop()`` interrupt a blocking ``select()`` immediately by
+        writing one byte to the write end — no waiting for the 0.5-second timeout.  The
+        thread exits and calls ``selector.close()`` BEFORE ``stop()`` closes the server
+        sockets, so ``selector.register()`` always sees live FDs (TEST-04 fix).
+        """
         selector = selectors.DefaultSelector()
-        for server in servers:
-            selector.register(server, selectors.EVENT_READ)
         try:
+            selector.register(wakeup_r, selectors.EVENT_READ)
+            for server in servers:
+                selector.register(server, selectors.EVENT_READ)
             while not stop.is_set():
                 for key, _mask in selector.select(timeout=0.5):
+                    if key.fileobj is wakeup_r:
+                        return  # stop() signalled — exit promptly
                     server = key.fileobj  # type: ignore[assignment]
                     try:
                         client, _addr = server.accept()
@@ -224,6 +332,7 @@ class LoopbackEgressProxy:
                         target=self._handle, args=(client, sem), name="egress-proxy-conn", daemon=True,
                     ).start()
         finally:
+            _close(wakeup_r)
             selector.close()
 
     # ── per-connection ─────────────────────────────────────────────────────────

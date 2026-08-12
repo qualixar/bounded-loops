@@ -185,15 +185,46 @@ class ProcessTurn:
         self._terminate(TurnState.CANCELLED)
 
     def wait(self, timeout_s: float | None = None) -> TurnResult:
-        """Wait for completion, turning deadline expiry into a group-wide stop."""
+        """Wait for completion, turning deadline expiry into a group-wide stop.
+
+        CON-04 fix: the old implementation held ``self._lock`` (an RLock) across
+        the entire ``self._process.wait(timeout=timeout_s)`` blocking call.  A
+        concurrent ``cancel()`` → ``_terminate()`` tried to acquire the same lock
+        and was blocked for the full remaining timeout — O(seconds) of starvation.
+
+        Fix: snapshot state under the lock, do the blocking wait OUTSIDE the lock,
+        then re-acquire briefly to record the outcome.  The ``_terminate`` guard
+        (``if self._state is not TurnState.RUNNING: return``) makes concurrent
+        cancel idempotent: if cancel fires between the lock release and the state
+        update, _terminate observes CANCELLED and the state-update below sees
+        CANCELLED too (``poll()`` would have seen the process exit → COMPLETED or
+        CANCELLED — whichever cancel() wrote first wins, which is correct).
+        """
         with self._lock:
             state = self.poll()
-            if state is TurnState.RUNNING:
-                try:
-                    self._process.wait(timeout=timeout_s)
-                    self._state = TurnState.COMPLETED
-                except subprocess.TimeoutExpired:
-                    self._terminate(TurnState.TIMED_OUT)
+            if state is not TurnState.RUNNING:
+                self._join_readers()
+                return TurnResult(
+                    state=self._state,
+                    returncode=self._process.returncode,
+                    stdout=self._stdout.text(self._redactions),
+                    stderr=self._stderr.text(self._redactions),
+                    output_truncated=self._stdout.truncated or self._stderr.truncated,
+                )
+        # Blocking wait is OUTSIDE the lock so cancel() is never starved.
+        timed_out = False
+        try:
+            self._process.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        # Re-acquire briefly to transition state and collect output.
+        with self._lock:
+            if timed_out:
+                self._terminate(TurnState.TIMED_OUT)
+            elif self._state is TurnState.RUNNING:
+                # cancel() may have set CANCELLED between our unlock and now;
+                # only advance to COMPLETED if we are still RUNNING.
+                self._state = TurnState.COMPLETED
             self._join_readers()
             return TurnResult(
                 state=self._state,

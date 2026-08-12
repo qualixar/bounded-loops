@@ -33,9 +33,11 @@ Security hardening:
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -139,22 +141,60 @@ def _load() -> dict:
 
 
 def _save(store: dict) -> None:
+    """Atomically replace the trust store using a temp-file-then-rename pattern.
+
+    CON-03 fix: the old implementation used O_CREAT | O_TRUNC which truncated
+    the file to zero bytes BEFORE writing.  A crash or exception between
+    ``open()`` and the completed ``write()`` left the store empty — the next
+    ``_load()`` would return {} (nothing trusted), effectively silently revoking
+    all trust records.
+
+    New approach:
+    1. Serialise JSON to bytes BEFORE opening any file.
+    2. Write to a uniquely-named temp file in the same directory (same filesystem,
+       so ``os.replace`` is atomic at the OS level).
+    3. ``fchmod(fd, 0o600)`` before closing — mode is set while we hold the fd,
+       never world-readable even for a millisecond.
+    4. ``flush`` + ``fsync`` — durability guarantee before the rename.
+    5. ``os.replace`` — atomic rename; old content survives any earlier failure.
+    6. ``finally`` cleanup — temp file removed on any exception path.
+
+    Symlink guard: O_NOFOLLOW (the old approach) is not portable and its
+    behaviour on O_CREAT differs across kernels.  Instead, an explicit
+    ``path.is_symlink()`` check before any I/O closes the "plant a symlink,
+    redirect the write" vector reliably.
+    """
     path = _store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(path.parent, 0o700)
     except OSError:
         pass
-    # Create/truncate with 0600 from the start (not write-then-chmod, which
-    # leaves a race window where the file is briefly world-readable). O_NOFOLLOW
-    # refuses to write THROUGH a symlink at the final path
-    # component — closing the "plant a symlink, redirect the write" vector.
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(path, flags, 0o600)
+    # Explicit symlink guard — refuse to write through a symlink at the store
+    # path.  An attacker who can plant a symlink there could redirect the write
+    # to an attacker-controlled file.  Fail with ELOOP (same errno O_NOFOLLOW uses).
+    if path.is_symlink():
+        raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path))
+    # Serialise BEFORE creating any file: a serialisation error leaves the
+    # destination untouched (atomicity guarantee — no O_TRUNC on the real path).
+    data = json.dumps(store).encode("utf-8")
+    fd, tmp_str = tempfile.mkstemp(dir=path.parent, prefix=".trust_tmp_")
+    tmp = Path(tmp_str)
     try:
-        os.write(fd, json.dumps(store).encode("utf-8"))
-    finally:
-        os.close(fd)
+        os.fchmod(fd, 0o600)  # set mode while fd is open, before any data is written
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())  # durability: data on disk before rename
+        fd = -1  # os.fdopen owns the fd; mark consumed to avoid double-close
+        os.replace(tmp_str, str(path))  # atomic on POSIX (same filesystem guaranteed)
+    except BaseException:
+        # Always clean up the temp file — do not leave .trust_tmp_* orphans.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def record_trust(loop_dir: Path, gate_cmd: str) -> None:

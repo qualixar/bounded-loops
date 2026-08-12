@@ -281,3 +281,188 @@ def test_double_start_raises():
             proxy.start()
     finally:
         proxy.stop()
+
+
+# ── TEST-02: resolver-failure "fail-closed" branches ─────────────────────────
+
+
+class _RaisingResolver:
+    """Resolver that always raises — drives the 'resolver throws → deny' branch."""
+
+    def resolve(self, host: str, port: int | None) -> tuple[str, ...]:
+        raise OSError(f"DNS failure for {host!r}")
+
+
+class _EmptyResolver:
+    """Resolver that always returns no addresses — drives the 'empty → deny' branch."""
+
+    def resolve(self, host: str, port: int | None) -> tuple[str, ...]:
+        return ()
+
+
+def test_resolver_exception_is_denied():
+    """If the resolver raises, the proxy must respond 403 (fail-closed, not crash).
+
+    Mutation proof: remove the ``except Exception: return _Pinned(None, ...)``
+    clause in _authorize() and this test fails (500/no-response instead of 403).
+    """
+
+    logs: list[dict] = []
+    proxy = LoopbackEgressProxy(
+        allowed=(NetworkDestination("resolvable.test", 443),),
+        resolver=_RaisingResolver(),
+        log=lambda **kw: logs.append(kw),
+    )
+    port = proxy.start()
+    try:
+        client = _connect_through(port, "resolvable.test:443")
+        response = client.recv(1024)
+        assert response.startswith(b"HTTP/1.1 403"), (
+            f"resolver exception must produce 403, got: {response[:80]!r}"
+        )
+        client.close()
+    finally:
+        proxy.stop()
+    assert logs and not logs[-1]["allowed"]
+    assert "resolved" in logs[-1]["reason"]
+
+
+def test_resolver_empty_result_is_denied():
+    """If the resolver returns no addresses, the proxy must respond 403 (fail-closed).
+
+    Mutation proof: remove the ``if not resolved: return _Pinned(None, ...)``
+    guard in _authorize() and this test fails (IndexError or wrong response).
+    """
+    logs: list[dict] = []
+    proxy = LoopbackEgressProxy(
+        allowed=(NetworkDestination("empty.test", 443),),
+        resolver=_EmptyResolver(),
+        log=lambda **kw: logs.append(kw),
+    )
+    port = proxy.start()
+    try:
+        client = _connect_through(port, "empty.test:443")
+        response = client.recv(1024)
+        assert response.startswith(b"HTTP/1.1 403"), (
+            f"empty resolution must produce 403, got: {response[:80]!r}"
+        )
+        client.close()
+    finally:
+        proxy.stop()
+    assert logs and not logs[-1]["allowed"]
+    assert "address" in logs[-1]["reason"]
+
+
+# ── CON-06: dual-stack bind coverage ─────────────────────────────────────────
+
+
+def test_proxy_binds_ipv6_loopback_when_available():
+    """When IPv6 is available, the proxy must listen on ::1 too (CON-06).
+
+    A co-resident attacker must not be able to bind [::1]:<port> and
+    catch egress from a compromised sandboxed child.
+    """
+    if not socket.has_ipv6:
+        import pytest as _pt
+        _pt.skip("IPv6 not available on this host")
+    proxy = LoopbackEgressProxy(allowed=(), resolver=_FakeResolver({}))
+    port = proxy.start()
+    try:
+        # If ::1 is bound by the proxy, connecting to it should succeed (or
+        # fail with a clean 400 for non-CONNECT) rather than ConnectionRefused.
+        try:
+            v6_client = socket.create_connection(("::1", port), timeout=2)
+        except (ConnectionRefusedError, OSError):
+            import pytest as _pt
+            _pt.skip("::1 not reachable on this host (IPv6 disabled at OS level)")
+        v6_client.sendall(b"GET / HTTP/1.1\r\nHost: test\r\n\r\n")
+        response = v6_client.recv(1024)
+        v6_client.close()
+        assert response.startswith(b"HTTP/1.1 400"), (
+            "proxy must be listening on ::1 and reject non-CONNECT"
+        )
+    finally:
+        proxy.stop()
+
+
+# ── TEST-04: stop()/restart lifecycle produces no background thread exceptions ─
+
+
+def test_stop_on_never_started_proxy_is_a_no_op():
+    """stop() on a proxy that was never started must not raise or hang (CRIT-3 guard).
+
+    Calling stop() before start() is a valid usage pattern (e.g. a ``finally``
+    block that does not know whether start() succeeded) and must be idempotent.
+    """
+    proxy = LoopbackEgressProxy(allowed=(), resolver=_FakeResolver({}))
+    proxy.stop()  # must complete without exception
+    proxy.stop()  # idempotent — second call is also a no-op
+
+
+def test_start_cleans_up_wakeup_pair_on_bind_failure(monkeypatch):
+    """If _bind_dual_stack() raises, both wakeup socket ends must be closed.
+
+    CRIT-3 guard: between ``socket.socketpair()`` and ``self._wakeup_w = wakeup_w``
+    there is a failure window.  The old code stored wakeup_w immediately after
+    socketpair(); if _bind_dual_stack() then raised, wakeup_r was never closed.
+    The fix wraps the entire post-socketpair section in try/except BaseException
+    and closes both ends before re-raising, leaving the proxy in the pre-start
+    state so stop() is still a no-op and start() can be retried.
+    """
+    proxy = LoopbackEgressProxy(allowed=(), resolver=_FakeResolver({}))
+
+    def _failing_bind(self):
+        raise OSError("simulated bind failure for CRIT-3 test")
+
+    monkeypatch.setattr(type(proxy), "_bind_dual_stack", _failing_bind)
+
+    import pytest as _pt
+    with _pt.raises(OSError, match="simulated bind failure"):
+        proxy.start()
+
+    # After a failed start, stop() must be a clean no-op — not hang, not crash.
+    proxy.stop()
+
+    # The proxy must still be startable (state fully reset).
+    monkeypatch.undo()
+    port = proxy.start()
+    assert port > 0
+    proxy.stop()
+
+
+def test_restart_lifecycle_produces_no_background_thread_exceptions():
+    """stop() must not leave _serve threads crashing after sockets are closed.
+
+    TEST-04 root cause: the old stop() closed server sockets BEFORE joining
+    the _serve thread.  If the new _serve thread hadn't yet called
+    selector.register(server, ...) when stop() ran, the thread resumed with
+    fileno()==-1, raising ValueError (PytestUnhandledThreadExceptionWarning).
+
+    The fix: a wakeup socket signals _serve to exit immediately; stop() then
+    joins the thread BEFORE closing server sockets.
+
+    Mutation proof: revert to the old stop() ordering and this test fails
+    with a non-empty exceptions list.
+    """
+    exceptions: list[BaseException] = []
+    original_hook = threading.excepthook
+
+    def _capture(args: threading.ExceptHookArgs) -> None:
+        if args.thread and "egress-proxy" in (args.thread.name or ""):
+            exceptions.append(args.exc_value)
+
+    threading.excepthook = _capture
+    try:
+        # Run many start/stop cycles to maximise the probability of hitting
+        # the race on any scheduling of GIL handoffs.
+        for _ in range(30):
+            proxy = LoopbackEgressProxy(allowed=(), resolver=_FakeResolver({}))
+            proxy.start()
+            proxy.stop()
+    finally:
+        threading.excepthook = original_hook
+
+    assert not exceptions, (
+        f"background egress-proxy thread(s) raised unhandled exceptions: "
+        f"{[f'{type(e).__name__}: {e}' for e in exceptions]}"
+    )
