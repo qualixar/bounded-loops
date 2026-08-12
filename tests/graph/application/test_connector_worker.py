@@ -101,7 +101,7 @@ class _Forwarder:
 class _RequestPort:
     call: object
 
-    def build(self, *, plan, node, envelope):
+    def build(self, *, plan, node, envelope, attempt=1):
         return self.call
 
 

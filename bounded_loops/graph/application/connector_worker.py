@@ -43,7 +43,10 @@ class ConnectorRequestPort(Protocol):
     and content-addressed request) from the immutable plan/node and the accepted
     envelope. No secret is produced here — only a grant reference and a request."""
 
-    def build(self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope) -> ConnectorCall: ...
+    def build(
+        self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
+        attempt: int,
+    ) -> ConnectorCall: ...
 
 
 class ConnectorNodeWorker:
@@ -70,7 +73,9 @@ class ConnectorNodeWorker:
             raise GraphIntegrityError(
                 f"connector node {node.node_id!r} must be bound to an admitted connection"
             )
-        call = self._request_port.build(plan=plan, node=node, envelope=envelope)
+        call = self._request_port.build(
+            plan=plan, node=node, envelope=envelope, attempt=attempt,
+        )
         if not isinstance(call, ConnectorCall):
             raise GraphIntegrityError("connector request port must return a ConnectorCall")
         result = self._invoker.invoke(

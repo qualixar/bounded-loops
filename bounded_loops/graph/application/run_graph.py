@@ -326,7 +326,9 @@ class GraphRunController:
         * Interrupted before recording anything (killed during the worker or the gate): no
           attempt record, so it is not spent and is RE-DRIVEN under its own number. This is
           what keeps the documented at-least-once resume contract. Its prefix events
-          re-append as head-safe no-ops, so no lower attempt number follows a higher one.
+          re-append as head-safe no-ops — ``_same_logical_event`` compares payloads with
+          the timestamp excluded, so a resume under a different clock still de-duplicates —
+          and no lower attempt number ever follows a higher one.
         * Recorded its failure, then the process died before the node's terminal receipt:
           the attempt IS spent. Re-driving it would let one attempt number carry both a
           rejection and a later acceptance — a contradiction that corrupts the gate
@@ -467,9 +469,10 @@ class GraphRunController:
         Returns ``None`` when the node SUCCEEDED and the caller should drive the rest of
         the graph, or a terminal projection when the run must stop.
 
-        Each non-final failure is recorded as an additive ``node.attempt.failed`` event
-        rather than routed through ``_fail_node``, because ``_fail_node`` appends
-        ``run.failed`` and ends the run — a retry must leave the node in flight.
+        EVERY failed attempt is recorded as an additive ``node.attempt.failed`` event,
+        the last one included, so counting gate rejections is one uniform query. Only the
+        terminal outcome goes through ``_fail_node``, which appends ``run.failed`` and ends
+        the run — a retry must leave the node in flight.
         """
         budget = _max_attempts(node)
         if consumed >= budget:
@@ -593,11 +596,14 @@ class GraphRunController:
     def _append_attempt_failed(
         self, node_id: str, attempt: int, reason: str, verdict: dict[str, object] | None,
     ) -> None:
-        """Record one non-final attempt without transitioning run state.
+        """Record one failed attempt without transitioning run state.
 
         ``verdict`` is present exactly when the attempt failed at the gate, so its
         presence discriminates a gate rejection from a worker fault when the per-attempt
         gate error rate is computed from the log.
+
+        Writing this record is also what marks the attempt SPENT for a later resume — see
+        ``_consumed_from`` — so it must be appended before the node's terminal receipt.
         """
         payload: dict[str, object] = {"node_id": node_id, "attempt": attempt, "reason": reason}
         if verdict is not None:

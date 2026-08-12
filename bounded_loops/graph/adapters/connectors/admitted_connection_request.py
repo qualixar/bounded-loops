@@ -258,6 +258,7 @@ class AdmittedConnectionRequestBuilder:
 
     def build(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
+        attempt: int,
     ) -> ConnectorCall:
         """Assemble a BYOK connector call for one https-transport node.
 
@@ -317,7 +318,11 @@ class AdmittedConnectionRequestBuilder:
             ExecutionGrantRequest(
                 run_id=self._run_id,
                 node_id=node.node_id,
-                attempt=1,
+                # Must match the attempt the invoker will present: the grant is
+                # audience-bound and ``validate_execution_grant`` requires
+                # ``grant.attempt == invocation.attempt``, so a hardcoded 1 would refuse
+                # every attempt after the first.
+                attempt=attempt,
                 connection=connection,
                 effects=frozenset({record.allowed_effect}),
                 destinations=frozenset({record.endpoint_host}),
@@ -345,7 +350,7 @@ class AdmittedConnectionRequestBuilder:
             self._artifact_store,
             organization_id=self._organization_id,
             project_id=self._project_id,
-            producer_attempt=f"{self._run_id}-{node.node_id}-byok",
+            producer_attempt=f"{self._run_id}-{node.node_id}-byok-{attempt}",
         )
         payload_digest = artifact_body.store(body)
 

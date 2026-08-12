@@ -18,6 +18,7 @@ from bounded_loops.graph.domain.authoring import (
     GraphBudget,
     GraphPolicyIntent,
     IsolationLevel,
+    NETWORK_EFFECTS,
     NodeKind,
     PortableBindingSlot,
     canonical_json,
@@ -179,6 +180,16 @@ def _node(raw: object, index: int) -> AuthoringNode:
     outputs = _ports(node["outputs"], f"{pointer}/outputs")
     budget = _budget(node["budget"], f"{pointer}/budget")
     effects = _effects(node["effects"], f"{pointer}/effects")
+    if budget.max_attempts > 1 and (effects & NETWORK_EFFECTS):
+        # The controller refuses this combination when it is constructed (D7: an external or
+        # irreversible effect cannot be re-driven without a per-effect idempotency key).
+        # Catching it here means `bl graph lint` and the studio reject it at authoring time
+        # instead of producing a plan that cannot start.
+        raise _error(
+            "retry_of_effectful_node", f"{pointer}/budget/max_attempts",
+            "a node carrying an external / irreversible effect cannot retry without a "
+            "per-effect idempotency key (D7); declare max_attempts: 1",
+        )
     isolation = _enum(IsolationLevel, node["isolation"], f"{pointer}/isolation", "isolation")
     connection_slot = _optional_identifier(node.get("connection_slot"), f"{pointer}/connection_slot")
     on_failure = node.get("on_failure")
