@@ -530,7 +530,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     graph_parser = subparsers.add_parser(
         "graph",
         help="Validate, compile, and demonstrate graph execution plans.",
-        description="Subcommands: lint, plan, demo, status, artifacts, run. E2 required for run.",
+        description=(
+            "Run a DAG of bounded loops where an independent gate decides each node. "
+            "Set up with init; author with lint, plan and studio; execute with run --execute; "
+            "decide a paused approval with approve or console; inspect with status, artifacts "
+            "and arena; try demo first. Executing a real graph needs OS-level isolation "
+            "enforcement (E2) — see docs/graph-capabilities.md."
+        ),
     )
     graph_parser.set_defaults(func=_cmd_graph_no_sub)
 
