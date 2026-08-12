@@ -34,7 +34,16 @@ _VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ABSOLUTE = re.compile(r"^(?:/|\\\\|[A-Za-z]:[\\/]|~[\\/])")
 _SECRET_WORDS = frozenset({"api_key", "credential", "password", "secret", "token"})
-_PROVIDERS = frozenset({"anthropic", "claude", "codex", "grok", "kimi", "muse", "openai", "openrouter", "qwen"})
+# Provider names that must NOT appear in a connection slot's ``requires``. A slot declares
+# CAPABILITIES so the graph stays portable across deployments; naming a provider there pins
+# the graph to one vendor. This is a DENYLIST for portability, not an allowlist of usable
+# providers — a provider is bound at deployment time, not in the authored graph.
+# Must cover every provider the project ships, or a slot naming the uncovered one silently
+# defeats the rule; a tripwire test asserts it stays a superset of the shipped CLI profiles.
+_PROVIDERS = frozenset({
+    "agy", "anthropic", "claude", "codex", "grok", "kimi", "muse", "openai", "openrouter",
+    "qwen",
+})
 _ON_FAILURE_DECLARED = frozenset({"fail_graph", "continue", "repair", "await_human"})
 # Declared in the authoring schema but NOT routed by GraphRunController: every failure
 # currently becomes fail_graph.  Accepting these would silently discard the author's

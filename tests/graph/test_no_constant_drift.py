@@ -11,10 +11,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from bounded_loops.graph.adapters.connectors.local_cli_worker import CLI_PROFILES
 from bounded_loops.graph.adapters.persistence.event_log import _NODE_EVENTS
 from bounded_loops.graph.application.arena_projection import _ALLOWED, _LIFECYCLE_EVENTS
 from bounded_loops.graph.application.run_graph import _EFFECTFUL_EFFECTS
 from bounded_loops.graph.application.run_graph import _MAX_ATTEMPTS_CEILING as CONTROLLER_CEILING
+from bounded_loops.graph.application.validate_graph import _PROVIDERS
 from bounded_loops.graph.application.validate_graph import _MAX_ATTEMPTS_CEILING as SCHEMA_CEILING
 from bounded_loops.graph.domain.authoring import NETWORK_EFFECTS, Effect
 
@@ -51,6 +53,20 @@ def test_the_projection_knows_exactly_the_lifecycle_events_the_log_defines() -> 
 def test_every_lifecycle_state_has_a_transition_rule() -> None:
     """A state reachable by an event but absent from ``_ALLOWED`` raises KeyError on read."""
     assert set(_NODE_EVENTS.values()) <= set(_ALLOWED)
+
+
+def test_the_portability_denylist_covers_every_shipped_provider() -> None:
+    """A slot may declare capabilities, never providers — for every provider we ship.
+
+    ``_PROVIDERS`` is a denylist enforcing portability: naming a provider in a slot's
+    ``requires`` pins the graph to one vendor. A provider the project ships a CLI profile
+    for but which is missing from the denylist can be named in a slot and pass validation,
+    silently defeating the rule for exactly the providers most likely to be named.
+
+    Mirrored rather than imported because the denylist lives in the application layer and
+    the profiles in an adapter; this test is the alarm for the drift that mirroring allows.
+    """
+    assert set(CLI_PROFILES) <= _PROVIDERS
 
 
 def test_adding_an_effect_forces_a_retry_safety_decision() -> None:
