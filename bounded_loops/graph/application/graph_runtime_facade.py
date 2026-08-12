@@ -224,6 +224,16 @@ class _FileApprovalCommandPort:
                     "node_id": command.request.node_id,
                     "actor_id": command.context.subject_id,
                     "decided_at": command.decision.decided_at,
+                    # Record the random nonce and the digest the decision was made over.
+                    # Without these the request can never be reconstructed, so a signature
+                    # over it would be unverifiable after the fact — which would make the
+                    # nonce pointless however random it is. A hosted deployment that injects
+                    # a real signature verifier re-checks the recorded signature against
+                    # this digest. (Full independent reconstruction of the digest would also
+                    # need `evidence_digest` and `expires_at`; recording the digest itself
+                    # avoids depending on that.)
+                    "nonce": command.request.nonce,
+                    "request_digest": command.decision.request_digest,
                 })
                 # Write an ALLOW-LISTED schema only: preserve the durable ``rejections`` list (so an
                 # approval commit never wipes a prior rejection) but never re-serialize unknown/hostile
@@ -687,9 +697,17 @@ class LocalGraphRuntimeFacade:
         now = datetime.now(timezone.utc)
         expires_at = (now + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
         decided_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        nonce = hashlib.sha256(
-            f"{identity.run_id}:{node_id}:nonce".encode("utf-8")
-        ).hexdigest()
+        # An UNPREDICTABLE nonce (256 bits from a CSPRNG), not a hash of public values.
+        # It was previously derived from `run_id:node_id`, both of which anyone with read
+        # access to the run directory can see, so the value a signature is computed over
+        # was fully predictable for every run and node. That is not what a nonce is for.
+        #
+        # Randomising it is safe here because nothing depends on it being reproducible:
+        # idempotency is keyed on `idempotency_key` (the deterministic `approval_id`), the
+        # digest is built and compared inside this single call, and the durable-rehydration
+        # path documents that it never re-validates this field. `token_hex(32)` yields the
+        # same 64-hex-character shape the previous SHA-256 derivation did.
+        nonce = secrets.token_hex(32)
         approval_id = _approval_id(identity, node_id)
         idempotency_key = approval_id
 

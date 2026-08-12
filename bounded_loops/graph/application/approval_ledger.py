@@ -105,10 +105,19 @@ def _approval_id(identity: GraphRunIdentity, node_id: str) -> str:
     ).hexdigest()
 
 
-def _rehydrated_request(identity: GraphRunIdentity, node: PlannedNode) -> ApprovalRequest:
+def _rehydrated_request(
+    identity: GraphRunIdentity, node: PlannedNode, *, nonce: str | None = None,
+) -> ApprovalRequest:
     # record_committed_approval reads only approval_id + tenant + node_id + attempt; the
     # remaining fields are reconstructed deterministically and are never re-validated on
     # the rehydration path.
+    #
+    # `nonce` carries the value RECORDED with the decision when the ledger has one. It is
+    # random per decision and therefore cannot be re-derived, so a record written before
+    # nonces were randomised (or by any writer that omits it) falls back to the old
+    # derivation below. The resolver ignores this field either way; carrying it through
+    # keeps the rehydrated request faithful to what was actually signed rather than
+    # silently substituting a different value.
     return ApprovalRequest(
         approval_id=_approval_id(identity, node.node_id),
         organization_id=identity.organization_id,
@@ -120,7 +129,8 @@ def _rehydrated_request(identity: GraphRunIdentity, node: PlannedNode) -> Approv
         evidence_digest="sha256:" + "0" * 64,  # unused by the resolver guard
         requested_effects=frozenset(node.required_effects),
         required_role=str(node.approval_policy.get("required_role") or "reviewer"),
-        nonce=hashlib.sha256(f"{identity.run_id}:{node.node_id}:nonce".encode("utf-8")).hexdigest(),
+        nonce=nonce
+        or hashlib.sha256(f"{identity.run_id}:{node.node_id}:nonce".encode("utf-8")).hexdigest(),
         expires_at="",
     )
 
@@ -163,8 +173,13 @@ def build_durable_approval_resolver(
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise GraphIntegrityError(f"durable approval record for node {node_id!r} is malformed") from exc
+        stored_nonce = stored.get("nonce")
         resolver.record_committed_approval(
-            identity=identity, request=_rehydrated_request(identity, node), commit=commit,
+            identity=identity,
+            request=_rehydrated_request(
+                identity, node, nonce=str(stored_nonce) if stored_nonce else None,
+            ),
+            commit=commit,
         )
         approved.add((node_id, 1))
 
