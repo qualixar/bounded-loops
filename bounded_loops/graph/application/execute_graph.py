@@ -774,6 +774,8 @@ def _report_paused(
     print(f"{label} graph run — REAL execution")
     print("=" * 62)
     print(f"run_state : {run_state}")
+    print(f"pause_status : PAUSED — awaiting human decision on "
+          f"{len(awaiting)} node(s): {', '.join(awaiting)}")
     for node in arena.nodes:
         if node.state == "SUCCEEDED":
             mark = "OK "
@@ -785,7 +787,6 @@ def _report_paused(
         print(f"  {mark}node {node.node_id!r}: {node.state}  artifact={art}")
     print(f"out       : {out_dir}")
     print()
-    print(f"Run is PAUSED — awaiting human approval on {len(awaiting)} node(s): {', '.join(awaiting)}")
     print("To continue:")
     for command in next_commands:
         print(f"  {command}")

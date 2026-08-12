@@ -13,7 +13,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-2563eb" alt="Apache-2.0 license"/></a>
 </p>
 
-![Ungated agent claim compared with a gate-verified bounded loop](assets/demo.gif)
+![Ungated agent claim compared with a gate-verified bounded loop](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/demo.gif)
 
 The flagship is **`bl graph`**: compose bounded loops into a DAG where an independent gate — never the producer — decides each node, connectors run on your own CLI subscription or a no-secret BYOK key, and every run is a hash-chained, content-addressed record you can replay. It is built on a keyless loop engine you can try in ten seconds.
 
@@ -88,7 +88,7 @@ is — no capability is claimed beyond what the shipped code does.
 | Gate-verified bounded-loop DAG (worker ≠ gate, controller-enforced) | Shipped |
 | Local-CLI + BYOK/HTTPS connectors via `bl graph run --execute` | Shipped |
 | No-secret egress broker (single-use leases; SSRF / DNS-rebind denied) | Shipped |
-| Receipt-derived, non-executing Arena (hash-chained log, content-addressed artifacts) | Shipped — local runs are marked `LOCAL/UNVERIFIED` |
+| Receipt-derived, non-executing Arena (hash-chained log, content-addressed artifacts — verdict and artifact digest co-recorded in the same hash-chained event; on resume the full hash chain is re-verified, SUCCEEDED nodes are not re-gated) | Shipped — local runs are marked `LOCAL/UNVERIFIED` |
 | Cross-model audit-coverage gate (`--audit-plan` → Arena verdict) | Shipped — read-side; independence is receipt-asserted |
 | Durable approvals — `bl graph run` pauses at approval nodes (exit 3); `bl graph approve --run --node --decision` records the decision and resumes; facade / MCP path unchanged | Shipped |
 | Click-to-approve console — `bl graph console --run <dir>` serves a loopback-only, token-gated HTML page; same durable machinery as `bl graph approve` | Shipped — local posture only (no TLS / role auth; a hosted deployment must supply those) |
@@ -111,7 +111,7 @@ recorded turns. On every lap:
 3. The engine records the verdict, token use, timing, and decision.
 4. A passing gate yields `DONE`; a bound yields `HALT`; a crash yields `ERROR`.
 
-![Readable ports-and-adapters architecture with five boxed zones: entry points, composition root, application, pure domain, and concrete adapters](docs/diagrams/ports-and-adapters.png)
+![Readable ports-and-adapters architecture with five boxed zones: entry points, composition root, application, pure domain, and concrete adapters](https://raw.githubusercontent.com/qualixar/bounded-loops/main/docs/diagrams/ports-and-adapters.png)
 
 The domain rules are standard-library-only. Concrete runners, gates, ledgers,
 memory, tracing, approval, and kill-switch implementations sit behind ports;

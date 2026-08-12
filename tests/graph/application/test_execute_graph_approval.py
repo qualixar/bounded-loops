@@ -136,8 +136,21 @@ def test_approval_node_pauses_run_with_actionable_status(tmp_path: Path, capsys)
     assert arena.nodes[0].state == "AWAITING_APPROVAL"
 
     printed = capsys.readouterr().out
-    assert "PAUSED" in printed.upper()
-    assert "checkpoint" in printed
+    # DX-01: the paused output must not be mistakable for an executing run.
+    # The run_state line is "RUNNING" (the run-level projection has no AWAITING_APPROVAL
+    # state); a separate pause_status line must name the paused status explicitly so a
+    # newcomer reading only the first few lines cannot think the run is still executing.
+    assert "run_state : RUNNING" in printed, (
+        "run_state must reflect the run-level projection (RUNNING), not a node state"
+    )
+    assert "pause_status" in printed, (
+        "a pause_status line must appear immediately after run_state so the paused "
+        "condition is unambiguous without reading to the bottom of the output"
+    )
+    assert "PAUSED" in printed, (
+        "the word PAUSED must appear in the human-readable output"
+    )
+    assert "checkpoint" in printed, "the awaiting node id must be named"
     assert "bl graph approve" in printed
     assert "--decision approved|rejected" in printed
 
