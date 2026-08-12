@@ -299,6 +299,18 @@ def _apply(projection: GraphRunProjection, stored: StoredGraphEvent) -> GraphRun
         state = _state(stored.event.payload, "PENDING")
         if state != "PENDING":
             raise GraphIntegrityError("run.created must declare PENDING")
+    elif event_type == "node.outcome.labeled":
+        # Ordered BEFORE the terminal guard, and deliberately: ground truth arrives after the
+        # run, and the run being finished is the NORMAL time to label it. Every other event
+        # type describes something the run did, so one arriving after a terminal state is
+        # corruption; a label describes what a reviewer later concluded ABOUT the run, which
+        # is only knowable once it has stopped.
+        #
+        # It carries the state forward unchanged, so labelling can never move a run's
+        # outcome — a reviewer records the truth, the run records what it decided, and
+        # neither overwrites the other.
+        _validate_audit_event(event_type, stored.event.payload)
+        state = projection.state
     elif projection.state in _TERMINAL:
         raise GraphIntegrityError("event after terminal graph state")
     elif event_type == "run.started":

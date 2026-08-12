@@ -101,12 +101,16 @@ class _ResumeCursor:
 
     spent: Mapping[str, int]
     started: Mapping[str, int]
-    redrives: Mapping[str, int]
+    #: Keyed on (node_id, attempt), NOT on node_id alone. A per-node total would charge one
+    #: attempt's re-drives against every later attempt, so a node that legitimately advanced
+    #: could be refused a re-drive it had never used — starved by the history of an attempt
+    #: that already completed.
+    redrives: Mapping[tuple[str, int], int]
 
     @classmethod
     def empty(cls, node_ids: tuple[str, ...]) -> "_ResumeCursor":
         zeros = {node_id: 0 for node_id in node_ids}
-        return cls(spent=zeros, started=dict(zeros), redrives=dict(zeros))
+        return cls(spent=zeros, started=dict(zeros), redrives={})
 
 
 # An attempt that never completes can be re-driven once per resume, and the prefix events
@@ -387,7 +391,7 @@ class GraphRunController:
         node_ids = tuple(node.node_id for node in self.plan.nodes)
         spent = {node_id: 0 for node_id in node_ids}
         started = {node_id: 0 for node_id in node_ids}
-        redrives = {node_id: 0 for node_id in node_ids}
+        redrives: dict[tuple[str, int], int] = {}
         for stored in receipts:
             event_type = stored.event.event_type
             if event_type not in ("node.attempt.failed", "node.running", "node.redrive"):
@@ -403,7 +407,7 @@ class GraphRunController:
             elif event_type == "node.running":
                 started[node_id] = max(started[node_id], attempt)
             else:
-                redrives[node_id] += 1
+                redrives[(node_id, attempt)] = redrives.get((node_id, attempt), 0) + 1
         return _ResumeCursor(spent=spent, started=started, redrives=redrives)
 
     def _states_from(self, latest: dict[str, dict[str, object]]) -> dict[str, NodeState]:
@@ -543,7 +547,7 @@ class GraphRunController:
                 # re-append, meaning nothing in the log would otherwise advance — so without
                 # this record a resume loop could re-execute the worker forever against a
                 # bounded attempt count.
-                redrive = cursor.redrives.get(node_id, 0) + 1
+                redrive = cursor.redrives.get((node_id, attempt), 0) + 1
                 if redrive > _MAX_REDRIVES_PER_ATTEMPT:
                     return self._fail_node(
                         states, node_id,

@@ -139,3 +139,46 @@ def test_a_label_must_name_a_real_artifact_digest(tmp_path: Path) -> None:
 
     with pytest.raises(GraphIntegrityError, match="digest"):
         _label(log, artifact_digest="not-a-digest")
+
+
+def test_a_finished_run_can_be_labelled_and_stays_readable(tmp_path: Path) -> None:
+    """Labelling a FINISHED run is the normal case, and it must not corrupt the run.
+
+    Ground truth arrives after the run — often long after. Every other event type describes
+    something the run did, so one arriving after a terminal state is corruption; a label
+    describes what a reviewer later concluded ABOUT the run, which is only knowable once it
+    has stopped. Before this, the append succeeded and every later projection raised
+    "event after terminal graph state", leaving the run permanently unreadable and
+    unrenderable in the Arena.
+    """
+    log = _running_log(tmp_path)
+    head = log.replay_projection().head_hash
+    log.append(head, UnsignedGraphEvent(
+        event_id="done", idempotency_key="done", event_type="run.succeeded",
+        timestamp="2026-08-12T00:30:00Z", actor="test", payload={"state": "SUCCEEDED"},
+    ))
+    assert log.replay_projection().state == "SUCCEEDED"
+
+    _label(log, label=OutcomeLabel.INCORRECT)
+
+    # Still readable, and the label did NOT move the run's outcome: a reviewer records the
+    # truth, the run records what it decided, and neither overwrites the other.
+    assert log.replay_projection().state == "SUCCEEDED"
+    assert _labels(tmp_path)[0]["label"] == "incorrect"
+    assert [s.event.event_type for s in log.replay()][-1] == "node.outcome.labeled"
+
+
+def test_a_failed_run_can_also_be_labelled(tmp_path: Path) -> None:
+    """A FAILED run needs labelling most: that is where a false REJECT would be found."""
+    log = _running_log(tmp_path)
+    head = log.replay_projection().head_hash
+    log.append(head, UnsignedGraphEvent(
+        event_id="bad", idempotency_key="bad", event_type="run.failed",
+        timestamp="2026-08-12T00:30:00Z", actor="test", payload={"state": "FAILED"},
+    ))
+
+    _label(log, label=OutcomeLabel.CORRECT)
+
+    assert log.replay_projection().state == "FAILED"
+    # A correct output on a failed run is a false rejection — the cost side of gating.
+    assert _labels(tmp_path)[0]["label"] == "correct"

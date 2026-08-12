@@ -669,3 +669,45 @@ def test_every_terminal_failure_declares_a_declared_cause(tmp_path: Path) -> Non
         failed = _of_type(run_dir, "node.failed")
         assert failed, "the run must have failed"
         assert failed[0]["cause"] in declared
+
+
+def test_one_attempts_redrives_do_not_starve_a_later_attempt(tmp_path: Path) -> None:
+    """The re-drive cap is per (node, attempt), not per node.
+
+    A per-node total charges one attempt's re-drives against every later attempt, so a node
+    that legitimately advanced could be refused a re-drive it had never used — starved by the
+    history of an attempt that already completed. Reproduces the audited scenario: attempt 1
+    burns two re-drives and then completes, after which attempt 2 must still get its own
+    full allowance.
+    """
+    log_path = tmp_path / "events.jsonl"
+    plan = _plan({"max_attempts": 5})
+
+    # Attempt 1: started, then killed before its gate. The first run is not a re-drive; each
+    # subsequent resume of that same incomplete attempt is.
+    with pytest.raises(KeyboardInterrupt):
+        _controller_at(log_path, plan, _CrashingGate(crash_on=1), "2026-08-12T00:00:00Z").run()
+    for clock in ("2026-08-12T00:00:01Z", "2026-08-12T00:00:02Z"):
+        with pytest.raises(KeyboardInterrupt):
+            _controller_at(log_path, plan, _CrashingGate(crash_on=1), clock).resume()
+    assert [p["redrive"] for p in _of_type(tmp_path, "node.redrive")] == [1, 2]
+
+    # Attempt 1 now completes (rejected), so attempt 2 begins and is itself interrupted.
+    with pytest.raises(KeyboardInterrupt):
+        _controller_at(log_path, plan, _CrashingGate(crash_on=2), "2026-08-12T00:00:03Z").resume()
+
+    # Attempt 2's FIRST re-drive must be permitted: under a per-node cap this was its
+    # fourth charge overall and the node failed as redrive_exhausted.
+    resumed = _controller_at(
+        log_path, plan, _Gate(reject_first=0), "2026-08-12T00:00:04Z",
+    ).resume()
+
+    assert resumed.state == "SUCCEEDED", "attempt 2 was starved by attempt 1's re-drives"
+    redrives = [(p["attempt"], p["redrive"]) for p in _of_type(tmp_path, "node.redrive")]
+    # Attempt 1 consumed its ENTIRE allowance (3 of 3) and attempt 2 still received its own
+    # first re-drive. Ordinals restart per attempt, which is what makes the cap per-attempt;
+    # under a per-node total, (2, 1) here would have been the fourth charge and the node
+    # would have failed as redrive_exhausted instead of succeeding.
+    assert redrives == [(1, 1), (1, 2), (1, 3), (2, 1)]
+    assert sum(1 for attempt, _ in redrives if attempt == 1) == _MAX_REDRIVES_PER_ATTEMPT
+    assert _of_type(tmp_path, "node.succeeded")[0]["attempt"] == 2
