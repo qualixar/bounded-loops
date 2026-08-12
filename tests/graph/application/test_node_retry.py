@@ -450,3 +450,35 @@ def test_resume_continues_the_attempt_count_instead_of_restarting_it(tmp_path: P
     states = latest_node_states(plan, GraphEventLog(log_path, _identity()).replay())
     assert states[_NODE_ID]["state"] == "SUCCEEDED"
     assert states[_NODE_ID]["attempt"] == 2
+
+
+def test_the_terminal_verdict_duplicates_the_final_attempt_rather_than_adding_one(
+    tmp_path: Path,
+) -> None:
+    """A rejection on the last attempt is recorded TWICE, and that is deliberate.
+
+    ``node.attempt.failed`` is the per-attempt audit record; ``node.failed`` is the node's
+    durable outcome and carries its verdict as it always has. So the final rejection appears
+    in both. A reader summing verdicts across BOTH event types therefore double-counts the
+    last one — the canonical count is ``node.attempt.failed`` alone.
+
+    This test pins that invariant: the two records describe the SAME rejection, same attempt
+    and same verdict body, so counting attempt records is both correct and complete.
+    """
+    _controller(
+        tmp_path, worker=_Worker(), gate=_Gate(reject_first=99), budgets={"max_attempts": 2},
+    ).run()
+
+    final_attempt = [p for p in _of_type(tmp_path, "node.attempt.failed") if p["attempt"] == 2]
+    failed = _of_type(tmp_path, "node.failed")
+
+    assert len(final_attempt) == 1
+    assert len(failed) == 1
+    assert failed[0]["attempt"] == final_attempt[0]["attempt"]
+    assert failed[0]["verdict"] == final_attempt[0]["verdict"], (
+        "the terminal receipt must restate the final attempt's verdict, not a different one"
+    )
+    # Canonical count: attempt records only. Summing both event types would give 3 for 2
+    # gate evaluations.
+    assert len(_of_type(tmp_path, "node.gating")) == 2
+    assert sum(1 for p in _of_type(tmp_path, "node.attempt.failed") if "verdict" in p) == 2
