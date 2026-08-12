@@ -17,12 +17,40 @@ _ALLOWED = {
     "PENDING": frozenset({"READY"}),
     "READY": frozenset({"STARTING", "AWAITING_APPROVAL"}),
     "STARTING": frozenset({"RUNNING"}),
-    "RUNNING": frozenset({"GATING", "FAILED"}),
+    # RUNNING -> RUNNING and GATING -> RUNNING are the two retry edges of a bounded
+    # loop: the next attempt re-enters RUNNING either after the gate rejected it
+    # (from GATING) or after a worker/artifact fault that never reached the gate
+    # (from RUNNING).  Both are only legal when the attempt number advances — see
+    # ``_attempt_is_consistent``.
+    "RUNNING": frozenset({"GATING", "RUNNING", "FAILED"}),
     "AWAITING_APPROVAL": frozenset({"SUCCEEDED", "FAILED"}),
-    "GATING": frozenset({"SUCCEEDED", "FAILED"}),
+    "GATING": frozenset({"SUCCEEDED", "RUNNING", "FAILED"}),
     "SUCCEEDED": frozenset(),
     "FAILED": frozenset(),
 }
+# A new attempt re-enters RUNNING from exactly these states.
+_RETRY_FROM = frozenset({"RUNNING", "GATING"})
+# The node lifecycle event types, which are the ONLY ones carrying a ``state``.
+# Mirrors ``event_log._NODE_EVENTS``; filtering on the ``node.`` prefix instead would
+# also catch the additive ``node.attempt.failed``, which carries no state and would
+# raise KeyError.  A tripwire test asserts these two sets stay identical.
+_LIFECYCLE_EVENTS = frozenset({
+    "node.ready", "node.starting", "node.running", "node.awaiting_approval",
+    "node.gating", "node.succeeded", "node.failed",
+})
+
+
+def _attempt_is_consistent(
+    next_state: str, current_state: str, attempt: int, current_attempt: int,
+) -> bool:
+    """Whether an attempt number is legal for one lifecycle transition.
+
+    Three cases: admission out of PENDING and a retry edge both ADVANCE the attempt by
+    one; every other transition moves within a single attempt and must not change it.
+    """
+    if current_state == "PENDING" or (next_state == "RUNNING" and current_state in _RETRY_FROM):
+        return attempt == current_attempt + 1
+    return attempt == current_attempt
 
 
 @dataclass(frozen=True)
@@ -135,7 +163,7 @@ def latest_node_states(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ..
     predecessors = _predecessors(plan)
     for stored in receipts:
         event = stored.event
-        if not event.event_type.startswith("node."):
+        if event.event_type not in _LIFECYCLE_EVENTS:
             continue
         node_id = event.payload["node_id"]
         if node_id not in values:
@@ -152,11 +180,10 @@ def latest_node_states(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ..
             or not isinstance(current_state, str)
             or isinstance(current_attempt, bool)
             or not isinstance(current_attempt, int)
-            or attempt != current_attempt + 1 and current_state == "PENDING"
             or next_state not in _ALLOWED[current_state]
         ):
             raise GraphIntegrityError("Arena receipt node lifecycle is invalid")
-        if attempt != current_attempt and current_state != "PENDING":
+        if not _attempt_is_consistent(next_state, current_state, attempt, current_attempt):
             raise GraphIntegrityError("Arena receipt node attempt sequence is invalid")
         # A node may only ever leave PENDING via READY (`_ALLOWED`); that single
         # admission edge is where cross-node causality is decided, and predecessor

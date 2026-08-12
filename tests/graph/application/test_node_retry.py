@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
+from bounded_loops.graph.application.arena_projection import latest_node_states
 from bounded_loops.graph.application.execution_policy import (
     ConfiguredExecutionPolicy,
     ExecutionEnforcerPort,
@@ -190,8 +191,9 @@ def test_exhausting_the_budget_fails_the_node_and_marks_it_exhausted(tmp_path: P
 
     assert projection.state == "FAILED"
     assert worker.calls == 2, "exactly the budget, not one more"
-    # The final failure is terminal, so it is node.failed — NOT another attempt event.
-    assert [payload["attempt"] for payload in _of_type(tmp_path, "node.attempt.failed")] == [1]
+    # Every failed attempt is recorded, the last one included, so a single query over
+    # node.attempt.failed counts gate rejections without missing the exhausting one.
+    assert [payload["attempt"] for payload in _of_type(tmp_path, "node.attempt.failed")] == [1, 2]
     failed = _of_type(tmp_path, "node.failed")
     assert len(failed) == 1
     assert failed[0]["attempt"] == 2
@@ -206,7 +208,9 @@ def test_a_node_without_a_declared_budget_gets_exactly_one_attempt(tmp_path: Pat
 
     assert projection.state == "FAILED"
     assert worker.calls == 1
-    assert _of_type(tmp_path, "node.attempt.failed") == []
+    # Its one attempt failed, so it is recorded like any other failed attempt — uniform
+    # counting is what keeps the gate-rejection metric correct across every budget.
+    assert [payload["attempt"] for payload in _of_type(tmp_path, "node.attempt.failed")] == [1]
     failed = _of_type(tmp_path, "node.failed")
     # A single-attempt node did not exhaust a budget; it failed on its only attempt.
     assert "budget_exhausted" not in failed[0]
@@ -247,7 +251,7 @@ def test_a_worker_fault_is_retried_but_recorded_without_a_gate_verdict(tmp_path:
     assert projection.state == "FAILED"
     assert worker.calls == 3, "a worker fault is retryable"
     attempts = _of_type(tmp_path, "node.attempt.failed")
-    assert [payload["attempt"] for payload in attempts] == [1, 2]
+    assert [payload["attempt"] for payload in attempts] == [1, 2, 3]
     assert all("verdict" not in payload for payload in attempts)
     # No gate was ever consulted, so no node.gating was recorded either.
     assert _of_type(tmp_path, "node.gating") == []
@@ -291,7 +295,7 @@ def test_the_gate_error_rate_is_computable_from_the_log_alone(tmp_path: Path) ->
 def test_an_invalid_retry_budget_is_refused_at_the_point_of_use(
     tmp_path: Path, budget: object,
 ) -> None:
-    """The controller validates the budget itself.
+    """The controller validates the budget itself, at CONSTRUCTION.
 
     ``PlannedNode.budgets`` is an untyped mapping, and a plan can be built
     programmatically through the runtime facade without passing through manifest
@@ -299,10 +303,78 @@ def test_an_invalid_retry_budget_is_refused_at_the_point_of_use(
     cannot be guarded in the manifest validator alone. ``True`` is included because a
     bool is an int in Python and would otherwise read as a budget of 1.
     """
+    with pytest.raises(GraphIntegrityError, match="max_attempts"):
+        _controller(
+            tmp_path, worker=_Worker(), gate=_Gate(reject_first=0),
+            budgets={"max_attempts": budget},
+        )
+
+
+def test_a_retried_run_is_readable_by_the_arena_and_the_resume_path(tmp_path: Path) -> None:
+    """``latest_node_states`` must survive a retried run.
+
+    It is shared by the Arena read model AND the controller's resume path, and it
+    validates the per-node lifecycle against a strict transition table. Retry introduces
+    GATING -> RUNNING and a rising attempt number, neither of which that table admitted,
+    so a retried run wedged both readers even though ``replay_projection`` was fine.
+    """
     controller = _controller(
-        tmp_path, worker=_Worker(), gate=_Gate(reject_first=0),
-        budgets={"max_attempts": budget},
+        tmp_path, worker=_Worker(), gate=_Gate(reject_first=2), budgets={"max_attempts": 3},
+    )
+    assert controller.run().state == "SUCCEEDED"
+
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity())
+    states = latest_node_states(_plan({"max_attempts": 3}), log.replay())
+
+    assert states[_NODE_ID]["state"] == "SUCCEEDED"
+    assert states[_NODE_ID]["attempt"] == 3
+
+
+def test_an_effectful_node_may_not_carry_a_retry_budget(tmp_path: Path) -> None:
+    """In-process retry is a re-drive, and D7 forbids re-driving an external effect.
+
+    ``_states_from`` already refuses to RESUME an effectful node interrupted mid-execution
+    without a per-effect idempotency key. A retry loop that ignored the same rule would let
+    a node repeat a payment or an external write that resume explicitly refuses to repeat.
+    """
+    node = PlannedNode(
+        node_id=_NODE_ID, kind="tool", package_digest=_DIGEST, binding_id=None,
+        required_effects=frozenset({Effect.EXTERNAL_WRITE}),
+        isolation=IsolationLevel.WORKSPACE_ONLY, hard_deadline_ms=1_000,
+        budgets={"max_attempts": 3}, approval_policy={},
+    )
+    plan = ExecutionPlan(
+        api_version="bounded-loops.dev/plan/v1", plan_id="sha256:" + "b" * 64,
+        source_graph_digest="sha256:" + "a" * 64, policy_digest="sha256:" + "c" * 64,
+        compiler_version="test", nodes=(node,), edges=(), levels=((_NODE_ID,),),
+        package_digests=(_DIGEST,), connection_bindings=(), canonical_json=b"{}",
+    )
+    with pytest.raises(GraphIntegrityError, match="idempotency key"):
+        GraphRunController(
+            plan=plan, event_log=GraphEventLog(tmp_path / "events.jsonl", _identity()),
+            worker=_Worker(), gate=_Gate(reject_first=0), artifact_verifier=_PassingVerifier(),
+            execution_policy=_policy(plan), execution_enforcer=_Enforcer(),
+            timestamp=lambda: "2026-08-12T00:00:00Z",
+        )
+
+
+def test_a_gate_rejection_on_the_final_attempt_is_still_counted(tmp_path: Path) -> None:
+    """The undercount this guards against was real, and this test would have missed it.
+
+    When the budget runs out ON a gate rejection, recording only the non-final failures
+    would leave that last rejection solely on the terminal node.failed. A metric counting
+    node.attempt.failed would then report 1/2 where the truth is 2/2 — a systematic
+    undercount of exactly the quantity the records exist to measure.
+    """
+    _controller(
+        tmp_path, worker=_Worker(), gate=_Gate(reject_first=99), budgets={"max_attempts": 2},
+    ).run()
+
+    gate_evaluations = len(_of_type(tmp_path, "node.gating"))
+    rejections = sum(
+        1 for payload in _of_type(tmp_path, "node.attempt.failed") if "verdict" in payload
     )
 
-    with pytest.raises(GraphIntegrityError, match="max_attempts"):
-        controller.run()
+    assert gate_evaluations == 2
+    assert rejections == 2, "the rejection that exhausted the budget must be counted too"
+    assert rejections / gate_evaluations == 1.0

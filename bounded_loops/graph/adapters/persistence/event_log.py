@@ -449,13 +449,13 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
         if not isinstance(payload["reason"], str) or not payload["reason"]:
             raise GraphIntegrityError("node.attempt.failed reason must be a non-empty string")
         if "verdict" in payload:
-            verdict = payload["verdict"]
-            if not isinstance(verdict, Mapping) or not isinstance(verdict.get("passed"), bool):
-                raise GraphIntegrityError("node.attempt.failed verdict must carry a boolean passed")
-            if verdict["passed"]:
-                # A recorded FAILED attempt whose verdict says it passed is a
-                # contradiction; refusing it keeps the gate-rejection count honest.
-                raise GraphIntegrityError("node.attempt.failed verdict must not report passed")
+            # The SAME closed-shape validation node.failed gets: {passed, reason} with an
+            # optional evidence_digest, a non-empty reason, and passed=False to match the
+            # receipt it rides on.  A weaker check here would let a hand-forged (but
+            # correctly re-hash-chained) log inject extra keys or an empty reason and
+            # still be counted as a gate rejection, which would corrupt the very rate
+            # these records exist to measure.
+            _validate_verdict(payload["verdict"], False)
 
     elif event_type == "audit.plan.created":
         required = {"plan_digest", "artifact_digest", "rubric_digest", "cell_count"}

@@ -123,6 +123,16 @@ def _max_attempts(node: PlannedNode) -> int:
         raise GraphIntegrityError("max_attempts must be an integer")
     if raw < 1 or raw > _MAX_ATTEMPTS_CEILING:
         raise GraphIntegrityError(f"max_attempts must be between 1 and {_MAX_ATTEMPTS_CEILING}")
+    if raw > 1 and (node.required_effects & _EFFECTFUL_EFFECTS):
+        # The same D7 rule the resume path already enforces (see ``_states_from``): an
+        # external / irreversible effect cannot be re-driven without a per-effect
+        # idempotency key.  In-process retry is a re-drive too, so allowing a budget
+        # above one here would let a node repeat a payment or an external write that
+        # resume explicitly refuses to repeat — an asymmetry that double-spends.
+        raise GraphIntegrityError(
+            f"node {node.node_id!r} carries an external / irreversible effect, so it cannot "
+            "retry without a per-effect idempotency key (D7); declare max_attempts: 1"
+        )
     return raw
 
 
@@ -222,6 +232,12 @@ class GraphRunController:
             or identity.policy_digest != plan.policy_digest
         ):
             raise GraphIntegrityError("event log identity does not match immutable execution plan")
+        # Validate EVERY node's retry budget before any work starts, not when its node is
+        # reached.  Reaching a node can itself fail first (a denied envelope, for example),
+        # which would leave an illegal budget — including an effectful node with a retry
+        # budget it must never have — undetected on that run.
+        for planned in plan.nodes:
+            _max_attempts(planned)
         self.plan = plan
         self.event_log = event_log
         self._worker = worker
@@ -390,8 +406,13 @@ class GraphRunController:
             if outcome.succeeded:
                 return None
             reason = outcome.failure or "node attempt failed"
+            # EVERY failed attempt is recorded, including the last one, so counting gate
+            # rejections is a single uniform query over node.attempt.failed.  Recording
+            # only the non-final failures would systematically undercount: whenever the
+            # budget runs out ON a gate rejection, that rejection would appear solely on
+            # the terminal node.failed and be missed.
+            self._append_attempt_failed(node_id, attempt, reason, outcome.verdict)
             if attempt < budget:
-                self._append_attempt_failed(node_id, attempt, reason, outcome.verdict)
                 continue
             return self._fail_node(
                 states, node_id, reason, attempt=attempt,
