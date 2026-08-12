@@ -213,7 +213,9 @@ class GraphEventLog:
         # malformed verdict/isolation would otherwise wedge the stream — writable but
         # unprojectable). Fail closed here, before the write.
         if stored.event.event_type in _NODE_EVENTS:
-            _validate_node_event(stored.event.event_type, stored.event.payload)
+            _validate_node_event(
+                stored.event.event_type, stored.event.payload, on_append=True,
+            )
         # Mirror the same fail-closed gate for the additive audit event types.
         if stored.event.event_type in _AUDIT_EVENTS:
             _validate_audit_event(stored.event.event_type, stored.event.payload)
@@ -256,7 +258,9 @@ class GraphEventLog:
             # correctly re-hash-chained) log cannot slip a malformed receipt past a
             # consumer that reads the raw stream rather than the projection.
             if stored.event.event_type in _NODE_EVENTS:
-                _validate_node_event(stored.event.event_type, stored.event.payload)
+                _validate_node_event(
+                    stored.event.event_type, stored.event.payload, on_append=False,
+                )
             # Mirror the same on-read gate for additive audit events.
             if stored.event.event_type in _AUDIT_EVENTS:
                 _validate_audit_event(stored.event.event_type, stored.event.payload)
@@ -302,7 +306,7 @@ def _apply(projection: GraphRunProjection, stored: StoredGraphEvent) -> GraphRun
     elif event_type in _NODE_EVENTS:
         if projection.state != "RUNNING":
             raise GraphIntegrityError("node transition requires graph run to be RUNNING")
-        _validate_node_event(event_type, stored.event.payload)
+        _validate_node_event(event_type, stored.event.payload, on_append=False)
         state = "RUNNING"
     elif event_type == "run.succeeded":
         state = _state(stored.event.payload, "SUCCEEDED")
@@ -328,23 +332,36 @@ def _state(payload: Mapping[str, object], expected: str) -> str:
     return expected
 
 
-def _validate_node_event(event_type: str, payload: Mapping[str, object]) -> None:
+def _validate_node_event(
+    event_type: str, payload: Mapping[str, object], *, on_append: bool,
+) -> None:
+    """Validate one lifecycle receipt.
+
+    ``on_append`` is the writer/reader distinction, and it exists for exactly one reason:
+    fields added after 0.4.0 are REQUIRED of anything this version writes, but must be
+    TOLERATED when absent from a receipt an older version already wrote. Requiring them on
+    read would make every pre-existing run directory unreplayable and unresumable — a
+    published release's runs are durable data, not something a later version may invalidate.
+    """
     expected_state = _NODE_EVENTS[event_type]
     required = {"node_id", "state", "attempt"}
     if event_type == "node.succeeded":
         required.add("artifact_digests")
     elif event_type == "node.failed":
         required.add("reason")
-        # A machine-readable cause is REQUIRED on a failure receipt. The free-text reason
-        # is for humans, and telling a gate rejection from a worker crash by parsing it is
-        # how an attempt that never reached the gate ends up in the gate error denominator.
-        required.add("cause")
+        # A machine-readable cause is required of anything WE write: the free-text reason is
+        # for humans, and telling a gate rejection from a worker crash by parsing it is how
+        # an attempt that never reached the gate ends up in the gate error denominator.
+        # Not required on read — 0.4.0 wrote node.failed without it, and those run
+        # directories must still replay and resume.
+        if on_append:
+            required.add("cause")
     if event_type == "node.succeeded":
         allowed = required | {"route", "transport", "isolation", "verdict"}
     elif event_type == "node.failed":
         # budget_exhausted appears only when a retry budget above one was spent, so a
         # reader can separate "ran out of attempts" from "failed on its only attempt".
-        allowed = required | {"verdict", "budget_exhausted"}
+        allowed = required | {"verdict", "budget_exhausted", "cause"}
     else:
         allowed = required
     if not required <= set(payload) <= allowed:
@@ -369,7 +386,7 @@ def _validate_node_event(event_type: str, payload: Mapping[str, object]) -> None
             _validate_verdict(payload["verdict"], True)
     if event_type == "node.failed" and (not isinstance(payload["reason"], str) or not payload["reason"]):
         raise GraphIntegrityError("node.failed requires a non-empty reason")
-    if event_type == "node.failed":
+    if event_type == "node.failed" and "cause" in payload:
         _validate_cause(payload["cause"], "node.failed")
         if payload["cause"] == NodeFailureCause.GATE_REJECTED.value and "verdict" not in payload:
             # A gate rejection without the verdict it rejected on is not auditable.

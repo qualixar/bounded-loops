@@ -5,9 +5,17 @@ import threading
 
 import pytest
 
-from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
+from bounded_loops.graph.adapters.persistence.event_log import (
+    GraphEventLog,
+    _canonical,
+    _hash,
+)
 from bounded_loops.graph.domain.errors import GraphIntegrityError
-from bounded_loops.graph.domain.events import GraphRunIdentity, UnsignedGraphEvent
+from bounded_loops.graph.domain.events import (
+    GraphRunIdentity,
+    StoredGraphEvent,
+    UnsignedGraphEvent,
+)
 
 
 def _identity() -> GraphRunIdentity:
@@ -263,3 +271,39 @@ def test_node_succeeded_rejects_a_non_hex_artifact_digest(tmp_path):
     }
     with pytest.raises(GraphIntegrityError, match="artifact digests"):
         store.append(head, _event("node.succeeded", "nonhex", payload))
+
+
+def test_a_pre_0_5_failure_receipt_still_replays(tmp_path):
+    """A published release's run directories are durable data, not ours to invalidate.
+
+    0.4.0 wrote ``node.failed`` with no ``cause``. Requiring that field on READ made every
+    such run directory unreplayable and unresumable — including runs already on users'
+    disks. It is required of what we WRITE and tolerated in what we read.
+
+    The legacy line is hand-built and correctly hash-chained, exactly as the older version
+    left it, rather than produced by today's writer — which now refuses that shape.
+    """
+    store, head = _running_log(tmp_path)
+    legacy = {"node_id": "probe", "state": "FAILED", "attempt": 1, "reason": "gate rejected"}
+    event = _event("node.failed", "legacy-fail", legacy)
+    stored = StoredGraphEvent(
+        identity=store.identity, sequence=3, event=event, previous_hash=head, event_hash="",
+    )
+    stored = StoredGraphEvent(
+        identity=stored.identity, sequence=stored.sequence, event=stored.event,
+        previous_hash=stored.previous_hash, event_hash=_hash(stored),
+    )
+    with (tmp_path / "events.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(_canonical(stored, include_hash=True) + "\n")
+
+    # Replays, projects, and the chain verifies.
+    assert store.replay_projection().state == "RUNNING"
+    assert [s.event.event_type for s in store.replay()][-1] == "node.failed"
+
+
+def test_todays_writer_still_refuses_a_failure_receipt_without_a_cause(tmp_path):
+    """Tolerating legacy shapes on read must not weaken what this version writes."""
+    store, head = _running_log(tmp_path)
+    payload = {"node_id": "probe", "state": "FAILED", "attempt": 1, "reason": "gate rejected"}
+    with pytest.raises(GraphIntegrityError, match="invalid shape"):
+        store.append(head, _event("node.failed", "nocause", payload))
