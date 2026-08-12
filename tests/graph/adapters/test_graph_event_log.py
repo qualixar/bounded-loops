@@ -307,3 +307,29 @@ def test_todays_writer_still_refuses_a_failure_receipt_without_a_cause(tmp_path)
     payload = {"node_id": "probe", "state": "FAILED", "attempt": 1, "reason": "gate rejected"}
     with pytest.raises(GraphIntegrityError, match="invalid shape"):
         store.append(head, _event("node.failed", "nocause", payload))
+
+
+def test_node_failed_refuses_a_verdict_on_a_non_gate_cause(tmp_path):
+    """A verdict may ride ONLY a gate rejection, on the terminal receipt as on the attempt one.
+
+    Checking one direction lets a worker fault carry a verdict, so a reader keying on the
+    verdict's presence counts a gate rejection where a cause-keyed reader sees none — the
+    exact disagreement the cause field was added to prevent. The controller does not write
+    this today; the log refuses it regardless, because a hand-forged but correctly
+    re-chained log is in the threat model.
+    """
+    store, head = _running_log(tmp_path)
+    payload = _failed_payload(
+        cause="worker_fault",
+        verdict={"passed": False, "reason": "looks like a gate rejection"},
+    )
+    with pytest.raises(GraphIntegrityError, match="exactly for a gate rejection"):
+        store.append(head, _event("node.failed", "faultverdict", payload))
+
+
+def test_node_failed_still_requires_the_verdict_for_a_gate_rejection(tmp_path):
+    """The other direction: a rejection with no verdict is not auditable."""
+    store, head = _running_log(tmp_path)
+    payload = _failed_payload(cause="gate_rejected")
+    with pytest.raises(GraphIntegrityError, match="exactly for a gate rejection"):
+        store.append(head, _event("node.failed", "noverdict", payload))

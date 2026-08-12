@@ -400,9 +400,15 @@ def _validate_node_event(
         raise GraphIntegrityError("node.failed requires a non-empty reason")
     if event_type == "node.failed" and "cause" in payload:
         _validate_cause(payload["cause"], "node.failed")
-        if payload["cause"] == NodeFailureCause.GATE_REJECTED.value and "verdict" not in payload:
-            # A gate rejection without the verdict it rejected on is not auditable.
-            raise GraphIntegrityError("node.failed gate_rejected requires the gate verdict")
+        # BOTH directions, as node.attempt.failed already requires: a gate rejection must
+        # carry the verdict it rejected on, and no other cause may carry one. One direction
+        # alone lets a worker fault ride a verdict, so a reader keying on the verdict's
+        # presence counts a gate rejection where a cause-keyed reader sees none — exactly the
+        # disagreement this field was added to prevent.
+        if (payload["cause"] == NodeFailureCause.GATE_REJECTED.value) != ("verdict" in payload):
+            raise GraphIntegrityError(
+                "node.failed verdict must be present exactly for a gate rejection"
+            )
     if event_type == "node.failed" and "verdict" in payload:
         _validate_verdict(payload["verdict"], False)
     if event_type == "node.failed" and "budget_exhausted" in payload:
