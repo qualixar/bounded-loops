@@ -482,3 +482,80 @@ def test_the_terminal_verdict_duplicates_the_final_attempt_rather_than_adding_on
     # gate evaluations.
     assert len(_of_type(tmp_path, "node.gating")) == 2
     assert sum(1 for p in _of_type(tmp_path, "node.attempt.failed") if "verdict" in p) == 2
+
+
+def _controller_at(
+    log_path: Path, plan: ExecutionPlan, gate: IndependentGatePort, clock: str,
+) -> GraphRunController:
+    return GraphRunController(
+        plan=plan, event_log=GraphEventLog(log_path, _identity()),
+        worker=_Worker(), gate=gate, artifact_verifier=_PassingVerifier(),
+        execution_policy=_policy(plan), execution_enforcer=_Enforcer(),
+        timestamp=lambda: clock,
+    )
+
+
+def test_an_attempt_that_recorded_its_failure_is_not_re_driven(tmp_path: Path) -> None:
+    """Grok probe P1/P2: a recorded failure must be spent, or one attempt carries two verdicts.
+
+    Crash after the final ``node.attempt.failed`` but before the node's terminal receipt.
+    If resume re-drove that same attempt number, the log could end up holding BOTH a
+    rejection and an acceptance for it — making the gate rejection rate count a rejection
+    that later passed — and a second rejection with a DIFFERENT reason would collide with
+    the existing attempt-record key and wedge the resume with no terminal receipt at all.
+    """
+    log_path = tmp_path / "events.jsonl"
+    plan = _plan({"max_attempts": 2})
+
+    # Drive both attempts to rejection, then interrupt before the terminal receipt by
+    # replaying the stream into a fresh controller rather than letting the first finish.
+    _controller_at(log_path, plan, _Gate(reject_first=99), "2026-08-12T00:00:00Z").run()
+    recorded = [p["attempt"] for p in _of_type(tmp_path, "node.attempt.failed")]
+    assert recorded == [1, 2], "both attempts recorded their own failure"
+
+    # A resume now, with an ACCEPTING gate, must not resurrect attempt 2.
+    resumed = _controller_at(
+        log_path, plan, _Gate(reject_first=0), "2026-08-12T00:00:01Z",
+    ).resume()
+
+    assert resumed.state == "FAILED", "a run whose budget is spent stays failed"
+    # No acceptance was ever written for an attempt that had already recorded a rejection.
+    assert _of_type(tmp_path, "node.succeeded") == []
+    assert [p["attempt"] for p in _of_type(tmp_path, "node.attempt.failed")] == [1, 2]
+
+
+def test_a_resume_denied_by_policy_does_not_write_a_lower_attempt(tmp_path: Path) -> None:
+    """Grok probe P3: the fail-closed resume paths must carry the real attempt number.
+
+    ``_fail_node`` defaults to attempt 1. On a resume that fails re-authorization after a
+    higher attempt was already recorded, that default appends attempt 1 after attempt 2 —
+    the same non-monotonic corruption the cursor exists to prevent, on a path the cursor
+    does not itself cover.
+    """
+    log_path = tmp_path / "events.jsonl"
+    plan = _plan({"max_attempts": 3})
+
+    # Attempt 1 rejected; attempt 2 interrupted mid-gate.
+    with pytest.raises(KeyboardInterrupt):
+        _controller_at(log_path, plan, _CrashingGate(crash_on=2), "2026-08-12T00:00:00Z").run()
+    assert [p["attempt"] for p in _of_type(tmp_path, "node.running")] == [1, 2]
+
+    class _DenyAll:
+        def authorize(self, *, plan, node):  # noqa: ANN001, ARG002
+            raise GraphIntegrityError("policy expired")
+
+    denied = GraphRunController(
+        plan=plan, event_log=GraphEventLog(log_path, _identity()),
+        worker=_Worker(), gate=_Gate(reject_first=0), artifact_verifier=_PassingVerifier(),
+        execution_policy=_DenyAll(), execution_enforcer=_Enforcer(),
+        timestamp=lambda: "2026-08-12T00:00:02Z",
+    ).resume()
+
+    assert denied.state == "FAILED"
+    failed = _of_type(tmp_path, "node.failed")
+    assert len(failed) == 1
+    assert failed[0]["attempt"] == 2, "the denial belongs to the attempt in flight, not attempt 1"
+
+    # The stream is still readable by the Arena and any later resume.
+    states = latest_node_states(plan, GraphEventLog(log_path, _identity()).replay())
+    assert states[_NODE_ID]["state"] == "FAILED"

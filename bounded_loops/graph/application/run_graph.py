@@ -18,7 +18,12 @@ from bounded_loops.graph.application.schedule_ready import NodeState, derive_rea
 from bounded_loops.graph.domain.authoring import NETWORK_EFFECTS, NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.connections import ResolvedRoute
-from bounded_loops.graph.domain.events import GraphRunIdentity, GraphRunProjection, UnsignedGraphEvent
+from bounded_loops.graph.domain.events import (
+    GraphRunIdentity,
+    GraphRunProjection,
+    StoredGraphEvent,
+    UnsignedGraphEvent,
+)
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
 # Effects whose real-world action cannot be safely repeated by an at-least-once
@@ -81,10 +86,6 @@ class _AttemptOutcome:
     verdict: dict[str, object] | None = None
     terminal: GraphRunProjection | None = None
 
-
-# Receipt states meaning an attempt actually BEGAN executing, so it counts against the
-# budget on resume.  READY and STARTING mean the node was dispatched but never ran.
-_ATTEMPT_STARTED = frozenset({"RUNNING", "GATING"})
 
 _DEFAULT_MAX_ATTEMPTS = 1
 # A ceiling exists so a typo in a manifest cannot request an effectively unbounded
@@ -299,16 +300,17 @@ class GraphRunController:
         # stream that run() refuses; complete the start so it is never wedged.
         if projection.state == "PENDING":
             self._append("run.started", "run.started", {"state": "RUNNING"})
-        latest = latest_node_states(self.plan, self.event_log.replay())
+        receipts = self.event_log.replay()
+        latest = latest_node_states(self.plan, receipts)
         # A crash between node.failed and run.failed leaves a RUNNING stream with a
         # FAILED node; finalize the terminal deterministically rather than re-drive a
         # run that has already failed.
         if any(observed["state"] == "FAILED" for observed in latest.values()):
             self._append("run.failed", "run.failed", {"state": "FAILED"})
             return self.event_log.replay_projection()
-        return self._run_loop(self._states_from(latest), self._consumed_from(latest))
+        return self._run_loop(self._states_from(latest), self._consumed_from(receipts))
 
-    def _consumed_from(self, latest: dict[str, dict[str, object]]) -> dict[str, int]:
+    def _consumed_from(self, receipts: tuple[StoredGraphEvent, ...]) -> dict[str, int]:
         """How many attempts each node has ALREADY spent, so a resume continues the count.
 
         Without this the retry loop restarts at attempt 1 on every resume, which is wrong
@@ -317,30 +319,41 @@ class GraphRunController:
         append a LOWER attempt number after a higher one, which makes the finished run
         permanently unreadable to the lifecycle validation in ``latest_node_states``.
 
-        An attempt interrupted mid-flight (RUNNING/GATING) counts as ``attempt - 1``: that
-        attempt is RE-DRIVEN under its own number rather than treated as spent, which keeps
-        the documented at-least-once resume contract intact. Re-driving it is safe for the
-        log because its prefix events re-append as head-safe no-ops (identical key AND
-        payload), and every event it writes afterwards is new — so no lower attempt number
-        is ever appended after a higher one. A node at READY or STARTING was dispatched but
-        never ran, so it has consumed nothing.
+        An attempt is spent exactly when it RECORDED its own failure — that is, when a
+        ``node.attempt.failed`` receipt exists for it. Counting those is what separates the
+        two cases that matter:
 
-        What this bounds is the number of DISTINCT attempts, which is the quantity that
-        multiplies the gate's false-accept probability. What it does not bound is repeated
-        re-driving of the SAME attempt across many resumes: a node that crashes before
-        reaching its gate can be re-driven once per resume without ever advancing the
-        attempt number. That residual is a spend concern, and it belongs to the run-level
-        budget with its pause-for-approval gate — not to the retry budget, which counts
-        gate evaluations.
+        * Interrupted before recording anything (killed during the worker or the gate): no
+          attempt record, so it is not spent and is RE-DRIVEN under its own number. This is
+          what keeps the documented at-least-once resume contract. Its prefix events
+          re-append as head-safe no-ops, so no lower attempt number follows a higher one.
+        * Recorded its failure, then the process died before the node's terminal receipt:
+          the attempt IS spent. Re-driving it would let one attempt number carry both a
+          rejection and a later acceptance — a contradiction that corrupts the gate
+          rejection rate — and a second rejection with a different reason would collide
+          with the existing attempt-record key and wedge the resume outright.
+
+        Deriving this from the attempt records rather than from the latest lifecycle state
+        is why the raw receipts are needed here: ``latest_node_states`` deliberately ignores
+        additive events, so it cannot see them.
+
+        What this bounds is the number of DISTINCT attempts, the quantity that multiplies
+        the gate's false-accept probability. It does NOT bound repeated re-driving of an
+        attempt that never recorded anything — an external loop that kills the worker before
+        it reaches the gate can re-drive forever. There is no run-level spend budget yet, so
+        that residual is currently unbounded, not merely deferred.
         """
-        consumed: dict[str, int] = {}
-        for node in self.plan.nodes:
-            observed = latest[node.node_id]
-            attempt = observed["attempt"]
-            if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 0:
+        consumed = {node.node_id: 0 for node in self.plan.nodes}
+        for stored in receipts:
+            if stored.event.event_type != "node.attempt.failed":
+                continue
+            node_id = stored.event.payload["node_id"]
+            if node_id not in consumed:
+                raise GraphIntegrityError("attempt receipt references a node outside the plan")
+            attempt = stored.event.payload["attempt"]
+            if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
                 raise GraphIntegrityError("receipt attempt count is invalid")
-            started = observed["state"] in _ATTEMPT_STARTED
-            consumed[node.node_id] = max(attempt - 1, 0) if started else 0
+            consumed[node_id] = max(consumed[node_id], attempt)
         return consumed
 
     def _states_from(self, latest: dict[str, dict[str, object]]) -> dict[str, NodeState]:
@@ -405,13 +418,20 @@ class GraphRunController:
                 # identical answer, and would inflate the attempt count with attempts that
                 # never reached the gate — which would corrupt the per-attempt gate error
                 # rate the attempt records exist to measure.
+                # The attempt this node is ABOUT to make.  Every fail-closed exit below must
+                # carry it: defaulting to 1 would append a lower attempt number after a
+                # higher one on any resume that fails re-authorization, which is the same
+                # unreadable-stream corruption the attempt cursor exists to prevent.
+                at = consumed.get(node_id, 0) + 1
                 try:
                     envelope = validate_execution_envelope(
                         self.plan, node,
                         self._execution_policy.authorize(plan=self.plan, node=node),
                     )
                 except Exception:
-                    return self._fail_node(states, node_id, "execution policy denied worker")
+                    return self._fail_node(
+                        states, node_id, "execution policy denied worker", attempt=at,
+                    )
                 # ONE classification drives BOTH the enforcer skip and the worker choice, so
                 # they can never drift into an unsandboxed subprocess (single source of truth).
                 egress = is_egress_node(self.plan, node, self._egress_transports)
@@ -420,7 +440,10 @@ class GraphRunController:
                     # Egress node but no connector worker wired: fail closed. Never fall back to
                     # the subprocess worker — that would run egress work on the wrong (sandboxed)
                     # path, and the enforcer was already skipped for this node.
-                    return self._fail_node(states, node_id, "no connector worker configured for egress node")
+                    return self._fail_node(
+                        states, node_id, "no connector worker configured for egress node",
+                        attempt=at,
+                    )
                 terminal = self._run_node_loop(
                     states, node_id, node, envelope, egress, worker,
                     consumed.get(node_id, 0),
