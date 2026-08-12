@@ -62,10 +62,9 @@ _BLOG_PIPELINE: dict[str, Any] = {
         },
         {
             "id": "draft", "kind": "tool", "tool_ref": "model:draft-writer",
-            # Asked for 2 attempts and silently received 1: the controller does not read
-            # max_attempts, so this template promised a retry the runtime never performed.
-            # Declared honestly as 1 until retry is routed.
-            "inputs": {"claims": "json"}, "outputs": {"draft": "text"}, "budget": _budget(1, 120),
+            # 2 attempts: drafting is the node most likely to be rejected by its gate on a
+            # first pass, and the controller now honours the budget.
+            "inputs": {"claims": "json"}, "outputs": {"draft": "text"}, "budget": _budget(2, 120),
             "effects": ["workspace_write"], "isolation": "workspace_only",
         },
         {

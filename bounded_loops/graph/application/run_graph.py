@@ -61,6 +61,71 @@ class GateVerdict:
     evidence_digest: str | None = None
 
 
+@dataclass(frozen=True)
+class _AttemptOutcome:
+    """The result of one attempt of a bounded loop node.
+
+    Exactly one of three shapes:
+
+    * ``succeeded`` — the gate accepted; the node is done.
+    * ``failure`` set, ``terminal`` None — a RETRYABLE failure.  The caller records an
+      attempt event and tries again while budget remains.  ``verdict`` is set only when
+      the failure came from the gate, which is what separates a gate rejection from a
+      worker fault when the per-attempt gate error rate is computed.
+    * ``terminal`` set — the node already failed durably; the run stops.  Used for
+      failures a retry cannot fix (denied execution environment, broken gate).
+    """
+
+    succeeded: bool = False
+    failure: str | None = None
+    verdict: dict[str, object] | None = None
+    terminal: GraphRunProjection | None = None
+
+
+_DEFAULT_MAX_ATTEMPTS = 1
+# A ceiling exists so a typo in a manifest cannot request an effectively unbounded
+# loop.  It is deliberately far below the authoring schema's own 1..1000 range: the
+# retry budget multiplies the gate's per-attempt false-accept probability, so a very
+# large budget silently degrades the guarantee the gate is there to provide.
+_MAX_ATTEMPTS_CEILING = 100
+
+
+def _node_event_key(node_id: str, event_type: str, attempt: int) -> str:
+    """The idempotency key for one node lifecycle event.
+
+    Attempt 1 keeps the pre-retry key format EXACTLY — ``node_id:event_type`` — so
+    run directories written before retry existed still replay and resume.  Later
+    attempts append the attempt number because the log raises
+    ``GraphIntegrityError`` when one key is reused with a different payload
+    (see ``GraphEventLog.append``), which would otherwise make a second
+    ``node.running`` crash the run rather than record it.
+
+    Do NOT "tidy" this into one uniform format: doing so silently breaks resume of
+    every run directory produced before this change.
+    """
+    if attempt <= 1:
+        return f"{node_id}:{event_type}"
+    return f"{node_id}:{event_type}:{attempt}"
+
+
+def _max_attempts(node: PlannedNode) -> int:
+    """The node's retry budget, validated at the point of use.
+
+    ``PlannedNode.budgets`` is ``Mapping[str, object]``, so the value is untyped and
+    must be checked rather than cast.  Validation lives here as well as in manifest
+    validation because a plan can be built programmatically through the runtime
+    facade without passing through the manifest validator, and an unbounded loop is
+    the one failure this component must never have.
+    """
+    raw = node.budgets.get("max_attempts", _DEFAULT_MAX_ATTEMPTS)
+    # bool is a subclass of int in Python, so True would otherwise read as 1.
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise GraphIntegrityError("max_attempts must be an integer")
+    if raw < 1 or raw > _MAX_ATTEMPTS_CEILING:
+        raise GraphIntegrityError(f"max_attempts must be between 1 and {_MAX_ATTEMPTS_CEILING}")
+    return raw
+
+
 class NodeWorkerPort(Protocol):
     """Executes a planned node without deciding whether its output is valid."""
 
@@ -270,8 +335,12 @@ class GraphRunController:
                     continue
                 states = dispatch_node(states, node_id)
                 self._append_node(node_id, "node.starting", NodeState.STARTING)
-                states[node_id] = NodeState.RUNNING
-                self._append_node(node_id, "node.running", NodeState.RUNNING)
+                # Envelope authorization, egress classification and worker selection are
+                # deterministic in the node and plan, so they are resolved ONCE outside the
+                # retry loop.  Retrying any of them would burn budget re-deriving an
+                # identical answer, and would inflate the attempt count with attempts that
+                # never reached the gate — which would corrupt the per-attempt gate error
+                # rate the attempt records exist to measure.
                 try:
                     envelope = validate_execution_envelope(
                         self.plan, node,
@@ -282,63 +351,149 @@ class GraphRunController:
                 # ONE classification drives BOTH the enforcer skip and the worker choice, so
                 # they can never drift into an unsandboxed subprocess (single source of truth).
                 egress = is_egress_node(self.plan, node, self._egress_transports)
-                if not egress:
-                    # An egress/connector node runs no subprocess to sandbox — the sandbox
-                    # enforcer would deny it the network it must use — so egress authorization
-                    # happens inside the connector worker instead. Every other node is enforced.
-                    try:
-                        self._execution_enforcer.enforce(plan=self.plan, node=node, envelope=envelope)
-                    except Exception:
-                        return self._fail_node(states, node_id, "execution environment denied worker")
                 worker = self._connector_worker if egress else self._worker
                 if worker is None:
                     # Egress node but no connector worker wired: fail closed. Never fall back to
                     # the subprocess worker — that would run egress work on the wrong (sandboxed)
                     # path, and the enforcer was already skipped for this node.
                     return self._fail_node(states, node_id, "no connector worker configured for egress node")
-                try:
-                    result = worker.execute(plan=self.plan, node=node, envelope=envelope)
-                except Exception:
-                    return self._fail_node(states, node_id, "worker execution failed")
-                try:
-                    self._validate_result(result)
-                    expected_route = self._expected_route_for(node)
-                    self._validate_observed_route(expected_route, result.observed_route)
-                    expected_transport = self._expected_transport_for(node)
-                    self._validate_observed_transport(expected_transport, result.observed_transport)
-                    self._artifact_verifier.verify(
-                        identity=self.event_log.identity,
-                        digests=result.output_artifact_digests,
-                    )
-                except Exception:
-                    return self._fail_node(states, node_id, "worker output artifact verification failed")
-                states[node_id] = NodeState.GATING
-                self._append_node(node_id, "node.gating", NodeState.GATING)
-                try:
-                    verdict = self._gate.evaluate(plan=self.plan, node=node, result=result)
-                except Exception:
-                    return self._fail_node(states, node_id, "independent gate evaluation failed")
-                if not isinstance(verdict, GateVerdict):
-                    return self._fail_node(states, node_id, "independent gate returned an invalid verdict")
-                if not self._verdict_is_wellformed(verdict):
-                    return self._fail_node(states, node_id, "independent gate returned an invalid verdict")
-                if verdict.passed:
-                    states[node_id] = NodeState.SUCCEEDED
-                    self._append_node(
-                        node_id,
-                        "node.succeeded",
-                        NodeState.SUCCEEDED,
-                        artifact_digests=list(result.output_artifact_digests),
-                        verdict=self._verdict_body(verdict),
-                        **({"route": self._route_payload(expected_route)} if expected_route else {}),
-                        **({"transport": expected_transport} if expected_transport else {}),
-                        **self._isolation_payload(result),
-                    )
-                    continue
-                return self._fail_node(
-                    states, node_id, "independent gate rejected output",
-                    verdict=self._verdict_body(verdict),
-                )
+                terminal = self._run_node_loop(states, node_id, node, envelope, egress, worker)
+                if terminal is not None:
+                    return terminal
+                continue
+
+    def _run_node_loop(
+        self,
+        states: dict[str, NodeState],
+        node_id: str,
+        node: PlannedNode,
+        envelope: ExecutionEnvelope,
+        egress: bool,
+        worker: NodeWorkerPort,
+    ) -> GraphRunProjection | None:
+        """Attempt one node until its independent gate accepts, or the budget runs out.
+
+        Returns ``None`` when the node SUCCEEDED and the caller should drive the rest of
+        the graph, or a terminal projection when the run must stop.
+
+        Each non-final failure is recorded as an additive ``node.attempt.failed`` event
+        rather than routed through ``_fail_node``, because ``_fail_node`` appends
+        ``run.failed`` and ends the run — a retry must leave the node in flight.
+        """
+        budget = _max_attempts(node)
+        for attempt in range(1, budget + 1):
+            states[node_id] = NodeState.RUNNING
+            self._append_node(node_id, "node.running", NodeState.RUNNING, attempt=attempt)
+            outcome = self._attempt_node(states, node_id, node, envelope, egress, worker, attempt)
+            if outcome.terminal is not None:
+                return outcome.terminal
+            if outcome.succeeded:
+                return None
+            reason = outcome.failure or "node attempt failed"
+            if attempt < budget:
+                self._append_attempt_failed(node_id, attempt, reason, outcome.verdict)
+                continue
+            return self._fail_node(
+                states, node_id, reason, attempt=attempt,
+                verdict=outcome.verdict,
+                # Only meaningful when a retry was actually available: a single-attempt
+                # node did not "exhaust" anything, it simply failed.
+                budget_exhausted=budget > 1,
+            )
+        # range(1, budget + 1) is non-empty because _max_attempts guarantees budget >= 1,
+        # so the loop always returns.  Kept explicit rather than relying on that.
+        raise GraphIntegrityError("node retry loop ended without a terminal outcome")
+
+    def _attempt_node(
+        self,
+        states: dict[str, NodeState],
+        node_id: str,
+        node: PlannedNode,
+        envelope: ExecutionEnvelope,
+        egress: bool,
+        worker: NodeWorkerPort,
+        attempt: int,
+    ) -> _AttemptOutcome:
+        """Run one attempt: enforce, execute, verify artifacts, then gate.
+
+        ``terminal`` is set for failures that a retry cannot fix — a denied execution
+        environment, or a gate that is itself broken.  Retrying those would burn budget
+        on an identical outcome, and retrying a malformed gate would mask the defect.
+        """
+        if not egress:
+            # An egress/connector node runs no subprocess to sandbox — the sandbox
+            # enforcer would deny it the network it must use — so egress authorization
+            # happens inside the connector worker instead. Every other node is enforced,
+            # on EVERY attempt: a later attempt must not run less isolated than the first.
+            try:
+                self._execution_enforcer.enforce(plan=self.plan, node=node, envelope=envelope)
+            except Exception:
+                return _AttemptOutcome(terminal=self._fail_node(
+                    states, node_id, "execution environment denied worker", attempt=attempt,
+                ))
+        try:
+            result = worker.execute(plan=self.plan, node=node, envelope=envelope)
+        except Exception:
+            return _AttemptOutcome(failure="worker execution failed")
+        expected_route = self._expected_route_for(node)
+        expected_transport = self._expected_transport_for(node)
+        try:
+            self._validate_result(result)
+            self._validate_observed_route(expected_route, result.observed_route)
+            self._validate_observed_transport(expected_transport, result.observed_transport)
+            self._artifact_verifier.verify(
+                identity=self.event_log.identity,
+                digests=result.output_artifact_digests,
+            )
+        except Exception:
+            return _AttemptOutcome(failure="worker output artifact verification failed")
+        states[node_id] = NodeState.GATING
+        self._append_node(node_id, "node.gating", NodeState.GATING, attempt=attempt)
+        try:
+            verdict = self._gate.evaluate(plan=self.plan, node=node, result=result)
+        except Exception:
+            return _AttemptOutcome(terminal=self._fail_node(
+                states, node_id, "independent gate evaluation failed", attempt=attempt,
+            ))
+        if not isinstance(verdict, GateVerdict) or not self._verdict_is_wellformed(verdict):
+            # A broken gate, not a failed attempt: retrying would spend the budget
+            # against a verdict this controller cannot interpret, and would hide the
+            # defect behind an eventual budget-exhausted failure.
+            return _AttemptOutcome(terminal=self._fail_node(
+                states, node_id, "independent gate returned an invalid verdict", attempt=attempt,
+            ))
+        if verdict.passed:
+            states[node_id] = NodeState.SUCCEEDED
+            self._append_node(
+                node_id,
+                "node.succeeded",
+                NodeState.SUCCEEDED,
+                attempt=attempt,
+                artifact_digests=list(result.output_artifact_digests),
+                verdict=self._verdict_body(verdict),
+                **({"route": self._route_payload(expected_route)} if expected_route else {}),
+                **({"transport": expected_transport} if expected_transport else {}),
+                **self._isolation_payload(result),
+            )
+            return _AttemptOutcome(succeeded=True)
+        return _AttemptOutcome(
+            failure="independent gate rejected output",
+            verdict=self._verdict_body(verdict),
+        )
+
+    def _append_attempt_failed(
+        self, node_id: str, attempt: int, reason: str, verdict: dict[str, object] | None,
+    ) -> None:
+        """Record one non-final attempt without transitioning run state.
+
+        ``verdict`` is present exactly when the attempt failed at the gate, so its
+        presence discriminates a gate rejection from a worker fault when the per-attempt
+        gate error rate is computed from the log.
+        """
+        payload: dict[str, object] = {"node_id": node_id, "attempt": attempt, "reason": reason}
+        if verdict is not None:
+            payload["verdict"] = verdict
+        self._append(f"{node_id}:node.attempt.failed:{attempt}", "node.attempt.failed", payload)
 
     def _resolve_approval(
         self, states: dict[str, NodeState], node_id: str, node: PlannedNode,
@@ -473,11 +628,18 @@ class GraphRunController:
 
     def _fail_node(
         self, states: dict[str, NodeState], node_id: str, reason: str,
-        *, verdict: dict[str, object] | None = None,
+        *, verdict: dict[str, object] | None = None, attempt: int = 1,
+        budget_exhausted: bool = False,
     ) -> GraphRunProjection:
         states[node_id] = NodeState.FAILED
-        extra = {"verdict": verdict} if verdict is not None else {}
-        self._append_node(node_id, "node.failed", NodeState.FAILED, reason=reason, **extra)
+        extra: dict[str, object] = {"verdict": verdict} if verdict is not None else {}
+        if budget_exhausted:
+            # Present only when a retry budget was actually available and spent, so a
+            # reader can tell "ran out of attempts" from "failed on its only attempt".
+            extra["budget_exhausted"] = True
+        self._append_node(
+            node_id, "node.failed", NodeState.FAILED, attempt=attempt, reason=reason, **extra,
+        )
         self._append("run.failed", "run.failed", {"state": "FAILED"})
         return self.event_log.replay_projection()
 
@@ -486,10 +648,12 @@ class GraphRunController:
         node_id: str,
         event_type: str,
         state: NodeState,
+        *,
+        attempt: int = 1,
         **extra: object,
     ) -> None:
-        payload = {"node_id": node_id, "state": state.value, "attempt": 1, **extra}
-        self._append(f"{node_id}:{event_type}", event_type, payload)
+        payload = {"node_id": node_id, "state": state.value, "attempt": attempt, **extra}
+        self._append(_node_event_key(node_id, event_type, attempt), event_type, payload)
 
     def _append(self, key: str, event_type: str, payload: dict[str, object]) -> None:
         stored = self.event_log.append(

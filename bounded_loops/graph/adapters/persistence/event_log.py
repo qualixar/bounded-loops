@@ -90,6 +90,12 @@ _AUDIT_EVENTS = frozenset({
     "audit.result.published",
     "repair.attempt.created",
     "release.decision.issued",
+    # One non-final attempt of a bounded loop.  Additive on purpose: a failed
+    # attempt is NOT a node outcome, so it must not transition run state — the
+    # node stays in flight and retries.  Only the terminal node.failed /
+    # node.succeeded carry the outcome.  Unrelated to "repair.attempt.created"
+    # above, which is audit-reconciliation lineage despite the shared word.
+    "node.attempt.failed",
 })
 
 
@@ -318,7 +324,9 @@ def _validate_node_event(event_type: str, payload: Mapping[str, object]) -> None
     if event_type == "node.succeeded":
         allowed = required | {"route", "transport", "isolation", "verdict"}
     elif event_type == "node.failed":
-        allowed = required | {"verdict"}
+        # budget_exhausted appears only when a retry budget above one was spent, so a
+        # reader can separate "ran out of attempts" from "failed on its only attempt".
+        allowed = required | {"verdict", "budget_exhausted"}
     else:
         allowed = required
     if not required <= set(payload) <= allowed:
@@ -345,6 +353,12 @@ def _validate_node_event(event_type: str, payload: Mapping[str, object]) -> None
         raise GraphIntegrityError("node.failed requires a non-empty reason")
     if event_type == "node.failed" and "verdict" in payload:
         _validate_verdict(payload["verdict"], False)
+    if event_type == "node.failed" and "budget_exhausted" in payload:
+        if not isinstance(payload["budget_exhausted"], bool):
+            raise GraphIntegrityError("node.failed budget_exhausted must be a boolean")
+        if payload["budget_exhausted"] and payload["attempt"] < 2:
+            # Exhausting a budget requires more than one attempt to have been available.
+            raise GraphIntegrityError("node.failed budget_exhausted requires attempt above one")
 
 
 _HEX_CHARS = frozenset("0123456789abcdef")
@@ -418,7 +432,32 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
     matching the node-event pattern — so a malformed audit event is caught
     before it is durably written AND when re-reading an existing stream.
     """
-    if event_type == "audit.plan.created":
+    if event_type == "node.attempt.failed":
+        # ``verdict`` is present EXACTLY when the attempt failed at the independent
+        # gate, and absent when it failed in the worker or artifact verification.
+        # Its presence is therefore the machine-readable discriminator between a
+        # gate rejection and a worker fault — which is what makes the per-attempt
+        # gate error rate computable without parsing the free-text ``reason``.
+        required = {"node_id", "attempt", "reason"}
+        if set(payload) - {"verdict"} != required:
+            raise GraphIntegrityError("node.attempt.failed payload has an invalid shape")
+        if not isinstance(payload["node_id"], str) or not payload["node_id"]:
+            raise GraphIntegrityError("node.attempt.failed node_id must be a non-empty string")
+        attempt = payload["attempt"]
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+            raise GraphIntegrityError("node.attempt.failed attempt must be a positive integer")
+        if not isinstance(payload["reason"], str) or not payload["reason"]:
+            raise GraphIntegrityError("node.attempt.failed reason must be a non-empty string")
+        if "verdict" in payload:
+            verdict = payload["verdict"]
+            if not isinstance(verdict, Mapping) or not isinstance(verdict.get("passed"), bool):
+                raise GraphIntegrityError("node.attempt.failed verdict must carry a boolean passed")
+            if verdict["passed"]:
+                # A recorded FAILED attempt whose verdict says it passed is a
+                # contradiction; refusing it keeps the gate-rejection count honest.
+                raise GraphIntegrityError("node.attempt.failed verdict must not report passed")
+
+    elif event_type == "audit.plan.created":
         required = {"plan_digest", "artifact_digest", "rubric_digest", "cell_count"}
         if set(payload) != required:
             raise GraphIntegrityError("audit.plan.created payload has an invalid shape")

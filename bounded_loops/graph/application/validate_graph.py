@@ -39,10 +39,11 @@ _ON_FAILURE_DECLARED = frozenset({"fail_graph", "continue", "repair", "await_hum
 # currently becomes fail_graph.  Accepting these would silently discard the author's
 # declared policy, so validation refuses them until the runtime honours them.
 _ON_FAILURE_UNIMPLEMENTED = frozenset({"continue", "repair", "await_human"})
-# The controller performs exactly one attempt per node: it never reads
-# ``PlannedNode.budgets["max_attempts"]``.  Until it does, a budget above one is a
-# promise the runtime does not keep, so it is refused rather than ignored.
-_MAX_ATTEMPTS_ROUTED = 1
+# Mirrors ``run_graph._MAX_ATTEMPTS_CEILING`` so an over-large budget is refused when the
+# graph is authored rather than when it runs.  Narrowed from 1000: the retry budget
+# multiplies the gate's per-attempt false-accept probability, so a very large budget
+# quietly erodes the guarantee the independent gate exists to provide.
+_MAX_ATTEMPTS_CEILING = 100
 _BASE_NODE_FIELDS = frozenset({
     "id", "kind", "inputs", "outputs", "budget", "effects", "isolation", "connection_slot", "on_failure",
 })
@@ -351,16 +352,10 @@ def _budget(raw: object, pointer: str) -> GraphBudget:
     budget = _mapping(raw, pointer)
     _closed(budget, {"max_attempts", "max_wallclock_s", "max_tokens", "max_cost_microunits"}, pointer)
     _required(budget, {"max_attempts", "max_wallclock_s"}, pointer)
-    max_attempts = _bounded_int(budget["max_attempts"], f"{pointer}/max_attempts", 1, 1000)
-    if max_attempts > _MAX_ATTEMPTS_ROUTED:
-        raise _error(
-            "max_attempts_unrouted", f"{pointer}/max_attempts",
-            f"max_attempts={max_attempts} was accepted but the runtime performs exactly "
-            f"{_MAX_ATTEMPTS_ROUTED} attempt per node; declare {_MAX_ATTEMPTS_ROUTED} until "
-            "retry is routed",
-        )
     return GraphBudget(
-        max_attempts=max_attempts,
+        max_attempts=_bounded_int(
+            budget["max_attempts"], f"{pointer}/max_attempts", 1, _MAX_ATTEMPTS_CEILING,
+        ),
         max_wallclock_s=_bounded_int(budget["max_wallclock_s"], f"{pointer}/max_wallclock_s", 1, 86400),
         max_tokens=_optional_int(budget.get("max_tokens"), f"{pointer}/max_tokens", minimum=1),
         max_cost_microunits=_optional_int(budget.get("max_cost_microunits"), f"{pointer}/max_cost_microunits", minimum=0),

@@ -164,13 +164,12 @@ def test_invalid_json_is_rejected():
             lambda g: g["nodes"][0].update({"on_failure": "await_human"}),
             "on_failure_unimplemented",
         ),
-        # max_attempts_unrouted: the controller never reads PlannedNode.budgets, so it
-        # performs exactly one attempt per node.  A budget above one is a promise the
-        # runtime does not keep — refuse it rather than ignore it.  This case is removed
-        # when retry is routed; until then it is the honest behaviour.
+        # max_attempts: above the ceiling the controller enforces.  Narrowed from 1000
+        # because the retry budget multiplies the gate's per-attempt false-accept
+        # probability, so an over-large budget erodes the gate's own guarantee.
         (
-            lambda g: g["nodes"][0]["budget"].update({"max_attempts": 5}),
-            "max_attempts_unrouted",
+            lambda g: g["nodes"][0]["budget"].update({"max_attempts": 101}),
+            "range",
         ),
         # edge_condition: edge 'when' that is not a string or null (line 231)
         (
