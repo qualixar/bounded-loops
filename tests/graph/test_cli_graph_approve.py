@@ -403,3 +403,86 @@ def test_run_execute_refuses_a_symlinked_inputs_file(tmp_path: Path, capsys) -> 
     ))
     assert rc == 2
     assert "symlink" in capsys.readouterr().err.lower()
+
+
+# ── TEST-07: uncovered error paths and exit-code branches ─────────────────────
+# The audit found three groups of uncovered branches (lines 92-100, 134-136,
+# 204-220). These tests cover the --inputs error path, plan-load failure, and
+# the exit-code branches for PAUSED and run-not-succeeded.
+
+def test_bad_inputs_file_returns_exit_code_2(tmp_path: Path, capsys) -> None:
+    """An --inputs path pointing at a binary or malformed JSON file must return
+    exit code 2 with a clear error. Covers the OSError/JSONDecodeError branch
+    in _load_node_prompts (lines 92-100 of cli_graph_approve.py)."""
+    # Create a valid run first so --run is valid
+    report = _execute(tmp_path, _APPROVAL_MANIFEST, "run-bad-inputs", capsys)
+    real_out = report["out"]
+    capsys.readouterr()  # clear captured output before the bad-inputs call
+
+    # Write a file with invalid JSON
+    bad_inputs = tmp_path / "bad_inputs.json"
+    bad_inputs.write_text("{ this is not valid json", encoding="utf-8")
+
+    rc = cmd_graph_approve(_ns(
+        run=real_out, node="checkpoint", decision="approved", inputs=str(bad_inputs),
+    ))
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "cannot load --inputs" in err or "inputs" in err.lower()
+
+
+def test_inputs_file_with_non_string_values_returns_exit_code_2(tmp_path: Path, capsys) -> None:
+    """An --inputs file mapping node_id to a non-string value (e.g. integer)
+    must return exit code 2. Covers the dict-type guard in _load_node_prompts."""
+    report = _execute(tmp_path, _APPROVAL_MANIFEST, "run-bad-inputs2", capsys)
+    real_out = report["out"]
+    capsys.readouterr()
+
+    bad_inputs = tmp_path / "bad_inputs2.json"
+    bad_inputs.write_text(json.dumps({"checkpoint": 42}), encoding="utf-8")
+
+    rc = cmd_graph_approve(_ns(
+        run=real_out, node="checkpoint", decision="approved", inputs=str(bad_inputs),
+    ))
+    assert rc == 2
+    assert "inputs" in capsys.readouterr().err.lower()
+
+
+def test_plan_load_failure_returns_exit_code_2(tmp_path: Path, capsys) -> None:
+    """A run directory whose run-meta.json references an unknown graph version
+    causes plan-reconstruction to fail, which must return exit code 2.
+    Covers the FileNotFoundError/ValueError/GraphValidationError branch in
+    _load_identity_and_facade (lines 134-136 of cli_graph_approve.py).
+
+    We simulate the failure by removing run-meta.json from the run directory
+    after the run was created but before the approve call."""
+    report = _execute(tmp_path, _APPROVAL_MANIFEST, "run-bad-plan", capsys)
+    real_out = report["out"]
+    capsys.readouterr()
+
+    # Delete run-meta.json so plan reconstruction fails
+    run_meta = Path(real_out) / "run-meta.json"
+    run_meta.unlink()
+
+    rc = cmd_graph_approve(_ns(
+        run=real_out, node="checkpoint", decision="approved",
+    ))
+    # Must fail cleanly — not with an unhandled exception
+    assert rc == 2
+
+
+def test_multi_gate_first_approval_returns_exit_code_paused(tmp_path: Path, capsys) -> None:
+    """After approving the first gate in a two-gate run, the second gate is still
+    awaiting. The approve command must return _EXIT_PAUSED (3), not 0.
+    Covers the 'still_paused' branch (line 213) of _report_approve."""
+    from bounded_loops.graph.application.execute_graph import _EXIT_PAUSED
+
+    report = _execute(tmp_path, _TWO_GATE_MANIFEST, "run-two-gate-exit", capsys)
+    real_out = report["out"]
+
+    approved = _approve(real_out, "gate1", "approved", capsys)
+    assert approved["_rc"] == _EXIT_PAUSED, (
+        f"first of two gates must return _EXIT_PAUSED={_EXIT_PAUSED}, got {approved['_rc']}"
+    )
+    assert approved["paused"] is True
+    assert "gate2" in approved.get("awaiting_approval", [])

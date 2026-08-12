@@ -432,3 +432,86 @@ def test_server_survives_multiple_sequential_tool_calls(tmp_path):
         assert "results" in r3
     finally:
         os.chdir(old_cwd)
+
+
+# ── TEST-15: MCP server error-branch coverage ─────────────────────────────────
+# Lines 138-139, 191-196, 417, 444 are confirmed uncovered by the audit.
+# These are response-formatting paths — no security impact, but needed for
+# regression protection against schema drift.
+
+def test_bl_list_with_invalid_manifest_includes_error_entry(tmp_path, monkeypatch):
+    """bl_list must include an error entry (not crash) when manifest_load raises
+    ManifestError for a loop directory. Covers lines 138-139 of mcp_server.py."""
+    # Create a loop directory with an invalid loop.yaml
+    loop_dir = tmp_path / "bad-loop"
+    loop_dir.mkdir()
+    (loop_dir / "loop.yaml").write_text("not: a: valid: manifest", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    # Write a pyproject.toml so the repo-root search terminates here
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (tmp_path / "loops").mkdir(exist_ok=True)
+    # Move the bad loop under loops/ so bl_list discovers it
+    import shutil
+    shutil.copytree(loop_dir, tmp_path / "loops" / "bad-loop")
+
+    result = mcp_server.bl_list()
+    assert "loops" in result
+    error_entries = [entry for entry in result["loops"] if entry.get("error")]
+    assert error_entries, "ManifestError loop must appear as an error entry, not be silently skipped"
+    assert error_entries[0]["rung"] == "?"
+    assert error_entries[0]["gate_kind"] == "?"
+
+
+def test_bl_show_with_invalid_manifest_returns_error_dict(tmp_path):
+    """bl_show must return an error dict (not crash) when the directory exists
+    but the manifest is invalid. Covers the ManifestError branch at line 196."""
+    loop_dir = tmp_path / "bad-loop"
+    loop_dir.mkdir()
+    (loop_dir / "loop.yaml").write_text("not: a: valid: manifest", encoding="utf-8")
+
+    result = mcp_server.bl_show(str(loop_dir))
+    assert result["status"] == "error"
+    assert result["error_type"] == "ManifestError"
+    assert isinstance(result["message"], str) and len(result["message"]) > 0
+
+
+def test_bl_runs_with_nonexistent_dir_returns_error_dict(tmp_path):
+    """bl_runs must return an error dict when given a non-existent directory.
+    Covers line 444 of mcp_server.py."""
+    result = mcp_server.bl_runs(str(tmp_path / "does-not-exist"))
+    assert result["status"] == "error"
+    assert result["error_type"] == "ManifestError"
+
+
+def test_bl_run_unexpected_exception_returns_error_dict(tmp_path):
+    """bl_run must catch unexpected exceptions from use_case.run() and return
+    an error dict rather than propagating. Covers the bare-Exception branch
+    at line 417 of mcp_server.py.
+
+    Pattern mirrors the established test style: mock manifest_load with a
+    real-dir manifest, do confirm=False to register the preview signature,
+    then confirm=True with wire patched to return a mock whose run() raises.
+    """
+    fake_manifest = _make_runnable_manifest()
+
+    # Step 1: register the preview signature via confirm=False
+    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest):
+        preview_result = mcp_server.bl_run(
+            str(fake_manifest.loop_dir), confirm=False
+        )
+    assert preview_result["status"] == "not_confirmed"
+    run_sig = mcp_server._previewed[str(fake_manifest.loop_dir.resolve())]
+
+    # Step 2: confirm=True with wire() returning a mock whose run() raises
+    crashing_use_case = MagicMock()
+    crashing_use_case.run.side_effect = RuntimeError("unexpected boom")
+
+    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
+         patch("bounded_loops.mcp_server.wire", return_value=crashing_use_case), \
+         patch("bounded_loops.mcp_server._run_signature", return_value=run_sig), \
+         patch("bounded_loops.mcp_server.record_trust"):
+        result = mcp_server.bl_run(str(fake_manifest.loop_dir), confirm=True)
+
+    assert result["status"] == "error"
+    assert result["error_type"] == "unexpected"
+    assert "RuntimeError" in result["message"] or "unexpected boom" in result["message"]

@@ -57,6 +57,73 @@ jobs:
         run: uv run mypy bounded_loops tests
       - name: Audit loop catalog
         run: uv run python -m bounded_loops.cli audit-loops --json
+      # REL-07: pip-audit scans the locked dependency graph for known CVEs using
+      # the OSV database (offline-capable). Pinned to a specific version to prevent
+      # non-deterministic CI failures from tool API changes. This step BLOCKS: a
+      # newly-introduced vulnerable transitive dependency should never reach PyPI.
+      # Rationale for blocking vs. informational: bounded-loops is a security
+      # product whose headline claim is auditable, tamper-resistant loops — having
+      # an unscanned dependency graph contradicts that claim.
+      - name: Audit dependency CVEs (REL-07)
+        run: uv run --with pip-audit==2.8.0 pip-audit
+
+  convergence-correctness:
+    # TEST-03: The two convergence-demo tests and the citation-convergence test verify
+    # the product's core behavioral promise: that a bounded loop converges, respects
+    # bounds, and correctly detects done-state. All three are marked `external_tool`
+    # and excluded from `core` by pyproject.toml's addopts. They use stub runners
+    # (cassettes) and do NOT require real subscription CLIs or external network access
+    # — the `external_tool` marker is present because `bl run` spawns a subprocess.
+    # `--override-ini='addopts='` lifts the marker exclusion without touching pyproject.
+    # Running on ubuntu-latest is sufficient: stub runner + pytest gate are both
+    # present in the dev environment; no Seatbelt/macOS capability required.
+    name: convergence behavioral correctness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - name: Sync locked development environment
+        run: uv sync --frozen --group dev
+      - name: Run convergence behavioral correctness tests (TEST-03)
+        # --override-ini='addopts=' clears the marker exclusion filter for this
+        # specific selection only. The three tests use stub cassettes — no real
+        # LLM, no subscription CLI, no network — so they run hermetically here.
+        run: |
+          uv run pytest -v --override-ini='addopts=' \
+            tests/loops/test_convergence_demo.py \
+            tests/loops/test_citation_convergence.py
+
+  optional-slm:
+    # TEST-06: slm_client.py ships as a first-class adapter but has 0% coverage
+    # in default CI because superlocalmemory is an optional dependency. This job
+    # installs it and runs the adapter tests that are skipped elsewhere.
+    name: optional SLM adapter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - name: Sync locked development environment
+        run: uv sync --frozen --group dev
+      - name: Install optional superlocalmemory dependency
+        run: uv pip install "superlocalmemory>=4.0.1"
+      - name: Run SLM adapter tests with optional dep present
+        run: |
+          uv run pytest -v --override-ini='addopts=' \
+            tests/graph/adapters/test_slm_client.py
 
   macos-egress-cage:
     name: macOS OS egress cage (live) / py${{ matrix.python-version }}
