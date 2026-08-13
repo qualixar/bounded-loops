@@ -310,10 +310,20 @@ class LocalCliConnectorWorker:
 
         stdout = result.stdout or ""
         parsed = self._read_envelope(invocation.profile, stdout)
-        # The envelope's `result` field is the reply the CLI would have printed in text mode, so
-        # asking for JSON does not change what the artifact contains — only what we additionally
-        # learn about its cost. If the envelope cannot be read (a CLI upgrade, an unknown shape)
-        # this degrades to the raw stdout with no usage, and a declared cap then fails closed.
+        if invocation.profile.envelope and parsed is None:
+            # We ASKED this CLI for an envelope and cannot read what came back — a CLI upgrade, a
+            # changed shape. Falling back to raw stdout would store the JSON envelope itself as
+            # the node's output artifact: not what text mode produces, accepted by a gate that
+            # only checks non-empty UTF-8, and then fed to every downstream node. A clear failure
+            # beats a silently wrong artifact, so this fails closed and names the CLI.
+            raise GraphIntegrityError(
+                f"local-CLI node {node.node_id!r}: {invocation.profile.binary!r} was asked for a "
+                f"{invocation.profile.envelope!r} JSON envelope but returned something this "
+                "version cannot read; refusing to store the raw output as the node's reply"
+            )
+        # The envelope's reply field is what the CLI would have printed in text mode, so asking
+        # for JSON does not change what the artifact contains — only what we additionally learn
+        # about its cost.
         reply = (parsed.reply if parsed is not None else stdout).encode("utf-8")
         usage = parsed.usage if parsed is not None else None
         digest = self._store.put(BytesIO(reply), self._policy(attempt)).digest

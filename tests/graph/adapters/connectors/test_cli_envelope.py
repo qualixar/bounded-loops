@@ -175,3 +175,28 @@ def test_agy_takes_the_larger_of_its_own_total_and_the_summed_parts() -> None:
     assert envelope is not None and envelope.usage is not None
     # 22501 + 5000 + 237 = 27738 exceeds agy's stale total of 22738, so the sum wins.
     assert envelope.usage.total_tokens == 27_738
+
+
+def test_an_unreadable_envelope_must_not_become_the_artifact(tmp_path) -> None:
+    """Muse round 3 raised this as "no fix needed". It needed one.
+
+    Falling back to raw stdout when the envelope cannot be parsed stores the JSON envelope
+    ITSELF as the node's output artifact — not what text mode produces, waved through by a gate
+    that only checks non-empty UTF-8, and then handed to every downstream node. That is a
+    silently wrong output, which is worse than a clear failure, so the worker refuses.
+    """
+    from bounded_loops.graph.adapters.connectors.local_cli_worker import (
+        CliProfile, LocalCliConnectorWorker,
+    )
+
+    profile = CliProfile(
+        "claude", ("-p",), prompt_via="stdin",
+        usage_args=("--output-format", "json"), envelope="claude",
+    )
+    # The parser's contract: an unreadable shape is None, never a guess.
+    assert LocalCliConnectorWorker._read_envelope(profile, "this is not the envelope") is None
+    assert LocalCliConnectorWorker._read_envelope(profile, '{"unexpected": "shape"}') is None
+    # A profile that never asked for an envelope keeps its plain-stdout behaviour.
+    plain = CliProfile("codex", ("exec",), prompt_via="arg")
+    assert plain.envelope == ""
+    assert LocalCliConnectorWorker._read_envelope(plain, "plain reply") is None
