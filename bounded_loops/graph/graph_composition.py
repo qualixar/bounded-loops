@@ -289,6 +289,57 @@ def unknown_local_cli_provider(
     )
 
 
+def duplicate_connection_binding(
+    plan: ExecutionPlan, node: PlannedNode, admitted: Mapping[str, AdmittedConnectionRecord],
+) -> str | None:
+    """Message if this node's connection is bound by more than one binding, else ``None``.
+
+    Same shape and same two callers as ``unknown_local_cli_provider``, for the same reason: a
+    misconfiguration visible in the plan must be refused from the plan, not from inside a worker
+    after the nodes upstream have really run and paid.
+
+    The constraint mirrored here is in ``OpaqueCredentialBroker``: a lease is minted from an
+    ``ExecutionGrant``, which carries the ``connection_id`` but NOT the ``binding_id``, so the
+    broker recovers the binding by scanning for the one whose connection matches and refuses when
+    that is ambiguous ("exactly one broker binding is required for the connection"). Two bindings
+    on one connection make every mint on it ambiguous — every node bound to it fails identically.
+
+    Left to the worker that surfaces as ``cause=worker_fault`` with an empty ``node.spend``, which
+    cannot distinguish "refused before the request" from "the provider was already paid". It IS
+    pre-egress (the mint precedes ``egress_broker.authorize`` and the forwarder, so nothing leaves
+    the process), but the receipt cannot say so, and a node upstream on a DIFFERENT connection has
+    really paid by then. Refusing from the plan makes the distinction unnecessary: nothing ran.
+
+    Scoped per NODE: a plan may legitimately carry two bindings on a connection no node binds, an
+    unused slot never reaches the broker, and refusing it would wedge a working path (the scoping
+    lesson on ``_refuse_unrunnable_providers``).
+    """
+    if not is_egress_node(plan, node, _HTTPS_TRANSPORTS):
+        return None
+    binding = next(
+        (b for b in plan.connection_bindings if b.binding_id == node.binding_id), None
+    )
+    # An absent binding, or one with no admitted record, is the neighbouring rule's to report — and
+    # a connection with no record never reaches the broker (byok_worker builds its binding set from
+    # the bindings whose connection_id is admitted).
+    if binding is None or binding.connection_id not in admitted:
+        return None
+    sharing = sorted(
+        b.binding_id for b in plan.connection_bindings
+        if b.connection_id == binding.connection_id
+    )
+    if len(sharing) < 2:
+        return None
+    return (
+        f"node {node.node_id!r} binds connection_id {binding.connection_id!r}, which is bound by "
+        f"{len(sharing)} bindings ({', '.join(repr(b) for b in sharing)}). A credential lease is "
+        "resolved from the connection, so more than one binding on it is ambiguous and every node "
+        "bound to it fails on every attempt. Give each binding its own connection_id and supply an "
+        "admitted-connection record for each (they may name the same endpoint and the same "
+        "credential env var). Refused before any attempt starts, so no provider was called."
+    )
+
+
 def _preflight(
     plan: ExecutionPlan,
     admitted_connections: Mapping[str, AdmittedConnectionRecord] | None = None,
@@ -341,6 +392,9 @@ def _preflight(
                     "admitted-connection record was supplied. Pass one via admitted_connections "
                     "(or --admitted on the CLI). A grant cannot be issued without it."
                 )
+        duplicate_binding = duplicate_connection_binding(plan, node, admitted)
+        if duplicate_binding is not None:
+            return duplicate_binding
     return None
 
 
@@ -348,8 +402,12 @@ def _refuse_unrunnable_providers(
     plan: ExecutionPlan,
     event_log: GraphEventLog,
     cli_profiles: Mapping[str, CliProfile],
+    admitted: Mapping[str, AdmittedConnectionRecord],
 ) -> None:
-    """Refuse a local-CLI provider this deployment cannot run — for nodes that could still run.
+    """Refuse a node this deployment cannot run — for nodes that could still run.
+
+    Both plan-visible refusals live here — a local-CLI provider with no profile, and a connection
+    bound by more than one binding — at the chokepoint every path bypassing ``_preflight`` shares.
 
     A node already SUCCEEDED cannot execute again, so its provider is a historical fact rather than a
     requirement. Reading the log costs one replay, which every assembly path does anyway.
@@ -369,6 +427,11 @@ def _refuse_unrunnable_providers(
         if unknown_provider is not None:
             raise GraphValidationError(
                 "unknown_provider", f"/nodes/{node.node_id}", unknown_provider,
+            )
+        duplicate_binding = duplicate_connection_binding(plan, node, admitted)
+        if duplicate_binding is not None:
+            raise GraphValidationError(
+                "duplicate_connection_binding", f"/nodes/{node.node_id}", duplicate_binding,
             )
 
 
@@ -448,7 +511,7 @@ def build_execution_controller(
     # its projection idempotently, and a check about what might execute next has no business refusing
     # a run with nothing left to execute. Third time a new refusal in this phase has wedged a working
     # path; hence the scope.
-    _refuse_unrunnable_providers(plan, event_log, cli_profiles)
+    _refuse_unrunnable_providers(plan, event_log, cli_profiles, admitted)
 
     # ── transport detection + worker assembly ────────────────────────────────
     has_local_cli = any(is_egress_node(plan, n, _LOCAL_CLI_TRANSPORTS) for n in plan.nodes)

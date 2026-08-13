@@ -344,6 +344,136 @@ def test_https_node_without_admitted_record_fails_closed_at_preflight(tmp_path: 
     )
 
 
+# ── two bindings on one connection: refused from the plan ────────────────────
+
+_TWO_SLOT_MANIFEST = """\
+api_version: "bounded-loops.dev/graph/v1"
+graph_id: byok-two
+version: "1.0.0"
+nodes:
+  - id: ask
+    kind: research_claim
+    inputs: {}
+    outputs: {claim: text}
+    budget: {max_attempts: 1, max_wallclock_s: 30}
+    effects: [external_write]
+    isolation: process_restricted
+    connection_slot: model_a
+  - id: again
+    kind: research_claim
+    inputs: {claim: text}
+    outputs: {claim: text}
+    budget: {max_attempts: 1, max_wallclock_s: 30}
+    effects: [external_write]
+    isolation: process_restricted
+    connection_slot: model_b
+edges:
+  - {from_node: ask, from_port: claim, to_node: again, to_port: claim}
+connection_slots:
+  - {id: model_a, requires: [text_generation], data_class_max: public}
+  - {id: model_b, requires: [text_generation], data_class_max: public}
+policies: {data_class: public, fail_mode: fail_closed}
+"""
+
+
+def _two_slot_connections(connection_a: str, connection_b: str) -> list[dict]:
+    """Two https bindings, one per slot, over the caller's choice of connection ids."""
+    def one(binding_id: str, slot_id: str, connection_id: str) -> dict:
+        candidate = dict(_byok_connections("api.openai.com")[0])
+        candidate.update(binding_id=binding_id, slot_id=slot_id, connection_id=connection_id)
+        return candidate
+    return [one("b-a", "model_a", connection_a), one("b-b", "model_b", connection_b)]
+
+
+def _record_for(connection_id: str) -> AdmittedConnectionRecord:
+    from dataclasses import replace
+
+    return replace(_admitted_record("api.openai.com"), connection_id=connection_id)
+
+
+def test_two_bindings_on_one_connection_are_refused_at_preflight(tmp_path: Path, capsys):
+    """Two bindings sharing one connection_id is refused from the PLAN, not from a worker.
+
+    Left to run time this reached ``OpaqueCredentialBroker``, whose lease mint recovers the
+    binding from the grant's ``connection_id`` and refuses when that is ambiguous. The worker
+    turned that into ``cause=worker_fault`` with an EMPTY ``node.spend`` — a classification that
+    cannot distinguish "refused before the request" from "the provider was already paid", and an
+    empty usage block that cannot settle it either. It is in fact pre-egress, but the receipt
+    could not say so, and any node upstream on a different connection had really paid by then.
+    """
+    out = tmp_path / "run"
+    rc = execute_graph_run(
+        manifest_text=_TWO_SLOT_MANIFEST,
+        manifest_suffix=".yaml",
+        connections_raw=_two_slot_connections("shared-conn", "shared-conn"),
+        node_prompts={"ask": "should not run", "again": "should not run"},
+        out_dir=out,
+        run_id="run-1",
+        admitted_connections={"shared-conn": _record_for("shared-conn")},
+        byok_egress_broker=_PinnedEgressBroker(),
+    )
+
+    assert rc == 2, "an ambiguous connection binding must fail closed (rc=2)"
+    assert not (out / "controller-events.jsonl").is_file(), (
+        "refused from the plan means no node ever started, so there is no receipt stream"
+    )
+    captured = capsys.readouterr()
+    message = captured.out + captured.err
+    # The message has to name the duplicated connection AND both bindings — the whole point is
+    # that the operator can find the two lines of config to change.
+    assert "'shared-conn'" in message, message
+    assert "'b-a'" in message and "'b-b'" in message, message
+
+
+def test_two_bindings_on_distinct_connections_are_not_refused(tmp_path: Path):
+    """The guard must not refuse the configuration that already worked.
+
+    Same graph, same two slots — only the connection ids differ. This is the shape operators are
+    told to move to by the refusal message, so it has to keep passing preflight.
+    """
+    from bounded_loops.graph.graph_composition import _preflight, _parse_manifest
+    from bounded_loops.graph.graph_composition import _DEFAULT_POLICY_DIGEST
+    from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
+
+    plan = compile_graph(
+        _parse_manifest(_TWO_SLOT_MANIFEST, ".yaml"),
+        CompileSnapshot(
+            policy_digest=_DEFAULT_POLICY_DIGEST,
+            package_digests=frozenset(),
+            connections=tuple(_two_slot_connections("conn-a", "conn-b")),  # type: ignore[arg-type]
+        ),
+    )
+    admitted = {"conn-a": _record_for("conn-a"), "conn-b": _record_for("conn-b")}
+
+    assert _preflight(plan, admitted) is None
+
+
+def test_a_duplicate_binding_no_node_uses_does_not_wedge_the_run():
+    """Scoping guard: the rule is per NODE, not per plan.
+
+    A plan can carry two bindings on a connection that no node binds. An unused slot never
+    reaches the broker's ambiguous lookup, so refusing it would wedge a run that works — the
+    same over-scoping that has broken a working path here three times before.
+    """
+    from bounded_loops.graph.graph_composition import _preflight, _parse_manifest
+    from bounded_loops.graph.graph_composition import _DEFAULT_POLICY_DIGEST
+    from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
+
+    # The single-node manifest binds slot "model" only; the second candidate duplicates the
+    # connection on a slot the graph never references.
+    spare = dict(_byok_connections("api.openai.com")[0])
+    spare.update(binding_id="b-spare", slot_id="unused")
+    plan = compile_graph(
+        _parse_manifest(_BYOK_MANIFEST, ".yaml"),
+        CompileSnapshot(
+            policy_digest=_DEFAULT_POLICY_DIGEST,
+            package_digests=frozenset(),
+            connections=tuple(_byok_connections("api.openai.com") + [spare]),
+        ),
+    )
+    assert _preflight(plan, {_CONN_ID: _admitted_record("api.openai.com")}) is None
+
+
 # ── test 3: credential absent from stored request document and artifacts ──────
 
 def test_credential_never_stored_in_request_document_or_artifact(
