@@ -25,6 +25,7 @@ import json
 import sys
 from pathlib import Path
 
+from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.graph.application.compile_graph import (
     CompileSnapshot,
     compile_graph,
@@ -279,7 +280,7 @@ def cmd_graph_run(args: argparse.Namespace) -> int:
     try:
         snapshot = CompileSnapshot(
             policy_digest=_NULL_POLICY_DIGEST,
-            package_digests=frozenset(),
+            package_digests=admitted_loop_package_digests(),
             connections=tuple(connections_raw),  # type: ignore[arg-type]
         )
         plan = compile_graph(graph, snapshot)

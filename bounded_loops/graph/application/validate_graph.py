@@ -240,6 +240,26 @@ def _refuse_unrunnable_repair(
             "on_failure: repair can never be reached under 'fail_mode: fail_closed', because the "
             "run stops at the first node failure. Set 'fail_mode: continue_declared'.",
         )
+    for index, node in enumerate(nodes):
+        if node.on_failure == _REPAIR and node.kind is NodeKind.LOOP:
+            # Fifth rule, and the reason is a limit of the port rather than of repair itself.
+            # A loop node's worker records the round inside the loop's own outcome receipt, but
+            # ``NodeWorkerPort.execute`` carries only ``attempt`` — so the worker cannot learn the
+            # round, and would stamp round-1 work as round 0. Running it anyway would put a FALSE
+            # round in a hash-chained receipt, which is worse than refusing: the log would look
+            # consistent while describing work that happened in a different round.
+            #
+            # Refused rather than silently downgraded, exactly as `on_failure: continue` and
+            # `await_human` are. Lifting this means carrying the round on the port the way
+            # ``attempt`` already is — deliberately not done as a side effect of this phase,
+            # because it touches every worker, every gate and their fakes.
+            raise _error(
+                "on_failure", f"/nodes/{index}/on_failure",
+                f"node {node.id!r} is a loop node declaring on_failure: repair, which this release "
+                "cannot record truthfully: the repair round does not reach a node worker, so the "
+                "loop's outcome receipt would report round 0 for every round. Use repair on a "
+                "non-loop node, or drop on_failure from this node.",
+            )
 
 
 def _ancestors(edges: tuple[AuthoringEdge, ...]) -> dict[str, frozenset[str]]:

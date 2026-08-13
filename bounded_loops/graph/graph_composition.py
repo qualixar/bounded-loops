@@ -48,6 +48,20 @@ from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifac
 from bounded_loops.graph.adapters.persistence.artifact_verifier import LocalArtifactVerifier
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
 from bounded_loops.graph.adapters.workers.acceptance_gate import StructuralAcceptanceGate
+from bounded_loops.graph.adapters.workers.loop_packages import (
+    LoopNodeResolver,
+    LoopPackageRegistry,
+)
+from bounded_loops.graph.adapters.workers.loop_receipt_gate import LoopReceiptGate
+from bounded_loops.graph.adapters.workers.sandboxed_worker import SandboxedNodeWorker
+from bounded_loops.graph.loop_node_wiring import (
+    admitted_loop_package_digests,
+    _KindDispatchGate,
+    _KindDispatchWorker,
+    _LoopNodeWorker,
+    _UnsupportedNodeWorker,
+    _default_loop_roots,
+)
 from bounded_loops.graph.application.arena_projection import (
     ArenaReadRequest,
     latest_node_states,
@@ -73,7 +87,10 @@ from bounded_loops.graph.application.approval_ledger import build_durable_approv
 from bounded_loops.graph.application.run_graph import GraphRunController, is_egress_node
 from bounded_loops.graph.application.node_spend import RunBudget
 from bounded_loops.graph.domain.pricing import PriceTable
-from bounded_loops.graph.application.node_contracts import ApprovalResolverPort, WorkerResult
+from bounded_loops.graph.application.node_contracts import (
+    ApprovalResolverPort,
+    WorkerResult,
+)
 from bounded_loops.graph.application.validate_graph import (
     parse_authoring_graph_json,
     parse_authoring_graph_yaml,
@@ -118,19 +135,6 @@ def _https_isolation(node_isolation: IsolationLevel) -> IsolationLevel:
     # NEVER downgrade a node that already declares a HIGHER isolation tier (dual-audit finding).
     floor = IsolationLevel.CONTAINER_RESTRICTED
     return node_isolation if _ISO_RANK[node_isolation] >= _ISO_RANK[floor] else floor
-
-
-class _UnsupportedNodeWorker:
-    """Fail closed for a node this phase cannot run (the preflight surfaces it first)."""
-
-    def execute(
-        self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
-        attempt: int,
-    ) -> WorkerResult:
-        raise GraphIntegrityError(
-            f"node {node.node_id!r} (kind {node.kind!r}) is not runnable via "
-            "`bl graph run --execute` in this phase (admitted local-CLI or https connector nodes only)"
-        )
 
 
 class _ByokDispatchWorker:
@@ -365,11 +369,22 @@ def _preflight(
       can later resume past it. An approval node has no connection binding, so it is
       excluded from the "admitted connector node" check below rather than folded into
       it — it is not a connector node at all, it is a human gate.
+    * ``kind: loop`` nodes: ALLOWED — they bind no connection and run a digest-pinned package
+      inside the node's own sandbox, so the transport question does not apply to them.
     * All other nodes (unbound, sandboxed tool, etc.): refused with a clear message.
     """
     admitted = admitted_connections or {}
     for node in plan.nodes:
         if node.kind == NodeKind.APPROVAL.value:
+            continue
+        if node.kind == NodeKind.LOOP.value:
+            # A loop node is not a connector node and never binds a connection: its worker runs a
+            # digest-pinned loop package inside the node's own sandbox, so it needs no transport and
+            # no credential. Excluded here for the same reason an approval node is — the check below
+            # asks which TRANSPORT a node was admitted for, and that question does not apply.
+            #
+            # Compile has already refused a loop node whose package digest is not resolvable on this
+            # host, so reaching this point means the bytes exist and hash correctly.
             continue
         if not is_egress_node(plan, node, _ALL_EXECUTOR_TRANSPORTS):
             return (
@@ -458,6 +473,11 @@ def build_execution_controller(
     # The graph's fail mode, reduced to one bit. False (halt at the first node failure) is every
     # pre-0.5 caller's behaviour, so an un-updated caller cannot silently gain continuation.
     continue_on_failure: bool = False,
+    # Where `kind: loop` nodes' packages are looked up, BY DIGEST. None means the shipped `loops/`
+    # tree beside the installed package plus `./loops` under the cwd, which is what makes the 68
+    # shipped packages composable without configuration. A deployment shipping its own catalogue
+    # passes its own roots.
+    loop_package_roots: tuple[Path, ...] | None = None,
 ) -> tuple[GraphRunController, LocalArtifactStore, GraphEventLog]:
     """Shared controller-assembly helper for ``execute_graph_run`` and ``LocalGraphRuntimeFacade``.
     Builds the full wiring (platform-caps check, artifact store, event log, workers, policy)
@@ -561,11 +581,40 @@ def build_execution_controller(
         connector_worker = local_cli_worker
 
     # ── controller ───────────────────────────────────────────────────────────
+    # ── kind: loop nodes ─────────────────────────────────────────────────────
+    # `loop_package` was a required digest-shaped field that nothing resolved and nothing
+    # re-checked, so a loop node ran whatever its connector binding pointed at. The sandboxed
+    # worker applies isolation by WRAPPING argv and a child of a wrapped process inherits the
+    # profile, so running the loop engine as that child is what puts the loop's own runner and
+    # gate under this node's isolation -- the thing LegacyLoopWorker refused to fake.
+    loop_registry = LoopPackageRegistry(roots=loop_package_roots or _default_loop_roots())
+    loop_worker = _LoopNodeWorker(
+        sandboxed=SandboxedNodeWorker(
+            identity=identity,
+            artifact_store=store,
+            # Replaced per attempt by _LoopNodeWorker; this placeholder is never resolved through.
+            resolver=LoopNodeResolver(registry=loop_registry, run_id=run_id),
+            capabilities=caps,
+            workspace_root=out_dir / "work",
+            organization_id=organization_id,
+            project_id=project_id,
+        ),
+        registry=loop_registry,
+        run_id=run_id,
+    )
+
     controller = GraphRunController(
         plan=plan,
         event_log=event_log,
-        worker=_UnsupportedNodeWorker(),
-        gate=StructuralAcceptanceGate(store, organization_id=organization_id, project_id=project_id),
+        worker=_KindDispatchWorker(loop_worker=loop_worker, fallback=_UnsupportedNodeWorker()),
+        gate=_KindDispatchGate(
+            loop_gate=LoopReceiptGate(
+                store, organization_id=organization_id, project_id=project_id,
+            ),
+            fallback=StructuralAcceptanceGate(
+                store, organization_id=organization_id, project_id=project_id,
+            ),
+        ),
         artifact_verifier=LocalArtifactVerifier(store),
         execution_policy=_build_policy(plan, egress_transports, admitted, local_cli_decision=local_cli_decision),
         execution_enforcer=enforcer,
@@ -634,7 +683,7 @@ def execute_graph_run(
         graph = _parse_manifest(manifest_text, manifest_suffix)
         snapshot = CompileSnapshot(
             policy_digest=policy_digest,
-            package_digests=frozenset(),
+            package_digests=admitted_loop_package_digests(),
             connections=tuple(connections_raw),  # type: ignore[arg-type]
         )
         plan = compile_graph(graph, snapshot)

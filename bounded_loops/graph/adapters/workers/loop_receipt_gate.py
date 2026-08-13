@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 
+from bounded_loops.graph.adapters.workers.loop_packages import normalise_package_digest
 from bounded_loops.graph.application.graph_ports import ArtifactReaderPort
 from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
 from bounded_loops.graph.domain.artifacts import ArtifactAccess, ArtifactRef
@@ -102,11 +103,20 @@ class LoopReceiptGate:
         it happens to say ``DONE``.
         """
         declared = outcome.get("package_digest")
-        if declared != node.package_digest:
+        # Compared in the BARE hex form on both sides. The plan carries the ``sha256:`` prefixed
+        # string the authoring schema requires, while the entry point records what its digest
+        # function returned. Comparing the two raw strings rejected a perfectly good receipt on a
+        # prefix — found by the first end-to-end graph run, where this gate refused its own worker's
+        # output twice and then failed the node on an exhausted budget.
+        expected = node.package_digest
+        if not isinstance(declared, str) or (
+            normalise_package_digest(declared)
+            != normalise_package_digest(expected if isinstance(expected, str) else "")
+        ):
             return GateVerdict(
                 False,
                 f"loop node {node.node_id!r} outcome names package digest {declared!r} but the plan "
-                f"admitted {node.package_digest!r}",
+                f"admitted {expected!r}",
             )
         if outcome.get("node_id") != node.node_id:
             return GateVerdict(

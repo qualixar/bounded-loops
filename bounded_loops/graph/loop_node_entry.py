@@ -29,6 +29,7 @@ import argparse
 import hashlib
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 from bounded_loops.application.loop_bridge import LoopExecutionRequest, wire_loop_for_graph
@@ -37,6 +38,7 @@ from bounded_loops.graph.adapters.workers.loop_packages import (
     CONTROLLER_SUBDIR,
     DEFAULT_OUTCOME_FILENAME,
     loop_package_digest,
+    normalise_package_digest,
 )
 
 
@@ -67,13 +69,26 @@ def run(argv: list[str] | None = None) -> int:
     # happens where the spec was built cannot see a package swapped between resolution and launch,
     # and this process is the one that will execute the package's own gate command.
     observed = loop_package_digest(package)
-    if observed != args.package_digest:
+    if observed != normalise_package_digest(args.package_digest):
         raise SystemExit(
             f"loop package digest mismatch for {package}: "
             f"declared {args.package_digest}, found {observed}"
         )
 
-    controller_root = Path.cwd() / CONTROLLER_SUBDIR
+    # The loop engine's own run storage goes under TMPDIR, NOT under cwd.
+    #
+    # cwd is the node's promoted-output directory and ``promote_workspace_outputs`` requires it to
+    # contain EXACTLY the declared outputs — it refuses an undeclared file rather than ignoring it.
+    # Writing the loop's controller tree there therefore failed the whole attempt with
+    # "workspace contains undeclared output: .controller/runs.sqlite", which is the promotion path
+    # being correctly strict, not a bug in it.
+    #
+    # The sandboxed worker exports TMPDIR to a per-node writable directory beside the outputs, so
+    # this stays inside the node's sandbox and is discarded with it. Run standalone, it lands in the
+    # system temp directory — still outside the loop package, which is all ``wire_loop_for_graph``
+    # requires. Reading TMPDIR rather than reaching for ``cwd.parent`` keeps this independent of the
+    # worker's directory layout.
+    controller_root = Path(tempfile.gettempdir()) / CONTROLLER_SUBDIR
     request = LoopExecutionRequest(
         run_id=args.run_id,
         node_id=args.node_id,

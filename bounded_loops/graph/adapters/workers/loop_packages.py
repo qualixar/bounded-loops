@@ -101,6 +101,25 @@ def loop_package_digest(package: Path) -> str:
     return accumulator.hexdigest()
 
 
+#: The authoring schema requires ``loop_package`` to match ``^sha256:[0-9a-f]{64}$`` (see
+#: ``validate_graph._DIGEST``), and the compiler copies that string verbatim into
+#: ``PlannedNode.package_digest``. ``loop_package_digest`` returns the BARE hex, because it is a
+#: digest function and the prefix is a vocabulary choice of the graph schema. Both forms must
+#: therefore resolve, or an authored graph would never find its own package — which is exactly what
+#: the first end-to-end run showed.
+_ALGORITHM_PREFIX = "sha256:"
+
+
+def normalise_package_digest(digest: str) -> str:
+    """Return the bare hex form of a package digest, accepting the ``sha256:`` prefixed form."""
+    return digest[len(_ALGORITHM_PREFIX):] if digest.startswith(_ALGORITHM_PREFIX) else digest
+
+
+def qualified_package_digest(package: Path) -> str:
+    """The package digest in the ``sha256:``-prefixed form a graph manifest must declare."""
+    return f"{_ALGORITHM_PREFIX}{loop_package_digest(package)}"
+
+
 @dataclass(frozen=True)
 class LoopPackageRegistry:
     """Maps an admitted package digest to a directory on this host, and re-verifies the bytes.
@@ -117,9 +136,15 @@ class LoopPackageRegistry:
         for root in self.roots:
             if not root.is_dir():
                 continue
-            for candidate in sorted(root.iterdir()):
-                if not (candidate / "loop.yaml").is_file():
+            for entry in sorted(root.iterdir()):
+                if not (entry / "loop.yaml").is_file():
                     continue
+                # RESOLVED, always. The path this returns is handed to a subprocess that runs with a
+                # DIFFERENT cwd (the node's own output directory), so a relative path here becomes a
+                # package that does not exist there. That is exactly how the first end-to-end graph
+                # run failed: a relative root resolved fine while digesting and then vanished inside
+                # the sandbox, and the node reported a bare "worker execution failed".
+                candidate = entry.resolve()
                 digest = loop_package_digest(candidate)
                 first = found.get(digest)
                 if first is not None and first != candidate:
@@ -132,7 +157,7 @@ class LoopPackageRegistry:
         return found
 
     def resolve(self, digest: str) -> Path:
-        package = self.index().get(digest)
+        package = self.index().get(normalise_package_digest(digest))
         if package is None:
             raise GraphIntegrityError(
                 f"no loop package on this host has digest {digest}; "
