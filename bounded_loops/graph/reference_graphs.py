@@ -78,6 +78,101 @@ REFERENCE_GRAPHS: tuple[ReferenceGraph, ...] = (
         approval_role="finance-controller",
         publish_summary="emit an ISO 20022 payment instruction",
     ),
+    ReferenceGraph(
+        slug="retail-listing-release",
+        graph_id="retail-listing-release",
+        domain="retail",
+        summary=(
+            "A product listing clears barcode, feed-schema and margin checks in parallel before a "
+            "merchandiser releases it to the storefront. A failed margin check routes to a stock "
+            "review rather than stopping the release pipeline."
+        ),
+        parallel_checks=(
+            LoopNodeSpec("check-barcode", "gtin-checkdigit"),
+            LoopNodeSpec("validate-feed", "product-feed-schema"),
+            LoopNodeSpec("check-margin", "price-margin-floor"),
+        ),
+        remediation=LoopNodeSpec("review-stock", "inventory-nonnegative"),
+        remediation_trigger="check-margin",
+        approval_role="merchandising-lead",
+        publish_summary="release the listing to the storefront feed",
+    ),
+    ReferenceGraph(
+        slug="marketing-campaign-release",
+        graph_id="marketing-campaign-release",
+        domain="marketing",
+        summary=(
+            "Campaign copy clears SEO limits, reading level and image alt-text in parallel, then an "
+            "editor approves publication. A failed factual claim routes to source mapping instead of "
+            "killing the campaign."
+        ),
+        parallel_checks=(
+            LoopNodeSpec("check-seo", "seo-meta-limits"),
+            LoopNodeSpec("check-reading-level", "reading-level-gate"),
+            LoopNodeSpec("check-alt-text", "alt-text-present"),
+        ),
+        remediation=LoopNodeSpec("map-claim-sources", "claim-source-mapping"),
+        remediation_trigger="check-reading-level",
+        approval_role="content-editor",
+        publish_summary="publish the campaign page",
+    ),
+    ReferenceGraph(
+        slug="engineering-release-gate",
+        graph_id="engineering-release-gate",
+        domain="engineering",
+        summary=(
+            "A release candidate clears dependency pinning, CORS posture and container-user checks "
+            "in parallel before a release manager cuts the tag. A failed CORS check routes to a "
+            "secret scan, on the reasoning that a permissive origin policy rarely travels alone."
+        ),
+        parallel_checks=(
+            LoopNodeSpec("pin-dependencies", "dependency-pinning"),
+            LoopNodeSpec("check-cors", "cors-not-wildcard"),
+            LoopNodeSpec("check-container-user", "dockerfile-no-root"),
+        ),
+        remediation=LoopNodeSpec("scan-secrets", "secret-scan-keyless"),
+        remediation_trigger="check-cors",
+        approval_role="release-manager",
+        publish_summary="cut the release tag",
+    ),
+    ReferenceGraph(
+        slug="customer-data-request",
+        graph_id="customer-data-request",
+        domain="customer",
+        summary=(
+            "A customer data-subject request clears processor terms, privacy-notice completeness "
+            "and NDA coverage in parallel before a privacy officer authorises the response. A "
+            "failed terms check routes to clause extraction so the gap can be named."
+        ),
+        parallel_checks=(
+            LoopNodeSpec("check-processor-terms", "gdpr-dpa-terms"),
+            LoopNodeSpec("check-privacy-notice", "privacy-policy-completeness"),
+            LoopNodeSpec("check-nda-coverage", "nda-required-clauses"),
+        ),
+        remediation=LoopNodeSpec("extract-clauses", "contract-clause-extraction"),
+        remediation_trigger="check-processor-terms",
+        approval_role="privacy-officer",
+        publish_summary="send the data-subject response",
+    ),
+    ReferenceGraph(
+        slug="solo-builder-ship",
+        graph_id="solo-builder-ship",
+        domain="personal",
+        summary=(
+            "A solo builder's change clears measurable objectives, roadmap fields and commit "
+            "convention in parallel before they approve their own ship. A failed acceptance-criteria "
+            "check routes to a red-green fix loop."
+        ),
+        parallel_checks=(
+            LoopNodeSpec("check-objectives", "okr-measurable"),
+            LoopNodeSpec("check-roadmap-fields", "roadmap-field-contract"),
+            LoopNodeSpec("check-commits", "conventional-commits"),
+        ),
+        remediation=LoopNodeSpec("fix-red-green", "bug-fix-red-green"),
+        remediation_trigger="check-objectives",
+        approval_role="maintainer",
+        publish_summary="ship the release notes",
+    ),
 )
 
 

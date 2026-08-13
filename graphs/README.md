@@ -17,9 +17,23 @@ so the generator and the test read one definition rather than two that agree by 
 
 ## What ships
 
-| Graph | Domain | Shape |
-|---|---|---|
-[`finance-payment-assurance`](finance-payment-assurance/) | finance | 3 parallel accounting checks → join → controller approval → payment instruction, with a failed balance check routing to reconciliation |
+Six graphs, one per domain, composing **24 distinct shipped loop packages**. Every one has the same
+skeleton — three parallel checks → join → approval → one irreversible effect, plus a conditional
+`when: failed` branch to a remediation loop — because that skeleton is what exercises the engine:
+fan-out, cross-node causality, the guard grammar, a human checkpoint, and exactly one effect.
+
+| Graph | Domain | Approval | Effect |
+|---|---|---|---|
+[`finance-payment-assurance`](finance-payment-assurance/) | finance | finance-controller | emit an ISO 20022 payment instruction |
+[`retail-listing-release`](retail-listing-release/) | retail | merchandising-lead | release the listing to the storefront feed |
+[`marketing-campaign-release`](marketing-campaign-release/) | marketing | content-editor | publish the campaign page |
+[`engineering-release-gate`](engineering-release-gate/) | IT / development | release-manager | cut the release tag |
+[`customer-data-request`](customer-data-request/) | customer | privacy-officer | send the data-subject response |
+[`solo-builder-ship`](solo-builder-ship/) | personal projects | maintainer | ship the release notes |
+
+No shipped loop carries a `customer`, `personal-projects` or `marketing` `role:` tag. Those three
+graphs are assembled from `legal`, `operations` and `engineering` packages — see the reasoning below
+on why the domain belongs to the graph.
 
 ## Current limitation — read before you try to run one
 
