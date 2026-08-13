@@ -1,0 +1,182 @@
+"""Content-addressed loop packages, and the resolver that makes ``kind: loop`` runnable.
+
+``loop_package`` was a required, digest-shaped field on every ``kind: loop`` node from the start —
+validated at authoring time, copied into ``PlannedNode.package_digest`` at compile time, and then
+never used again. Nothing produced that digest from real files and nothing re-checked it before
+execution, so the field named a package while the node ran whatever its connector binding pointed
+at. This module closes that loop: it computes the digest from the package's own bytes, resolves a
+digest back to a directory, and turns the result into the ``NodeExecutionSpec`` the sandboxed worker
+already knows how to run.
+
+Resolution is BY DIGEST ONLY. A name lookup would mean that pulling new commits silently changes
+what a persisted ``plan_id`` executes, and ``plan_id`` is the value that decides whether an existing
+run directory may be resumed.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Mapping
+
+from bounded_loops.graph.adapters.workers.sandboxed_worker import NodeExecutionSpec
+from bounded_loops.graph.domain.errors import GraphIntegrityError
+from bounded_loops.graph.domain.plan import PlannedNode
+
+#: The single declared output of a loop node, written by ``graph.loop_node_entry`` into its cwd and
+#: promoted by the sandboxed worker. Declared HERE rather than in the entry point because the
+#: resolver owns the ``declared_outputs`` contract — the entry point is the consumer of it, and
+#: pointing the dependency the other way made these two modules import each other.
+DEFAULT_OUTCOME_FILENAME = "loop-outcome.json"
+#: Loop-engine storage lives under the node workspace, never inside the read-only package.
+CONTROLLER_SUBDIR = ".controller"
+
+#: Directory and file names EXCLUDED from a package digest.
+#:
+#: Every entry is something a RUN can create inside a package directory, never something the
+#: package ships. That is the whole selection rule, and it is the safe direction to err in. Covering
+#: too little is the dangerous failure: digest only ``loop.yaml`` and someone can edit ``seed/`` or
+#: the gate's own checker script, and a resumed ``plan_id`` then executes different code while the
+#: receipt still names the digest that was recorded. Covering too much is merely annoying — a single
+#: ``bl run`` that wrote into the package would move the digest and make existing runs unresumable —
+#: and ``.bounded-loops`` is exactly that case, which is why it heads the list.
+#:
+#: Note ``STATE.md`` is deliberately NOT excluded. It is the loop's memory seed, so it can change
+#: behaviour, and anything that changes behaviour belongs in the digest. Graph runs cannot dirty it:
+#: ``wire_loop_for_graph`` refuses a controller root inside the package.
+_EXCLUDED_NAMES = frozenset({
+    ".bounded-loops",   # loop-engine run storage, written by `bl run` without a controller root
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    ".git",
+    ".DS_Store",
+})
+_EXCLUDED_SUFFIXES = (".pyc", ".pyo")
+
+
+def _digestible_files(package: Path) -> Iterable[Path]:
+    for path in sorted(package.rglob("*")):
+        if any(part in _EXCLUDED_NAMES for part in path.relative_to(package).parts):
+            continue
+        if path.is_symlink():
+            # A symlink's TARGET is outside the digest's reach, so hashing the link would certify
+            # bytes this function never read. Refuse rather than certify a package whose content
+            # depends on something the digest cannot cover.
+            raise GraphIntegrityError(
+                f"loop package {package} contains a symlink ({path.relative_to(package)}); "
+                "a package must be self-contained to be content-addressed"
+            )
+        if path.is_file() and not path.name.endswith(_EXCLUDED_SUFFIXES):
+            yield path
+
+
+def loop_package_digest(package: Path) -> str:
+    """Return the canonical content digest of a loop package directory.
+
+    Canonical form: for each included file in sorted relative-path order, the POSIX relative path,
+    an executable-bit flag, the byte length, and the bytes — each length-prefixed so no combination
+    of paths and contents can be re-partitioned into a different package with the same digest.
+
+    Mtimes, uids and directory entries are excluded on purpose. Including them would make the digest
+    depend on how the tree was checked out rather than on what it contains, so a fresh clone of the
+    same commit would compute a different digest and refuse to resume its own runs.
+    """
+    package = package.resolve()
+    if not package.is_dir():
+        raise GraphIntegrityError(f"loop package {package} is not a directory")
+    accumulator = hashlib.sha256()
+    for path in _digestible_files(package):
+        relative = path.relative_to(package).as_posix()
+        payload = path.read_bytes()
+        # The executable bit is part of the execution surface: a gate's `run:` may invoke a shipped
+        # script directly, and whether that script is executable changes whether the gate can run.
+        executable = "1" if path.stat().st_mode & 0o111 else "0"
+        header = f"{len(relative)}:{relative}:{executable}:{len(payload)}:".encode("utf-8")
+        accumulator.update(header)
+        accumulator.update(payload)
+    return accumulator.hexdigest()
+
+
+@dataclass(frozen=True)
+class LoopPackageRegistry:
+    """Maps an admitted package digest to a directory on this host, and re-verifies the bytes.
+
+    ``roots`` are directories whose immediate children are candidate loop packages (the shipped
+    ``loops/`` tree, plus whatever a deployment adds). The index is built by digesting each
+    candidate, so a package is reachable only if its CONTENT hashes to the digest the plan admitted.
+    """
+
+    roots: tuple[Path, ...]
+
+    def index(self) -> Mapping[str, Path]:
+        found: dict[str, Path] = {}
+        for root in self.roots:
+            if not root.is_dir():
+                continue
+            for candidate in sorted(root.iterdir()):
+                if not (candidate / "loop.yaml").is_file():
+                    continue
+                digest = loop_package_digest(candidate)
+                first = found.get(digest)
+                if first is not None and first != candidate:
+                    # Byte-identical packages under two names are indistinguishable by digest, so
+                    # resolution would depend on iteration order. Refuse rather than pick one.
+                    raise GraphIntegrityError(
+                        f"two loop packages share digest {digest}: {first} and {candidate}"
+                    )
+                found[digest] = candidate
+        return found
+
+    def resolve(self, digest: str) -> Path:
+        package = self.index().get(digest)
+        if package is None:
+            raise GraphIntegrityError(
+                f"no loop package on this host has digest {digest}; "
+                f"searched {', '.join(str(root) for root in self.roots) or '(no roots configured)'}"
+            )
+        return package
+
+
+@dataclass(frozen=True)
+class LoopNodeResolver:
+    """Turns a ``kind: loop`` node into the argv that runs its package under the node's sandbox.
+
+    This is the ``NodeExecutionResolver`` the sandboxed worker's own docstring anticipated —
+    "backed by an admitted package registry in production". Filling it is what makes a loop node
+    executable; the worker already supplies the sandbox, the deadline, the rlimits and the
+    descriptor-safe promotion of exactly the declared outputs.
+    """
+
+    registry: LoopPackageRegistry
+    run_id: str
+    #: Attempt and round come from the controller per attempt, so the resolver is rebuilt rather
+    #: than mutated — a resolver that carried mutable attempt state would be a race waiting to
+    #: happen once nodes run concurrently.
+    attempt: int = 1
+    repair_round: int = 0
+    interpreter: str = sys.executable
+
+    def resolve(self, node: PlannedNode) -> NodeExecutionSpec:
+        if node.package_digest is None:
+            raise GraphIntegrityError(
+                f"node {node.node_id!r} is a loop node with no package digest; "
+                "authoring requires loop_package and the compiler carries it into the plan"
+            )
+        package = self.registry.resolve(node.package_digest)
+        return NodeExecutionSpec(
+            argv=(
+                self.interpreter, "-I", "-B", "-m", "bounded_loops.graph.loop_node_entry",
+                "--package", str(package),
+                "--package-digest", node.package_digest,
+                "--run-id", self.run_id,
+                "--node-id", node.node_id,
+                "--attempt", str(self.attempt),
+                "--repair-round", str(self.repair_round),
+                "--outcome", DEFAULT_OUTCOME_FILENAME,
+            ),
+            declared_outputs={DEFAULT_OUTCOME_FILENAME: "application/json"},
+        )
