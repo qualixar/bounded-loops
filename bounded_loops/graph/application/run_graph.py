@@ -51,6 +51,7 @@ from bounded_loops.graph.domain.events import (
     UnsignedGraphEvent,
 )
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
+from bounded_loops.graph.domain.pricing import PriceTable, empty_price_table
 from bounded_loops.graph.domain.usage import WorkerUsage
 
 # Effects whose real-world action cannot be safely repeated by an at-least-once
@@ -200,6 +201,7 @@ class GraphRunController:
         approval_resolver: ApprovalResolverPort | None = None,
         connector_worker: NodeWorkerPort | None = None,
         egress_transports: frozenset[str] = frozenset(),
+        price_table: PriceTable | None = None,
     ) -> None:
         if worker is gate or connector_worker is gate:
             raise GraphIntegrityError("worker and independent gate must be separate objects")
@@ -229,6 +231,10 @@ class GraphRunController:
         self._approval_resolver = approval_resolver
         self._connector_worker = connector_worker
         self._egress_transports = egress_transports
+        # Empty by default: with no operator-supplied rates every cost cap is unmeasurable and
+        # fails closed. Shipping default prices would be wrong within a week of a reprice, and
+        # wrong in the direction that permits more spend than was authorised.
+        self._price_table = empty_price_table() if price_table is None else price_table
         self._head = "0" * 64
 
     def run(self) -> GraphRunProjection:
@@ -543,8 +549,9 @@ class GraphRunController:
         # something that is not a WorkerResult would raise AttributeError and escape this
         # method uncaught, turning a misbehaving worker into a crashed run.
         max_tokens, max_cost = _spend_caps(node)
+        usage = self._priced(result.usage, expected_route)
         unmeasurable = unmeasurable_dimension(
-            result.usage, max_tokens=max_tokens, max_cost_microunits=max_cost,
+            usage, max_tokens=max_tokens, max_cost_microunits=max_cost,
         )
         if unmeasurable is not None:
             # The node asked to be bounded on this dimension and this worker cannot report it.
@@ -588,7 +595,7 @@ class GraphRunController:
                 **({"route": route_payload(expected_route)} if expected_route else {}),
                 **({"transport": expected_transport} if expected_transport else {}),
                 **isolation_payload(result),
-                **usage_payload(result.usage),
+                **usage_payload(usage),
             )
             return _AttemptOutcome(succeeded=True)
         return _AttemptOutcome(
@@ -599,7 +606,7 @@ class GraphRunController:
             # is what makes retry spend visible at all: without it, the only measured attempts
             # would be the ones that passed, and a node could retry its way through any cap
             # while every recorded total looked small.
-            usage=result.usage,
+            usage=usage,
         )
 
     def _append_attempt_failed(
@@ -689,6 +696,28 @@ class GraphRunController:
             )
         # PENDING: no decision yet — stay paused; the hold receipt is already durable.
         return self.event_log.replay_projection()
+
+    def _priced(
+        self, usage: WorkerUsage | None, route: ResolvedRoute | None,
+    ) -> WorkerUsage | None:
+        """Annotate a worker's report with a price-table charge, where one can be computed.
+
+        Additive only: the worker's own figures are never overwritten, so a provider-reported
+        charge always stays distinguishable from arithmetic over a rate card. Returns the
+        report unchanged when the provider already billed us, when the route is unpriced, or
+        when tokens are only half measured — each of which is a real gap that a derived 0
+        would misreport as free work.
+        """
+        if usage is None or usage.cost_microunits is not None:
+            return usage
+        estimated = self._price_table.cost_microunits(
+            provider_id=route.provider_id if route else None,
+            model_id=route.model_id if route else None,
+            input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
+        )
+        if estimated is None:
+            return usage
+        return usage.with_estimated_cost(estimated, estimated_by=self._price_table.source)
 
     def _spend_snapshot(self) -> dict[str, NodeSpend]:
         """Per-node spend as the DURABLE receipts state it, right now.

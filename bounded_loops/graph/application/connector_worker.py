@@ -89,7 +89,9 @@ class ConnectorNodeWorker:
             raise GraphIntegrityError(f"connector node {node.node_id!r} failed: {result.reason}")
         digests = (result.response_digest,) if result.response_digest is not None else ()
         route, transport = self._route_for(plan, node)
-        return WorkerResult(digests, route, transport)
+        # usage keyword, not positional: WorkerResult's isolation fields sit between here and
+        # transport, and a positional argument would silently land in one of them.
+        return WorkerResult(digests, route, transport, usage=result.usage)
 
     @staticmethod
     def _route_for(plan: ExecutionPlan, node: PlannedNode) -> tuple[ResolvedRoute | None, str | None]:

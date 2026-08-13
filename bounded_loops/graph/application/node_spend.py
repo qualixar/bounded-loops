@@ -105,7 +105,8 @@ def consumed_spend_from(
         usage = usage_from_payload(raw) if raw is not None else None
         spend[node_id] = spend[node_id].plus(
             usage.total_tokens if usage else None,
-            usage.cost_microunits if usage else None,
+            # The provider's own charge when it gave one, else the price-table estimate.
+            usage.chargeable_cost_microunits if usage else None,
         )
     return spend
 
@@ -137,7 +138,11 @@ def unmeasurable_dimension(
     """
     if max_tokens is not None and (usage is None or usage.total_tokens is None):
         return "tokens"
-    if max_cost_microunits is not None and (usage is None or usage.cost_microunits is None):
+    if max_cost_microunits is not None and (
+        usage is None or usage.chargeable_cost_microunits is None
+    ):
+        # Either the provider billed us or a price table priced the route. Neither means the
+        # cost cap has nothing to check against, so the node refuses rather than run unpriced.
         return "cost"
     return None
 

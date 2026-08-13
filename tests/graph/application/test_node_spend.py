@@ -27,8 +27,16 @@ from bounded_loops.graph.application.node_spend import (
     run_spend,
     spend_refusal,
 )
+from bounded_loops.graph.application.execution_policy import (
+    ConfiguredExecutionPolicy,
+    ExecutionEnvelope,
+    NetworkMode,
+)
 from bounded_loops.graph.application.run_graph import GraphRunController
+from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.errors import GraphIntegrityError
+from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode, ResolvedBinding
+from bounded_loops.graph.domain.pricing import ModelPrice, PriceTable
 from bounded_loops.graph.domain.events import UnsignedGraphEvent
 from bounded_loops.graph.domain.usage import WorkerUsage, usage_from_payload
 
@@ -61,6 +69,27 @@ class _MeteredWorker:
     def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
         self.calls += 1
         return WorkerResult(output_artifact_digests=(_DIGEST,), usage=self._usage)
+
+
+class _RoutedMeteredWorker(_MeteredWorker):
+    """Reports the route it took, which the controller requires of any bound node.
+
+    A bound node whose worker returns no route fails artifact verification — the check that
+    stops a worker from silently calling a provider the immutable plan never authorised.
+    """
+
+    def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
+        self.calls += 1
+        binding = next(b for b in plan.connection_bindings if b.binding_id == node.binding_id)
+        return WorkerResult(
+            (_DIGEST,),
+            ResolvedRoute(
+                binding.provider_id, binding.model_target, binding.region,
+                binding.fallback, binding.route_policy_digest,
+            ),
+            binding.transport,
+            usage=self._usage,
+        )
 
 
 class _SilentWorker:
@@ -467,3 +496,119 @@ def test_measurability_is_decided_per_dimension(usage, max_tokens, max_cost, exp
     assert unmeasurable_dimension(
         usage, max_tokens=max_tokens, max_cost_microunits=max_cost,
     ) == expected
+
+
+def _routed_plan(budgets: dict[str, object]) -> ExecutionPlan:
+    """A plan whose node is bound to a real provider/model, so a price table can price it."""
+    base = _plan(budgets)
+    node = base.nodes[0]
+    routed = PlannedNode(
+        node_id=node.node_id, kind=node.kind, package_digest=node.package_digest,
+        binding_id="binding-1", required_effects=node.required_effects,
+        isolation=node.isolation, hard_deadline_ms=node.hard_deadline_ms,
+        budgets=node.budgets, approval_policy=node.approval_policy,
+    )
+    binding = ResolvedBinding(
+        binding_id="binding-1", slot_id="slot-1", connector_id="c", connector_version="1",
+        connection_id="conn-1", admission_digest="sha256:" + "9" * 64,
+        route_policy_digest="sha256:" + "8" * 64, provider_id="anthropic",
+        model_target="claude-opus-5", region="us", fallback=False, transport="https",
+    )
+    return ExecutionPlan(
+        api_version=base.api_version, plan_id=base.plan_id,
+        source_graph_digest=base.source_graph_digest, policy_digest=base.policy_digest,
+        compiler_version=base.compiler_version, nodes=(routed,), edges=(),
+        levels=((_NODE_ID,),), package_digests=base.package_digests,
+        connection_bindings=(binding,), canonical_json=base.canonical_json,
+    )
+
+
+def _routed_policy(plan: ExecutionPlan) -> ConfiguredExecutionPolicy:
+    """A bound node's envelope must carry its binding's transport, or the policy denies it."""
+    return ConfiguredExecutionPolicy({
+        node.node_id: ExecutionEnvelope(
+            node.isolation, "https", node.required_effects, NetworkMode.DENY, (),
+        )
+        for node in plan.nodes
+    })
+
+
+def test_a_price_table_turns_tokens_into_a_cost_cap_that_works(tmp_path: Path) -> None:
+    """Providers report tokens, not money, so a cost cap is unusable without a rate card.
+
+    The estimate is recorded SEPARATELY from any provider-reported charge and names the table
+    that produced it, so an operator reconciling an invoice can tell arithmetic from a bill.
+    """
+    plan = _routed_plan({"max_attempts": 5, "max_cost_microunits": 20_000})
+    table = PriceTable(
+        # $3/Mtok in, $15/Mtok out. One attempt of 1000 in + 500 out costs 3000 + 7500 =
+        # 10_500 micro-USD, so the 20_000 cap affords one attempt and refuses the third.
+        prices={("anthropic", "claude-opus-5"): ModelPrice(3_000_000, 15_000_000)},
+        source="price-table:test-v1",
+    )
+    worker = _RoutedMeteredWorker(input_tokens=1_000, output_tokens=500)
+    controller = GraphRunController(
+        plan=plan, event_log=GraphEventLog(tmp_path / "events.jsonl", _identity()),
+        worker=worker, gate=_Gate(reject_first=99), artifact_verifier=_PassingVerifier(),
+        execution_policy=_routed_policy(plan), execution_enforcer=_Enforcer(),
+        timestamp=lambda: "2026-08-12T00:00:00Z", price_table=table,
+    )
+
+    projection = controller.run()
+
+    assert projection.state == "FAILED"
+    # Two attempts at 10_500 reach 21_000, past the 20_000 cap, so the third never starts —
+    # with two retry attempts still unspent. Money ran out, not tries.
+    assert worker.calls == 2
+    failed = _of_type(tmp_path, "node.failed")
+    assert failed[0]["cause"] == "spend_exhausted"
+
+    # The estimate is attributed to the table, and kept apart from cost_microunits, which
+    # stays absent because this provider reported no charge of its own.
+    usage = _of_type(tmp_path, "node.attempt.failed")[0]["usage"]
+    assert usage["estimated_cost_microunits"] == 10_500
+    assert usage["estimated_by"] == "price-table:test-v1"
+    assert "cost_microunits" not in usage
+    assert usage["reported_by"] == "test-provider", "the worker's own attribution survives"
+
+    spend = consumed_spend_from(plan, controller.event_log.replay())
+    assert spend[_NODE_ID].cost_microunits == 21_000
+
+
+def test_a_provider_reported_charge_beats_the_tables_estimate(tmp_path: Path) -> None:
+    """One is the bill, the other is arithmetic over a rate card. Both are recorded."""
+    plan = _routed_plan({"max_attempts": 1, "max_cost_microunits": 1_000_000})
+    controller = GraphRunController(
+        plan=plan, event_log=GraphEventLog(tmp_path / "events.jsonl", _identity()),
+        worker=_RoutedMeteredWorker(input_tokens=1_000, output_tokens=500, cost_microunits=9_999),
+        gate=_Gate(reject_first=0), artifact_verifier=_PassingVerifier(),
+        execution_policy=_routed_policy(plan), execution_enforcer=_Enforcer(),
+        timestamp=lambda: "2026-08-12T00:00:00Z",
+        price_table=PriceTable(
+            prices={("anthropic", "claude-opus-5"): ModelPrice(3_000_000, 15_000_000)},
+            source="price-table:test-v1",
+        ),
+    )
+
+    assert controller.run().state == "SUCCEEDED"
+
+    usage = _of_type(tmp_path, "node.succeeded")[0]["usage"]
+    assert usage["cost_microunits"] == 9_999
+    # No estimate is even computed once the provider has billed us: the worker's own report is
+    # not second-guessed, and an estimate beside a bill would only invite the wrong one to be
+    # summed.
+    assert "estimated_cost_microunits" not in usage
+    assert consumed_spend_from(plan, controller.event_log.replay())[_NODE_ID].cost_microunits == 9_999
+
+
+def test_an_unpriced_route_makes_a_cost_cap_fail_closed(tmp_path: Path) -> None:
+    """No default prices ship, so out of the box every cost cap refuses rather than guesses."""
+    projection = _controller(
+        tmp_path, worker=_MeteredWorker(input_tokens=1_000, output_tokens=500),
+        gate=_Gate(reject_first=0), budgets={"max_attempts": 2, "max_cost_microunits": 20_000},
+    ).run()
+
+    assert projection.state == "FAILED"
+    failed = _of_type(tmp_path, "node.failed")
+    assert failed[0]["cause"] == "budget_unmeasurable"
+    assert "cost" in failed[0]["reason"]

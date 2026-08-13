@@ -26,10 +26,12 @@ import ipaddress
 import re
 import socket
 import ssl
+import time
 
 from bounded_loops.graph.adapters.connectors.artifact_body import ArtifactBodyPort
 from bounded_loops.graph.adapters.connectors.credentials import CredentialResolverPort, ProviderCredential
 from bounded_loops.graph.adapters.connectors.request_document import ConnectorRequestDocument, decode_request_document
+from bounded_loops.graph.adapters.connectors.provider_usage import extract_provider_usage
 from bounded_loops.graph.application.connector_forward import ConnectorInvocation, ConnectorResult
 from bounded_loops.graph.application.egress_broker import split_destination
 from bounded_loops.graph.domain.connections import CredentialLease
@@ -137,10 +139,19 @@ class HttpConnectorForwarder:
         if credential is not None and document.scheme != "https":
             raise _ForwardDenied("refusing to transmit a credential over a non-TLS connection")
         effective_port = port if port is not None else _DEFAULT_PORTS[document.scheme]
+        started = time.monotonic()
         status, body = self._exchange(host, effective_port, pinned_ips, invocation.method, document, credential)
+        wallclock_ms = int((time.monotonic() - started) * 1000)
         response_digest = self._artifact_body.store(body)
         ok = 200 <= status < 300
-        return ConnectorResult(ok, "" if ok else f"provider returned HTTP {status}", response_digest, status)
+        # Usage is read from the body HERE because this is the only place the body exists;
+        # everything downstream holds a digest. Integers only — see provider_usage.
+        usage = extract_provider_usage(
+            body, reported_by=f"provider:{host}", wallclock_ms=wallclock_ms,
+        )
+        return ConnectorResult(
+            ok, "" if ok else f"provider returned HTTP {status}", response_digest, status, usage,
+        )
 
     def _resolve_credential(self, lease: CredentialLease) -> ProviderCredential | None:
         if self._credential_resolver is None:

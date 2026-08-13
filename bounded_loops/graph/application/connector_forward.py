@@ -31,6 +31,7 @@ from bounded_loops.graph.application.credential_broker import OpaqueCredentialBr
 from bounded_loops.graph.application.egress_broker import EgressBroker, EgressRequest
 from bounded_loops.graph.domain.authoring import Effect
 from bounded_loops.graph.domain.connections import CredentialLease, ExecutionGrant
+from bounded_loops.graph.domain.usage import WorkerUsage
 from bounded_loops.graph.domain.errors import GraphValidationError
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -66,12 +67,19 @@ class ConnectorInvocation:
 
 @dataclass(frozen=True)
 class ConnectorResult:
-    """A forwarder's content-addressed result — no inline response bytes."""
+    """A forwarder's content-addressed result — no inline response bytes.
+
+    ``usage`` is the one thing read OUT of the response body and carried back inline, and it
+    is integers only. A token count is metering metadata, not content, so it does not breach
+    the no-response-bytes rule — and without it spend could not be metered at all, since the
+    forwarder is the only component that ever holds the body.
+    """
 
     ok: bool
     reason: str
     response_digest: str | None = None
     provider_status: int | None = None
+    usage: WorkerUsage | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.ok, bool):
@@ -86,6 +94,10 @@ class ConnectorResult:
             isinstance(self.provider_status, bool) or not isinstance(self.provider_status, int)
         ):
             raise GraphValidationError("connector_result", "/provider_status", "provider_status must be an int")
+        if self.usage is not None and not isinstance(self.usage, WorkerUsage):
+            # A bare dict here would bypass WorkerUsage's own validation, which is the only
+            # thing standing between a spend total and a negative charge that refunds budget.
+            raise GraphValidationError("connector_result", "/usage", "usage must be a WorkerUsage")
 
 
 class ConnectorForwardPort(Protocol):

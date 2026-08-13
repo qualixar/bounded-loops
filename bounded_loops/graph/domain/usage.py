@@ -31,6 +31,13 @@ MICROUNITS_PER_USD = 1_000_000
 #: The measurable quantities, in the order they are reported in a receipt.
 _QUANTITIES = ("input_tokens", "output_tokens", "cost_microunits", "wallclock_ms")
 
+#: Added by the RUNTIME, not by the worker: a charge derived from an operator price table
+#: rather than reported by the provider. Kept separate from ``cost_microunits`` because the
+#: two have different standing — one is the bill, the other is arithmetic over a rate card —
+#: and an operator reconciling an invoice has to be able to tell them apart. When both are
+#: present the reported figure wins for accounting, and the disagreement is itself evidence.
+_ESTIMATES = ("estimated_cost_microunits",)
+
 
 @dataclass(frozen=True)
 class WorkerUsage:
@@ -53,9 +60,11 @@ class WorkerUsage:
     cost_microunits: int | None = None
     wallclock_ms: int | None = None
     reported_by: str | None = None
+    estimated_cost_microunits: int | None = None
+    estimated_by: str | None = None
 
     def __post_init__(self) -> None:
-        for field in _QUANTITIES:
+        for field in _QUANTITIES + _ESTIMATES:
             value = getattr(self, field)
             if value is None:
                 continue
@@ -70,6 +79,16 @@ class WorkerUsage:
             raise GraphIntegrityError(
                 "usage that reports a quantity must name what measured it: an unattributed "
                 "number cannot be audited back to a provider or an estimate"
+            )
+        if self.estimated_by is not None and (
+            not isinstance(self.estimated_by, str) or not self.estimated_by
+        ):
+            raise GraphIntegrityError("usage estimated_by must be a non-empty string or None")
+        if (self.estimated_cost_microunits is None) != (self.estimated_by is None):
+            # An estimate whose rate card is unnamed cannot be reconciled against an invoice,
+            # and a named table with no figure is noise. Both or neither.
+            raise GraphIntegrityError(
+                "an estimated cost and the table that produced it must appear together"
             )
 
     @property
@@ -89,6 +108,31 @@ class WorkerUsage:
             return None
         return self.input_tokens + self.output_tokens
 
+    @property
+    def chargeable_cost_microunits(self) -> int | None:
+        """The figure spend accounting uses: the provider's own charge, else the estimate.
+
+        Reported beats estimated because one is the bill and the other is arithmetic. Neither
+        present means cost is unmeasured — not zero.
+        """
+        if self.cost_microunits is not None:
+            return self.cost_microunits
+        return self.estimated_cost_microunits
+
+    def with_estimated_cost(self, cost_microunits: int, *, estimated_by: str) -> "WorkerUsage":
+        """This same report, annotated with a charge derived from a price table.
+
+        Returns a new value rather than mutating: the worker's own report is evidence, and
+        overwriting it with the runtime's arithmetic would destroy the distinction the
+        separate field exists to keep.
+        """
+        return WorkerUsage(
+            input_tokens=self.input_tokens, output_tokens=self.output_tokens,
+            cost_microunits=self.cost_microunits, wallclock_ms=self.wallclock_ms,
+            reported_by=self.reported_by,
+            estimated_cost_microunits=cost_microunits, estimated_by=estimated_by,
+        )
+
     def payload(self) -> dict[str, object]:
         """The durable receipt shape. Keys appear only for measured quantities.
 
@@ -98,10 +142,12 @@ class WorkerUsage:
         """
         body: dict[str, object] = {
             field: getattr(self, field)
-            for field in _QUANTITIES
+            for field in _QUANTITIES + _ESTIMATES
             if getattr(self, field) is not None
         }
-        if body:
+        if self.estimated_by is not None:
+            body["estimated_by"] = self.estimated_by
+        if any(getattr(self, field) is not None for field in _QUANTITIES):
             # Guaranteed non-None by __post_init__ whenever anything was measured. An
             # attribution with nothing attributed is dropped: it would be noise in the log.
             body["reported_by"] = self.reported_by
@@ -119,9 +165,12 @@ def usage_from_payload(raw: object) -> WorkerUsage:
     # usage block the runtime itself had just written.
     if not isinstance(raw, Mapping) or not all(isinstance(key, str) for key in raw):
         raise GraphIntegrityError("usage must be an object with string keys")
-    unknown = set(raw) - set(_QUANTITIES) - {"reported_by"}
+    unknown = set(raw) - set(_QUANTITIES) - set(_ESTIMATES) - {"reported_by", "estimated_by"}
     if unknown:
         raise GraphIntegrityError(f"usage has unknown keys: {sorted(unknown)}")
+    estimated_by = raw.get("estimated_by")
+    if estimated_by is not None and not isinstance(estimated_by, str):
+        raise GraphIntegrityError("usage estimated_by must be a string")
     reported_by = raw.get("reported_by")
     if reported_by is not None and not isinstance(reported_by, str):
         # Coercing this to None instead would surface as the confusing "must name what
@@ -133,6 +182,8 @@ def usage_from_payload(raw: object) -> WorkerUsage:
         cost_microunits=_quantity(raw, "cost_microunits"),
         wallclock_ms=_quantity(raw, "wallclock_ms"),
         reported_by=reported_by,
+        estimated_cost_microunits=_quantity(raw, "estimated_cost_microunits"),
+        estimated_by=estimated_by,
     )
 
 
