@@ -87,9 +87,36 @@ Neither alone is enough. A careless catalog entry cannot open the channel by its
 a forgotten `export` in a shell profile. If a provider asks for a name you have not allowed, the run
 logs a warning naming it and does not forward it.
 
-`BOUNDED_LOOPS_CLI_ENV_GRANT` is the old name for this variable and still works on the local-CLI
-path, so an existing grant survives the upgrade. Prefer the new name: it is the one the base loop
-engine has always used, and both now mean the same thing.
+### This is a breaking change from 0.4.x — read this if you already set a grant
+
+Before 0.5, on the local-CLI path, **the operator variable alone was enough**. Every shipped
+provider declares `env_grant = []`, so if you set `BOUNDED_LOOPS_CLI_ENV_GRANT=MY_KEY` and relied on
+a built-in provider, that key reached the CLI.
+
+**It no longer does.** The provider has to declare the name too. `BOUNDED_LOOPS_CLI_ENV_GRANT` is
+still read on this path, so the *variable* keeps working — but the old name does **not** restore the
+old one-key behaviour, and nothing can, because that behaviour is the thing being fixed.
+
+To restore a grant, add the name to the provider's catalog entry:
+
+```toml
+[providers.codex]
+binary = "codex"
+args = ["exec", "--skip-git-repo-check"]
+prompt_via = "arg"
+env_grant = ["MY_KEY"]        # the provider's half
+```
+
+```bash
+export BOUNDED_LOOPS_ENV_PASSTHROUGH_ALLOW=MY_KEY   # your half
+```
+
+The run logs a warning naming any variable you allowed that no provider asked for, and any variable
+a provider asked for that you did not allow — so a half-configured grant says so instead of failing
+somewhere inside the CLI. Names only; never values.
+
+Prefer the new name going forward: it is the one the base loop engine has always used, and since 0.5
+both names mean exactly the same thing.
 
 ## Provider packages (entry points)
 

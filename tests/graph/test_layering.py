@@ -44,19 +44,46 @@ def _module_name(path: Path) -> str:
 
 
 def _imports(path: Path) -> tuple[str, ...]:
-    """Every module this file imports, from both ``import x`` and ``from x import y``.
+    """Every module this file imports, by any of the four routes into a module.
 
     Function-local imports count. A deferred import is still a dependency — hiding an
     adapter import inside a function would defeat the whole check, and that is exactly the
     shape a future drift is most likely to take.
+
+    The last three routes were added after the P3 audit pointed out that the first version saw
+    only absolute ``import``/``from``, so a **relative** import (``from ..adapters.x import y``)
+    or a dynamic one (``importlib.import_module("…adapters…")``) would have been invisible to CI.
+    A tripwire with a known bypass is worse than no tripwire, because it is trusted.
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    text = path.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(path))
     found: list[str] = []
+    package = _module_name(path).rsplit(".", 1)[0]
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            found.append(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0:
+                if node.module:
+                    found.append(node.module)
+                continue
+            # Relative: resolve against this module's package so the rules below see the same
+            # absolute name an equivalent absolute import would have produced.
+            base = package.rsplit(".", node.level - 1)[0] if node.level > 1 else package
+            found.append(f"{base}.{node.module}" if node.module else base)
+        elif isinstance(node, ast.Call):
+            # ``importlib.import_module("x.y")`` / ``__import__("x.y")`` — the target is a literal
+            # in every real use; a computed one would be unreachable for any static check, and is
+            # itself a review flag.
+            target = node.func
+            dynamic = (
+                (isinstance(target, ast.Name) and target.id == "__import__")
+                or (isinstance(target, ast.Attribute) and target.attr == "import_module")
+            )
+            if dynamic and node.args and isinstance(node.args[0], ast.Constant):
+                literal = node.args[0].value
+                if isinstance(literal, str):
+                    found.append(literal)
     return tuple(found)
 
 
@@ -87,6 +114,22 @@ def test_the_graph_application_layer_imports_no_concrete_adapter() -> None:
     )
     assert offences == [], (
         "application modules must depend on ports, not adapters:\n  " + "\n  ".join(offences)
+    )
+
+
+def test_the_graph_application_layer_does_not_import_the_composition_tier() -> None:
+    """The re-export bypass. ``graph_composition`` legitimately imports ``LocalArtifactStore``, so
+    ``from bounded_loops.graph.graph_composition import LocalArtifactStore`` inside an application
+    module reaches the same concrete adapter while naming only a permitted module — invisible to the
+    rule above, which matches on the imported MODULE.
+
+    Forbidding the edge outright is simpler than trying to tell a re-exported adapter from a
+    legitimate one, and it is the correct rule anyway: composition points inward, never the reverse.
+    """
+    offences = _offences(_GRAPH / "application", tuple(sorted(_COMPOSITION_TIER)))
+    assert offences == [], (
+        "application must not import the composition tier (adapters leak through its re-exports):\n  "
+        + "\n  ".join(offences)
     )
 
 
@@ -205,3 +248,66 @@ def test_every_port_is_satisfied_by_the_adapter_that_claims_it(tmp_path: Path) -
     assert isinstance(store, ArtifactReaderPort)
     assert isinstance(store, ArtifactStorePort)
     assert isinstance(log, EventLogPort)
+
+
+def test_every_controller_assembly_path_checks_the_provider_map() -> None:
+    """``_preflight`` guards only ``execute_graph_run``; the facade, MCP and console bypass it.
+
+    A run created with ``--providers catalog.toml`` and resumed WITHOUT it has a plan naming a
+    provider that no longer exists. The resolver would still end the node terminally rather than
+    retrying it, but only after starting it — and after that resume pass had already paid for every
+    node upstream. So the check lives at the one chokepoint all of those paths share.
+    """
+    import inspect
+
+    from bounded_loops.graph import graph_composition
+
+    source = inspect.getsource(graph_composition.build_execution_controller)
+    assert "unknown_local_cli_provider" in source, (
+        "build_execution_controller is the only assembly point the facade, MCP and console share; "
+        "the provider check has to be here, not only in _preflight"
+    )
+
+
+def test_the_provider_rule_has_no_skip_by_omission_default() -> None:
+    """``cli_profiles`` is required on the shared rule. A default of "no map means skip" is the
+    shape that let the facade path go unchecked in the first place."""
+    import inspect
+
+    from bounded_loops.graph.graph_composition import unknown_local_cli_provider
+
+    profiles_param = inspect.signature(unknown_local_cli_provider).parameters["cli_profiles"]
+    assert profiles_param.default is inspect.Parameter.empty
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog",
+        "import bounded_loops.graph.adapters.persistence.event_log",
+        "from ..adapters.persistence.event_log import GraphEventLog",
+        "from ...graph.adapters.persistence.event_log import GraphEventLog",
+        'importlib.import_module("bounded_loops.graph.adapters.persistence.event_log")',
+        '__import__("bounded_loops.graph.adapters.persistence.event_log")',
+    ],
+)
+def test_the_tripwire_sees_every_route_into_an_adapter(tmp_path: Path, snippet: str) -> None:
+    """Each of these is a way to reach an adapter, and the first version of ``_imports`` caught
+    only the first two. A tripwire with a known bypass is worse than none, because it is trusted.
+
+    Written against a synthetic file rather than by mutating the real tree, so the test proves the
+    detector without a step that could be left applied.
+    """
+    module = tmp_path / "bounded_loops" / "graph" / "application" / "probe.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(f"import importlib\n{snippet}\n", encoding="utf-8")
+
+    global _ROOT
+    original = _ROOT
+    try:
+        _ROOT = tmp_path / "bounded_loops"
+        seen = _imports(module)
+    finally:
+        _ROOT = original
+
+    assert any("adapters" in name for name in seen), f"{snippet!r} was invisible: saw {seen}"

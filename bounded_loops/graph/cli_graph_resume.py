@@ -33,6 +33,7 @@ def cmd_graph_resume(args: argparse.Namespace) -> int:
     # the same pattern the other graph subcommands follow.
     from bounded_loops.graph.cli_graph import _err, _resolve_budget
     from bounded_loops.graph.cli_graph_approve import _load_identity_and_facade, _load_node_prompts
+    from bounded_loops.graph.cli_graph_providers import _catalog_path
 
     run_dir = Path(args.run)
     if not run_dir.is_dir():
@@ -50,7 +51,12 @@ def cmd_graph_resume(args: argparse.Namespace) -> int:
         _err(f"graph resume: {exc}")
         return 2
 
-    identity, facade = _load_identity_and_facade(run_dir, node_prompts or {})
+    # The SAME catalog the run was created with. Without it, a run whose plan names a
+    # catalog provider is unresumable — the wiring chokepoint refuses a provider this
+    # process cannot run, which is right, and would be a trap without this flag.
+    identity, facade = _load_identity_and_facade(
+        run_dir, node_prompts or {}, _catalog_path(args),
+    )
     if identity is None or facade is None:
         return 2
 
@@ -119,5 +125,11 @@ def add_resume_parser(graph_subs: argparse._SubParsersAction) -> None:  # type: 
     resume_p.add_argument("--budget-file", default=None, metavar="<json>",
                           help="Budget file holding standing ceilings and the price table. "
                                "Explicit flags above override it per dimension.")
+    resume_p.add_argument(
+        "--providers", default=None, metavar="<catalog.toml>",
+        help=(
+            "Provider catalog (TOML) this run needs. Supply the SAME catalog the run was created with: a run whose plan names a catalog provider cannot be continued by a process that has never heard of it. BOUNDED_LOOPS_PROVIDERS is the machine-wide default."
+        ),
+    )
     resume_p.add_argument("--json", action="store_true", help="Emit JSON output.")
     resume_p.set_defaults(func=cmd_graph_resume)

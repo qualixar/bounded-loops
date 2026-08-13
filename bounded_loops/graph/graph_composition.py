@@ -26,6 +26,7 @@ The per-node prompt is RUN-TIME input (``node_id -> prompt``), never baked into 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import ssl
 import sys
@@ -265,6 +266,40 @@ def _build_policy(
     return ConfiguredExecutionPolicy(envelopes)
 
 
+def unknown_local_cli_provider(
+    plan: ExecutionPlan, node: PlannedNode, cli_profiles: Mapping[str, CliProfile],
+) -> str | None:
+    """Message if this node binds a local-CLI provider the deployment cannot run, else ``None``.
+
+    One rule, two callers, on purpose. ``_preflight`` uses it to refuse a fresh run with a readable
+    CLI message; ``build_execution_controller`` uses it to refuse EVERY path that assembles a
+    controller — resume, approve, MCP, console — because those bypass ``_preflight`` entirely.
+
+    The gap that made this shared mattered on resume: a run created with ``--providers catalog.toml``
+    and resumed WITHOUT it has a plan naming a provider that no longer exists. The resolver would
+    still end the node terminally (``WorkerContractError``, so no retry storm), but only after
+    starting it — and after that resume pass had already paid for the nodes upstream.
+
+    The profile map is a required argument here. A default of "no map means skip the check" is the
+    shape that let this hole exist in the first place.
+    """
+    if not is_egress_node(plan, node, _LOCAL_CLI_TRANSPORTS):
+        return None
+    binding = next(
+        (b for b in plan.connection_bindings if b.binding_id == node.binding_id), None
+    )
+    if binding is None or binding.provider_id in cli_profiles:
+        return None
+    known = ", ".join(sorted(cli_profiles)) or "(none configured)"
+    return (
+        f"node {node.node_id!r} binds local-CLI provider {binding.provider_id!r}, which this "
+        f"deployment has no profile for (known: {known}). Add a provider catalog entry for it "
+        "(--providers / BOUNDED_LOOPS_PROVIDERS), or bind the node to a provider that is "
+        "installed. Refused before any attempt starts: reaching this node would fail every "
+        "attempt identically, having already paid for every node upstream of it."
+    )
+
+
 def _preflight(
     plan: ExecutionPlan,
     admitted_connections: Mapping[str, AdmittedConnectionRecord] | None = None,
@@ -302,23 +337,9 @@ def _preflight(
                 "transport 'local_cli' (subscription CLI) or 'https' (BYOK/HTTP connector), "
                 "or are an 'approval' human checkpoint. Sandboxed tool execution is a later phase."
             )
-        # local_cli nodes require a profile for the provider their binding names.
-        # Defaulted to the shipped profile map rather than to ``None``-means-skip: a check a
-        # caller can silently omit is not a check. An empty mapping refuses every local-CLI
-        # node, which is the honest answer for a deployment with no providers installed.
-        if is_egress_node(plan, node, _LOCAL_CLI_TRANSPORTS):
-            binding = next(
-                (b for b in plan.connection_bindings if b.binding_id == node.binding_id), None
-            )
-            if binding is not None and binding.provider_id not in cli_profiles:
-                known = ", ".join(sorted(cli_profiles)) or "(none configured)"
-                return (
-                    f"node {node.node_id!r} binds local-CLI provider {binding.provider_id!r}, "
-                    f"which this deployment has no profile for (known: {known}). Add a provider "
-                    "catalog entry for it, or bind the node to a provider that is installed. "
-                    "Refused before the run starts: reaching this node would fail every attempt "
-                    "identically, having already paid for every node upstream of it."
-                )
+        unknown_provider = unknown_local_cli_provider(plan, node, cli_profiles)
+        if unknown_provider is not None:
+            return unknown_provider
         # https nodes require an admitted record — fail closed if absent.
         if is_egress_node(plan, node, _HTTPS_TRANSPORTS):
             binding = next(
@@ -387,6 +408,20 @@ def build_execution_controller(
                 f"cannot enforce {node.isolation.value} isolation: {reason}",
             )
     enforcer = ExecutionEnforcer(caps)
+
+    # Every path that assembles a controller passes through here — ``execute_graph_run``, the
+    # facade's resume and approve, MCP, the console. ``_preflight`` only guards the first of those,
+    # so the provider check belongs at this chokepoint as well: a run created with a provider
+    # catalog and resumed without it names a provider that no longer exists, and the alternative is
+    # discovering that after the resume pass has already paid for the nodes upstream.
+    for node in plan.nodes:
+        if node.kind == NodeKind.APPROVAL.value:
+            continue
+        unknown_provider = unknown_local_cli_provider(plan, node, cli_profiles)
+        if unknown_provider is not None:
+            raise GraphValidationError(
+                "unknown_provider", f"/nodes/{node.node_id}", unknown_provider,
+            )
 
     # ── egress posture (Slice 2): resolved ONCE, before any store/worker is built ───────────
     local_cli_decision = resolve_local_cli_egress_decision(plan, environ=environ, capabilities=caps)
@@ -494,6 +529,9 @@ def execute_graph_run(
     # as unmeasurable rather than running against prices nobody supplied.
     run_budget: RunBudget | None = None,
     price_table: PriceTable | None = None,
+    # The catalog file ``cli_profiles`` was resolved from, recorded on the run so a continuation
+    # resolves the same providers. Not derivable from the map itself.
+    provider_catalog: Path | None = None,
 ) -> int:
     """Compile a user manifest and run its admitted connector nodes for real.
 
@@ -604,6 +642,7 @@ def execute_graph_run(
     _persist_run_dir(
         out_dir, plan, manifest_text, connections_raw, identity,
         mode=mode_label, audit_plan_json=audit_plan_json,
+        provider_catalog=provider_catalog,
     )
     arena = read_arena_projection(
         plan,
@@ -706,6 +745,7 @@ def _persist_run_dir(
     *,
     mode: str = "local_cli",
     audit_plan_json: str | None = None,
+    provider_catalog: Path | None = None,
 ) -> None:
     """Persist the four files ``bl graph status`` / ``arena`` reconstruct any run from. Written
     after the run so a crash never leaves a half-written receipt claiming success. Run-time inputs
@@ -731,6 +771,19 @@ def _persist_run_dir(
         "run_id": identity.run_id,
         "platform": sys.platform,
     }
+    if provider_catalog is not None:
+        # Recorded so every CONTINUE path resolves the same provider map this run used. Without it,
+        # a catalog that overrode a shipped name (an operator pointing ``claude`` at their own
+        # wrapper) was silently dropped on resume/approve, and the continuation invoked — and paid
+        # for — the shipped binary instead. The digest turns a catalog EDITED between the run and the
+        # resume from an invisible difference into a warning.
+        run_meta["provider_catalog"] = str(provider_catalog)
+        try:
+            run_meta["provider_catalog_sha256"] = hashlib.sha256(
+                provider_catalog.read_bytes()
+            ).hexdigest()
+        except OSError:
+            run_meta["provider_catalog_sha256"] = ""
     (out_dir / "run-meta.json").write_text(json.dumps(run_meta, sort_keys=True), encoding="utf-8")
     if audit_plan_json is not None:
         (out_dir / "audit-plan.json").write_text(audit_plan_json, encoding="utf-8")

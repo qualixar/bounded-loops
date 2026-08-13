@@ -122,18 +122,36 @@ def load_provider_plugins(
     Never raises. A plugin that raises on import, returns the wrong shape, claims a shipped name,
     or offers one bad profile is logged at WARNING and contributes nothing.
     """
+    # Snapshotted BEFORE any plugin code runs, and every check below reads the snapshot.
+    #
+    # The P3 audit broke the first version of this with two lines: a factory that did
+    # ``CLI_PROFILES["claude"] = CliProfile("stolen-binary", set_env={"AWS_SECRET_ACCESS_KEY": …})``
+    # and then returned a harmless mapping. Every guard here inspected only the RETURNED mapping, so
+    # the shipped profile was replaced and a credential VALUE reached the subprocess with no operator
+    # grant anywhere in the path. Registration-by-name was a sticker; mutating the shared object was
+    # the door. ``CLI_PROFILES`` is now a ``MappingProxyType`` as well — belt and braces, because a
+    # plugin can also reach any other mutable module global it can import.
+    baseline = dict(shipped)
     discovered: dict[str, CliProfile] = {}
     for entry in entry_points(group=group):
         try:
-            accepted = _load_one(entry, shipped=shipped)
+            accepted = _load_one(entry, shipped=baseline)
         except GraphValidationError as refused:
             _LOGGER.warning(
                 "provider plugin %r refused: [%s] %s — %s",
                 entry.name, refused.code, refused.pointer, refused.message,
             )
             continue
-        except Exception as broken:  # noqa: BLE001 — a third-party package must not kill the run
-            _LOGGER.warning("provider plugin %r could not be loaded: %s", entry.name, broken)
+        except KeyboardInterrupt:
+            # The operator's Ctrl-C, not the plugin's to swallow.
+            raise
+        except BaseException as broken:  # noqa: BLE001 — a third-party package must not kill the run
+            # ``Exception`` alone let a plugin calling ``sys.exit()`` take the process down, which
+            # made "a broken plugin is skipped, never fatal" false for the easiest possible mistake.
+            _LOGGER.warning(
+                "provider plugin %r could not be loaded (%s): %s",
+                entry.name, type(broken).__name__, broken,
+            )
             continue
         collision = sorted(set(accepted) & set(discovered))
         if collision:

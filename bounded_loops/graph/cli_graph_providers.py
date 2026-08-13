@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 
 from bounded_loops.graph.adapters.connectors.provider_catalog import (
+    default_catalog_path,
     describe as _describe_providers,
     resolve_cli_profiles,
 )
@@ -34,10 +34,7 @@ def _catalog_path(args: argparse.Namespace) -> Path | None:
     the default for a whole machine.
     """
     explicit = getattr(args, "providers", None)
-    if explicit:
-        return Path(explicit)
-    from_env = os.environ.get("BOUNDED_LOOPS_PROVIDERS", "").strip()
-    return Path(from_env) if from_env else None
+    return Path(explicit) if explicit else default_catalog_path()
 
 
 def cmd_graph_providers(args: argparse.Namespace) -> int:

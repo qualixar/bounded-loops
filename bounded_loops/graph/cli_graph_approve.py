@@ -61,6 +61,7 @@ from bounded_loops.graph.graph_run_report import (
     _awaiting_approval_nodes,
     approve_command_hint,
 )
+from bounded_loops.graph.cli_graph_providers import _catalog_path
 from bounded_loops.graph.graph_runtime_facade import LocalGraphRuntimeFacade
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
@@ -95,7 +96,7 @@ def _load_node_prompts(inputs_path: object) -> tuple[dict[str, str] | None, str 
 
 
 def _load_identity_and_facade(
-    run_dir: Path, node_prompts: dict[str, str],
+    run_dir: Path, node_prompts: dict[str, str], catalog_path: Path | None = None,
 ) -> tuple[GraphRunIdentity, LocalGraphRuntimeFacade] | tuple[None, None]:
     """Load the run's identity and construct a flat-addressed facade for *run_dir*.
 
@@ -110,7 +111,9 @@ def _load_identity_and_facade(
     ``cli_graph.py``.
     """
     try:
-        facade = LocalGraphRuntimeFacade.for_run_dir(run_dir, node_prompts=node_prompts)
+        facade = LocalGraphRuntimeFacade.for_run_dir(
+            run_dir, node_prompts=node_prompts, provider_catalog=catalog_path,
+        )
     except (GraphIntegrityError, GraphValidationError) as exc:
         _err(f"graph approve: {exc}")
         return None, None
@@ -145,7 +148,9 @@ def cmd_graph_approve(args: argparse.Namespace) -> int:
         _err(f"graph approve: {error}")
         return 2
 
-    identity, facade = _load_identity_and_facade(run_dir, node_prompts or {})
+    identity, facade = _load_identity_and_facade(
+        run_dir, node_prompts or {}, _catalog_path(args),
+    )
     if identity is None or facade is None:
         return 2
 

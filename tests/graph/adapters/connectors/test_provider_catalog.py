@@ -17,6 +17,7 @@ from bounded_loops.graph.adapters.connectors.provider_catalog import (
     catalog_from_mapping,
     describe,
     load_provider_catalog,
+    profile_from_mapping,
     resolve_cli_profiles,
 )
 from bounded_loops.graph.domain.errors import GraphValidationError
@@ -161,3 +162,46 @@ def test_describe_reports_metering_and_names_but_never_a_value(tmp_path: Path) -
     assert "codex" in joined and "NOT metered" in joined
     assert "MYCLI_REGION" in joined
     assert "sk-" not in joined
+
+
+def test_an_empty_or_non_string_provider_name_is_refused() -> None:
+    """``catalog_from_mapping`` is public and does not only see TOML.
+
+    An empty name yields a provider no binding can ever reference, which then lists in
+    ``bl graph providers`` as a nameless row; a non-string key used to surface as an
+    ``AttributeError`` from ``name.lower()`` rather than a validation error a caller can act on.
+    """
+    with pytest.raises(GraphValidationError, match="must be a non-empty string"):
+        catalog_from_mapping({"providers": {"": {"binary": "mycli"}}})
+
+    with pytest.raises(GraphValidationError, match="must be a non-empty string"):
+        catalog_from_mapping({"providers": {123: {"binary": "mycli"}}})
+
+
+def test_an_absurdly_large_catalog_is_refused_before_parsing(tmp_path: Path) -> None:
+    """A real catalog is a few small tables. A megabyte means the wrong file was pointed at —
+    most likely a mistyped BOUNDED_LOOPS_PROVIDERS — and saying so beats parsing it."""
+    path = tmp_path / "huge.toml"
+    path.write_text('x = "' + "a" * (1024 * 1024 + 16) + '"\n', encoding="utf-8")
+
+    with pytest.raises(GraphValidationError, match="over the"):
+        load_provider_catalog(path)
+
+
+@pytest.mark.parametrize("flag", ["--api-key", "--token=abc", "--password", "--client-secret"])
+def test_a_credential_flag_in_args_is_refused(flag: str) -> None:
+    """``args`` legitimately carries values, so it cannot be name-only — but a key on a command line
+    is visible to every process on the host, whether or not the value is in this file.
+
+    The first version of this module claimed "a catalog never carries a credential" while
+    ``args = ["--api-key", "sk-…"]`` loaded without complaint. The audit was right to call that out.
+    """
+    with pytest.raises(GraphValidationError, match="on the command line"):
+        profile_from_mapping("x", {"binary": "c", "args": [flag, "value"]}, pointer="/p")
+
+
+@pytest.mark.parametrize("args", [["--model", "sk-experiment"], ["--print"], ["--region", "in"]])
+def test_a_legitimate_flag_that_merely_looks_odd_still_works(args: list[str]) -> None:
+    """Refused on the FLAG name, not by guessing at the value's shape — so a model called
+    ``sk-experiment`` is not collateral damage."""
+    assert profile_from_mapping("x", {"binary": "c", "args": args}, pointer="/p").args == tuple(args)

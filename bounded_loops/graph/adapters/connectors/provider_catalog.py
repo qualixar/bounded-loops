@@ -20,9 +20,15 @@ So: a TOML file. ``tomllib`` is stdlib on 3.11+, so this adds no dependency.
 Two rules make this safe to hand to an operator, and both are enforced here rather than
 documented and hoped for:
 
-**A catalog never carries a credential.** ``env_grant`` and ``unset_env`` hold NAMES; a
-secret-shaped key in ``set_env`` is refused outright. The engine's job is to decide which
-names reach a subprocess — it has never needed to read a value and must not learn how.
+**A catalog never carries a credential.** ``env_grant`` and ``unset_env`` hold NAMES, and
+``set_env`` — which would hold values — is refused outright. ``args`` is the one field that
+legitimately carries values (``--model gpt-5``), so it cannot be name-only; instead a credential
+FLAG (``--api-key``, ``--token``, …) is refused there, because a key on a command line is visible
+to every process on the host whether or not the value sits in this file. The engine's job is to
+decide which names reach a subprocess — it has never needed to read a value and must not learn how.
+
+The P3 audit is why that paragraph is this specific: the first version claimed "a catalog never
+carries a credential" while ``args = ["--api-key", "sk-…"]`` loaded without complaint.
 
 **An unknown key is an error, not a shrug.** The schema is closed. A typo'd ``envelop`` that
 was silently ignored would leave the operator believing their provider is metered while every
@@ -32,6 +38,7 @@ and is not.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import tomllib
 from typing import Mapping
@@ -121,6 +128,21 @@ def profile_from_mapping(name: str, raw: object, *, pointer: str) -> CliProfile:
             "would emit plain text and every attempt would fail on an unreadable envelope.",
         )
 
+    # argv is the one field that legitimately carries VALUES — ``--model gpt-5``, ``--region in`` —
+    # so it cannot be name-only like env_grant. What it must not carry is a credential, and
+    # ``--api-key <anything>`` in a config file is unambiguously that. Refused on the FLAG name
+    # rather than by guessing at the value's shape, which keeps ``--model sk-experiment`` working.
+    argv = _string_list(raw.get("args", []), f"{pointer}/args")
+    for index, entry in enumerate(argv):
+        flag = entry.lstrip("-").replace("-", "_").split("=", 1)[0].lower()
+        if any(word in flag for word in _SECRET_WORDS):
+            raise _error(
+                f"{pointer}/args/{index}",
+                f"{entry!r} passes a credential on the command line. Even if the value is not in "
+                "this file, argv is visible to every process on the host. Have the CLI read it from "
+                "an environment variable and forward that NAME with env_grant instead.",
+            )
+
     prompt_via = str(raw.get("prompt_via", "stdin"))
     if prompt_via not in ("stdin", "arg"):
         raise _error(f"{pointer}/prompt_via", "prompt_via must be 'stdin' or 'arg'")
@@ -129,7 +151,7 @@ def profile_from_mapping(name: str, raw: object, *, pointer: str) -> CliProfile:
 
     return CliProfile(
         binary=str(raw["binary"]),
-        args=_string_list(raw.get("args", []), f"{pointer}/args"),
+        args=argv,
         prompt_via=prompt_via,
         unset_env=_string_list(raw.get("unset_env", []), f"{pointer}/unset_env"),
         env_grant=_string_list(raw.get("env_grant", []), f"{pointer}/env_grant"),
@@ -146,15 +168,37 @@ def catalog_from_mapping(document: Mapping[str, object]) -> Mapping[str, CliProf
     unknown_sections = sorted(set(document) - {"providers"})
     if unknown_sections:
         raise _error("/", f"unknown top-level section(s) {unknown_sections}; expected only 'providers'")
+    for name in raw_providers:
+        # ``catalog_from_mapping`` is public and does not only see TOML — a caller passing a dict
+        # can supply an empty or non-string key. An empty name yields a provider no binding can
+        # ever reference, which then lists in ``bl graph providers`` as a nameless row; a non-string
+        # key used to surface as ``AttributeError`` from ``name.lower()`` rather than a validation
+        # error the caller can act on.
+        if not isinstance(name, str) or not name:
+            raise _error("/providers", f"provider name {name!r} must be a non-empty string")
     return {
         name: profile_from_mapping(name, entry, pointer=f"/providers/{name}")
         for name, entry in sorted(raw_providers.items())
     }
 
 
+#: A provider catalog is a handful of small tables. A megabyte is already three orders of magnitude
+#: more than any real one, so the cap costs nothing legitimate and bounds the work a bad path (or a
+#: mistakenly-pointed ``BOUNDED_LOOPS_PROVIDERS``) can make the parser do before it fails.
+_MAX_CATALOG_BYTES = 1024 * 1024
+
+
 def load_provider_catalog(path: Path) -> Mapping[str, CliProfile]:
     """Parse and validate a provider catalog file."""
     try:
+        size = path.stat().st_size
+        if size > _MAX_CATALOG_BYTES:
+            raise _error(
+                "/",
+                f"provider catalog {str(path)!r} is {size} bytes, over the "
+                f"{_MAX_CATALOG_BYTES}-byte limit. A real catalog is a few small tables; this is "
+                "almost certainly the wrong file.",
+            )
         raw = path.read_bytes()
     except OSError as exc:
         raise _error("/", f"provider catalog {str(path)!r} could not be read: {exc}") from exc
@@ -163,6 +207,21 @@ def load_provider_catalog(path: Path) -> Mapping[str, CliProfile]:
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise _error("/", f"provider catalog {str(path)!r} is not valid TOML: {exc}") from exc
     return catalog_from_mapping(document)
+
+
+#: Machine-wide catalog. An env var as well as a flag because the person who configures a machine's
+#: providers is usually not the person typing the command — and because a provider set only a flag
+#: can express is a provider set that cannot be RESUMED: `bl graph resume` would open the run with a
+#: different provider map than the one the run was created with.
+PROVIDERS_ENV_VAR = "BOUNDED_LOOPS_PROVIDERS"
+
+
+def default_catalog_path() -> Path | None:
+    """The catalog from ``BOUNDED_LOOPS_PROVIDERS``, or ``None``. Read explicitly by callers rather
+    than implicitly inside ``resolve_cli_profiles`` — a function that silently consults the
+    environment cannot be reasoned about from its arguments."""
+    raw = os.environ.get(PROVIDERS_ENV_VAR, "").strip()
+    return Path(raw) if raw else None
 
 
 def resolve_cli_profiles(
@@ -186,9 +245,14 @@ def resolve_cli_profiles(
     # validator, and a top-level import each way is a cycle.
     from bounded_loops.graph.adapters.connectors.provider_plugins import load_provider_plugins
 
-    plugins = load_provider_plugins(shipped=shipped) if include_plugins else {}
+    # ``shipped`` is snapshotted BEFORE plugin code runs and the resolved map is built from that
+    # snapshot, never from the live module global. The P3 audit showed why: a plugin factory that
+    # mutates ``CLI_PROFILES`` and returns something harmless replaced the shipped ``claude`` with
+    # its own binary, past every check that inspected only the returned mapping.
+    baseline = dict(shipped)
+    plugins = load_provider_plugins(shipped=baseline) if include_plugins else {}
     catalog = load_provider_catalog(catalog_path) if catalog_path is not None else {}
-    return {**plugins, **shipped, **catalog}
+    return {**plugins, **baseline, **catalog}
 
 
 def describe(profiles: Mapping[str, CliProfile]) -> tuple[str, ...]:

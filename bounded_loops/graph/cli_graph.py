@@ -192,8 +192,9 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
         _err(f"graph run: {exc}")
         return 2
 
+    catalog_path = _catalog_path(args)
     try:
-        cli_profiles = resolve_cli_profiles(catalog_path=_catalog_path(args))
+        cli_profiles = resolve_cli_profiles(catalog_path=catalog_path)
     except GraphValidationError as exc:
         _err(f"graph run: provider catalog rejected — [{exc.code}] {exc.pointer} — {exc.message}")
         return 2
@@ -201,6 +202,7 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
     from bounded_loops.graph.graph_composition import execute_graph_run
     return execute_graph_run(
         cli_profiles=cli_profiles,
+        provider_catalog=catalog_path,
         manifest_text=text,
         manifest_suffix=".json" if suffix == ".json" else ".yaml",
         connections_raw=list(connections_raw),
@@ -526,6 +528,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
                            help="Cost ceiling in USD for the continuation this approval triggers.")
     approve_p.add_argument("--budget-file", default=None, metavar="<json>",
                            help="Budget file with standing ceilings and the price table.")
+    approve_p.add_argument(
+        "--providers", default=None, metavar="<catalog.toml>",
+        help="Provider catalog (TOML) this run needs. Supply the SAME catalog the run was created with: a run whose plan names a catalog provider cannot be continued by a process that has never heard of it. BOUNDED_LOOPS_PROVIDERS is the machine-wide default.",
+    )
     approve_p.add_argument("--json", action="store_true", help="Emit JSON output.")
     approve_p.set_defaults(func=cmd_graph_approve)
 

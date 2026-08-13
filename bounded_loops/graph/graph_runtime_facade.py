@@ -48,6 +48,8 @@ Two addressing modes (0.4.0 — dual-audit reconciliation, design Q4/M2)
 
 from __future__ import annotations
 
+import logging
+
 import hashlib
 import json
 import re
@@ -59,7 +61,11 @@ from pathlib import Path
 from typing import Mapping
 
 from bounded_loops.graph.adapters.connectors.admitted_connection_request import AdmittedConnectionRecord
-from bounded_loops.graph.adapters.connectors.local_cli_worker import CLI_PROFILES, CliProfile
+from bounded_loops.graph.adapters.connectors.local_cli_worker import CliProfile
+from bounded_loops.graph.adapters.connectors.provider_catalog import (
+    default_catalog_path,
+    resolve_cli_profiles,
+)
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
 from bounded_loops.graph.adapters.persistence.local_approval_access import (
     SameTenantArenaAuthorizer,
@@ -114,6 +120,50 @@ from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
+_LOGGER = logging.getLogger(__name__)
+
+
+def _recorded_catalog(run_dir: Path) -> Path | None:
+    """The provider catalog this run was CREATED with, from ``run-meta.json``.
+
+    A continuation has to resolve the same provider map the run did. Before P3 recorded this, a
+    catalog that overrode a shipped name — an operator pointing ``claude`` at their own wrapper —
+    was silently dropped on resume and approve, and the continuation invoked (and paid for) the
+    shipped binary instead. Nothing failed; the wrong CLI just ran.
+
+    Falls back to ``BOUNDED_LOOPS_PROVIDERS`` when the run recorded nothing, which is the case for
+    every run created before this field existed.
+
+    A recorded catalog that has since been EDITED is a warning, not a refusal: the operator may have
+    legitimately corrected an entry, and refusing would make a resumable run unresumable over a
+    file they still have. A recorded catalog that has since been DELETED is left to the wiring
+    check, which names the provider it cannot find and how to supply it.
+    """
+    meta_path = run_dir / "run-meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return default_catalog_path()
+    recorded = meta.get("provider_catalog")
+    if not isinstance(recorded, str) or not recorded:
+        return default_catalog_path()
+    path = Path(recorded)
+    expected = meta.get("provider_catalog_sha256")
+    if isinstance(expected, str) and expected:
+        try:
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return path  # let the wiring check name the missing provider
+        if actual != expected:
+            _LOGGER.warning(
+                "provider catalog %s has changed since this run was created; continuing with the "
+                "file as it is now. If a provider entry was edited, this run's remaining nodes may "
+                "resolve to a different binary than the ones already completed.",
+                recorded,
+            )
+    return path
+
+
 @dataclass
 class LocalGraphRuntimeFacade:
     """Concrete ``GraphRuntimeFacade`` for local run directories.
@@ -148,7 +198,13 @@ class LocalGraphRuntimeFacade:
 
     runs_root: Path
     arena_authorizer: ArenaAuthorizationPort
-    cli_profiles: Mapping[str, CliProfile] = field(default_factory=lambda: dict(CLI_PROFILES))
+    # Resolved, not shipped: a run created with a provider catalog must be RESUMABLE. Defaulting
+    # to the five built-ins meant resume/approve opened the run with a provider map the run's own
+    # plan could name providers outside of — and since P3 refuses that at the wiring chokepoint,
+    # defaulting narrow here would make every catalog-provider graph unresumable.
+    cli_profiles: Mapping[str, CliProfile] = field(
+        default_factory=lambda: dict(resolve_cli_profiles(catalog_path=default_catalog_path()))
+    )
     environ: Mapping[str, str] | None = None
     node_prompts: Mapping[str, str] = field(default_factory=dict)
     admitted_connections: Mapping[str, AdmittedConnectionRecord] | None = None
@@ -195,6 +251,7 @@ class LocalGraphRuntimeFacade:
         *,
         arena_authorizer: ArenaAuthorizationPort | None = None,
         cli_profiles: Mapping[str, CliProfile] | None = None,
+        provider_catalog: Path | None = None,
         environ: Mapping[str, str] | None = None,
         node_prompts: Mapping[str, str] | None = None,
         admitted_connections: Mapping[str, AdmittedConnectionRecord] | None = None,
@@ -243,7 +300,16 @@ class LocalGraphRuntimeFacade:
         return cls(
             runs_root=resolved,  # inert in this mode — every lookup returns _literal_run_dir
             arena_authorizer=arena_authorizer or SameTenantArenaAuthorizer(),
-            cli_profiles=cli_profiles if cli_profiles is not None else dict(CLI_PROFILES),
+            # Precedence, most explicit first: a map the caller built > a catalog the caller
+            # named > the catalog THIS RUN was created with > BOUNDED_LOOPS_PROVIDERS > shipped.
+            # The recorded one has to outrank the env var: it is what the completed nodes actually
+            # ran, and resolving a continuation differently is how the wrong binary gets invoked.
+            cli_profiles=(
+                cli_profiles if cli_profiles is not None
+                else dict(resolve_cli_profiles(
+                    catalog_path=provider_catalog or _recorded_catalog(run_dir),
+                ))
+            ),
             environ=environ,
             node_prompts=node_prompts or {},
             admitted_connections=admitted_connections,
@@ -356,6 +422,15 @@ class LocalGraphRuntimeFacade:
         # the ledger and wedges every future resume (dual-audit MAJOR).
         node = self._require_approval_node(plan, node_id)
         self._guard_decision_conflict(run_dir, node_id, decision)
+
+        # Prove the controller CAN be assembled before writing the decision. P3 added a
+        # provider check inside ``build_execution_controller``, and with the write first, an
+        # operator approving without the run's provider catalog committed the approval and then hit
+        # a refusal — leaving the run AWAITING_APPROVAL with the decision already recorded, and
+        # every later approve failing identically. That is the P2-B closed door exactly: a new
+        # refusal that wedges a previously-continuable run. A dry assembly costs one object
+        # construction and keeps the ledger untouched when the wiring cannot work.
+        self._assert_assemblable(plan=plan, identity=identity, run_dir=run_dir)
 
         if decision == "approved":
             self._record_approval(
@@ -580,6 +655,36 @@ class LocalGraphRuntimeFacade:
             idempotency_key=idempotency_key,
             now=now,
         )
+
+    def _assert_assemblable(
+        self, *, plan: ExecutionPlan, identity: GraphRunIdentity, run_dir: Path,
+    ) -> None:
+        """Raise if this deployment could not build a controller for *plan* — before any write.
+
+        Uses the same ``build_execution_controller`` the real continuation uses, so the check cannot
+        drift from what it is checking. Assembly reads and validates; it starts no node and appends
+        no receipt, so calling it twice costs one wasted object and no durable effect.
+        """
+        try:
+            build_execution_controller(
+                plan=plan,
+                identity=identity,
+                out_dir=run_dir,
+                node_prompts=self.node_prompts,
+                admitted_connections=self.admitted_connections,
+                cli_profiles=self.cli_profiles,
+                environ=self.environ,
+                byok_egress_broker=self.byok_egress_broker,
+                byok_credential_resolver=self.byok_credential_resolver,
+                byok_tls_context=self.byok_tls_context,
+                run_budget=self.run_budget,
+                price_table=self.price_table,
+            )
+        except GraphValidationError as exc:
+            raise GraphIntegrityError(
+                f"approve: refusing to record a decision this deployment could not then act on — "
+                f"{exc.message}"
+            ) from exc
 
     def _require_approval_node(self, plan: ExecutionPlan, node_id: str) -> PlannedNode:
         """Return the APPROVAL node with ``node_id`` or fail closed — a bogus or non-approval node_id

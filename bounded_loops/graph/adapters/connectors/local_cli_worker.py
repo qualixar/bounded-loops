@@ -25,6 +25,7 @@ compiler-admitted ``local_cli`` transport so only an admitted connector runs thi
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from io import BytesIO
 import logging
 import os
@@ -152,7 +153,7 @@ class LocalCliConnectorPort(Protocol):
 # prompt on stdin (CLAUDE_CONFIG_DIR cleared so it uses the default subscription login); the others
 # take the prompt as a positional argument, and `codex exec` needs --skip-git-repo-check to run
 # outside a git repo.
-CLI_PROFILES: Mapping[str, CliProfile] = {
+CLI_PROFILES: Mapping[str, CliProfile] = MappingProxyType({
     # `--output-format json` yields the reply under `result` PLUS real usage and the
     # provider's own `total_cost_usd`. Verified live on this host (2026-08-13): a one-word reply
     # reported input_tokens 2 with cache_creation 40413 and cache_read 6351 — so a token cap
@@ -187,7 +188,7 @@ CLI_PROFILES: Mapping[str, CliProfile] = {
         "agy", ("-p",), prompt_via="arg",
         usage_args=("--output-format", "json"), envelope="agy",
     ),
-}
+})
 
 
 @dataclass(frozen=True)
@@ -435,6 +436,19 @@ class LocalCliConnectorWorker:
                 "local-CLI %s declares env name(s) %s that no operator grant authorizes; "
                 "not forwarding them. Add them to %s to allow.",
                 profile.binary, ", ".join(refused), ENV_PASSTHROUGH_ALLOW_VAR,
+            )
+        undeclared = sorted(allowed_by_operator - declared)
+        if undeclared:
+            # The OTHER direction, and the one that breaks a working pre-P3 deployment. Until P3 the
+            # operator grant alone forwarded a variable, so an operator who set it and relied on a
+            # shipped profile (all of which declare nothing) had a working setup. Under the
+            # intersection that same config forwards nothing. Saying so by name is the difference
+            # between a five-minute fix and debugging an auth failure several layers inside the CLI.
+            _LOGGER.warning(
+                "operator grant authorizes env name(s) %s but provider %r declares none of them, "
+                "so they are NOT forwarded. Since 0.5 a name needs BOTH the provider's env_grant "
+                "and the operator's %s; add the name to this provider's catalog entry.",
+                ", ".join(undeclared), profile.binary, ENV_PASSTHROUGH_ALLOW_VAR,
             )
         allowed = _CLI_ENV_ALLOWLIST | granted
 

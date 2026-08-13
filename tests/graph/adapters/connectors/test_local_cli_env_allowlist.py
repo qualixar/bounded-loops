@@ -127,3 +127,43 @@ def test_shipped_profiles_grant_nothing_by_default() -> None:
 
     for name, profile in CLI_PROFILES.items():
         assert profile.env_grant == (), f"{name} ships with a pre-granted variable"
+
+
+def test_an_operator_grant_no_provider_declares_is_reported_not_silent(caplog) -> None:
+    """The direction that breaks a working pre-P3 deployment.
+
+    Until P3 the operator variable alone forwarded a variable, so an operator who set it while
+    relying on a shipped profile (all of which declare nothing) had a working setup. Under the
+    intersection that same config forwards nothing. Naming it is the difference between a
+    five-minute fix and debugging an auth failure several layers inside the CLI.
+    """
+    import logging
+
+    source = {**_BENIGN, **_SECRETS, "BOUNDED_LOOPS_ENV_PASSTHROUGH_ALLOW": "GITHUB_TOKEN"}
+
+    with caplog.at_level(logging.WARNING):
+        env = _worker(source)._child_env(CliProfile("claude"))
+
+    assert "GITHUB_TOKEN" not in env
+    assert "GITHUB_TOKEN" in caplog.text
+    assert "declares none of them" in caplog.text
+    # The warning names the variable, never its value.
+    assert _SECRETS["GITHUB_TOKEN"] not in caplog.text
+
+
+def test_the_legacy_alias_does_not_restore_the_old_one_key_behaviour_for_a_SHIPPED_profile() -> None:
+    """The compatibility claim, tested against the shape the product actually ships.
+
+    The audit's point: the legacy-alias test above uses a CUSTOM profile that declares the name, so
+    it proved the variable is still read — not that a real 0.4.x deployment keeps working. Every
+    shipped profile declares nothing, so an operator who set only the old variable and relied on a
+    built-in provider LOSES the grant. That is the intended fix, and the docs now say so; this test
+    exists so nobody re-reads the alias as backwards compatibility.
+    """
+    from bounded_loops.graph.adapters.connectors.local_cli_worker import CLI_PROFILES
+
+    source = {**_BENIGN, **_SECRETS, "BOUNDED_LOOPS_CLI_ENV_GRANT": "AZURE_HM_API_KEY"}
+
+    env = _worker(source)._child_env(CLI_PROFILES["codex"])
+
+    assert "AZURE_HM_API_KEY" not in env
