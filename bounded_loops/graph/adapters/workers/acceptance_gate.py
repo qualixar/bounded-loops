@@ -41,9 +41,20 @@ class StructuralAcceptanceGate:
         if not payload.strip():
             return GateVerdict(False, f"node {node.node_id!r} produced an empty reply")
         try:
-            payload.decode("utf-8")
+            text = payload.decode("utf-8")
         except UnicodeDecodeError:
             return GateVerdict(False, f"node {node.node_id!r} output is not valid UTF-8 text")
+        # ``bytes.strip()`` above only removes ASCII whitespace, so a reply of U+200B (zero-width
+        # space), U+00A0 (NBSP) or a bare UTF-8 BOM passed as "non-empty" — output no human would
+        # call a reply. Stripping the DECODED text uses Unicode's own definition of whitespace, and
+        # the BOM is removed explicitly because Python does not classify U+FEFF as whitespace.
+        # Found by the P4 audit; this widens what the gate catches without making it semantic.
+        if not text.replace("﻿", "").strip():
+            return GateVerdict(
+                False,
+                f"node {node.node_id!r} produced only whitespace "
+                "(Unicode whitespace and a byte-order mark count as empty)",
+            )
         return GateVerdict(
             True,
             f"independent gate: node {node.node_id!r} produced a non-empty, well-formed reply",

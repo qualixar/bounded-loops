@@ -84,3 +84,54 @@ def test_a_run_where_the_gate_never_ran_says_so_rather_than_asking_for_labels(
     assert rc == 0
     assert "NO GATED ATTEMPTS" in printed
     assert "label_node_outcome" not in printed, "do not ask for labels when there is nothing to label"
+
+
+def test_a_read_only_report_does_not_create_the_log_it_reads(tmp_path, capsys) -> None:
+    """``GraphEventLog.__init__`` touches its file, so merely constructing one CREATED an empty log
+    — and its lock — inside the run directory. A report must not mutate the run it reports on, and
+    an absent receipt stream is a real answer rather than an empty one."""
+    digest = "sha256:" + "a" * 64
+    run = tmp_path / "run"
+    run.mkdir()
+    import json as _json
+
+    (run / "run-meta.json").write_text(_json.dumps({
+        "execution": True, "organization_id": "local-org", "project_id": "local-project",
+        "run_id": "graph-run", "plan_id": digest, "policy_digest": digest,
+    }), encoding="utf-8")
+
+    rc = cmd_graph_metrics(_args(run))
+    capsys.readouterr()
+
+    # Either guard refusing is correct — the loader's missing-manifest check may fire before the
+    # missing-log check. The property that matters is the same in both cases: nothing was created.
+    assert rc == 2
+    assert not (run / "controller-events.jsonl").exists(), "the read path created a log"
+    assert not (run / "controller-events.jsonl.lock").exists(), "the read path created a lock"
+
+
+def test_the_published_baseline_is_not_printed_beside_an_uncomputable_precision(tmp_path, capsys) -> None:
+    """Printing 0.39% next to "blocked precision 0/0" invites a comparison against nothing."""
+    import inspect
+
+    from bounded_loops.graph import cli_graph_metrics
+
+    source = inspect.getsource(cli_graph_metrics.cmd_graph_metrics)
+    baseline_line = source.index("advisory baseline")
+    guard = source.rindex("blocked_precision().reportable", 0, baseline_line)
+
+    assert guard < baseline_line, "the baseline must sit inside a reportable-precision guard"
+
+
+def test_the_interval_is_never_labelled_a_calibrated_95_percent_ci() -> None:
+    """The audit measured this interval's real coverage at 31-41% under correlated retries. Printing
+    "95% CI" is therefore a false statement about the data, and a caveat beside a false label is how
+    the false label gets quoted."""
+    from bounded_loops.graph.application.gate_metrics import Interval, Rate
+    from bounded_loops.graph.cli_graph_metrics import _rate_text
+
+    printed = _rate_text("false-accept rate", Rate(1, 20, 0.05, Interval(0.01, 0.24)))
+
+    assert "95% CI" not in printed, "asserted on the OUTPUT, not the source — a comment may say it"
+    assert "UNCALIBRATED" in printed
+    assert "nominal-95%" in printed, "say what it actually is: nominal under an assumption"

@@ -202,20 +202,77 @@ def test_an_empty_or_unreadable_artifact_is_still_refused(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize(
-    ("attack", "defeated_by"),
+    "payload",
     [
-        ("fabricate a plausible artifact", None),
-        ("replay an earlier digest", None),
-        ("gate delegates to the worker", None),
-        ("mutate after the verdict", "content addressing"),
+        b"null",
+        b"{}",
+        b"[]",
+        b"I cannot help with that.",
+        b".",
+        "\u200b".encode(),           # zero-width space
+        "\u00a0".encode(),           # non-breaking space
+        "\ufeff".encode(),           # byte-order mark
+        "\u2003\u2003".encode(),     # em spaces
     ],
 )
-def test_the_scoreboard_is_recorded_not_implied(attack: str, defeated_by: str | None) -> None:
-    """One table a reader can find without reading four docstrings.
+def test_what_the_structural_gate_does_and_does_not_call_a_reply(tmp_path: Path, payload: bytes) -> None:
+    """The audit's fifth attack, and the honest boundary of this gate.
 
-    Three of four attacks succeed against the STRUCTURAL gate. That is the correct headline for this
-    file, and it must not be softened: the engine bounds *how many attempts* a loop may take and
-    records *what each one cost and claimed*, and it does not — cannot, by this gate alone — certify
-    that the work was done. Any α this project publishes is conditional on that.
+    Semantically empty output — ``null``, ``{}``, a refusal sentence — PASSES, and must: judging
+    whether a reply answers the question is semantic review, which this gate is explicitly not.
+
+    Output that is only whitespace does NOT pass, and three of these used to. ``bytes.strip()``
+    removes ASCII whitespace only, so a zero-width space, an NBSP or a bare BOM read as a non-empty
+    reply. Stripping the decoded text uses Unicode's own definition instead.
     """
-    assert (defeated_by is not None) == (attack == "mutate after the verdict")
+    store = _store(tmp_path)
+    plan = ExecutionPlan.__new__(ExecutionPlan)
+    digest = _put(store, payload)
+
+    verdict = _gate(store).evaluate(
+        plan=plan, node=_node(), result=WorkerResult((digest,), None, None),
+    )
+
+    whitespace_only = not payload.decode("utf-8").replace("\ufeff", "").strip()
+    assert verdict.passed is not whitespace_only, (
+        f"{payload!r}: whitespace-only output must fail; semantically empty output must pass, "
+        "because this gate is structural and says so"
+    )
+
+
+def test_only_the_first_declared_artifact_is_examined(tmp_path: Path) -> None:
+    """A worker returning ``(junk, real)`` is judged on ``junk``; ``(real, junk)`` on ``real``.
+
+    ``StructuralAcceptanceGate`` reads ``digests[0]`` and nothing else, so a multi-output node is
+    gated on one of its outputs. Recorded because "the gate checked the node's output" invites the
+    reader to assume it checked all of them.
+    """
+    store = _store(tmp_path)
+    plan = ExecutionPlan.__new__(ExecutionPlan)
+    good = _put(store, b"a real answer")
+    blank = _put(store, b"   ")
+
+    assert _gate(store).evaluate(
+        plan=plan, node=_node(), result=WorkerResult((good, blank), None, None),
+    ).passed, "a blank SECOND output is never looked at"
+    assert not _gate(store).evaluate(
+        plan=plan, node=_node(), result=WorkerResult((blank, good), None, None),
+    ).passed, "a blank FIRST output fails even though a real one follows"
+
+
+def test_the_honest_headline_is_recorded_where_a_reader_will_find_it() -> None:
+    """What this gate is, in one assertion on the module's own words.
+
+    The previous version of this test compared two literals from its own parametrize list and
+    invoked no gate at all — a tautology that looked like a scoreboard. The audit called it, correctly.
+    What is worth pinning is that the gate's own docstring still says STRUCTURAL, so no future edit
+    can quietly promote it to a correctness check without this failing.
+    """
+    doc = StructuralAcceptanceGate.__doc__ or ""
+    module_doc = __import__(
+        "bounded_loops.graph.adapters.workers.acceptance_gate", fromlist=["x"],
+    ).__doc__ or ""
+
+    assert "STRUCTURAL" in module_doc
+    assert "not a semantic review" in module_doc
+    assert "non-empty" in doc

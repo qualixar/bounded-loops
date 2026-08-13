@@ -35,13 +35,17 @@ def _err(message: str) -> None:
 def _rate_text(label: str, rate: Rate) -> str:
     if not rate.reportable:
         return (
-            f"  {label:<24} not reported — {rate.numerator}/{rate.denominator} labelled "
-            f"(too few to support a rate)"
+            f"  {label:<24} not reported — {rate.numerator} of {rate.denominator} "
+            f"(too few to support a rate; the counts are real)"
         )
     assert rate.interval is not None
+    # NOT labelled "95% CI". The audit simulated correlated retries and measured this interval's
+    # actual coverage at 31-41%, not 95% — so "95% CI" is a false claim about this data, and a caveat
+    # printed beside a false label is exactly how the false label ends up quoted. What it honestly is:
+    # a nominal-95% interval computed under an iid assumption the data violates.
     return (
         f"  {label:<24} {rate.value:.4f}  [{rate.interval.low:.4f}, {rate.interval.high:.4f}] "
-        f"95% CI   from {rate.numerator}/{rate.denominator}"
+        f"nominal-95% iid (UNCALIBRATED)   from {rate.numerator}/{rate.denominator}"
     )
 
 
@@ -84,7 +88,14 @@ def cmd_graph_metrics(args: argparse.Namespace) -> int:
     run_dir = Path(args.run)
     try:
         plan, identity = load_plan_from_run_dir(run_dir)[:2]
-        log = GraphEventLog(run_dir / "controller-events.jsonl", identity)
+        log_path = run_dir / "controller-events.jsonl"
+        if not log_path.is_file():
+            # ``GraphEventLog.__init__`` touches the file, so simply constructing one CREATED an
+            # empty log (and its lock) inside the run directory. A read-only report must not mutate
+            # the run it reports on — and an absent log is a real answer, not an empty one.
+            _err(f"graph metrics: no receipt stream at {log_path} — nothing to measure")
+            return 2
+        log = GraphEventLog(log_path, identity)
         receipts = log.replay()
     except (GraphIntegrityError, GraphValidationError, OSError, ValueError) as exc:
         # ValueError included because ``load_plan_from_run_dir``'s symlink guard raises one, so
@@ -136,8 +147,11 @@ def cmd_graph_metrics(args: argparse.Namespace) -> int:
     print(_rate_text("false-accept rate (α)", overall.false_accept_rate()))
     print(_rate_text("false-REJECTION rate", overall.false_reject_rate()))
     print(_rate_text("blocked precision", overall.blocked_precision()))
-    print(f"  {'advisory baseline':<24} {ADVISORY_BLOCKED_PRECISION_BASELINE:.4f} "
-          "(arXiv:2605.17998 — the number that demoted a gate to advisory)")
+    if overall.blocked_precision().reportable:
+        # Only beside a real number. Printing a published baseline next to "0/0" invites the reader
+        # to compare against nothing, which is worse than omitting the comparison.
+        print(f"  {'advisory baseline':<24} {ADVISORY_BLOCKED_PRECISION_BASELINE:.4f} "
+              "(arXiv:2605.17998 — the number that demoted a gate to advisory)")
 
     if any(
         rate.reportable for rate in (
