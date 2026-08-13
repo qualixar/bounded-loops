@@ -8,6 +8,9 @@ said no.
 
 from __future__ import annotations
 
+from typing import Iterable
+
+from bounded_loops.graph.application.edge_guards import POST_FAILURE_GUARDS
 from bounded_loops.graph.application.schedule_ready import NodeState
 from bounded_loops.graph.domain.events import NodeFailureCause
 
@@ -57,20 +60,30 @@ def may_continue(cause: NodeFailureCause, *, continue_on_failure: bool) -> bool:
     return continue_on_failure and cause in MAY_CONTINUE_AFTER
 
 
-#: The authoring fail mode that stops a run at the first node failure. Anything else keeps driving
-#: the graph, which is what a failure-conditioned edge needs to be admitted at all.
+#: The authoring fail mode that stops a run at the first node failure — the default.
 HALT_AT_FIRST_FAILURE = "fail_closed"
+#: The one mode that keeps driving the graph past a node failure.
+CONTINUE_AFTER_FAILURE = "continue_declared"
+#: Every fail mode the authoring schema accepts. An ALLOWLIST, deliberately.
+KNOWN_FAIL_MODES = frozenset({HALT_AT_FIRST_FAILURE, CONTINUE_AFTER_FAILURE})
 
 
 def continues_after_failure(fail_mode: str | None) -> bool:
     """Reduce a graph's ``fail_mode`` to the one bit the controller acts on.
 
-    ``None`` or an unknown value reduces to False — halt. A run directory written before the fail
-    mode was recorded has no value to read, and defaulting to the stricter behaviour keeps such a
-    run replaying exactly as it originally ran. A plan that actually NEEDS continuation is not
-    silently downgraded: the controller refuses to be built at all in that case.
+    Matched against an ALLOWLIST, not against the halting value. The first version of this asked
+    ``fail_mode != "fail_closed"``, which meant every unrecognised string — ``"yolo"``, an empty
+    string, even the wrong-case ``"FAIL_CLOSED"`` — enabled continuation. A function whose whole job
+    is fail-closed discipline failed OPEN on a typo, and its docstring claimed the opposite.
+    Found by the P4.25a dual audit (Muse finding 1); the audit reported ``"yolo"`` and the empty
+    string and wrong-case variants were worse still.
+
+    ``None`` and anything outside the allowlist reduce to halting. A run directory written before the
+    mode was recorded has no value to read, and the stricter behaviour is how such a run originally
+    executed. A plan that actually NEEDS continuation is never silently downgraded — the controller
+    refuses to drive it at all in that case.
     """
-    return fail_mode is not None and fail_mode != HALT_AT_FIRST_FAILURE
+    return fail_mode == CONTINUE_AFTER_FAILURE
 
 
 def recorded_fail_mode(meta: dict[str, object]) -> str | None:
@@ -82,3 +95,20 @@ def recorded_fail_mode(meta: dict[str, object]) -> str | None:
     """
     value = meta.get("fail_mode")
     return value if isinstance(value, str) and value else None
+
+
+def unhonourable_edge_conditions(
+    edge_conditions: Iterable[str | None], *, continue_on_failure: bool
+) -> tuple[str, ...]:
+    """The edge conditions a halting controller could never admit, sorted and de-duplicated.
+
+    Empty when the controller continues past node failures, or when no edge carries a
+    failure-conditioned guard. A caller uses a non-empty result to refuse to DRIVE the plan — never
+    to refuse to construct or read one, because an already-sealed run drives nothing.
+    """
+    if continue_on_failure:
+        return ()
+    return tuple(sorted({
+        condition for condition in edge_conditions
+        if condition is not None and condition in POST_FAILURE_GUARDS
+    }))

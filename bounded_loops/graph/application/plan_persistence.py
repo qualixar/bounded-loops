@@ -89,4 +89,21 @@ def load_plan_from_run_dir(
         plan_digest=plan.plan_id,
         policy_digest=plan.policy_digest,
     )
+    # The fail mode decides whether a continuation drives the graph past a node failure, so it must
+    # come from a source an edit cannot forge. ``manifest.yaml`` is covered by the graph digest —
+    # which the plan_id check above has just verified — while ``run-meta.json`` is unsigned JSON that
+    # anyone with write access to the run directory can change. So the manifest wins, and a
+    # disagreement is treated as tampering rather than quietly preferred either way.
+    #
+    # Found by the P4.25a dual audit (Muse finding 2): reading the mode from run-meta let a
+    # filesystem edit flip a fail_closed run into one that continues past gate rejections, with the
+    # plan_id check still passing because fail_mode is deliberately not in the plan's canonical form.
+    authored_fail_mode = graph.policies.fail_mode
+    recorded = meta.get("fail_mode")
+    if isinstance(recorded, str) and recorded and recorded != authored_fail_mode:
+        raise ValueError(
+            f"run-meta.json fail_mode {recorded!r} disagrees with the manifest's "
+            f"{authored_fail_mode!r}; the run directory has been modified"
+        )
+    meta["fail_mode"] = authored_fail_mode
     return plan, identity, meta

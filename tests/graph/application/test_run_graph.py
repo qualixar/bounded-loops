@@ -955,14 +955,34 @@ def test_the_default_fail_mode_still_stops_at_the_first_failure(tmp_path):
 
 
 
-def test_a_controller_built_to_halt_REFUSES_a_plan_with_a_failure_conditioned_edge(tmp_path):
+def test_a_controller_built_to_halt_REFUSES_TO_DRIVE_a_failure_conditioned_plan(tmp_path):
     """The hole this closes: a graph may declare a continue fail mode and still reach a controller
-    assembled without it. Rather than silently ignore the condition, construction fails."""
+    assembled without it. Rather than silently ignore the condition, driving it fails."""
     plan = _continue_plan("failed")
     log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
 
     with pytest.raises(GraphIntegrityError, match="built to stop at the first node failure"):
-        _controller(plan, log, _Worker([]))
+        _controller(plan, log, _Worker([])).run()
+
+
+def test_an_ALREADY_TERMINAL_run_can_still_be_read_back_by_a_halting_controller(tmp_path):
+    """The refusal guards DRIVING, and a sealed run drives nothing.
+
+    Checking it in the constructor made an idempotent resume of a finished run raise instead of
+    returning its projection, and made a legacy run directory with no recorded fail mode unreadable.
+    Found by the P4.25a dual audit (Muse finding 3).
+    """
+    plan = _continue_plan("failed")
+    identity = _identity(plan)
+    sealed = _controller(
+        plan, GraphEventLog(tmp_path / "events.jsonl", identity), _Worker([]),
+        continue_on_failure=True,
+    ).run()
+    assert sealed.state in ("SUCCEEDED", "FAILED")
+
+    # A fresh controller WITHOUT the flag must still construct and report the terminal projection.
+    reader = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), _Worker([]))
+    assert reader.resume().state == sealed.state
 
 
 def test_an_unconditional_plan_is_unaffected_by_that_refusal(tmp_path):

@@ -52,8 +52,11 @@ from bounded_loops.graph.application.schedule_ready import (
     derive_ready_nodes,
     dispatch_node,
 )
-from bounded_loops.graph.application.edge_guards import POST_FAILURE_GUARDS
-from bounded_loops.graph.application.failure_policy import RUN_SUCCEEDS_ON, may_continue
+from bounded_loops.graph.application.failure_policy import (
+    RUN_SUCCEEDS_ON,
+    may_continue,
+    unhonourable_edge_conditions,
+)
 from bounded_loops.graph.application.skip_untaken import untaken_branches
 from bounded_loops.graph.domain.authoring import NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError, WorkerContractError
@@ -114,19 +117,6 @@ class GraphRunController:
     ) -> None:
         if worker is gate or connector_worker is gate:
             raise GraphIntegrityError("worker and independent gate must be separate objects")
-        if not continue_on_failure and any(
-            edge.when in POST_FAILURE_GUARDS for edge in plan.edges
-        ):
-            # Fail closed rather than no-op. This controller stops at the first node failure, so a
-            # failure-conditioned edge could never be admitted — the run would silently ignore a
-            # condition the author wrote, which is the defect enforcing ``when`` exists to close.
-            # The authoring validator already refuses these under ``fail_mode: fail_closed``; this
-            # catches the case where the graph declared a continue mode but the caller assembling
-            # this controller did not pass it through.
-            raise GraphIntegrityError(
-                "plan carries a failure-conditioned edge but this controller was built to stop at "
-                "the first node failure; pass continue_on_failure to honour the graph's fail mode"
-            )
         identity = event_log.identity
         if (
             identity.graph_digest != plan.source_graph_digest
@@ -285,9 +275,27 @@ class GraphRunController:
             states[node.node_id] = NodeState.PENDING
         return states
 
+    def _assert_can_drive_this_plan(self) -> None:
+        """Refuse to DRIVE a plan whose conditions this controller cannot honour — fail closed
+        rather than silently ignore a condition the author wrote. Checked when driving, not in
+        ``__init__``: there it also refused to READ a terminal run back, so an idempotent ``resume``
+        of a finished run raised instead of returning its projection (P4.25a audit, Muse finding 3).
+        """
+        unhonourable = unhonourable_edge_conditions(
+            (edge.when for edge in self.plan.edges),
+            continue_on_failure=self._continue_on_failure,
+        )
+        if unhonourable:
+            raise GraphIntegrityError(
+                f"plan carries {', '.join(unhonourable)} edge condition(s) but this controller was "
+                "built to stop at the first node failure; pass continue_on_failure to honour the "
+                "graph's fail mode"
+            )
+
     def _run_loop(
         self, states: dict[str, NodeState], cursor: ResumeCursor,
     ) -> GraphRunProjection:
+        self._assert_can_drive_this_plan()
         while True:
             # Before asking what is ready, retire every branch that was NOT taken. Without this a
             # node whose guarded edges were all excluded stays PENDING for ever: it is never ready,
