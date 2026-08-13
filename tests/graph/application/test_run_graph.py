@@ -339,9 +339,10 @@ class _CrashWorker:
         )
 
 
-def _controller(plan, event_log, worker, gate=None):
+def _controller(plan, event_log, worker, gate=None, continue_on_failure=False):
     return GraphRunController(
         plan=plan, event_log=event_log, worker=worker, gate=gate or _Gate(True, []),
+        continue_on_failure=continue_on_failure,
         artifact_verifier=_artifacts(), execution_policy=_policy(plan),
         execution_enforcer=_Enforcer([]), timestamp=lambda: "2026-08-08T00:00:00Z",
     )
@@ -782,3 +783,189 @@ def test_an_unconditional_graph_still_runs_unchanged(tmp_path):
     assert worker.calls == ["a", "b"]
     assert "node.skipped" not in [e.event.event_type for e in log.replay()]
     assert latest_node_states(plan, log.replay())["b"]["state"] == "SUCCEEDED"
+
+
+# ── continue_declared: routing around a failure (P4.25a-2) ───────────────────────────────
+
+
+def _continue_plan(guard: str | None):
+    """``a -> b`` under a fail mode that keeps driving the graph after a node fails.
+
+    Mirrors ``_two_node_plan``'s slots and bindings: the shared stubs verify an observed route and
+    transport against the node's binding, so an unbound node fails before it ever reaches the gate.
+    """
+    graph = validate_authoring_graph({
+        "api_version": "bounded-loops.dev/graph/v1",
+        "graph_id": "continue-run",
+        "version": "1.0.0",
+        "nodes": [
+            {"id": "a", "kind": "research_claim", "inputs": {}, "outputs": {"claim": "text"},
+             "budget": {"max_attempts": 1, "max_wallclock_s": 1}, "effects": ["read_only"],
+             "isolation": "workspace_only", "connection_slot": "model_a"},
+            {"id": "b", "kind": "research_claim", "inputs": {"ctx": "text"},
+             "outputs": {"claim": "text"},
+             "budget": {"max_attempts": 1, "max_wallclock_s": 1}, "effects": ["read_only"],
+             "isolation": "workspace_only", "connection_slot": "model_b"},
+        ],
+        "edges": [{"from_node": "a", "from_port": "claim", "to_node": "b", "to_port": "ctx",
+                   "when": guard}],
+        "connection_slots": [
+            {"id": "model_a", "requires": ["text_generation"], "data_class_max": "public"},
+            {"id": "model_b", "requires": ["text_generation"], "data_class_max": "public"},
+        ],
+        "policies": {"data_class": "public", "fail_mode": "continue_declared"},
+    })
+
+    def _binding(binding_id, slot_id, connection_id):
+        return {
+            "binding_id": binding_id, "slot_id": slot_id, "connector_id": "codex-cli",
+            "connector_version": "1.0.0", "connection_id": connection_id,
+            "admission_digest": "sha256:" + "b" * 64,
+            "route_policy_digest": "sha256:" + "c" * 64, "provider_id": "openai",
+            "model_target": "codex", "region": "in", "fallback": False,
+            "capabilities": {"text_generation"},
+            "data_class_max": "public", "allowed_effects": {"read_only"},
+            "isolation": "workspace_only", "transport": "local_cli", "admitted": True,
+        }
+
+    return compile_graph(graph, CompileSnapshot(
+        policy_digest="sha256:" + "a" * 64, package_digests=frozenset(),
+        connections=(
+            _binding("binding-1", "model_a", "conn-1"),
+            _binding("binding-2", "model_b", "conn-2"),
+        ),
+    ))
+
+
+@dataclass
+class _GateRejecting:
+    """An independent gate that rejects exactly ONE node, so a single node can fail in a run."""
+
+    reject: str
+    calls: list[tuple[str, tuple[str, ...]]]
+
+    def evaluate(self, *, plan, node, result) -> GateVerdict:
+        self.calls.append((node.node_id, result.output_artifact_digests))
+        return GateVerdict(node.node_id != self.reject, "selective fixture gate")
+
+
+@dataclass
+class _GateExploding:
+    """A BROKEN gate: it raises instead of returning a verdict."""
+
+    calls: list[str]
+
+    def evaluate(self, *, plan, node, result) -> GateVerdict:
+        self.calls.append(node.node_id)
+        raise RuntimeError("gate is broken")
+
+
+def test_a_failure_conditioned_branch_runs_when_its_upstream_fails(tmp_path):
+    """The whole point of the phase. 'a' is rejected by the independent gate, so 'b' runs.
+
+    The run still reports FAILED — a failure is a failure — but the recovery branch executed.
+    """
+    plan = _continue_plan("failed")
+    worker = _Worker([])
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    projection = _controller(
+        plan, log, worker, gate=_GateRejecting("a", []), continue_on_failure=True,
+    ).run()
+
+    assert projection.state == "FAILED"
+    assert worker.calls == ["a", "b"]  # the recovery branch really ran
+    events = [e.event.event_type for e in log.replay()]
+    assert "node.skipped" not in events  # the branch WAS taken
+    # Exactly ONE run.failed, written at the end -- not mid-run, which would have sealed the
+    # stream and made every later append illegal.
+    assert events.count("run.failed") == 1
+    assert events[-1] == "run.failed"
+
+
+def test_the_untaken_branch_is_skipped_and_the_run_still_succeeds(tmp_path):
+    """Mirror case: 'a' succeeds, so the ``failed`` branch is not taken and must be SKIPPED —
+    and an untaken branch must not make an otherwise-clean run report FAILED."""
+    plan = _continue_plan("failed")
+    worker = _Worker([])
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    projection = _controller(plan, log, worker, continue_on_failure=True).run()
+
+    assert projection.state == "SUCCEEDED"
+    assert worker.calls == ["a"]
+    skipped = [e.event.payload for e in log.replay() if e.event.event_type == "node.skipped"]
+    assert skipped[0]["node_id"] == "b"
+    assert skipped[0]["attempt"] == 0
+    assert "branch not taken" in skipped[0]["reason"]
+    assert latest_node_states(plan, log.replay())["b"]["state"] == "SKIPPED"
+
+
+def test_an_UNGUARDED_dependency_failure_still_blocks_under_continue(tmp_path):
+    """Continuing must not turn a failed dependency into a green light: 'b' has an
+    unconditional edge, so it must never run even though the run kept going."""
+    plan = _continue_plan(None)
+    worker = _Worker([])
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    projection = _controller(
+        plan, log, worker, gate=_GateRejecting("a", []), continue_on_failure=True,
+    ).run()
+
+    assert projection.state == "FAILED"
+    assert worker.calls == ["a"]
+    events = [e.event.event_type for e in log.replay()]
+    assert "node.skipped" not in events  # blocked, NOT retired as an untaken branch
+
+
+def test_a_broken_gate_halts_the_run_even_under_continue(tmp_path):
+    """The HALT classification. A gate that raises has proved unreliable, so no later verdict
+    from it can be trusted — continuing would keep gating on a known-broken authority."""
+    plan = _continue_plan("failed")
+    worker = _Worker([])
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    projection = _controller(
+        plan, log, worker, gate=_GateExploding([]), continue_on_failure=True,
+    ).run()
+
+    assert projection.state == "FAILED"
+    assert worker.calls == ["a"]  # 'b' never ran, despite its ``failed`` condition
+    causes = [
+        e.event.payload.get("cause") for e in log.replay()
+        if e.event.event_type == "node.failed"
+    ]
+    assert causes == ["gate_broken"]
+
+
+def test_the_default_fail_mode_still_stops_at_the_first_failure(tmp_path):
+    """Backward compatibility: without continue_on_failure the run seals at the first failure.
+
+    Uses an UNCONDITIONAL plan, because a failure-conditioned one is now refused outright by a
+    controller built to halt — see the construction test below.
+    """
+    plan = _continue_plan(None)
+    worker = _Worker([])
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    projection = _controller(plan, log, worker, gate=_GateRejecting("a", [])).run()
+
+    assert projection.state == "FAILED"
+    assert worker.calls == ["a"]  # 'b' blocked on its failed dependency
+
+
+
+def test_a_controller_built_to_halt_REFUSES_a_plan_with_a_failure_conditioned_edge(tmp_path):
+    """The hole this closes: a graph may declare a continue fail mode and still reach a controller
+    assembled without it. Rather than silently ignore the condition, construction fails."""
+    plan = _continue_plan("failed")
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    with pytest.raises(GraphIntegrityError, match="built to stop at the first node failure"):
+        _controller(plan, log, _Worker([]))
+
+
+def test_an_unconditional_plan_is_unaffected_by_that_refusal(tmp_path):
+    plan = _continue_plan(None)
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+    assert _controller(plan, log, _Worker([])).run().state == "SUCCEEDED"

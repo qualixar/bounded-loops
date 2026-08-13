@@ -49,6 +49,14 @@ DEFAULT_GUARD = EdgeGuard.SUCCEEDED
 #: was wrong. Ordered as declared, not sorted, so the default reads first.
 ACCEPTED_GUARDS: tuple[str, ...] = tuple(guard.value for guard in EdgeGuard)
 
+#: Guards satisfiable only by a source that did NOT succeed. An edge carrying one of these can be
+#: admitted only in a run that keeps driving the graph after a node fails, so both the authoring
+#: validator and the controller check for them — the validator to refuse an unreachable condition,
+#: the controller to refuse a plan it was not built to drive.
+POST_FAILURE_GUARDS = frozenset({
+    EdgeGuard.FAILED.value, EdgeGuard.SKIPPED.value, EdgeGuard.TERMINAL.value,
+})
+
 
 def parse_guard(raw: object, *, pointer: str) -> EdgeGuard:
     """Resolve an authored ``when`` to a guard, refusing anything outside the grammar.

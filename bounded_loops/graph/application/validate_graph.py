@@ -24,7 +24,7 @@ from bounded_loops.graph.domain.authoring import (
     canonical_json,
     digest,
 )
-from bounded_loops.graph.application.edge_guards import EdgeGuard, canonical_guard
+from bounded_loops.graph.application.edge_guards import POST_FAILURE_GUARDS, canonical_guard
 from bounded_loops.graph.domain.errors import GraphValidationError
 
 
@@ -134,13 +134,6 @@ def validate_authoring_graph(raw: object) -> AuthoringGraphSpec:
     )
 
 
-#: Guards that can only ever be satisfied by a node that did NOT succeed, and therefore can only
-#: fire in a run that keeps going after a node fails.
-_POST_FAILURE_GUARDS = frozenset({
-    EdgeGuard.FAILED.value, EdgeGuard.SKIPPED.value, EdgeGuard.TERMINAL.value,
-})
-
-
 def _refuse_unreachable_failure_routing(
     edges: tuple[AuthoringEdge, ...], policies: GraphPolicyIntent,
 ) -> None:
@@ -158,7 +151,7 @@ def _refuse_unreachable_failure_routing(
     if policies.fail_mode != "fail_closed":
         return
     for index, edge in enumerate(edges):
-        if edge.when in _POST_FAILURE_GUARDS:
+        if edge.when in POST_FAILURE_GUARDS:
             raise _error(
                 "edge_condition", f"/edges/{index}/when",
                 f"a {edge.when!r} condition can never be reached under "

@@ -13,13 +13,13 @@ from bounded_loops.graph.application.execution_policy import (
     validate_execution_envelope,
 )
 from bounded_loops.graph.application.node_contracts import (
-    ApprovalOutcome,
     ApprovalResolverPort,
     ArtifactVerifierPort,
     GateVerdict,
     IndependentGatePort,
     NodeWorkerPort,
 )
+from bounded_loops.graph.application.approval_step import resolve_approval
 from bounded_loops.graph.application.attempt_outcome import AttemptOutcome
 from bounded_loops.graph.application.node_receipt_writer import NodeReceiptWriter
 from bounded_loops.graph.application.node_receipts import (
@@ -52,6 +52,8 @@ from bounded_loops.graph.application.schedule_ready import (
     derive_ready_nodes,
     dispatch_node,
 )
+from bounded_loops.graph.application.edge_guards import POST_FAILURE_GUARDS
+from bounded_loops.graph.application.failure_policy import RUN_SUCCEEDS_ON, may_continue
 from bounded_loops.graph.application.skip_untaken import untaken_branches
 from bounded_loops.graph.domain.authoring import NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError, WorkerContractError
@@ -63,12 +65,6 @@ from bounded_loops.graph.domain.events import (
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 from bounded_loops.graph.domain.pricing import PriceTable, empty_price_table
 from bounded_loops.graph.domain.usage import WorkerUsage
-
-#: The node states a SUCCEEDED run may end in. SKIPPED belongs here — a conditional graph whose
-#: untaken branch was correctly skipped did not fail. FAILED deliberately does NOT, even when a
-#: ``failed``-guarded recovery edge ran afterwards: whether a handled failure clears the run is a
-#: repair-semantics question, and it belongs with repair edges (P4.25b). Until then, failure is failure.
-_RUN_SUCCEEDS_ON = frozenset({NodeState.SUCCEEDED, NodeState.SKIPPED})
 
 
 def is_egress_node(plan: ExecutionPlan, node: PlannedNode, egress_transports: frozenset[str]) -> bool:
@@ -114,9 +110,23 @@ class GraphRunController:
         egress_transports: frozenset[str] = frozenset(),
         price_table: PriceTable | None = None,
         run_budget: RunBudget | None = None,
+        continue_on_failure: bool = False,
     ) -> None:
         if worker is gate or connector_worker is gate:
             raise GraphIntegrityError("worker and independent gate must be separate objects")
+        if not continue_on_failure and any(
+            edge.when in POST_FAILURE_GUARDS for edge in plan.edges
+        ):
+            # Fail closed rather than no-op. This controller stops at the first node failure, so a
+            # failure-conditioned edge could never be admitted — the run would silently ignore a
+            # condition the author wrote, which is the defect enforcing ``when`` exists to close.
+            # The authoring validator already refuses these under ``fail_mode: fail_closed``; this
+            # catches the case where the graph declared a continue mode but the caller assembling
+            # this controller did not pass it through.
+            raise GraphIntegrityError(
+                "plan carries a failure-conditioned edge but this controller was built to stop at "
+                "the first node failure; pass continue_on_failure to honour the graph's fail mode"
+            )
         identity = event_log.identity
         if (
             identity.graph_digest != plan.source_graph_digest
@@ -148,6 +158,11 @@ class GraphRunController:
         # wrong in the direction that permits more spend than was authorised.
         self._price_table = empty_price_table() if price_table is None else price_table
         self._run_budget = RunBudget() if run_budget is None else run_budget
+        # The graph's ``fail_mode``, reduced to the one bit the controller acts on. NOT carried on
+        # ``ExecutionPlan``: the plan's ``canonical_json`` feeds ``plan_id``, so adding a field
+        # would change every plan digest and make existing run directories unresumable — and a
+        # published release's runs are durable data, not something a later version may invalidate.
+        self._continue_on_failure = continue_on_failure
         # The chain head lives on the writer, not here: it is only ever read or advanced by an
         # append, and two owners of one hash is how a head moves backward unnoticed.
         self._receipts = NodeReceiptWriter(
@@ -285,7 +300,7 @@ class GraphRunController:
                 )
             ready = derive_ready_nodes(self.plan, states)
             if not ready:
-                if all(state in _RUN_SUCCEEDS_ON for state in states.values()):
+                if all(state in RUN_SUCCEEDS_ON for state in states.values()):
                     self._receipts.append("run.succeeded", "run.succeeded", {"state": "SUCCEEDED"})
                     return self.event_log.replay_projection()
                 self._receipts.append("run.failed", "run.failed", {"state": "FAILED"})
@@ -378,7 +393,7 @@ class GraphRunController:
             # A resume found the budget already spent.  Fail closed rather than run with
             # no remaining attempts: re-granting the budget here would make total attempts
             # a function of how many times the run was resumed rather than of the budget.
-            return self._fail_node(
+            return self._fail_node_or_continue(
                 states, node_id, "retry budget was already spent before this resume",
                 attempt=consumed, budget_exhausted=budget > 1,
                 cause=NodeFailureCause.BUDGET_SPENT,
@@ -426,7 +441,7 @@ class GraphRunController:
                 # bounded attempt count.
                 redrive = cursor.redrives.get((node_id, attempt), 0) + 1
                 if redrive > MAX_REDRIVES_PER_ATTEMPT:
-                    return self._fail_node(
+                    return self._fail_node_or_continue(
                         states, node_id,
                         f"attempt {attempt} was re-driven {redrive - 1} times without "
                         "completing; refusing to re-execute it again",
@@ -456,7 +471,9 @@ class GraphRunController:
             )
             if attempt < budget:
                 continue
-            return self._fail_node(
+            # The canonical node-level failure: every attempt was spent. This is the one a
+            # failure-conditioned edge exists to route around.
+            return self._fail_node_or_continue(
                 states, node_id, reason, attempt=attempt, cause=cause,
                 verdict=outcome.verdict,
                 # Only meaningful when a retry was actually available: a single-attempt
@@ -616,57 +633,13 @@ class GraphRunController:
     def _resolve_approval(
         self, states: dict[str, NodeState], node_id: str, node: PlannedNode,
     ) -> GraphRunProjection | None:
-        """Apply the recorded human decision for an approval node.
-
-        Returns a projection when the run must STOP — a fail-closed failure (no
-        resolver, a rejection, or a malformed outcome) or a durable pause (no
-        decision yet, so the node is left AWAITING_APPROVAL and the run stays
-        resumable). Returns ``None`` when the node was approved: its
-        ``node.succeeded`` receipt is written (the human decision is the
-        independent gate) and the caller drives the remaining nodes.
-        """
-        # An approval node ALWAYS records that it reached the human gate first, so
-        # every terminal transition is AWAITING_APPROVAL -> {SUCCEEDED, FAILED} — the
-        # node never fails or succeeds straight from READY, which would be an
-        # unprojectable receipt (READY has no terminal edge). It also keeps the honest
-        # story: the receipt shows the node required human approval before its outcome.
-        states[node_id] = NodeState.AWAITING_APPROVAL
-        self._append_node(node_id, "node.awaiting_approval", NodeState.AWAITING_APPROVAL)
-        if self._approval_resolver is None:
-            return self._fail_node(
-                states, node_id, "approval node reached without an approval resolver",
-                cause=NodeFailureCause.APPROVAL_UNRESOLVED,
-            )
-        try:
-            outcome = self._approval_resolver.resolve(
-                identity=self.event_log.identity, node=node, attempt=1,
-                # attempt=1: approval nodes do not retry (ARCH-09); only the approval
-                # decision itself is durable.  Multi-attempt retry tracking would require
-                # a separate event kind and is not supported at this layer.
-            )
-        except Exception:
-            # Consistent with worker/gate/policy failures: a resolver error fails the
-            # run closed (durable FAILED) rather than escaping as an uncaught exception.
-            return self._fail_node(
-                states, node_id, "approval resolver evaluation failed",
-                cause=NodeFailureCause.APPROVAL_UNRESOLVED,
-            )
-        if outcome is ApprovalOutcome.APPROVED:
-            states[node_id] = NodeState.SUCCEEDED
-            self._append_node(node_id, "node.succeeded", NodeState.SUCCEEDED, artifact_digests=[])
-            return None
-        if outcome is ApprovalOutcome.REJECTED:
-            return self._fail_node(
-                states, node_id, "human approval was rejected",
-                cause=NodeFailureCause.APPROVAL_REJECTED,
-            )
-        if outcome is not ApprovalOutcome.PENDING:
-            return self._fail_node(
-                states, node_id, "approval resolver returned an invalid outcome",
-                cause=NodeFailureCause.APPROVAL_UNRESOLVED,
-            )
-        # PENDING: no decision yet — stay paused; the hold receipt is already durable.
-        return self.event_log.replay_projection()
+        """Delegate the human checkpoint. See ``approval_step.resolve_approval``."""
+        return resolve_approval(
+            states, node_id, node,
+            resolver=self._approval_resolver, receipts=self._receipts,
+            identity=self.event_log.identity, fail=self._fail_node,
+            projection=self.event_log.replay_projection,
+        )
 
     def _run_budget_pause(self, node_id: str, *, attempt: int) -> GraphRunProjection | None:
         """Stop the run, resumably, when the operator's total is reached. ``None`` to proceed.
@@ -782,19 +755,37 @@ class GraphRunController:
         *, cause: NodeFailureCause, verdict: dict[str, object] | None = None,
         attempt: int = 1, budget_exhausted: bool = False,
     ) -> GraphRunProjection:
+        """Record a node failure and SEAL the run. For failures that must always stop it."""
         states[node_id] = NodeState.FAILED
-        # ``cause`` is required, not defaulted: the free-text reason is for humans, and any
-        # default here would silently mislabel some failure — which is exactly how an
-        # attempt that never reached the gate could end up in the gate's error denominator.
-        extra: dict[str, object] = {"cause": cause.value}
-        if verdict is not None:
-            extra["verdict"] = verdict
-        if budget_exhausted:
-            # Present only when a retry budget was actually available and spent, so a
-            # reader can tell "ran out of attempts" from "failed on its only attempt".
-            extra["budget_exhausted"] = True
-        self._append_node(
-            node_id, "node.failed", NodeState.FAILED, attempt=attempt, reason=reason, **extra,
+        self._receipts.append_node_failed(
+            node_id, reason, cause=cause, verdict=verdict, attempt=attempt,
+            budget_exhausted=budget_exhausted,
         )
         self._receipts.append("run.failed", "run.failed", {"state": "FAILED"})
         return self.event_log.replay_projection()
+
+    def _fail_node_or_continue(
+        self, states: dict[str, NodeState], node_id: str, reason: str,
+        *, cause: NodeFailureCause, verdict: dict[str, object] | None = None,
+        attempt: int = 1, budget_exhausted: bool = False,
+    ) -> GraphRunProjection | None:
+        """A node-level failure: under a continue fail mode the graph keeps being driven.
+
+        ``None`` means "this node failed, the RUN has not" — the caller drives the rest of the graph,
+        which is what lets a failure-conditioned branch be admitted at all.
+
+        The run.failed receipt is deliberately NOT written on that path. Writing it would make the
+        stream terminal mid-run and every later append would be refused. The run still ends FAILED,
+        because a FAILED node is not in ``RUN_SUCCEEDS_ON`` and the main loop seals it at the end.
+        """
+        if may_continue(cause, continue_on_failure=self._continue_on_failure):
+            states[node_id] = NodeState.FAILED
+            self._receipts.append_node_failed(
+                node_id, reason, cause=cause, verdict=verdict, attempt=attempt,
+                budget_exhausted=budget_exhausted,
+            )
+            return None
+        return self._fail_node(
+            states, node_id, reason, cause=cause, verdict=verdict, attempt=attempt,
+            budget_exhausted=budget_exhausted,
+        )

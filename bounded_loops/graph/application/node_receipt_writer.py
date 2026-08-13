@@ -112,6 +112,28 @@ class NodeReceiptWriter:
             payload["artifact_digests"] = list(artifact_digests)
         self.append(f"{node_id}:node.attempt.failed:{attempt}", "node.attempt.failed", payload)
 
+    def append_node_failed(
+        self, node_id: str, reason: str, *, cause: NodeFailureCause,
+        verdict: dict[str, object] | None = None, attempt: int = 1,
+        budget_exhausted: bool = False,
+    ) -> None:
+        """The node's TERMINAL failure receipt. Sibling of ``append_attempt_failed``.
+
+        ``cause`` is required, not defaulted: the free-text reason is for humans, and any default
+        here would silently mislabel some failure — which is exactly how an attempt that never
+        reached the gate could end up in the gate's error denominator.
+        """
+        extra: dict[str, object] = {"cause": cause.value}
+        if verdict is not None:
+            extra["verdict"] = verdict
+        if budget_exhausted:
+            # Present only when a retry budget was actually available and spent, so a reader can
+            # tell "ran out of attempts" from "failed on its only attempt".
+            extra["budget_exhausted"] = True
+        self.append_node(
+            node_id, "node.failed", "FAILED", attempt=attempt, reason=reason, **extra,
+        )
+
     def append_redrive(self, node_id: str, attempt: int, redrive: int) -> None:
         """Record that an incomplete attempt is being re-executed by a resume.
 
