@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from bounded_loops.graph.adapters.connectors.cli_envelope import (
     parse_claude_envelope,
     parse_grok_envelope,
@@ -200,3 +202,20 @@ def test_an_unreadable_envelope_must_not_become_the_artifact(tmp_path) -> None:
     plain = CliProfile("codex", ("exec",), prompt_via="arg")
     assert plain.envelope == ""
     assert LocalCliConnectorWorker._read_envelope(plain, "plain reply") is None
+
+
+@pytest.mark.parametrize("cost", ["Infinity", "-Infinity", "NaN", "1e308"])
+def test_a_cost_python_cannot_represent_is_unmeasured_not_an_exception(cost: str) -> None:
+    """Grok round 3, P1. `json.loads` accepts Infinity and NaN; int(inf) raises.
+
+    That exception escaped the parser, reached the controller as a plain worker fault, and got
+    RETRIED — paying the provider once per attempt while a declared cap was never consulted.
+    Unmeasured is the honest answer to a cost nobody can represent, and it fails a cap closed.
+    """
+    body = json.dumps(_CLAUDE).replace('"total_cost_usd": 0.282617', f'"total_cost_usd": {cost}')
+
+    envelope = parse_claude_envelope(body, reported_by="cli:claude")
+
+    assert envelope is not None, "the reply is still returned — the call did happen"
+    assert envelope.usage is not None
+    assert envelope.usage.cost_microunits is None

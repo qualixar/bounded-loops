@@ -52,7 +52,11 @@ from bounded_loops.graph.adapters.connectors.cli_envelope import (
 from bounded_loops.graph.application.node_contracts import WorkerResult
 from bounded_loops.graph.domain.artifacts import ArtifactPolicy
 from bounded_loops.graph.domain.connections import ResolvedRoute
-from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
+from bounded_loops.graph.domain.errors import (
+    GraphIntegrityError,
+    GraphValidationError,
+    WorkerContractError,
+)
 from bounded_loops.graph.domain.events import GraphRunIdentity
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
@@ -316,7 +320,7 @@ class LocalCliConnectorWorker:
             # the node's output artifact: not what text mode produces, accepted by a gate that
             # only checks non-empty UTF-8, and then fed to every downstream node. A clear failure
             # beats a silently wrong artifact, so this fails closed and names the CLI.
-            raise GraphIntegrityError(
+            raise WorkerContractError(
                 f"local-CLI node {node.node_id!r}: {invocation.profile.binary!r} was asked for a "
                 f"{invocation.profile.envelope!r} JSON envelope but returned something this "
                 "version cannot read; refusing to store the raw output as the node's reply"

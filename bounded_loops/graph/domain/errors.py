@@ -30,3 +30,14 @@ class GraphValidationError(GraphError):
 
 class GraphIntegrityError(GraphError):
     """A controller event/artifact stream is corrupt or inconsistent."""
+
+
+class WorkerContractError(GraphIntegrityError):
+    """A worker cannot honour its contract, and a retry would change nothing.
+
+    Distinct from a transient worker fault because the two deserve opposite responses. A fault
+    is worth retrying; a broken contract — a CLI whose JSON envelope this version cannot read, a
+    provider whose usage block is unusable — will fail identically on every attempt while paying
+    the provider each time. Raised as its own type so the controller can end the node instead of
+    spending the whole retry budget proving the wiring is still wrong.
+    """

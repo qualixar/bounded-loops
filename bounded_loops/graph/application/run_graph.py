@@ -49,7 +49,7 @@ from bounded_loops.graph.application.node_spend import (
 )
 from bounded_loops.graph.application.schedule_ready import NodeState, derive_ready_nodes, dispatch_node
 from bounded_loops.graph.domain.authoring import NodeKind
-from bounded_loops.graph.domain.errors import GraphIntegrityError
+from bounded_loops.graph.domain.errors import GraphIntegrityError, WorkerContractError
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.events import (
     NodeFailureCause,
@@ -504,6 +504,17 @@ class GraphRunController:
             result = worker.execute(
                 plan=self.plan, node=node, envelope=envelope, attempt=attempt,
             )
+        except WorkerContractError as broken:
+            # It RAN and was billed, so the execution is still recorded — but this failure is
+            # DETERMINISTIC, so the node ends here. Retrying a worker whose contract is broken
+            # (a CLI whose envelope this version cannot read) fails identically on every attempt
+            # and pays the provider each time: a closed door that spends more than the hole it
+            # replaced. That is exactly how the first version of this refusal behaved.
+            self._append_spend(node_id, attempt, execution, None)
+            return _AttemptOutcome(terminal=self._fail_node(
+                states, node_id, str(broken) or "worker contract cannot be honoured",
+                attempt=attempt, cause=NodeFailureCause.WORKER_CONTRACT,
+            ))
         except Exception:
             # It RAN. The provider may well have been billed before this raised, and we cannot
             # know — so the execution is recorded with no usage, which is what makes the run

@@ -1130,3 +1130,59 @@ def test_a_zero_cost_is_still_a_real_measurement(tmp_path: Path) -> None:
     ).run()
 
     assert projection.state == "SUCCEEDED"
+
+
+class _BrokenContractWorker:
+    """A worker whose contract cannot be honoured — a CLI whose envelope we cannot read."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
+        from bounded_loops.graph.domain.errors import WorkerContractError
+
+        self.calls += 1
+        raise WorkerContractError("the CLI returned an envelope this version cannot read")
+
+
+def test_a_broken_worker_contract_ends_the_node_instead_of_paying_per_retry(
+    tmp_path: Path,
+) -> None:
+    """Grok round 3, P1 — and the second time this phase that a closed door spent more.
+
+    An unreadable CLI envelope was raised as a plain Exception, so the controller recorded an
+    unmeasured spend and RETRIED it as a worker fault: identical failure on every attempt, the
+    provider paid each time, and the declared cap never consulted because nothing measurable
+    accumulated. A deterministic contract failure ends the node on its first attempt.
+    """
+    worker = _BrokenContractWorker()
+
+    projection = _budgeted_run(
+        tmp_path, worker=worker, gate=_Gate(reject_first=0),
+        run_budget=RunBudget(max_tokens=100_000), budgets={"max_attempts": 5},
+    ).run()
+
+    assert projection.state == "FAILED"
+    assert worker.calls == 1, "five attempts would have been five payments"
+    failed = _of_type(tmp_path, "node.failed")
+    assert failed[0]["cause"] == "worker_contract"
+    # The execution is still recorded with no usage: it RAN, and may well have been billed, so
+    # the run total stays a lower bound rather than silently omitting a paid call.
+    assert len(_of_type(tmp_path, "node.spend")) == 1
+    assert "usage" not in _of_type(tmp_path, "node.spend")[0]
+
+
+def test_a_transient_worker_fault_is_still_retried(tmp_path: Path) -> None:
+    """The distinction is the whole point: a fault is worth retrying, a broken contract is not."""
+    from tests.graph.application.test_node_retry import _RaisingWorker
+
+    worker = _RaisingWorker()
+
+    projection = _budgeted_run(
+        tmp_path, worker=worker, gate=_Gate(reject_first=0),
+        run_budget=RunBudget(), budgets={"max_attempts": 3},
+    ).run()
+
+    assert projection.state == "FAILED"
+    assert worker.calls == 3, "a transient fault gets its whole retry budget"
+    assert _of_type(tmp_path, "node.failed")[0]["cause"] == "worker_fault"

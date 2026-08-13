@@ -57,6 +57,10 @@ class NodeFailureCause(str, Enum):
     #: its money with attempts to spare, and conflating the two would misreport which
     #: bound actually stopped the work.
     SPEND_EXHAUSTED = "spend_exhausted"
+    #: A worker cannot honour its contract — e.g. a CLI whose JSON envelope this version cannot
+    #: read. Deterministic, so it is NOT retried: every attempt would fail identically while
+    #: paying the provider again. Distinct from WORKER_FAULT, which is transient and worth a retry.
+    WORKER_CONTRACT = "worker_contract"
     #: The node declares a spend budget but its worker returned no usage, so the spend
     #: could not be metered. Refused rather than metered as free: a budget checked against
     #: an unmeasurable quantity never trips, which looks exactly like protection and is not.

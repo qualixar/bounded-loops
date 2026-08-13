@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 from typing import Mapping
 
 from bounded_loops.graph.domain.usage import MICROUNITS_PER_USD, WorkerUsage
@@ -99,9 +100,16 @@ def _cost_microunits(raw: object) -> int | None:
     """
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return None
-    if raw < 0:
+    # json.loads accepts the Infinity and NaN tokens, and a huge finite value overflows to inf
+    # on the multiply below. int(inf) raises OverflowError and int(nan) raises ValueError — which
+    # escaped this parser, reached the controller as a plain worker fault, and got RETRIED,
+    # paying the provider once per attempt. Unmeasured is the honest answer to a cost nobody can
+    # represent, and it fails a declared cap closed instead of spending against it.
+    if not math.isfinite(raw) or raw < 0:
         return None
     exact = raw * MICROUNITS_PER_USD
+    if not math.isfinite(exact):
+        return None
     rounded = int(exact)
     return rounded if rounded == exact else rounded + 1
 
