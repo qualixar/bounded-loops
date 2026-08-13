@@ -740,6 +740,14 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
             "re-supply one here if a pending connector node needs it to resume."
         ),
     )
+    # Same names as `run` and `resume`: approving continues the run, so it needs a ceiling
+    # when that run paused on one.
+    approve_p.add_argument("--max-tokens", default=None, type=int, metavar="<n>",
+                           help="Spend ceiling for the continuation this approval triggers.")
+    approve_p.add_argument("--max-cost-usd", default=None, metavar="<amount>",
+                           help="Cost ceiling in USD for the continuation this approval triggers.")
+    approve_p.add_argument("--budget-file", default=None, metavar="<json>",
+                           help="Budget file with standing ceilings and the price table.")
     approve_p.add_argument("--json", action="store_true", help="Emit JSON output.")
     approve_p.set_defaults(func=cmd_graph_approve)
 

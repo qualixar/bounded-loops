@@ -40,6 +40,7 @@ from bounded_loops.graph.application.node_spend import (
     RunBudget,
     consumed_attempts_from,
     consumed_spend_from,
+    effective_run_budget,
     max_attempts,
     run_spend,
     spend_caps,
@@ -53,7 +54,6 @@ from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.events import (
     NodeFailureCause,
     GraphRunProjection,
-    StoredGraphEvent,
     UnsignedGraphEvent,
 )
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
@@ -215,10 +215,23 @@ class GraphRunController:
         if projection.state == "PENDING":
             self._append("run.started", "run.started", {"state": "RUNNING"})
         receipts = self.event_log.replay()
-        # Checked before the resume is recorded, so a continuation that is going to be refused
-        # leaves no trace: appending run.resumed first meant every rejected poll wrote an event
-        # attesting a resume that did nothing.
-        self._require_a_ceiling_if_this_run_already_paused(receipts)
+        # A ceiling this run already paused on is STICKY: any dimension this continuation does
+        # not mention is carried forward from the pause record. That one rule covers both holes
+        # the audit found here.
+        #
+        # Resuming with NO ceiling used to mean unbounded — a run paused at 200 of an authorised
+        # 150 ran on to 2000. Refusing that was the first fix, and it wedged every surface that
+        # continues a run without typing a number: `bl graph approve`, the console's approve
+        # button, MCP's resume. Sticky is better than refusing: the continuation is bounded by
+        # the same number the operator already authorised, so it pauses again immediately rather
+        # than either spending freely or becoming unresumable.
+        #
+        # It also stops a TOKEN-only continuation from dropping a COST ceiling the operator never
+        # touched, which let a cost-paused run reach 4000 against an authorised 1500.
+        #
+        # Carrying forward can only ADD a bound, never relax one, so it can never permit spend
+        # that was not authorised — which is what makes it safe to apply without asking.
+        self._run_budget = effective_run_budget(self._run_budget, receipts)
         # Record the resume itself before doing any work. Previously a resume left no trace
         # at all, so neither an operator nor the Arena could tell a run had been resumed —
         # let alone how often.
@@ -404,6 +417,13 @@ class GraphRunController:
                     states, node_id, refusal, attempt=max(attempt - 1, 1),
                     cause=NodeFailureCause.SPEND_EXHAUSTED,
                 )
+            # 1 for a fresh attempt. A re-drive must be HIGHER, or its spend record re-uses the
+            # original execution's key: with different usage the log refuses it outright and the
+            # run becomes unresumable, and with identical usage the second real payment is
+            # silently not recorded while the total still calls itself exact. Reading
+            # cursor.redrives here (as this did) yields 1 on the FIRST re-drive, because the
+            # cursor is a snapshot taken before that re-drive was recorded.
+            execution = 1
             if attempt <= cursor.started.get(node_id, 0):
                 # This attempt already has a node.running receipt, so a previous run started
                 # it and died before it completed. Its prefix events de-duplicate on
@@ -419,15 +439,12 @@ class GraphRunController:
                         attempt=attempt, cause=NodeFailureCause.REDRIVE_EXHAUSTED,
                     )
                 self._append_redrive(node_id, attempt, redrive)
+                execution = redrive + 1
             states[node_id] = NodeState.RUNNING
             self._append_node(node_id, "node.running", NodeState.RUNNING, attempt=attempt)
             outcome = self._attempt_node(
                 states, node_id, node, envelope, egress, worker, attempt,
-                # Which execution of THIS attempt: 1 for a fresh attempt, higher for a re-drive
-                # after an interrupted one. Each execution paid the provider, so each needs its
-                # own spend record — one keyed per attempt would collide with a different
-                # payload and wedge the run, the same way the pause key did.
-                execution=cursor.redrives.get((node_id, attempt), 0) + 1,
+                execution=execution,
             )
             if outcome.terminal is not None:
                 return outcome.terminal
@@ -693,29 +710,6 @@ class GraphRunController:
             )
         # PENDING: no decision yet — stay paused; the hold receipt is already durable.
         return self.event_log.replay_projection()
-
-    def _require_a_ceiling_if_this_run_already_paused(
-        self, receipts: tuple[StoredGraphEvent, ...],
-    ) -> None:
-        """Refuse to continue a budget-paused run with no ceiling declared.
-
-        Omitting the flag is the EASY mistake and it silently meant unlimited: a run paused at
-        200 of an authorised 150 resumed straight through to 2000. An automated retry loop makes
-        exactly that call. The pause tells the operator to raise the ceiling, so continuing with
-        no ceiling at all cannot be what they meant.
-
-        This is a REFUSAL, not a grant. Nothing in the log authorises spend — the log only
-        records that a ceiling was in force, and the operator still has to supply the new number
-        themselves. A refusal can never escalate; a stored grant could be replayed.
-        """
-        if self._run_budget.declared:
-            return
-        if any(stored.event.event_type == "run.budget.paused" for stored in receipts):
-            raise GraphIntegrityError(
-                "this run paused because its spend ceiling was reached; resuming it requires an "
-                "explicit ceiling (--max-tokens / --max-cost-usd). Continuing without one would "
-                "mean no limit at all, which is not what a budget pause is asking for"
-            )
 
     def _run_budget_pause(self, node_id: str, *, attempt: int) -> GraphRunProjection | None:
         """Stop the run, resumably, when the operator's total is reached. ``None`` to proceed.

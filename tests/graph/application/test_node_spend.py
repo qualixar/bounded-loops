@@ -965,15 +965,14 @@ def test_a_run_ceiling_also_requires_the_spend_to_be_measurable(tmp_path: Path) 
     assert "tokens" in failed[0]["reason"]
 
 
-def test_a_budget_paused_run_cannot_be_resumed_with_no_ceiling_at_all(tmp_path: Path) -> None:
-    """A4 — Grok hypothesis, proved. Omitting the flag silently meant unlimited.
+def test_a_paused_ceiling_is_sticky_when_a_continuation_names_no_number(tmp_path: Path) -> None:
+    """A3/F5 — resuming with NO ceiling once meant unbounded: 2000 tokens against 150 authorised.
 
-    A run paused at 200 of an authorised 150 resumed straight through to 2000 tokens. Omitting
-    the flag is the EASY mistake, and an automated retry loop makes exactly that call.
-
-    The refusal stores no grant: the log only records that a ceiling was in force, and the
-    operator still supplies the new number themselves. A refusal cannot escalate; a stored
-    grant could be replayed to buy the same spend twice.
+    Refusing that was the first fix and it wedged every surface that continues a run without
+    typing a number — `bl graph approve`, the console's approve button, MCP's resume. Sticky is
+    better than refusing: the continuation is bounded by the number the operator already
+    authorised, so it pauses again immediately rather than spending freely OR becoming
+    unresumable. Carrying a ceiling forward can only ADD a bound, never relax one.
     """
     budgets: dict[str, object] = {"max_attempts": 20}
     controller = _budgeted_run(
@@ -981,17 +980,76 @@ def test_a_budget_paused_run_cannot_be_resumed_with_no_ceiling_at_all(tmp_path: 
         run_budget=RunBudget(max_tokens=150), budgets=budgets,
     )
     controller.run()
-    spent_at_pause = run_spend(consumed_spend_from(controller.plan, controller.event_log.replay()))
+    at_pause = run_spend(consumed_spend_from(controller.plan, controller.event_log.replay()))
 
-    with pytest.raises(GraphIntegrityError, match="explicit ceiling"):
-        _budgeted_run(
-            tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
-            run_budget=RunBudget(), budgets=budgets,
-        ).resume()
+    worker = _MeteredWorker()
+    resumed = _budgeted_run(
+        tmp_path, worker=worker, gate=_Gate(reject_first=99),
+        run_budget=RunBudget(), budgets=budgets,
+    ).resume()
 
-    # Nothing ran, so nothing more was spent.
+    assert resumed.state == "RUNNING", "still resumable — not wedged"
+    assert worker.calls == 0, "and not one further execution was bought"
     after = run_spend(consumed_spend_from(controller.plan, controller.event_log.replay()))
-    assert after.tokens == spent_at_pause.tokens == 200
+    assert after.tokens == at_pause.tokens == 200
+
+
+def test_a_token_only_continuation_does_not_drop_a_cost_ceiling(tmp_path: Path) -> None:
+    """F7 — Grok round 2, proved. Raising tokens silently removed the cost cap.
+
+    A run paused on cost at 2000 of an authorised 1500, continued with only a token ceiling, ran
+    on to a recorded cost of 4000. The operator never typed a higher cost ceiling; the dimension
+    they did not mention was read as "unbounded".
+    """
+    budgets: dict[str, object] = {"max_attempts": 10}
+    controller = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(cost_microunits=1_000), gate=_Gate(reject_first=99),
+        run_budget=RunBudget(max_cost_microunits=1_500), budgets=budgets,
+    )
+    controller.run()
+
+    worker = _MeteredWorker(cost_microunits=1_000)
+    resumed = _budgeted_run(
+        tmp_path, worker=worker, gate=_Gate(reject_first=99),
+        run_budget=RunBudget(max_tokens=10_000), budgets=budgets,
+    ).resume()
+
+    assert resumed.state == "RUNNING"
+    assert worker.calls == 0, "the cost ceiling the operator never touched still binds"
+    total = run_spend(consumed_spend_from(controller.plan, controller.event_log.replay()))
+    assert total.cost_microunits == 2_000, "not the 4000 an unbounded cost dimension reached"
+
+
+def test_a_re_driven_attempt_records_its_second_payment(tmp_path: Path) -> None:
+    """F1 — Grok round 2, proved. The execution ordinal did not advance on the first re-drive.
+
+    An at-least-once resume pays the provider again. Both executions keyed ``execution=1``, so
+    with different usage the log refused the second outright (run unresumable) and with identical
+    usage the second real payment was silently not recorded while the total still called itself
+    exact. My own resume test never reached this: it exhausted the NODE cap first, so no further
+    execution was ever bought.
+    """
+    budgets: dict[str, object] = {"max_attempts": 3}
+    controller = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_CrashingGate(crash_on=1),
+        run_budget=RunBudget(max_tokens=100_000), budgets=budgets,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        controller.run()
+    assert run_spend(consumed_spend_from(controller.plan, controller.event_log.replay())).tokens == 100
+
+    # The re-drive pays again, and reports a DIFFERENT amount — which is what collided.
+    resumed = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(input_tokens=100, output_tokens=150),
+        gate=_Gate(reject_first=0), budgets=budgets,
+        run_budget=RunBudget(max_tokens=100_000),
+    ).resume()
+
+    assert resumed.state == "SUCCEEDED", "a colliding key made this unresumable"
+    records = _of_type(tmp_path, "node.spend")
+    assert [(r["attempt"], r["execution"]) for r in records] == [(1, 1), (1, 2)]
+    total = run_spend(consumed_spend_from(controller.plan, controller.event_log.replay()))
+    assert total.tokens == 350, "both payments recorded: 100 then 250"
 
 
 def test_a_run_that_never_paused_needs_no_ceiling_to_resume(tmp_path: Path) -> None:
@@ -1039,29 +1097,6 @@ def test_a_finished_run_stays_readable_without_a_ceiling(tmp_path: Path) -> None
         tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=0),
         run_budget=RunBudget(), budgets=budgets,
     ).resume().state == "SUCCEEDED"
-
-
-def test_a_refused_continuation_writes_nothing_at_all(tmp_path: Path) -> None:
-    """The ceiling check runs BEFORE the resume is recorded.
-
-    Appending run.resumed first meant every rejected poll wrote an event attesting a resume
-    that did nothing — the log grew once per poll while no work happened.
-    """
-    budgets: dict[str, object] = {"max_attempts": 10}
-    _budgeted_run(
-        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
-        run_budget=RunBudget(max_tokens=150), budgets=budgets,
-    ).run()
-    before = len(_events(tmp_path))
-
-    for _ in range(3):
-        with pytest.raises(GraphIntegrityError, match="explicit ceiling"):
-            _budgeted_run(
-                tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
-                run_budget=RunBudget(), budgets=budgets,
-            ).resume()
-
-    assert len(_events(tmp_path)) == before
 
 
 def test_a_reported_zero_token_count_is_not_a_measurement(tmp_path: Path) -> None:

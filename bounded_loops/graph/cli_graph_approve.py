@@ -162,7 +162,18 @@ def cmd_graph_approve(args: argparse.Namespace) -> int:
     already_decided = _already_decided(run_dir.resolve(), args.node)
 
     try:
-        projection = facade.approve(request, node_id=args.node, decision=args.decision)
+        # A run that paused on its spend ceiling needs one supplied here too: approving a
+        # checkpoint CONTINUES the run, and the controller refuses to continue a paused run with
+        # no ceiling. Without these flags a budget pause followed by a human gate could not be
+        # finished from this command at all.
+        from bounded_loops.graph.cli_graph import _resolve_budget
+
+        run_budget, price_table = _resolve_budget(args)
+        projection = facade.approve(
+            request, node_id=args.node, decision=args.decision,
+            run_budget=run_budget if run_budget.declared else None,
+            price_table=price_table if price_table.prices else None,
+        )
     except (GraphIntegrityError, GraphValidationError) as exc:
         _err(f"graph approve: {exc}")
         return 2

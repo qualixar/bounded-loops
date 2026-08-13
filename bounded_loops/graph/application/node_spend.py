@@ -197,6 +197,43 @@ def run_spend(spend: dict[str, NodeSpend]) -> NodeSpend:
     return total
 
 
+def effective_run_budget(
+    declared: RunBudget, receipts: tuple[StoredGraphEvent, ...],
+) -> RunBudget:
+    """The declared ceiling, with any unmentioned dimension carried forward from the pause.
+
+    An operator continuing a paused run types the number they want to change. Reading the
+    dimensions they did NOT type as "unbounded" removed a ceiling they still expected to hold:
+    a run paused on cost at 2000 of 1500 micro-USD, continued with only a token ceiling, ran on
+    to a recorded cost of 4000. They never authorised that.
+
+    Carrying forward can only ADD a bound, never relax one, so it cannot permit spend the
+    operator did not allow — which is what makes it safe to do silently. The pause record
+    already carries both ceilings, so the base is the run's own history rather than a file the
+    caller may not have.
+    """
+    latest: Mapping[str, object] | None = None
+    for stored in receipts:
+        if stored.event.event_type == "run.budget.paused":
+            latest = stored.event.payload
+    if latest is None:
+        return declared
+    return RunBudget(
+        max_tokens=declared.max_tokens if declared.max_tokens is not None
+        else _paused_cap(latest, "max_tokens"),
+        max_cost_microunits=declared.max_cost_microunits
+        if declared.max_cost_microunits is not None
+        else _paused_cap(latest, "max_cost_microunits"),
+    )
+
+
+def _paused_cap(payload: Mapping[str, object], field: str) -> int | None:
+    value = payload.get(field)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
 def unmeasurable_dimension(
     usage: WorkerUsage | None, *, max_tokens: int | None, max_cost_microunits: int | None,
 ) -> str | None:

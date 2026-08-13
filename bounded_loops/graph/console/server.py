@@ -422,6 +422,10 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
 
     def _decide(self, *, token: str, node_id: str, decision: str) -> None:
         try:
+            # No ceiling is typed on an approve, so the controller carries the pause's own
+            # ceilings forward (effective_run_budget) — which is why approving a run that paused
+            # on budget is not refused here. Adding a second number to this form would ask the
+            # operator to re-authorise spend they already authorised.
             self.server.facade.approve(
                 self.server.request_ctx, node_id=node_id, decision=decision,
             )
