@@ -500,12 +500,16 @@ is the honest statement of this posture.
 `pip install bounded-loops` installs `pytest>=8.0` as a core runtime dependency.
 This is intentional, not a packaging error.
 
-The engine ships a built-in `pytest` gate kind. When a graph node declares
-`kind: loop` with a pytest gate, the engine invokes `python -m pytest` as a
+The engine ships a built-in `pytest` gate kind. When a bounded loop declares
+`gate.kind: pytest` (in `loop.yaml`), the engine invokes `python -m pytest` as a
 subprocess at run time — not as a test framework for this project's own test suite,
-but as the independent gate that checks the node's output. Because that subprocess
-call is part of the engine's runtime path (not just a development or CI tool), pytest
+but as the independent gate that checks the workspace. Because that subprocess call
+is part of the engine's runtime path (not just a development or CI tool), pytest
 must be present in the same environment as the engine itself.
+
+Note: `kind: loop` as a **graph node kind** is distinct from a standalone loop using
+a pytest gate. `kind: loop` graph nodes are not executable via `bl graph run --execute`
+in this release — preflight refuses them. See the capability matrix above.
 
 A test (`test_default_install_includes_pytest_for_shipped_pytest_gates`) asserts this
 dependency is present and reachable, specifically to prevent well-meaning packaging

@@ -4,7 +4,7 @@
 
 <h1 align="center">bounded-loops</h1>
 
-<p align="center"><strong>A graph engine for reliable AI agents: a DAG of independently-gated bounded loops where a producer never grades its own work, and every run is a replayable, receipt-backed record.</strong></p>
+<p align="center"><strong>Two things ship in this package: a standalone bounded loop engine and a graph engine that composes loops into DAGs. Each is a complete, independently useful program.</strong></p>
 
 <p align="center">
   <a href="https://github.com/qualixar/bounded-loops/actions/workflows/ci.yml"><img src="https://github.com/qualixar/bounded-loops/actions/workflows/ci.yml/badge.svg" alt="CI status"/></a>
@@ -15,9 +15,55 @@
 
 ![Ungated agent claim compared with a gate-verified bounded loop](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/demo.gif)
 
-The flagship is **`bl graph`**: compose bounded loops into a DAG where an independent gate — never the producer — decides each node, connectors run on your own CLI subscription or a no-secret BYOK key, and every run is a hash-chained, content-addressed record you can replay. It is built on a keyless loop engine you can try in ten seconds.
+```bash
+pip install bounded-loops
+bl run loops/bug-fix-red-green --yes    # a real planted bug, a real pytest gate, no API key
+```
 
-## Quick start
+68 loop packages ship in [`loops/`](loops/). 64 run with no API key at all.
+
+---
+
+## What this is
+
+**A bounded loop** is a single agent task driven to a verified finish. A worker
+attempts the task; a separate object — the gate — decides pass or fail; the engine
+retries up to a declared bound. The gate is never the worker. The worker's own
+claim of "done" is recorded as metadata and ignored by the control path. State is
+an append-only hash-chained event log. Run one with `bl run <loop>`.
+
+**A graph** (`bl graph`) is a DAG whose nodes are agent tasks. Use it when you
+need fan-out, conditional branching, join, human approval checkpoints, or an
+irreversible publish step. Each node has its own gate, and the same invariant
+holds whether you run one task or fifty.
+
+**Loops are not only graph substrate.** Someone with one gated task gets full
+value from a loop in ten minutes, never touching the graph engine.
+
+---
+
+## Loop or graph?
+
+| You have… | Use |
+|---|---|
+| One task with a checkable finish condition | `bl run` — a loop |
+| A bug fix, a citation check, a schema validation, a lint that must pass | `bl run` — a loop |
+| Multiple tasks where step B depends on step A | `bl graph` |
+| Fan-out to independent nodes, then a join | `bl graph` |
+| A human approval checkpoint before an action | `bl graph` |
+| An irreversible publish step that must be gated | `bl graph` |
+| Branching: route differently on failure vs success | `bl graph` |
+
+Shipped loops that stand on their own: `bug-fix-red-green`,
+`citation-existence-check`, `cors-not-wildcard`, `dependency-pinning`,
+`dead-import-clean`, `contract-clause-extraction`. Full index:
+[`catalog/README.md`](catalog/README.md).
+
+---
+
+## Quickstart: a loop
+
+No API key. The runner is a stub; the gate is real pytest.
 
 ```bash
 pip install bounded-loops
@@ -26,98 +72,201 @@ cd bounded-loops
 bl run loops/bug-fix-red-green --yes
 ```
 
-No API key is needed. The default cassette proposes the fix; a real pytest gate
-checks it. The command ends with a receipt:
+Output:
 
 ```text
+[bounded-loops] About to run loop 'bug-fix-red-green':
+  runner : stub
+  gate   : pytest -q
 ✓ [DONE] gate-passed (laps: 1)  ledger: loops/bug-fix-red-green/.ledger.jsonl
 Gate verified: the independent acceptance gate passed after 1 lap.
 ```
 
-Now see why the gate matters:
+Now see a loop that needs multiple laps:
 
 ```bash
-./loops/bug-fix-red-green/wreck.sh   # exits 1: the agent claimed GREEN; pytest still fails
-bl run loops/convergence-demo --yes  # two failed verdicts, then DONE on lap 3
+bl run loops/convergence-demo --yes
 ```
 
-The `agent_claimed_done` field is evidence only. It never controls termination —
-in a single loop or across a graph.
+```text
+✓ [DONE] gate-passed (laps: 3)  ledger: loops/convergence-demo/.ledger.jsonl
+```
 
-## The graph engine
+The worker's `agent_claimed_done` field is recorded in the ledger and never
+read by the control path. Only the gate decides when the loop exits.
 
-`bl graph` runs a directed acyclic graph of nodes. Each node is a bounded loop
-with its own worker and its own **independent** acceptance gate; the controller
-enforces that the worker never grades its own node. A run writes an append-only,
-hash-chained event log plus content-addressed artifacts, and the read-only Arena
-renders that record without executing anything.
+---
+
+## Quickstart: a graph
+
+No agent CLI or credentials needed. Runs **in-process**, no OS sandbox — the banner
+says "DEMONSTRATION" and the run directory is marked accordingly.
 
 ```bash
-bl graph init                                         # configure egress posture (optional)
-bl graph lint graph.yaml                              # validate the DAG offline
-bl graph run graph.yaml --execute \
-    --connections connections.json --out ./run        # run — pauses at approval nodes (exit 3)
+bl graph demo --out ./demo-run
+bl graph status --run ./demo-run
+```
+
+The next one is different: it enforces **real** OS isolation (macOS Seatbelt or Linux
+bubblewrap, no Docker), still with no credential.
+
+```bash
+bl graph run --execute --out ./sandbox-demo
+```
+
+A built-in probe node runs inside the sandbox, attempts a network connection and an
+out-of-workspace write, and an independent gate passes only if the OS denied both.
+
+To run a real agent graph (needs your already-logged-in `claude`, `codex`, `grok`,
+`muse`, or `agy` CLI):
+
+```bash
+bl graph run --execute manifest.yaml \
+  --connections connections.json \
+  --inputs inputs.json \
+  --out ./my-run
+```
+
+Full instructions for creating `manifest.yaml`, `connections.json`, and
+`inputs.json` are in [docs/graph-quickstart.md](docs/graph-quickstart.md).
+
+---
+
+## Bounded loops in depth
+
+### The engine loop
+
+On every lap:
+
+1. The runner works inside a quarantined scratch copy of `seed/`.
+2. The gate evaluates the workspace independently.
+3. The engine records the verdict, token use, and timing.
+4. A passing gate yields `DONE`; exhausted bounds yield `HALT`; a crash yields `ERROR`.
+
+The gate is a separate object from the runner. The controller checks `worker is gate`
+(Python identity) and refuses to run if the check trips. This forbids one object
+playing both roles — it does not enforce that the gate's logic is truly independent
+of the worker's output. A wrapped worker (`GateWrapper(worker)`) that rubber-stamps
+its input passes the identity check. The guarantee: no code path branches on
+`agent_claimed_done`; only `verdict.passed` can produce a `DONE` outcome.
+
+### The 68-loop catalog
+
+64 loops are keyless (stub runner + real mechanical gate — offline, deterministic,
+no API key). 4 require a framework package (`langgraph`, `crewai`, `agent-framework`,
+or `google-adk`). Gate kinds: 44 `command`, 10 `jsonschema`, 9 `pytest`, 3 `composite`,
+1 `osv`, 1 `checkov`. No loop uses "an LLM decides" as its gate.
+
+Domains: software, security, finance, legal, healthcare, retail, operations,
+enterprise/ERP, testing, content, research, business.
+
+Worth reading first:
+
+- [`bug-fix-red-green`](loops/bug-fix-red-green/) — the smallest pytest loop. Ships
+  `wreck.sh`, which runs the same prompt ungated: the agent claims GREEN, pytest fails.
+- [`citation-existence-check`](loops/citation-existence-check/) — the checker and
+  reporter are in `forbid:`, so the agent cannot edit what the gate reads.
+- [`convergence-demo`](loops/convergence-demo/) — two failures, a passing third lap,
+  and a deliberate max-iteration trip.
+
+### Create your own loop
+
+```bash
+bl new --list                        # show available templates
+bl new pytest-basic my-loop          # scaffold from a template
+bl lint my-loop                      # validate manifest and bounds
+bl run my-loop --yes                 # run it
+```
+
+Full how-to with worked examples: [docs/WRITING-A-LOOP.md](docs/WRITING-A-LOOP.md).
+
+### Runners
+
+| Runner | Purpose |
+|---|---|
+| `stub` | Deterministic replay; keyless and offline |
+| `shell` | Pipes the prompt to a configured CLI |
+| `python_callable` | Framework glue in a spawned, scrubbed process |
+| `codex` | Logged-in Codex CLI; parses JSONL events and usage |
+| `claude-code` | Claude Code; parses its JSON result and usage |
+| `antigravity` | `agy` with rung-derived approval policy |
+| `docker` / `worktree` | Stronger process or repository isolation |
+
+### Built-in gates
+
+`command`, `pytest`, `jsonschema`, `composite`, plus typed adapters for `osv`,
+`checkov`, `gitleaks`, `semgrep`, `trivy`, `promptfoo`, `great_expectations`, and
+`axe`. Typed gates parse structured output and fail closed on malformed reports.
+Run `bl gates` to check local tool availability.
+
+---
+
+## Graph engine in depth
+
+`bl graph` compiles a YAML manifest into an execution plan, validates every
+connection binding at compile time, and runs each node inside a native OS sandbox
+(macOS Seatbelt or Linux bubblewrap — no Docker). Every run writes an append-only,
+hash-chained event log. The read-only Arena renders that log without re-executing
+anything.
+
+### Node kinds
+
+`loop`, `tool`, `router`, `join`, `approval`, `audit`, `research_source`,
+`research_claim`, `subgraph`, `publish`.
+
+**What `bl graph run --execute` runs today:** only nodes with an admitted `local_cli`
+or `https` connector binding. Every other kind — **including `kind: loop`** — is
+refused by a fail-closed preflight. Do not write graphs that depend on loop nodes
+running yet.
+
+### Graph commands
+
+```bash
+bl graph lint manifest.yaml                              # validate the DAG
+bl graph plan manifest.yaml --connections connections.json    # compile to plan
+bl graph run --execute manifest.yaml \
+    --connections connections.json --out ./run           # run; pauses at approval (exit 3)
 bl graph approve --run ./run --node <id> \
-    --decision approved                               # record a decision and resume
-bl graph console --run ./run                          # click-to-approve in a browser
-bl graph arena --run ./run --out arena.html           # receipt-derived, read-only view
+    --decision approved                                  # record decision, resume
+bl graph console --run ./run                             # browser click-to-approve
+bl graph arena --run ./run                               # render read-only Arena HTML
+bl graph status --run ./run                              # text projection of the event log
+bl graph init                                            # configure egress posture
 ```
 
-Two connector modes ship today, both credential-safe:
+### Connector modes
 
-- **Local-CLI** — run your already-logged-in agent CLI (`claude`, `codex`,
-  `grok`, `muse`, `agy`) as the node worker. The engine never reads, stores, or
-  logs your credentials; authentication stays out-of-band.
-- **BYOK / HTTPS** — route a node to a frontier-model API. Pass an
-  admitted-connection record (`--admitted admitted.json`); the request goes
-  through a **no-secret egress broker** that issues single-use, time-bound leases
-  and denies SSRF and DNS-rebind (private, loopback, link-local, CGNAT, and
-  reserved ranges). A node with no matching admitted record fails closed.
+- **Local-CLI** — runs your already-logged-in agent CLI (`claude`, `codex`, `grok`,
+  `muse`, `agy`) as a subprocess. The engine never reads, stores, or logs credentials.
+- **BYOK / HTTPS** — routes a node to a model API via a no-secret egress broker that
+  issues single-use, time-bound leases and denies SSRF and DNS-rebind (private,
+  loopback, link-local, CGNAT and reserved ranges).
 
-Add cross-model audit coverage with `--audit-plan audit.json`: independent
-auditor nodes grade mandatory coverage cells, and the Arena shows a release
-verdict that blocks on any producer-only cell or unresolved high-severity finding.
+### What the graph gate does and does not check
+
+`StructuralAcceptanceGate` re-reads the node's promoted artifact from the store,
+separately from the worker, and passes if it is non-empty and UTF-8-decodable.
+**That is structural acceptance — a well-formed reply exists. It is not a semantic
+review.** The cross-model audit engine (`--audit-plan`) is the overlay for that.
 
 ### Honest capability matrix
 
-`bl graph` is a beta. This is exactly what is enforced today, and where the line
-is — no capability is claimed beyond what the shipped code does.
-
 | Capability | Status |
 |---|---|
-| Gate-verified bounded-loop DAG (worker ≠ gate, controller-enforced) | Shipped |
+| Gate-verified DAG (worker ≠ gate, controller-enforced identity check) | Shipped |
 | Local-CLI + BYOK/HTTPS connectors via `bl graph run --execute` | Shipped |
+| `kind: loop` nodes executable via `bl graph run --execute` | Not in this release — preflight refuses them |
 | No-secret egress broker (single-use leases; SSRF / DNS-rebind denied) | Shipped |
-| Receipt-derived, non-executing Arena (hash-chained log, content-addressed artifacts — verdict and artifact digest co-recorded in the same hash-chained event; on resume the full hash chain is re-verified, SUCCEEDED nodes are not re-gated) | Shipped — local runs are marked `LOCAL/UNVERIFIED` |
-| Cross-model audit-coverage gate (`--audit-plan` → Arena verdict) | Shipped — read-side; independence is receipt-asserted |
-| Durable approvals — `bl graph run` pauses at approval nodes (exit 3); `bl graph approve --run --node --decision` records the decision and resumes; facade / MCP path unchanged | Shipped |
-| Click-to-approve console — `bl graph console --run <dir>` serves a loopback-only, token-gated HTML page; same durable machinery as `bl graph approve` | Shipped — local posture only (no TLS / role auth; a hosted deployment must supply those) |
-| Egress posture for `local_cli` nodes — `bl graph init` writes `~/.bounded-loops/egress.json`; OPEN is the default (subscription CLI unchanged); ALLOWLIST is opt-in: real macOS Seatbelt cage + loopback proxy, fail-closed without the cage | Shipped — OPEN default; ALLOWLIST selectable; not yet the default tier |
-| Hosted receipt verification · tamper-evident approvals ledger · sandboxed arbitrary-tool nodes | Deployment-provided seams / roadmap |
+| Hash-chained event log; on resume, full chain re-verified | Shipped — local runs marked `LOCAL/UNVERIFIED` |
+| Cross-model audit coverage gate (`--audit-plan` → Arena verdict) | Shipped — read-side; independence is receipt-asserted |
+| Durable approvals — `bl graph approve` / `bl graph console` | Shipped — local posture only (no TLS / role auth) |
+| ALLOWLIST egress cage for `local_cli` nodes (macOS Seatbelt, opt-in) | Shipped — OPEN is the default; ALLOWLIST is opt-in |
+| Hosted receipt verification · tamper-evident approvals · sandboxed arbitrary-tool nodes | Deployment-provided seams / roadmap |
 
-Full detail, run-directory layout, and the deploying-engineer checklist live in
-[docs/graph-capabilities.md](docs/graph-capabilities.md),
-[docs/graph-quickstart.md](docs/graph-quickstart.md), and
-[docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md).
+Full detail: [docs/graph-capabilities.md](docs/graph-capabilities.md).
+Runnable walkthrough: [docs/graph-quickstart.md](docs/graph-quickstart.md).
 
-## What the engine does
-
-Whether a node in a graph or a standalone loop, the unit is the same: a folder
-with a task, a broken seed, a runner, an independent gate, bounds, and optional
-recorded turns. On every lap:
-
-1. The runner works inside a quarantined scratch copy.
-2. The gate evaluates the result independently.
-3. The engine records the verdict, token use, timing, and decision.
-4. A passing gate yields `DONE`; a bound yields `HALT`; a crash yields `ERROR`.
-
-![Readable ports-and-adapters architecture with five boxed zones: entry points, composition root, application, pure domain, and concrete adapters](https://raw.githubusercontent.com/qualixar/bounded-loops/main/docs/diagrams/ports-and-adapters.png)
-
-The domain rules are standard-library-only. Concrete runners, gates, ledgers,
-memory, tracing, approval, and kill-switch implementations sit behind ports;
-[`bounded_loops/composition.py`](bounded_loops/composition.py) is the composition
-root. The graph engine reuses the same ports per node. Read
-[ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
+---
 
 ## Nine enforced bounds and a kill switch
 
@@ -133,68 +282,26 @@ root. The graph engine reuses the same ports per node. Read
 | 8 | Human approval | explicit or rung-derived approval |
 | 9 | Wall-clock limit | inter-lap budget plus subprocess timeouts |
 
-`BOUNDED_LOOPS_KILL` is checked before every lap. Gate commands are tokenized
-and run without a shell. Runner environments use an environment-variable
-allowlist, and protected gate/reporter files can be declared with `forbid:`.
-Details and threat boundaries are in [NINE-BOUNDS.md](docs/NINE-BOUNDS.md) and
+`BOUNDED_LOOPS_KILL` is checked before every lap. Gate commands are tokenized and
+run without a shell. Runner environments use an environment-variable allowlist.
+Details and threat boundaries: [docs/NINE-BOUNDS.md](docs/NINE-BOUNDS.md) and
 [SECURITY.md](SECURITY.md).
 
-## Runners and gates
+---
 
-| Runner | Purpose |
-|---|---|
-| `stub` | Replays deterministic turns; keyless and offline |
-| `shell` | Pipes the prompt to a configured CLI |
-| `python_callable` | Runs framework glue in a spawned, scrubbed process |
-| `codex` | Runs the logged-in Codex CLI and parses JSONL events and usage |
-| `claude-code` | Runs Claude Code and parses its JSON result and usage |
-| `antigravity` | Runs `agy` with rung-derived approval policy |
-| `docker` / `worktree` | Adds stronger process or repository isolation |
+## Architecture
 
-```bash
-bl run loops/citation-existence-check --runner codex --yes
-bl run loops/citation-existence-check --runner claude-code --yes
-```
+Hexagonal (ports-and-adapters). The domain rule — the gate decides, not the agent —
+lives in one file (`bounded_loops/application/run_loop.py`) and holds regardless
+of which runner, gate, or storage backend a loop uses. The graph engine reuses the
+same ports per node. [`bounded_loops/composition.py`](bounded_loops/composition.py)
+is the composition root.
 
-Built-in gates include `command`, `pytest`, `jsonschema`, and `composite`, plus
-typed adapters for `osv`, `checkov`, `gitleaks`, `semgrep`, `trivy`,
-`promptfoo`, `great_expectations`, and `axe`. Typed gates parse structured
-output and fail closed on malformed reports. Run `bl gates` to see local tool
-availability. See the committed [Codex run receipt](docs/real-run-example/README.md).
+![Ports and adapters: the domain rule at the centre, runners, gates and storage at the edges](docs/diagrams/ports-and-adapters.png)
 
-## The loop catalog
+Full design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-The source catalog contains 68 loops across software, security, finance, legal,
-healthcare, retail, operations, enterprise/ERP, testing, content, research, and
-business roles. Sixty-four are keyless; four framework examples require their
-framework package (`langgraph`, `crewai`, `agent-framework`, or `google-adk`).
-
-These examples are deliberately dominated by deterministic acceptance checks:
-linters, schemas, tests, reconciliation rules, citation reporters, and security
-scanners. Bounded loops are appropriate when the result has a checkable
-contract. When evaluation is subjective, keep a human approval gate. Start with:
-
-- [`convergence-demo`](loops/convergence-demo/) — two gate failures, a successful
-  third lap, and a deliberate max-iteration trip.
-- [`citation-existence-check`](loops/citation-existence-check/) — a legal citation
-  corrected over two laps while the reporter and checker stay protected.
-- [`bug-fix-red-green`](loops/bug-fix-red-green/) — the smallest pytest loop and
-  its intentionally ungated counterexample.
-- [`catalog/README.md`](catalog/README.md) — the full role and pattern index.
-
-## Create your own loop
-
-```bash
-bl new --list
-bl new pytest-basic my-loop
-bl doctor
-bl lint my-loop
-bl run my-loop --yes
-```
-
-Packaged templates work from a wheel; the full 68-loop catalog lives in this
-repository. Follow [WRITING-A-LOOP.md](docs/WRITING-A-LOOP.md) and prove the
-unfixed seed fails before proving the fix passes.
+---
 
 ## Codex, Claude Code, MCP, and editors
 
@@ -206,32 +313,39 @@ codex plugin marketplace add .
 codex plugin add bounded-loops@bounded-loops
 ```
 
-The Codex package uses `.codex-plugin/plugin.json` and ships the bounded-loops
-skill plus `bounded-loops-mcp` wiring. Claude Code and Antigravity packages, the
-isolated install test, and local-development commands are documented in
-[`plugins/README.md`](plugins/README.md). VS Code / GitHub Copilot MCP files are
-also included.
+The `bounded-loops-mcp` server exposes loop tools — run, lint, list, show, gates,
+audit, run-history — over the composition root. The graph MCP shim
+(`graph_status` / `graph_resume` / `graph_approve`) mounts onto a deployment's own
+server via a runtime facade; subject identity binds to the MCP session, never an LLM
+tool argument.
 
-The `bounded-loops-mcp` server exposes the loop tools — run, lint, list, show,
-gates, audit, and run-history — over the composition root. Confirmation binds the
-gate, runner, and iteration cap, so a caller cannot preview a safer run and
-confirm a different one. The graph engine ships an MCP shim
-(`graph_status`/`graph_resume`/`graph_approve`) that a deployment wires onto its
-own server with a runtime facade; subject identity is always bound to the MCP
-session, never an LLM tool argument.
+**Provider plugins are a boundary, not a sandbox.** A plugin is arbitrary code in this
+process and can monkey-patch the worker. The narrower guarantee worth stating exactly:
+the engine's own resolution path will not hand a plugin's values to a subprocess, and
+its checks cannot be defeated by mutating something they read.
+
+Claude Code and Antigravity packages, the isolated install test, and
+local-development commands: [`plugins/README.md`](plugins/README.md).
+
+---
 
 ## Known limitations
 
-- `bl graph run --execute` pauses at approval nodes (exit code 3 AWAITING_APPROVAL) and
-  resumes via `bl graph approve`; sandboxed arbitrary-tool nodes are a later phase.
-- The `ALLOWLIST` egress cage is wired for `local_cli` nodes on macOS Seatbelt
-  (opt-in via `bl graph init` or `BOUNDED_LOOPS_EGRESS_POSTURE`; fail-closed without the
-  cage); it is not yet the default tier — `open` remains the default.
-- Framework example glue uses deterministic edits and currently reports
-  `changed: true`; production glue should compute a before/after diff.
-- `content-fact-gate` and OSV scans require network access; the quick start
-  itself is offline. The npm package is a thin Python launcher, not a second
-  engine. Python 3.11+ is required.
+- `kind: loop` nodes in a graph manifest compile and lint without error, but
+  `bl graph run --execute` refuses them at preflight. This is by design in this
+  release; a sandboxed loop-node runner is in progress.
+- `bl graph run --execute` pauses at `approval` nodes (exit code 3, `AWAITING_APPROVAL`)
+  and resumes via `bl graph approve`. Sandboxed arbitrary-tool nodes are a later phase.
+- The `ALLOWLIST` egress cage is a network-only restriction on macOS Seatbelt. A
+  caged subprocess still has full filesystem access.
+- The Arena's `LOCAL/UNVERIFIED` notice is accurate: local runs are not verified
+  against a hosted receipt server.
+- `content-fact-gate` and OSV scans require network access; the quickstart is offline.
+- Framework example glue uses deterministic edits and reports `changed: true`; production
+  glue should compute a before/after diff.
+- Python 3.11+ required. The npm package is a thin Python launcher, not a second engine.
+
+---
 
 ## Credits
 
@@ -243,6 +357,8 @@ Berman's [Loop Library](https://github.com/Forward-Future/loopy), and runnable
 verifier-loop projects such as proof-loop, repo-task-proof-loop, and agentops.
 This repository's contribution is the executable harness: enforced bounds,
 independent gates, receipts, a graph engine, and a cross-domain source catalog.
+
+---
 
 ## Contributing, citation, and security
 
