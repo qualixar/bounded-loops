@@ -5,6 +5,16 @@ All notable changes to bounded-loops are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Gate false-accept rate intervals are now anytime-valid confidence sequences.**
+  The Wilson score interval, which required independent Bernoulli trials, has been
+  replaced by the PrPl-EB empirical-Bernstein confidence sequence (Waudby-Smith &
+  Ramdas, JRSS-B 2023). The new interval is valid under optional stopping and
+  does not break when retries share a worker, prompt, or failure mode. The
+  `bl graph metrics` output label changes from `nominal-95% iid (UNCALIBRATED)`
+  to `anytime-valid 95% CS (PrPl-EB)`.
+
 ### Fixed
 
 - **Conditional edges (`when`) now actually apply.** An edge's `when` was accepted,

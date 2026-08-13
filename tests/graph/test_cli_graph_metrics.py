@@ -111,27 +111,40 @@ def test_a_read_only_report_does_not_create_the_log_it_reads(tmp_path, capsys) -
 
 
 def test_the_published_baseline_is_not_printed_beside_an_uncomputable_precision(tmp_path, capsys) -> None:
-    """Printing 0.39% next to "blocked precision 0/0" invites a comparison against nothing."""
+    """Printing 0.39% next to "blocked precision 0/0" invites a comparison against nothing.
+
+    The guard expression changed from ``blocked_precision().reportable`` to
+    ``bp_cs.reportable`` when the CLI switched to the CS-based rates.  The
+    property that matters — the baseline lives inside a reportable guard — is
+    unchanged.
+    """
     import inspect
 
     from bounded_loops.graph import cli_graph_metrics
 
     source = inspect.getsource(cli_graph_metrics.cmd_graph_metrics)
     baseline_line = source.index("advisory baseline")
-    guard = source.rindex("blocked_precision().reportable", 0, baseline_line)
+    # The CS refactor replaced overall.blocked_precision().reportable with bp_cs.reportable
+    guard = source.rindex("bp_cs.reportable", 0, baseline_line)
 
     assert guard < baseline_line, "the baseline must sit inside a reportable-precision guard"
 
 
-def test_the_interval_is_never_labelled_a_calibrated_95_percent_ci() -> None:
-    """The audit measured this interval's real coverage at 31-41% under correlated retries. Printing
-    "95% CI" is therefore a false statement about the data, and a caveat beside a false label is how
-    the false label gets quoted."""
+def test_the_interval_label_claims_measured_coverage_and_not_anytime_validity() -> None:
+    """The interval is now a PrPl-EB anytime-valid confidence sequence (Waudby-Smith & Ramdas 2023).
+    The label must say so precisely.  The former 'nominal-95% iid (UNCALIBRATED)' label described a
+    Wilson interval whose measured coverage under correlated retries was 31-41%; that label is gone."""
     from bounded_loops.graph.application.gate_metrics import Interval, Rate
     from bounded_loops.graph.cli_graph_metrics import _rate_text
 
     printed = _rate_text("false-accept rate", Rate(1, 20, 0.05, Interval(0.01, 0.24)))
 
-    assert "95% CI" not in printed, "asserted on the OUTPUT, not the source — a comment may say it"
-    assert "UNCALIBRATED" in printed
-    assert "nominal-95%" in printed, "say what it actually is: nominal under an assumption"
+    assert "95% CI" not in printed, "CI implies a fixed-time guarantee this does not carry"
+    assert "UNCALIBRATED" not in printed, "coverage has now been measured; the old label is gone"
+    # The label must claim MEASURED coverage and nothing stronger. The radius is the fixed-time
+    # empirical-Bernstein form with no stitching term, so simultaneous validity over all n is
+    # UNPROVEN here -- and a label asserting it would be the same class of error as the "95% CI"
+    # this project already stopped printing. Tracked as task #38.
+    assert "anytime-valid" not in printed, "unproven for this radius: no stitching term"
+    assert "COVERAGE-MEASURED" in printed, "say what was established, not what was hoped"
+    assert "emp-Bernstein" in printed, "the method must be named so a reader can look it up"

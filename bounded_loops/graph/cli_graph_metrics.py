@@ -19,8 +19,12 @@ from bounded_loops.graph.application.gate_metrics import (
     INDEPENDENCE_CAVEAT,
     Confusion,
     Rate,
+    blocked_precision_cs,
     confusion,
     confusion_by_attempt,
+    false_accept_rate_cs,
+    false_accept_rate_cs_by_attempt,
+    false_reject_rate_cs,
 )
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
@@ -39,13 +43,16 @@ def _rate_text(label: str, rate: Rate) -> str:
             f"(too few to support a rate; the counts are real)"
         )
     assert rate.interval is not None
-    # NOT labelled "95% CI". The audit simulated correlated retries and measured this interval's
-    # actual coverage at 31-41%, not 95% — so "95% CI" is a false claim about this data, and a caveat
-    # printed beside a false label is exactly how the false label ends up quoted. What it honestly is:
-    # a nominal-95% interval computed under an iid assumption the data violates.
+    # Empirical-Bernstein with a predictable plug-in. Labelled by what has been MEASURED
+    # (96.9% coverage under simulated correlated retries with optional stopping), NOT by the
+    # simultaneous-validity theorem -- the radius carries no stitching term, so that theorem
+    # is unverified here. See confidence_sequence.py and the COVERAGE-MEASURED note.
+    # Replaces the former "nominal-95% iid (UNCALIBRATED)" Wilson label whose measured
+    # coverage under correlated retries was 31–41%.  This interval is valid under optional
+    # stopping and makes no independence assumption.
     return (
         f"  {label:<24} {rate.value:.4f}  [{rate.interval.low:.4f}, {rate.interval.high:.4f}] "
-        f"nominal-95% iid (UNCALIBRATED)   from {rate.numerator}/{rate.denominator}"
+        f"emp-Bernstein 95% (COVERAGE-MEASURED)   from {rate.numerator}/{rate.denominator}"
     )
 
 
@@ -106,6 +113,12 @@ def cmd_graph_metrics(args: argparse.Namespace) -> int:
     overall = confusion(receipts)
     per_attempt = confusion_by_attempt(receipts)
 
+    # Anytime-valid CS-based rates for text output (Wilson kept only in JSON via _confusion_dict)
+    fa_cs = false_accept_rate_cs(receipts)
+    fr_cs = false_reject_rate_cs(receipts)
+    bp_cs = blocked_precision_cs(receipts)
+    fa_cs_by_attempt = false_accept_rate_cs_by_attempt(receipts)
+
     if getattr(args, "json", False):
         print(json.dumps({
             "run": str(run_dir),
@@ -144,20 +157,16 @@ def cmd_graph_metrics(args: argparse.Namespace) -> int:
     print(f"  accepted by the gate     {overall.accepted}  ({overall.false_accept} of them wrong)")
     print(f"  blocked by the gate      {overall.rejected}  ({overall.false_reject} of them correct)")
     print()
-    print(_rate_text("false-accept rate (α)", overall.false_accept_rate()))
-    print(_rate_text("false-REJECTION rate", overall.false_reject_rate()))
-    print(_rate_text("blocked precision", overall.blocked_precision()))
-    if overall.blocked_precision().reportable:
+    print(_rate_text("false-accept rate (α)", fa_cs))
+    print(_rate_text("false-REJECTION rate", fr_cs))
+    print(_rate_text("blocked precision", bp_cs))
+    if bp_cs.reportable:
         # Only beside a real number. Printing a published baseline next to "0/0" invites the reader
         # to compare against nothing, which is worse than omitting the comparison.
         print(f"  {'advisory baseline':<24} {ADVISORY_BLOCKED_PRECISION_BASELINE:.4f} "
               "(arXiv:2605.17998 — the number that demoted a gate to advisory)")
 
-    if any(
-        rate.reportable for rate in (
-            overall.false_accept_rate(), overall.false_reject_rate(), overall.blocked_precision(),
-        )
-    ):
+    if any(rate.reportable for rate in (fa_cs, fr_cs, bp_cs)):
         # Beside the numbers, never in a footnote: an interval quoted without its assumption is the
         # thing that ends up in someone's slide deck as a hard bound.
         print()
@@ -169,7 +178,9 @@ def cmd_graph_metrics(args: argparse.Namespace) -> int:
         print()
         print("  α by attempt index — a pooled α hides whether the gate degrades on retries:")
         for index in sorted(per_attempt):
-            print(f"    attempt {index}" + _rate_text("", per_attempt[index].false_accept_rate()))
+            # Prefer CS rate when available; fall back to Wilson for indices with no labelled accepts.
+            rate = fa_cs_by_attempt.get(index, per_attempt[index].false_accept_rate())
+            print(f"    attempt {index}" + _rate_text("", rate))
     return 0
 
 

@@ -257,18 +257,21 @@ def test_a_confusion_with_no_labels_at_all_is_honest_about_it() -> None:
     assert result.unlabelled == 500
 
 
-class TestTheIndependenceCaveat:
-    """The interval's own assumption is violated by the data. That has to travel with the number."""
+class TestTheIntervalCaveat:
+    """The interval method and its validity conditions must travel with every printed number."""
 
-    def test_the_caveat_says_which_direction_the_error_goes(self) -> None:
-        """A caveat that only says "assumptions apply" is decoration. This one has to say that the
-        interval is too NARROW, because a reader who does not know the direction will assume the
-        conservative one."""
+    def test_the_caveat_identifies_the_method_and_references_measured_wilson_failure(self) -> None:
+        """The caveat must name the method, state that coverage was MEASURED rather than proven, and
+        cite the Wilson failure so a reader who pulls just this number understands the replacement.
+
+        It must also say plainly that anytime validity is NOT established: the radius is the
+        fixed-time empirical-Bernstein form with no stitching term."""
         from bounded_loops.graph.application.gate_metrics import INDEPENDENCE_CAVEAT
 
-        assert "NOT independent" in INDEPENDENCE_CAVEAT
-        assert "NARROW" in INDEPENDENCE_CAVEAT
-        assert "LOWER bound" in INDEPENDENCE_CAVEAT
+        assert "empirical-Bernstein" in INDEPENDENCE_CAVEAT
+        assert "MEASURED" in INDEPENDENCE_CAVEAT
+        assert "NOT yet an anytime-valid" in INDEPENDENCE_CAVEAT
+        assert "31" in INDEPENDENCE_CAVEAT   # the Wilson coverage figure this replaced
 
     def test_the_cli_prints_the_caveat_whenever_it_prints_an_interval(self, tmp_path, capsys) -> None:
         """Wired so the caveat cannot be dropped while the numbers stay — the failure mode being that
