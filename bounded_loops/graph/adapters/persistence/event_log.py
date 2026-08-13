@@ -617,8 +617,25 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
         # gate rejection and a worker fault — which is what makes the per-attempt
         # gate error rate computable without parsing the free-text ``reason``.
         required = {"node_id", "attempt", "reason", "cause"}
-        if set(payload) - {"verdict"} != required:
+        # ``artifact_digests`` rides ONLY a gate rejection: the gate read that output and refused
+        # it, so the artifact exists and a reviewer can later judge whether refusing it was right.
+        # Without this the false-REJECTION rate was structurally uncomputable — ``label_node_outcome``
+        # harvests digests from receipts and a rejection carried none, so no block could ever be
+        # marked wrong. Found by the P4 audit.
+        if set(payload) - {"verdict", "artifact_digests"} != required:
             raise GraphIntegrityError("node.attempt.failed payload has an invalid shape")
+        if "artifact_digests" in payload and payload["cause"] != NodeFailureCause.GATE_REJECTED.value:
+            raise GraphIntegrityError(
+                "node.attempt.failed artifact_digests may accompany only a gate rejection"
+            )
+        if "artifact_digests" in payload:
+            digests = payload["artifact_digests"]
+            if not isinstance(digests, (list, tuple)) or not digests or not all(
+                _is_digest(value) for value in digests
+            ):
+                raise GraphIntegrityError(
+                    "node.attempt.failed artifact_digests must be a non-empty list of SHA-256 digests"
+                )
         _validate_cause(payload["cause"], "node.attempt.failed")
         if not isinstance(payload["node_id"], str) or not payload["node_id"]:
             raise GraphIntegrityError("node.attempt.failed node_id must be a non-empty string")

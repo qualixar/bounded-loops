@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Callable
 
 from bounded_loops.graph.application.graph_ports import EventLogPort
@@ -21,6 +20,7 @@ from bounded_loops.graph.application.node_contracts import (
     IndependentGatePort,
     NodeWorkerPort,
 )
+from bounded_loops.graph.application.attempt_outcome import AttemptOutcome
 from bounded_loops.graph.application.node_receipt_writer import NodeReceiptWriter
 from bounded_loops.graph.application.node_receipts import (
     isolation_payload,
@@ -58,28 +58,6 @@ from bounded_loops.graph.domain.events import (
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 from bounded_loops.graph.domain.pricing import PriceTable, empty_price_table
 from bounded_loops.graph.domain.usage import WorkerUsage
-
-
-@dataclass(frozen=True)
-class _AttemptOutcome:
-    """The result of one attempt of a bounded loop node.
-
-    Exactly one of three shapes:
-
-    * ``succeeded`` — the gate accepted; the node is done.
-    * ``failure`` set, ``terminal`` None — a RETRYABLE failure.  The caller records an
-      attempt event and tries again while budget remains.  ``verdict`` is set only when
-      the failure came from the gate, which is what separates a gate rejection from a
-      worker fault when the per-attempt gate error rate is computed.
-    * ``terminal`` set — the node already failed durably; the run stops.  Used for
-      failures a retry cannot fix (denied execution environment, broken gate).
-    """
-
-    succeeded: bool = False
-    failure: str | None = None
-    cause: NodeFailureCause | None = None
-    verdict: dict[str, object] | None = None
-    terminal: GraphRunProjection | None = None
 
 
 def is_egress_node(plan: ExecutionPlan, node: PlannedNode, egress_transports: frozenset[str]) -> bool:
@@ -453,7 +431,9 @@ class GraphRunController:
             # budget runs out ON a gate rejection, that rejection would appear solely on
             # the terminal node.failed and be missed.
             cause = outcome.cause or NodeFailureCause.WORKER_FAULT
-            self._receipts.append_attempt_failed(node_id, attempt, reason, cause, outcome.verdict)
+            self._receipts.append_attempt_failed(
+                node_id, attempt, reason, cause, outcome.verdict, outcome.artifact_digests,
+            )
             if attempt < budget:
                 continue
             return self._fail_node(
@@ -477,7 +457,7 @@ class GraphRunController:
         worker: NodeWorkerPort,
         attempt: int,
         execution: int,
-    ) -> _AttemptOutcome:
+    ) -> AttemptOutcome:
         """Run one attempt: enforce, execute, verify artifacts, then gate.
 
         ``terminal`` is set for failures that a retry cannot fix — a denied execution
@@ -492,7 +472,7 @@ class GraphRunController:
             try:
                 self._execution_enforcer.enforce(plan=self.plan, node=node, envelope=envelope)
             except Exception:
-                return _AttemptOutcome(terminal=self._fail_node(
+                return AttemptOutcome(terminal=self._fail_node(
                     states, node_id, "execution environment denied worker", attempt=attempt,
                     cause=NodeFailureCause.ENVIRONMENT_DENIED,
                 ))
@@ -507,7 +487,7 @@ class GraphRunController:
             # and pays the provider each time: a closed door that spends more than the hole it
             # replaced. That is exactly how the first version of this refusal behaved.
             self._receipts.append_spend(node_id, attempt, execution, None)
-            return _AttemptOutcome(terminal=self._fail_node(
+            return AttemptOutcome(terminal=self._fail_node(
                 states, node_id, str(broken) or "worker contract cannot be honoured",
                 attempt=attempt, cause=NodeFailureCause.WORKER_CONTRACT,
             ))
@@ -516,7 +496,7 @@ class GraphRunController:
             # know — so the execution is recorded with no usage, which is what makes the run
             # total read as a lower bound instead of silently omitting a paid call.
             self._receipts.append_spend(node_id, attempt, execution, None)
-            return _AttemptOutcome(
+            return AttemptOutcome(
                 failure="worker execution failed", cause=NodeFailureCause.WORKER_FAULT,
             )
         expected_route = self._expected_route_for(node)
@@ -528,7 +508,7 @@ class GraphRunController:
             validate_worker_result(result)
         except Exception:
             self._receipts.append_spend(node_id, attempt, execution, None)
-            return _AttemptOutcome(
+            return AttemptOutcome(
                 failure="worker output artifact verification failed",
                 cause=NodeFailureCause.ARTIFACT_UNVERIFIED,
             )
@@ -548,7 +528,7 @@ class GraphRunController:
                 digests=result.output_artifact_digests,
             )
         except Exception:
-            return _AttemptOutcome(
+            return AttemptOutcome(
                 failure="worker output artifact verification failed",
                 cause=NodeFailureCause.ARTIFACT_UNVERIFIED,
             )
@@ -568,7 +548,7 @@ class GraphRunController:
             # never fire, which is indistinguishable from protection until the bill arrives.
             # Terminal rather than retried: the WIRING is what is wrong, so a further attempt
             # would report exactly as little while costing exactly as much.
-            return _AttemptOutcome(terminal=self._fail_node(
+            return AttemptOutcome(terminal=self._fail_node(
                 states, node_id,
                 f"node {node_id!r} declares a {unmeasurable} budget but its worker does not "
                 f"report {unmeasurable}, so the spend cannot be metered; either remove that "
@@ -580,7 +560,7 @@ class GraphRunController:
         try:
             verdict = self._gate.evaluate(plan=self.plan, node=node, result=result)
         except Exception:
-            return _AttemptOutcome(terminal=self._fail_node(
+            return AttemptOutcome(terminal=self._fail_node(
                 states, node_id, "independent gate evaluation failed", attempt=attempt,
                 cause=NodeFailureCause.GATE_BROKEN,
             ))
@@ -588,7 +568,7 @@ class GraphRunController:
             # A broken gate, not a failed attempt: retrying would spend the budget
             # against a verdict this controller cannot interpret, and would hide the
             # defect behind an eventual budget-exhausted failure.
-            return _AttemptOutcome(terminal=self._fail_node(
+            return AttemptOutcome(terminal=self._fail_node(
                 states, node_id, "independent gate returned an invalid verdict", attempt=attempt,
                 cause=NodeFailureCause.GATE_BROKEN,
             ))
@@ -605,11 +585,12 @@ class GraphRunController:
                 **({"transport": expected_transport} if expected_transport else {}),
                 **isolation_payload(result),
             )
-            return _AttemptOutcome(succeeded=True)
-        return _AttemptOutcome(
+            return AttemptOutcome(succeeded=True)
+        return AttemptOutcome(
             failure="independent gate rejected output",
             cause=NodeFailureCause.GATE_REJECTED,
             verdict=verdict_body(verdict),
+            artifact_digests=tuple(result.output_artifact_digests),
         )
 
     def _resolve_approval(

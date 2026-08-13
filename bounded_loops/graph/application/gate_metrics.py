@@ -255,7 +255,12 @@ def _gate_verdicts(receipts: Sequence[StoredGraphEvent]) -> dict[tuple[str, int]
         if not isinstance(node_id, str) or not isinstance(attempt, int):
             continue
         if event_type == _SUCCEEDED:
-            out[(node_id, attempt)] = True
+            # Only when a VERDICT is present. An approval node writes ``node.succeeded`` with no
+            # verdict — a human decided and the gate never ran — and counting that as a gate pass
+            # credits the gate for a judgement it did not make. Same reasoning as excluding worker
+            # faults from the denominator; found by the P4 audit.
+            if "verdict" in payload:
+                out[(node_id, attempt)] = True
         elif event_type in (_ATTEMPT_FAILED, _FAILED):
             if payload.get("cause") == NodeFailureCause.GATE_REJECTED.value:
                 out[(node_id, attempt)] = False

@@ -89,7 +89,7 @@ class NodeReceiptWriter:
 
     def append_attempt_failed(
         self, node_id: str, attempt: int, reason: str, cause: NodeFailureCause,
-        verdict: dict[str, object] | None,
+        verdict: dict[str, object] | None, artifact_digests: tuple[str, ...] = (),
     ) -> None:
         """Record one failed attempt without transitioning run state.
 
@@ -105,6 +105,11 @@ class NodeReceiptWriter:
         }
         if verdict is not None:
             payload["verdict"] = verdict
+        if artifact_digests:
+            # Only a GATE REJECTION carries these: the gate read this output and refused it, so the
+            # artifact exists and a reviewer can judge whether refusing it was right. A worker fault
+            # produced nothing and carries none.
+            payload["artifact_digests"] = list(artifact_digests)
         self.append(f"{node_id}:node.attempt.failed:{attempt}", "node.attempt.failed", payload)
 
     def append_redrive(self, node_id: str, attempt: int, redrive: int) -> None:

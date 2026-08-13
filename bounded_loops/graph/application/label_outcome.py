@@ -123,7 +123,14 @@ def _require_the_attempt_produced_that_artifact(
             continue
         if payload.get("attempt") == attempt:
             seen_attempt = True
-        if stored.event.event_type != "node.succeeded" or payload.get("attempt") != attempt:
+        # BOTH terminal shapes an attempt can have output in. Harvesting only from
+        # ``node.succeeded`` made a gate REJECTION unlabelable, and therefore made the
+        # false-rejection rate and blocked precision structurally uncomputable — no reviewer could
+        # ever mark a block as wrong, so those cells stayed 0 on every honest log while the tests
+        # that "measured" them injected events the public API refuses. Found by the P4 audit.
+        if payload.get("attempt") != attempt or stored.event.event_type not in (
+            "node.succeeded", "node.attempt.failed",
+        ):
             continue
         digests = payload.get("artifact_digests")
         if isinstance(digests, (list, tuple)):
@@ -133,9 +140,12 @@ def _require_the_attempt_produced_that_artifact(
             f"cannot label node {node_id!r} attempt {attempt}: this run has no such attempt"
         )
     if artifact_digest not in produced:
-        # A failed attempt produces nothing, so it has no digest to bind to; that is
-        # reported as the same refusal rather than a special case, because a label on
-        # output that does not exist is meaningless either way.
+        # An attempt that failed BEFORE the gate (worker fault, policy denial) genuinely produced
+        # nothing and has no digest to bind to. An attempt the GATE rejected did produce output —
+        # the gate read it — and since P4 that digest is on its receipt, so it can be labelled and a
+        # block can be judged wrong. The earlier version of this comment claimed a failed attempt
+        # produces nothing, full stop; that was false for exactly the case the false-rejection rate
+        # depends on.
         raise GraphIntegrityError(
             f"cannot label node {node_id!r} attempt {attempt}: it did not produce "
             f"artifact {artifact_digest}"

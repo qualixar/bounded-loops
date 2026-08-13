@@ -54,11 +54,22 @@ def _stream(*specs: tuple[str, int, bool | None, str | None]) -> list[StoredGrap
     for node_id, attempt, passed, label in specs:
         sequence += 1
         if passed is True:
-            out.append(_event(sequence, "node.succeeded", {"node_id": node_id, "attempt": attempt}))
+            # A real gated success carries the gate's VERDICT. Without it this fixture was building a
+            # shape only the approval path produces (a human decided, the gate never ran), and the
+            # metrics correctly refuse to count that as a gate pass.
+            out.append(_event(sequence, "node.succeeded", {
+                "node_id": node_id, "attempt": attempt,
+                "verdict": {"passed": True, "reason": "gate accepted"},
+                "artifact_digests": [_DIGEST],
+            }))
         elif passed is False:
+            # A real gate rejection carries the digest it rejected — that is what makes a block
+            # labelable, and therefore the false-rejection rate computable at all.
             out.append(_event(sequence, "node.attempt.failed", {
                 "node_id": node_id, "attempt": attempt,
                 "cause": NodeFailureCause.GATE_REJECTED.value,
+                "verdict": {"passed": False, "reason": "gate rejected"},
+                "artifact_digests": [_DIGEST],
             }))
         else:
             out.append(_event(sequence, "node.attempt.failed", {
