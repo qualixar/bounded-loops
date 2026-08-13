@@ -164,7 +164,10 @@ That is deliberate: bound repairs per node instead and two nodes can repair each
 forever, each seeing its own counter as unspent. One global counter is what makes the run
 provably terminate.
 
-**Total node executions are bounded by `(1 + repair_budget) × Σᵥ(max_attemptsᵥ + 1)`.**
+**Total node executions are bounded by `(1 + repair_budget) × Σᵥ max_attemptsᵥ`.**
+(`max_attempts` is the total attempts a node may make, so a node with `max_attempts: 1`
+contributes 1. In the retry-budget notation used by the scheduling literature, where `bᵥ` is
+the number of *retries*, that is `(1 + R) × Σᵥ(bᵥ + 1)` — the same quantity.)
 Per-node retry budgets alone do *not* bound a graph with repair — that is the whole point.
 
 Repair is a **bounded outer loop, not a cycle**. Nothing is revived: a round boundary is

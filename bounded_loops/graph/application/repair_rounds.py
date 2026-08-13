@@ -13,8 +13,16 @@ hash-chained receipt, so a verifier sees precisely where and why monotonicity re
 
 So the lifecycle is per **(node, round)**, not per node. Every rule below follows from that.
 
-**Termination.** Total node executions are bounded by ``(1 + R) * Σ_v (b_v + 1)``, where ``R`` is the
-graph's GLOBAL repair budget and ``b_v`` each node's retry budget, given three conditions:
+**Termination.** Total node executions are bounded by ``(1 + R) * Σ_v a_v``, where ``R`` is the
+graph's GLOBAL repair budget and ``a_v`` is node ``v``'s ``max_attempts`` — the TOTAL attempts it may
+make, so ``max_attempts: 1`` contributes 1, not 2.
+
+Stated in the retry-budget notation the scheduling literature uses, where ``b_v`` counts RETRIES, that
+is ``(1 + R) * Σ_v (b_v + 1)``. The two are the same quantity: ``a_v = b_v + 1``. Writing
+``Σ (max_attempts + 1)`` — as this module's own docs briefly did — overstates the bound by one per
+node per round, which is exactly the sort of off-by-|V| that must not reach a paper.
+
+The bound holds given three conditions:
 
 1. *suffix locality* — a round re-executes only the target's descendants, never the whole graph;
 2. *per-round reset* — each node's retry budget resets at a boundary, or a repair accomplishes
@@ -88,10 +96,15 @@ def repair_budget(plan: ExecutionPlan) -> int:
 def total_execution_bound(plan: ExecutionPlan) -> int:
     """``(1 + R) * Σ_v (b_v + 1)`` — the tight bound on node executions for the whole run.
 
+    Sums ``max_attempts`` directly, which is what the controller actually spends: ``run_graph``
+    iterates ``range(1, max_attempts + 1)``. See the module docstring on why ``Σ (max_attempts + 1)``
+    would be wrong.
+
     This is the quantity arXiv:2604.11378 Theorem 6.2 gets wrong under repair. Its bound is
-    ``Σ_v τ_v·(b_v + 1)``, the sum of the per-node budgets, and its proof depends on terminal states
-    being absorbing. A repair breaks that premise, and the true bound carries the ``(1 + R)`` factor —
-    so with ``R`` unbounded their bound does not exist at all.
+    ``Σ_v τ_v·(b_v + 1)`` — the same per-round total as ours — but its proof depends on terminal
+    states being absorbing. A repair breaks that premise, so the true bound carries the ``(1 + R)``
+    factor; with ``R`` unbounded their bound does not exist at all. The disagreement is about the
+    FACTOR, not the per-round sum, and the paper must say so precisely or it is attacking a straw man.
     """
     per_round = 0
     for node in plan.nodes:

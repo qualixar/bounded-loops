@@ -50,7 +50,7 @@ All notable changes to bounded-loops are documented here. This project follows
 
   The budget is a **global** cap on repair rounds for the whole run, not per node, and that is
   what makes the run provably finish: total node executions are bounded by
-  `(1 + repair_budget) × Σ(max_attempts + 1)`. Per-node retry budgets alone do not bound a
+  `(1 + repair_budget) × Σ(max_attempts)`. Per-node retry budgets alone do not bound a
   graph that can repair.
 
   Every round is recorded — `run.repair.round` for the boundary, `node.repaired` for each node
