@@ -188,7 +188,10 @@ def test_an_absurdly_large_catalog_is_refused_before_parsing(tmp_path: Path) -> 
         load_provider_catalog(path)
 
 
-@pytest.mark.parametrize("flag", ["--api-key", "--token=abc", "--password", "--client-secret"])
+@pytest.mark.parametrize("flag", [
+    "--api-key", "--token=abc", "--password", "--client-secret", "--x-api-key",
+    "--openai-api-key", "--bearer", "--access-token", "--API-KEY",
+])
 def test_a_credential_flag_in_args_is_refused(flag: str) -> None:
     """``args`` legitimately carries values, so it cannot be name-only — but a key on a command line
     is visible to every process on the host, whether or not the value is in this file.
@@ -200,8 +203,20 @@ def test_a_credential_flag_in_args_is_refused(flag: str) -> None:
         profile_from_mapping("x", {"binary": "c", "args": [flag, "value"]}, pointer="/p")
 
 
-@pytest.mark.parametrize("args", [["--model", "sk-experiment"], ["--print"], ["--region", "in"]])
+@pytest.mark.parametrize("args", [
+    ["--model", "sk-experiment"],
+    ["--print"],
+    ["--region", "in"],
+    # The false positives the FIRST version of this lint produced. ``--max-tokens`` is one of the
+    # commonest flags an agent CLI takes, and a substring test on "token" refused it. A lint that
+    # rejects ordinary configuration gets switched off, and then it protects nothing.
+    ["--max-tokens", "4096"],
+    ["--token-limit", "8000"],
+    ["--num-tokens", "10"],
+    ["--token-budget", "1000"],
+    ["--max-token-count", "512"],
+])
 def test_a_legitimate_flag_that_merely_looks_odd_still_works(args: list[str]) -> None:
-    """Refused on the FLAG name, not by guessing at the value's shape — so a model called
-    ``sk-experiment`` is not collateral damage."""
+    """Refused on the FLAG name, and only when it is a credential flag rather than a quantity —
+    so neither ``--model sk-experiment`` nor ``--max-tokens`` is collateral damage."""
     assert profile_from_mapping("x", {"binary": "c", "args": args}, pointer="/p").args == tuple(args)

@@ -75,6 +75,39 @@ def _is_env_name(value: str) -> bool:
     )
 
 
+#: Flag STEMS that mean "the next argv word is a credential". Matched as a suffix on the flag name,
+#: never as a substring of it — the first version used the ``_SECRET_WORDS`` substring test and
+#: refused ``--max-tokens``, one of the commonest flags an agent CLI takes. A lint that rejects
+#: ordinary configuration gets switched off, and then it protects nothing.
+_CREDENTIAL_FLAG_STEMS = (
+    "api_key", "apikey", "auth", "auth_token", "access_token", "bearer", "credential",
+    "credentials", "client_secret", "password", "passwd", "secret", "token",
+)
+#: Words that make a flag a QUANTITY, not a credential: ``--max-tokens``, ``--token-limit``,
+#: ``--num-tokens``. Same distinction ``validate_graph._is_declared_quantity`` already draws for
+#: budget fields, for the same reason.
+_QUANTITY_WORDS = ("max", "min", "num", "count", "limit", "budget", "size", "length", "total")
+
+
+def _is_credential_flag(entry: str) -> bool:
+    """Does this argv word pass a credential VALUE on the command line?
+
+    Only flags are considered — a bare value cannot be judged, and guessing at value shapes is how
+    ``--model sk-experiment`` would become collateral damage.
+    """
+    if not entry.startswith("-"):
+        return False
+    flag = entry.lstrip("-").replace("-", "_").split("=", 1)[0].lower()
+    if not flag:
+        return False
+    parts = flag.split("_")
+    if any(word in parts for word in _QUANTITY_WORDS):
+        return False
+    return flag in _CREDENTIAL_FLAG_STEMS or any(
+        flag.endswith("_" + stem) for stem in _CREDENTIAL_FLAG_STEMS
+    )
+
+
 def _error(pointer: str, message: str) -> GraphValidationError:
     return GraphValidationError("provider_catalog", pointer, message)
 
@@ -134,8 +167,7 @@ def profile_from_mapping(name: str, raw: object, *, pointer: str) -> CliProfile:
     # rather than by guessing at the value's shape, which keeps ``--model sk-experiment`` working.
     argv = _string_list(raw.get("args", []), f"{pointer}/args")
     for index, entry in enumerate(argv):
-        flag = entry.lstrip("-").replace("-", "_").split("=", 1)[0].lower()
-        if any(word in flag for word in _SECRET_WORDS):
+        if _is_credential_flag(entry):
             raise _error(
                 f"{pointer}/args/{index}",
                 f"{entry!r} passes a credential on the command line. Even if the value is not in "
