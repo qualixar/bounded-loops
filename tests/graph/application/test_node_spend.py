@@ -250,7 +250,7 @@ def test_a_budgeted_node_refuses_a_worker_that_cannot_meter_itself(tmp_path: Pat
     failed = _of_type(tmp_path, "node.failed")
     assert failed[0]["cause"] == "budget_unmeasurable"
     assert worker.calls == 1, "terminal, not retried: the wiring is what is wrong"
-    assert "reported no usage" in failed[0]["reason"]
+    assert "does not report tokens" in failed[0]["reason"]
 
 
 def test_an_unbudgeted_node_runs_happily_on_a_worker_that_reports_nothing(tmp_path: Path) -> None:
@@ -380,3 +380,90 @@ def test_spend_appears_in_the_events_a_reader_would_query(tmp_path: Path) -> Non
     assert len(usages) == 2
     assert [u["cost_microunits"] for u in usages] == [1_500, 1_500]
     assert json.dumps(usages)  # plain JSON: no floats, nothing exotic
+
+
+class _WallclockOnlyWorker:
+    """Reports elapsed time and nothing else — every subprocess and CLI worker.
+
+    This shape is why measurability is checked per dimension. Wallclock is genuinely
+    measurable by any worker, so "did it report anything?" answers yes while tokens and cost
+    stay unmeasured forever.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
+        self.calls += 1
+        return WorkerResult(
+            output_artifact_digests=(_DIGEST,),
+            usage=WorkerUsage(wallclock_ms=1_200, reported_by="local-cli"),
+        )
+
+
+def test_a_worker_that_only_reports_wallclock_cannot_satisfy_a_token_cap(tmp_path: Path) -> None:
+    """The dimension-blind hole: reporting SOMETHING is not reporting the capped thing.
+
+    With a general "did the worker report usage" check this passed, ran to completion, and
+    left spend.tokens at 0 with the cap never tripping — the exact silent-unenforceable
+    failure the refusal exists to prevent, now reachable through an honest worker rather
+    than a broken one.
+    """
+    worker = _WallclockOnlyWorker()
+
+    projection = _controller(
+        tmp_path, worker=worker, gate=_Gate(reject_first=0),
+        budgets={"max_attempts": 3, "max_tokens": 1_000},
+    ).run()
+
+    assert projection.state == "FAILED"
+    failed = _of_type(tmp_path, "node.failed")
+    assert failed[0]["cause"] == "budget_unmeasurable"
+    assert "tokens" in failed[0]["reason"]
+    assert worker.calls == 1
+
+
+def test_wallclock_alone_is_fine_when_no_spend_cap_asks_for_more(tmp_path: Path) -> None:
+    """A CLI worker reporting only elapsed time is honest and must stay usable."""
+    projection = _controller(
+        tmp_path, worker=_WallclockOnlyWorker(), gate=_Gate(reject_first=0),
+        budgets={"max_attempts": 3},
+    ).run()
+
+    assert projection.state == "SUCCEEDED"
+    assert _of_type(tmp_path, "node.succeeded")[0]["usage"] == {
+        "wallclock_ms": 1_200, "reported_by": "local-cli",
+    }
+
+
+def test_a_cost_cap_needs_reported_cost_not_merely_tokens(tmp_path: Path) -> None:
+    """Tokens are not money until a price is applied; until then the cost cap is unmetered."""
+    projection = _controller(
+        tmp_path, worker=_MeteredWorker(cost_microunits=None), gate=_Gate(reject_first=0),
+        budgets={"max_attempts": 2, "max_cost_microunits": 500},
+    ).run()
+
+    assert projection.state == "FAILED"
+    assert _of_type(tmp_path, "node.failed")[0]["cause"] == "budget_unmeasurable"
+    assert "cost" in _of_type(tmp_path, "node.failed")[0]["reason"]
+
+
+@pytest.mark.parametrize(
+    ("usage", "max_tokens", "max_cost", "expected"),
+    [
+        (None, None, None, None),
+        (None, 100, None, "tokens"),
+        (WorkerUsage(wallclock_ms=5, reported_by="p"), 100, None, "tokens"),
+        (WorkerUsage(input_tokens=1, output_tokens=1, reported_by="p"), 100, None, None),
+        (WorkerUsage(input_tokens=1, reported_by="p"), 100, None, "tokens"),
+        (WorkerUsage(input_tokens=1, output_tokens=1, reported_by="p"), None, 100, "cost"),
+        (WorkerUsage(cost_microunits=7, reported_by="p"), None, 100, None),
+        (WorkerUsage(cost_microunits=7, reported_by="p"), 100, 100, "tokens"),
+    ],
+)
+def test_measurability_is_decided_per_dimension(usage, max_tokens, max_cost, expected) -> None:
+    from bounded_loops.graph.application.node_spend import unmeasurable_dimension
+
+    assert unmeasurable_dimension(
+        usage, max_tokens=max_tokens, max_cost_microunits=max_cost,
+    ) == expected

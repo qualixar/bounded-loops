@@ -14,7 +14,7 @@ from typing import Mapping
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import StoredGraphEvent
 from bounded_loops.graph.domain.plan import ExecutionPlan
-from bounded_loops.graph.domain.usage import usage_from_payload
+from bounded_loops.graph.domain.usage import WorkerUsage, usage_from_payload
 
 #: Receipt kinds that carry per-node consumption. Listed explicitly rather than matched by
 #: prefix so a newly added ``node.*`` event cannot silently start or stop counting.
@@ -121,6 +121,25 @@ def run_spend(spend: dict[str, NodeSpend]) -> NodeSpend:
             attempts_measured=total.attempts_measured + node_spend.attempts_measured,
         )
     return total
+
+
+def unmeasurable_dimension(
+    usage: WorkerUsage | None, *, max_tokens: int | None, max_cost_microunits: int | None,
+) -> str | None:
+    """Which declared cap this attempt cannot be metered against, or ``None``.
+
+    Checked PER DIMENSION, not "did the worker report anything". A worker that reports only
+    wallclock — which is every subprocess and CLI worker, since they can measure elapsed time
+    and nothing else — satisfies "reported something" while leaving a token cap permanently at
+    zero. The cap would never trip, no error would be raised, and the operator would read
+    silence as protection. That is the precise failure this rule exists to prevent, so it has
+    to name the dimension rather than take a general answer.
+    """
+    if max_tokens is not None and (usage is None or usage.total_tokens is None):
+        return "tokens"
+    if max_cost_microunits is not None and (usage is None or usage.cost_microunits is None):
+        return "cost"
+    return None
 
 
 def spend_refusal(

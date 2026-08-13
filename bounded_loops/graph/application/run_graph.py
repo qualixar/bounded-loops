@@ -39,6 +39,7 @@ from bounded_loops.graph.application.node_spend import (
     consumed_attempts_from,
     consumed_spend_from,
     spend_refusal,
+    unmeasurable_dimension,
 )
 from bounded_loops.graph.application.schedule_ready import NodeState, derive_ready_nodes, dispatch_node
 from bounded_loops.graph.domain.authoring import NETWORK_EFFECTS, NodeKind
@@ -542,19 +543,20 @@ class GraphRunController:
         # something that is not a WorkerResult would raise AttributeError and escape this
         # method uncaught, turning a misbehaving worker into a crashed run.
         max_tokens, max_cost = _spend_caps(node)
-        if (max_tokens is not None or max_cost is not None) and (
-            result.usage is None or not result.usage.measured_anything
-        ):
-            # The node asked to be bounded by spend and this worker cannot say what it spent.
+        unmeasurable = unmeasurable_dimension(
+            result.usage, max_tokens=max_tokens, max_cost_microunits=max_cost,
+        )
+        if unmeasurable is not None:
+            # The node asked to be bounded on this dimension and this worker cannot report it.
             # Metering it as free would leave the cap permanently untripped — a budget that can
             # never fire, which is indistinguishable from protection until the bill arrives.
             # Terminal rather than retried: the WIRING is what is wrong, so a further attempt
             # would report exactly as little while costing exactly as much.
             return _AttemptOutcome(terminal=self._fail_node(
                 states, node_id,
-                f"node {node_id!r} declares a spend budget but its worker reported no usage, "
-                "so spend cannot be metered; either remove the budget or bind the node to a "
-                "worker that reports usage",
+                f"node {node_id!r} declares a {unmeasurable} budget but its worker does not "
+                f"report {unmeasurable}, so the spend cannot be metered; either remove that "
+                "budget or bind the node to a worker that reports it",
                 attempt=attempt, cause=NodeFailureCause.BUDGET_UNMEASURABLE,
             ))
         states[node_id] = NodeState.GATING
