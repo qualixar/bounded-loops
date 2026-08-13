@@ -773,3 +773,65 @@ def test_the_facades_own_ceiling_applies_when_a_call_supplies_none(tmp_path, mon
     facade.resume(_request())
 
     assert seen["run_budget"] == RunBudget(max_cost_microunits=250_000)
+
+
+def test_a_run_records_the_provider_catalog_it_used_and_a_continuation_resolves_it(tmp_path) -> None:
+    """The wrong-binary bug. A catalog that OVERRODE a shipped name was dropped on every continue
+    path, so the continuation resolved the shipped binary and billed a real call to the wrong CLI.
+    Nothing failed; the wrong thing ran.
+    """
+    import json
+
+    from bounded_loops.graph.graph_runtime_facade import _recorded_catalog
+
+    catalog = tmp_path / "providers.toml"
+    catalog.write_text(
+        '[providers.claude]\nbinary = "/opt/wrappers/claude"\nprompt_via = "stdin"\n',
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run-meta.json").write_text(
+        json.dumps({"provider_catalog": str(catalog)}), encoding="utf-8"
+    )
+
+    assert _recorded_catalog(run_dir) == catalog
+
+
+def test_a_run_that_recorded_no_catalog_is_unaffected(tmp_path, monkeypatch) -> None:
+    """Every run created before this field existed must keep resuming exactly as it did."""
+    import json
+
+    from bounded_loops.graph.graph_runtime_facade import _recorded_catalog
+
+    monkeypatch.delenv("BOUNDED_LOOPS_PROVIDERS", raising=False)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run-meta.json").write_text(json.dumps({"run_id": "r"}), encoding="utf-8")
+
+    assert _recorded_catalog(run_dir) is None
+
+
+def test_a_recorded_catalog_that_moved_says_so_by_name(tmp_path, caplog) -> None:
+    """The downstream wiring check can only say "this provider is unknown" — true, but it does not
+    tell the operator that the file the run was created with has moved."""
+    import json
+    import logging
+
+    from bounded_loops.graph.graph_runtime_facade import _recorded_catalog
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run-meta.json").write_text(
+        json.dumps({
+            "provider_catalog": str(tmp_path / "gone.toml"),
+            "provider_catalog_sha256": "a" * 64,
+        }),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        _recorded_catalog(run_dir)
+
+    assert "gone.toml" in caplog.text
+    assert "--providers" in caplog.text

@@ -155,7 +155,16 @@ def _recorded_catalog(run_dir: Path) -> Path | None:
         try:
             actual = hashlib.sha256(path.read_bytes()).hexdigest()
         except OSError:
-            return path  # let the wiring check name the missing provider
+            # Named here, because the wiring check downstream can only say "this provider is
+            # unknown" — true, but it does not tell the operator that the file this run was created
+            # with has moved, which is the actual thing to fix.
+            _LOGGER.warning(
+                "this run was created with provider catalog %s, which can no longer be read. "
+                "Re-supply it with --providers <path> (or BOUNDED_LOOPS_PROVIDERS); any provider "
+                "it defined is about to be reported as unknown.",
+                recorded,
+            )
+            return path
         if actual != expected:
             _LOGGER.warning(
                 "provider catalog %s has changed since this run was created; continuing with the "
