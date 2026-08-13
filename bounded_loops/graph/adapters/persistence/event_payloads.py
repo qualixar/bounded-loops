@@ -153,8 +153,14 @@ def _validate_node_event(
             _validate_isolation(payload["isolation"])
         if "verdict" in payload:
             _validate_verdict(payload["verdict"], True)
-    if event_type == "node.failed" and (not isinstance(payload["reason"], str) or not payload["reason"]):
-        raise GraphIntegrityError("node.failed requires a non-empty reason")
+    if event_type in ("node.failed", "node.skipped") and (
+        not isinstance(payload.get("reason"), str) or not payload.get("reason")
+    ):
+        # node.skipped required the KEY but not a non-empty value, so an empty reason was accepted —
+        # and an unexplained skip is indistinguishable from a scheduler bug when the run is read back
+        # later. Found by the P4.25a dual audit (Grok finding 5). Not a causality bypass; admission
+        # still has to return SKIP.
+        raise GraphIntegrityError(f"{event_type} requires a non-empty reason")
     if event_type == "node.failed" and "cause" in payload:
         _validate_cause(payload["cause"], "node.failed")
 

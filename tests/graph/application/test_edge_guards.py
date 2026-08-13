@@ -250,3 +250,112 @@ def test_every_skip_carries_a_reason_naming_the_guard_that_excluded_it():
     assert "branch not taken" in reason
     assert "a is SUCCEEDED" in reason
     assert "failed" in reason
+
+
+# ── the diamond the P4.25a dual audit (Grok) found hanging ────────────────────────────────
+
+
+def _diamond(merge_kind: str = "research_claim", mode: str | None = None):
+    """Grok's exact shape — the commonest conditional graph there is.
+
+        a --when:succeeded--> b --unguarded--> d
+        a --when:failed-----> c --unguarded--> d
+    """
+    merge: dict[str, object] = {"inputs": {"left": "text", "right": "text"}}
+    if mode is not None:
+        merge["mode"] = mode
+    nodes = [
+        _node("a"),
+        _node("b", inputs={"feed": "text"}),
+        _node("c", inputs={"feed": "text"}),
+        _node("d", kind=merge_kind, outputs={}, **merge),
+    ]
+    edges = [
+        {"from_node": "a", "from_port": "out", "to_node": "b", "to_port": "feed",
+         "when": "succeeded"},
+        {"from_node": "a", "from_port": "out", "to_node": "c", "to_port": "feed",
+         "when": "failed"},
+        {"from_node": "b", "from_port": "out", "to_node": "d", "to_port": "left", "when": None},
+        {"from_node": "c", "from_port": "out", "to_node": "d", "to_port": "right", "when": None},
+    ]
+    return _compile(nodes, edges)
+
+
+def test_a_diamond_merge_does_not_hang_when_one_branch_was_skipped():
+    """Before the fix: ``d`` sat PENDING for ever and the run reported FAILED after the success
+    path had finished. A skip must PROPAGATE through an unguarded edge."""
+    plan = _diamond()
+    states = {
+        "a": NodeState.SUCCEEDED, "b": NodeState.SUCCEEDED,
+        "c": NodeState.SKIPPED, "d": NodeState.PENDING,
+    }
+    assert derive_ready_nodes(plan, states) == ()
+    assert derive_skipped_nodes(plan, states) == ("d",)
+
+
+def test_the_diamond_settles_one_snapshot_at_a_time_not_all_at_once():
+    """Right after ``a`` succeeds only ``c`` is decidable: ``d`` still has an unguarded edge from a
+    PENDING ``b``, which is ordinary waiting, not an untaken branch.
+
+    ``d`` becomes skippable only once ``b`` reaches a terminal state — which is exactly why the
+    controller re-runs the cascade on every pass of its loop rather than once per run.
+    """
+    plan = _diamond()
+    states = {
+        "a": NodeState.SUCCEEDED, "b": NodeState.PENDING,
+        "c": NodeState.PENDING, "d": NodeState.PENDING,
+    }
+    assert [node for node, _ in untaken_branches(plan, states)] == ["c"]
+    assert derive_ready_nodes(plan, states) == ("b",)
+
+    # Second pass, after b succeeded and c was retired — now d is decidable.
+    settled = {**states, "b": NodeState.SUCCEEDED, "c": NodeState.SKIPPED}
+    assert [node for node, _ in untaken_branches(plan, settled)] == ["d"]
+
+
+def test_an_all_successful_join_merge_also_settles_rather_than_hanging():
+    plan = _diamond(merge_kind="join", mode="all_successful")
+    states = {
+        "a": NodeState.SUCCEEDED, "b": NodeState.SUCCEEDED,
+        "c": NodeState.SKIPPED, "d": NodeState.PENDING,
+    }
+    assert derive_skipped_nodes(plan, states) == ("d",)
+
+
+def test_an_any_successful_join_merge_still_RUNS_on_the_taken_branch():
+    """The join mode that expresses "either branch is enough" must not be skipped."""
+    plan = _diamond(merge_kind="join", mode="any_successful")
+    states = {
+        "a": NodeState.SUCCEEDED, "b": NodeState.SUCCEEDED,
+        "c": NodeState.SKIPPED, "d": NodeState.PENDING,
+    }
+    assert derive_ready_nodes(plan, states) == ("d",)
+    assert derive_skipped_nodes(plan, states) == ()
+
+
+def test_a_FAILED_unguarded_dependency_still_BLOCKS_and_is_never_propagated_as_a_skip():
+    """The distinction the fix rests on. A failure must surface as a failure — converting it into a
+    skip would let the run report SUCCEEDED with a broken dependency silently unmet."""
+    plan = _diamond()
+    states = {
+        "a": NodeState.SUCCEEDED, "b": NodeState.FAILED,
+        "c": NodeState.SKIPPED, "d": NodeState.PENDING,
+    }
+    assert derive_ready_nodes(plan, states) == ()
+    assert derive_skipped_nodes(plan, states) == ()  # NOT retired — the run must fail
+
+
+@pytest.mark.parametrize("waiting", [NodeState.RUNNING, NodeState.GATING])
+def test_ordinary_waiting_wins_over_both_block_and_skip(waiting):
+    """A non-terminal predecessor is just waiting; ``d`` must not be retired early.
+
+    PENDING is deliberately not in this list: a PENDING node whose own guard is already satisfied is
+    legitimately READY, so it is not a waiting state for this purpose.
+    """
+    plan = _diamond()
+    states = {
+        "a": NodeState.SUCCEEDED, "b": waiting,
+        "c": NodeState.SKIPPED, "d": NodeState.PENDING,
+    }
+    assert derive_ready_nodes(plan, states) == ()
+    assert derive_skipped_nodes(plan, states) == ()

@@ -124,6 +124,39 @@ def guard_satisfied(guard: str | None, state: NodeState) -> bool | None:
     return state is NodeState.SKIPPED
 
 
+def _blocked_or_unreachable(live: list[Parent]) -> Admission:
+    """Tell "not admissible YET" apart from "never admissible", for a node that needs every
+    unguarded predecessor to have succeeded.
+
+    FAILED and SKIPPED are both terminal, and treating them alike is the bug this exists to fix. A
+    **failure** must surface as a failure — blocking here is what makes the run report FAILED instead
+    of quietly skipping past a dependency that broke. A **skip** means that path was never taken, so
+    it must PROPAGATE: a node whose unguarded predecessor was skipped can never run, and leaving it
+    PENDING hangs the graph.
+
+    Found by the P4.25a dual audit (Grok), on the commonest conditional shape there is::
+
+        a --when:succeeded--> b --unguarded--> d
+        a --when:failed-----> c --unguarded--> d
+
+    With ``a`` succeeding, ``c`` is correctly SKIPPED — and before this, ``d`` sat PENDING for ever
+    while the run reported FAILED after the success path had finished.
+
+    A non-terminal predecessor is ordinary waiting and must win over both, or a node would be retired
+    before its predecessors had resolved.
+    """
+    if any(guard is None and state not in _TERMINAL for state, guard in live):
+        return Admission.BLOCK  # still waiting on real work
+    if any(
+        guard is None and state is not NodeState.SUCCEEDED and state is not NodeState.SKIPPED
+        for state, guard in live
+    ):
+        # A genuine failure, halt, cancellation or expiry upstream. Never convert that into a skip:
+        # the run must fail rather than report success with the dependency silently unmet.
+        return Admission.BLOCK
+    return Admission.SKIP
+
+
 def predecessors_admit(kind: str, policy: Mapping[str, object], parents: tuple[Parent, ...]) -> bool:
     """Whether a node's predecessors permit it to leave PENDING *for dispatch*.
 
@@ -178,20 +211,19 @@ def predecessors_admission(
         # An explicitly-guarded live edge already asserted the outcome it required, so re-checking it
         # for SUCCEEDED would contradict a ``failed`` guard — the entire point of failure routing.
         # An unguarded live edge still has to have succeeded.
-        return (
-            Admission.ADMIT
-            if all(guard is not None or state is NodeState.SUCCEEDED for state, guard in live)
-            else Admission.BLOCK
-        )
+        if all(guard is not None or state is NodeState.SUCCEEDED for state, guard in live):
+            return Admission.ADMIT
+        return _blocked_or_unreachable(live)
     mode = policy.get("join_mode")
     states = tuple(state for state, _ in live)
     if mode == "all_selected":
         return Admission.ADMIT if all(state in _TERMINAL for state in states) else Admission.BLOCK
     if mode == "all_successful":
-        return (
-            Admission.ADMIT if all(state is NodeState.SUCCEEDED for state in states)
-            else Admission.BLOCK
-        )
+        if all(state is NodeState.SUCCEEDED for state in states):
+            return Admission.ADMIT
+        # Same reasoning as a non-join: every predecessor must succeed, so one SKIPPED predecessor
+        # makes this join permanently unadmittable rather than merely not-yet-ready.
+        return _blocked_or_unreachable(live)
     if mode == "any_successful":
         return (
             Admission.ADMIT if any(state is NodeState.SUCCEEDED for state in states)
