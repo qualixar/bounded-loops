@@ -346,7 +346,7 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
         check that follow, in that order, below.
         """
         path, _query = self._split_path()
-        if path not in ("/approve", "/reject"):
+        if path not in ("/approve", "/reject", "/continue"):
             self._send_plain(HTTPStatus.NOT_FOUND, "not found")
             return
         if not self._origin_ok():
@@ -362,6 +362,13 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
             self._send_plain(HTTPStatus.FORBIDDEN, "forbidden — missing or invalid token")
             return
 
+        if path == "/continue":
+            # Same guard order as a decision — route, Origin, bounded body, constant-time
+            # token — before anything reaches the facade. Continuing a run spends money, so it
+            # gets exactly the protection approving one does, no more and no less.
+            self._continue_with_new_ceiling(token=token, form=form)
+            return
+
         node_id = _first(form, "node_id").strip()
         if not node_id:
             self._send_plain(HTTPStatus.BAD_REQUEST, "node_id is required")
@@ -369,6 +376,49 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
 
         decision = "approved" if path == "/approve" else "rejected"
         self._decide(token=token, node_id=node_id, decision=decision)
+
+    def _continue_with_new_ceiling(self, *, token: str, form: dict[str, list[str]]) -> None:
+        """Continue a budget-paused run under a ceiling the operator just typed.
+
+        The number is never persisted as an authorisation. It applies to THIS continuation
+        only, exactly like the CLI flag — so there is no stored grant in the log that could be
+        replayed to buy the same spend twice.
+        """
+        from bounded_loops.graph.application.budget_config import usd_to_microunits
+        from bounded_loops.graph.application.node_spend import RunBudget
+
+        raw_tokens = _first(form, "max_tokens").strip()
+        raw_cost = _first(form, "max_cost_usd").strip()
+        if not raw_tokens and not raw_cost:
+            self._send_plain(
+                HTTPStatus.BAD_REQUEST,
+                "give a new token ceiling or a new cost ceiling in USD",
+            )
+            return
+        try:
+            budget = RunBudget(
+                max_tokens=int(raw_tokens) if raw_tokens else None,
+                max_cost_microunits=usd_to_microunits(raw_cost) if raw_cost else None,
+            )
+        except (ValueError, GraphIntegrityError) as exc:
+            self._send_plain(HTTPStatus.BAD_REQUEST, f"that is not a usable limit — {exc}")
+            return
+
+        try:
+            self.server.facade.resume(self.server.request_ctx, run_budget=budget)
+        except (GraphIntegrityError, GraphValidationError) as exc:
+            self._send_plain(HTTPStatus.CONFLICT, f"could not continue the run — {exc}")
+            return
+        # Deliberately NOT record_decision(): that counter drives the console's auto-stop for
+        # an approval queue that has been worked through. Continuing a run under a new ceiling
+        # is not a decision on a node, and it may well pause again — shutting the console down
+        # here would take away the surface the operator needs next.
+        location = f"/?token={quote(token, safe='')}&continued=1"
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self._send_hardening_headers()
+        self.end_headers()
 
     def _decide(self, *, token: str, node_id: str, decision: str) -> None:
         try:
