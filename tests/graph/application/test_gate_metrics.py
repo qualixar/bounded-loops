@@ -7,6 +7,8 @@ number at all, because it looks like evidence.
 
 from __future__ import annotations
 
+import pytest
+
 from bounded_loops.graph.application.gate_metrics import (
     ADVISORY_BLOCKED_PRECISION_BASELINE,
     MINIMUM_LABELLED_FOR_A_RATE,
@@ -242,3 +244,64 @@ def test_a_confusion_with_no_labels_at_all_is_honest_about_it() -> None:
     assert result.labelled == 0
     assert result.false_accept_rate().value is None
     assert result.unlabelled == 500
+
+
+class TestTheIndependenceCaveat:
+    """The interval's own assumption is violated by the data. That has to travel with the number."""
+
+    def test_the_caveat_says_which_direction_the_error_goes(self) -> None:
+        """A caveat that only says "assumptions apply" is decoration. This one has to say that the
+        interval is too NARROW, because a reader who does not know the direction will assume the
+        conservative one."""
+        from bounded_loops.graph.application.gate_metrics import INDEPENDENCE_CAVEAT
+
+        assert "NOT independent" in INDEPENDENCE_CAVEAT
+        assert "NARROW" in INDEPENDENCE_CAVEAT
+        assert "LOWER bound" in INDEPENDENCE_CAVEAT
+
+    def test_the_cli_prints_the_caveat_whenever_it_prints_an_interval(self, tmp_path, capsys) -> None:
+        """Wired so the caveat cannot be dropped while the numbers stay — the failure mode being that
+        an interval ends up in a slide deck as a hard bound."""
+        import inspect
+
+        from bounded_loops.graph import cli_graph_metrics
+
+        source = inspect.getsource(cli_graph_metrics.cmd_graph_metrics)
+        assert "INDEPENDENCE_CAVEAT" in source
+        assert "reportable" in source, "printed when a rate is reported, not unconditionally"
+
+
+class TestTheCompoundingBaseline:
+    """``1-(1-α)^m`` is the naive model, present to be falsified rather than followed."""
+
+    def test_it_compounds_the_way_elementary_probability_says(self) -> None:
+        from bounded_loops.graph.application.gate_metrics import naive_compounded_false_accept
+
+        assert naive_compounded_false_accept(0.0, 10) == 0.0
+        assert naive_compounded_false_accept(1.0, 3) == 1.0
+        assert naive_compounded_false_accept(0.1, 1) == pytest.approx(0.1)
+        assert naive_compounded_false_accept(0.1, 3) == pytest.approx(0.271)
+
+    def test_zero_attempts_cannot_produce_a_false_accept(self) -> None:
+        from bounded_loops.graph.application.gate_metrics import naive_compounded_false_accept
+
+        assert naive_compounded_false_accept(0.5, 0) == 0.0
+
+    @pytest.mark.parametrize(("alpha", "attempts"), [(-0.1, 1), (1.1, 1), (0.5, -1)])
+    def test_nonsense_inputs_raise_rather_than_returning_a_plausible_number(
+        self, alpha: float, attempts: int,
+    ) -> None:
+        """A silently-clamped probability would produce a real-looking curve from invalid input."""
+        from bounded_loops.graph.application.gate_metrics import naive_compounded_false_accept
+
+        with pytest.raises(ValueError):
+            naive_compounded_false_accept(alpha, attempts)
+
+    def test_it_is_documented_as_a_baseline_to_falsify_not_a_recommender(self) -> None:
+        """The most dangerous possible use of this module is deriving max_attempts from this curve.
+        The docstring has to forbid it in as many words, because someone will try."""
+        from bounded_loops.graph.application.gate_metrics import naive_compounded_false_accept
+
+        doc = naive_compounded_false_accept.__doc__ or ""
+        assert "FALSIFY" in doc
+        assert "not a budget recommender" in doc

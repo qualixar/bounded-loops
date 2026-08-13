@@ -16,6 +16,7 @@ from pathlib import Path
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
 from bounded_loops.graph.application.gate_metrics import (
     ADVISORY_BLOCKED_PRECISION_BASELINE,
+    INDEPENDENCE_CAVEAT,
     Confusion,
     Rate,
     confusion,
@@ -72,6 +73,12 @@ def _confusion_dict(result: Confusion) -> dict[str, object]:
     }
 
 
+def _wrapped(text: str, width: int) -> list[str]:
+    import textwrap
+
+    return textwrap.wrap(text, width=width)
+
+
 def cmd_graph_metrics(args: argparse.Namespace) -> int:
     """Report the gate's confusion matrix and the two curves, overall and per attempt index."""
     run_dir = Path(args.run)
@@ -92,6 +99,7 @@ def cmd_graph_metrics(args: argparse.Namespace) -> int:
             "overall": _confusion_dict(overall),
             "by_attempt": {str(k): _confusion_dict(v) for k, v in per_attempt.items()},
             "advisory_blocked_precision_baseline": ADVISORY_BLOCKED_PRECISION_BASELINE,
+            "independence_caveat": INDEPENDENCE_CAVEAT,
         }, indent=2, sort_keys=True))
         return 0
 
@@ -118,6 +126,18 @@ def cmd_graph_metrics(args: argparse.Namespace) -> int:
     print(_rate_text("blocked precision", overall.blocked_precision()))
     print(f"  {'advisory baseline':<24} {ADVISORY_BLOCKED_PRECISION_BASELINE:.4f} "
           "(arXiv:2605.17998 — the number that demoted a gate to advisory)")
+
+    if any(
+        rate.reportable for rate in (
+            overall.false_accept_rate(), overall.false_reject_rate(), overall.blocked_precision(),
+        )
+    ):
+        # Beside the numbers, never in a footnote: an interval quoted without its assumption is the
+        # thing that ends up in someone's slide deck as a hard bound.
+        print()
+        print("  ASSUMPTION — read before quoting any interval above:")
+        for line in _wrapped(INDEPENDENCE_CAVEAT, 76):
+            print(f"    {line}")
 
     if len(per_attempt) > 1:
         print()

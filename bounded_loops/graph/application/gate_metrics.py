@@ -21,10 +21,19 @@ than no number, because it looks like evidence. That is the same discipline P2-B
 settled on: unmeasurable is not zero, and the honest output of an unmeasurable question is a refusal.
 
 **Intervals, not point estimates.** A rate of 0/12 is not "zero" — it is "no false accept observed
-in twelve attempts", which is compatible with a true rate near 20%. Every rate carries a Wilson score
+in twelve attempts", which is compatible with a true rate near 25%. Every rate carries a Wilson score
 interval. Wilson rather than the textbook Wald interval because Wald collapses to [0, 0] at zero
 observed events, asserting certainty from an absence of evidence, which is precisely the error this
 module exists to avoid. Wilson needs no dependency beyond ``math``.
+
+**And the interval's own assumption is violated — stated, because it changes how the number reads.**
+Wilson assumes independent Bernoulli trials. Attempts in one run are not independent: retries of a
+node share its worker, prompt and failure mode. Correlation makes an iid interval too NARROW, so
+every bound here is a LOWER bound on the true uncertainty. That is why ``confusion_by_attempt`` is
+the primary figure rather than the pooled one: within a single attempt index there is at most one
+observation per node, which is much closer to the assumption than the pooled set is. A properly
+cluster-aware interval is P5 work (``confseq``, MIT, gives anytime-valid confidence sequences); until
+then ``INDEPENDENCE_CAVEAT`` travels with every reported interval, including through the CLI.
 
 Nothing here reads a store, a clock, or an adapter: receipts in, numbers out. That makes every figure
 reproducible from an archived log by anyone, which is the property a reviewer will want.
@@ -56,9 +65,30 @@ _SUCCEEDED = "node.succeeded"
 _FAILED = "node.failed"
 
 
+#: Printed next to every interval, and not optional. A confidence interval whose assumptions are not
+#: stated beside it is the artefact most likely to be misquoted — and this one's central assumption is
+#: violated by the very data it summarises.
+INDEPENDENCE_CAVEAT = (
+    "Wilson intervals assume independent Bernoulli trials. Attempts in one run are NOT independent: "
+    "retries of a node share its worker, its prompt and its failure mode, and nodes in a graph share "
+    "a worker. Correlated observations make an iid interval too NARROW, so treat these bounds as a "
+    "LOWER bound on the true uncertainty. The per-attempt-index slices are the more defensible "
+    "figures — within attempt index k there is at most one observation per node."
+)
+
+
 @dataclass(frozen=True)
 class Interval:
-    """A two-sided Wilson score interval for a proportion."""
+    """A two-sided Wilson score interval for a proportion.
+
+    **Read ``INDEPENDENCE_CAVEAT`` before quoting one of these.** The interval is computed as though
+    each gated attempt were an independent Bernoulli trial. They are not, and the direction of the
+    error is the unflattering one: correlation makes the interval too narrow, so this understates
+    uncertainty rather than overstating it.
+
+    It is reported anyway, with the caveat attached, because the alternative — a bare point estimate —
+    understates uncertainty *infinitely*. A too-narrow interval that says so beats no interval.
+    """
 
     low: float
     high: float
@@ -130,6 +160,29 @@ class Confusion:
         justified is a gate that should be advisory, whatever its α looks like.
         """
         return _rate(self.true_reject, self.rejected)
+
+
+def naive_compounded_false_accept(alpha: float, attempts: int) -> float:
+    """``1 - (1 - α)^m`` — the chance at least one false accept slips through ``m`` attempts.
+
+    **This is a baseline to FALSIFY, not a budget recommender.** It is elementary probability, not a
+    result borrowed from anyone: if each attempt were an independent draw with false-accept
+    probability α, a retry budget of m would compound the risk exactly this way. Deriving a "safe"
+    max_attempts from it would be the single most dangerous use of this module.
+
+    It earns its place because it is the model the measured data should be tested AGAINST. Every
+    reason the ``INDEPENDENCE_CAVEAT`` gives — retries share a worker, a prompt, a failure mode —
+    predicts that reality departs from this curve, and probably in the unsafe direction: a worker that
+    failed the gate twice may be converging on output shaped to pass it, which makes later attempts
+    *more* likely to be false accepts, not independently likely. Publishing the gap between this curve
+    and ``confusion_by_attempt`` is the interesting result; publishing this curve alone would be
+    presenting an assumption as a finding.
+    """
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError("alpha must be a probability")
+    if attempts < 0:
+        raise ValueError("attempts cannot be negative")
+    return 1.0 - (1.0 - alpha) ** attempts
 
 
 def _wilson(successes: int, trials: int, z: float = 1.959963984540054) -> Interval:
