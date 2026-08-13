@@ -47,7 +47,12 @@ from bounded_loops.graph.application.node_spend import (
     spend_refusal,
     unmeasurable_dimension,
 )
-from bounded_loops.graph.application.schedule_ready import NodeState, derive_ready_nodes, dispatch_node
+from bounded_loops.graph.application.schedule_ready import (
+    NodeState,
+    derive_ready_nodes,
+    dispatch_node,
+)
+from bounded_loops.graph.application.skip_untaken import untaken_branches
 from bounded_loops.graph.domain.authoring import NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError, WorkerContractError
 from bounded_loops.graph.domain.connections import ResolvedRoute
@@ -58,6 +63,12 @@ from bounded_loops.graph.domain.events import (
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 from bounded_loops.graph.domain.pricing import PriceTable, empty_price_table
 from bounded_loops.graph.domain.usage import WorkerUsage
+
+#: The node states a SUCCEEDED run may end in. SKIPPED belongs here — a conditional graph whose
+#: untaken branch was correctly skipped did not fail. FAILED deliberately does NOT, even when a
+#: ``failed``-guarded recovery edge ran afterwards: whether a handled failure clears the run is a
+#: repair-semantics question, and it belongs with repair edges (P4.25b). Until then, failure is failure.
+_RUN_SUCCEEDS_ON = frozenset({NodeState.SUCCEEDED, NodeState.SKIPPED})
 
 
 def is_egress_node(plan: ExecutionPlan, node: PlannedNode, egress_transports: frozenset[str]) -> bool:
@@ -263,9 +274,18 @@ class GraphRunController:
         self, states: dict[str, NodeState], cursor: ResumeCursor,
     ) -> GraphRunProjection:
         while True:
+            # Before asking what is ready, retire every branch that was NOT taken. Without this a
+            # node whose guarded edges were all excluded stays PENDING for ever: it is never ready,
+            # so the loop below would report the run FAILED with a node still pending. Recorded at
+            # attempt 0 — no attempt was made, and claiming 1 would assert work that never ran.
+            for skipped_id, why in untaken_branches(self.plan, states):
+                states[skipped_id] = NodeState.SKIPPED
+                self._append_node(
+                    skipped_id, "node.skipped", NodeState.SKIPPED, attempt=0, reason=why,
+                )
             ready = derive_ready_nodes(self.plan, states)
             if not ready:
-                if all(state is NodeState.SUCCEEDED for state in states.values()):
+                if all(state in _RUN_SUCCEEDS_ON for state in states.values()):
                     self._receipts.append("run.succeeded", "run.succeeded", {"state": "SUCCEEDED"})
                     return self.event_log.replay_projection()
                 self._receipts.append("run.failed", "run.failed", {"state": "FAILED"})

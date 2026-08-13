@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from bounded_loops.graph.application.graph_ports import EventLogPort
-from bounded_loops.graph.application.schedule_ready import NodeState, predecessors_admit
+from bounded_loops.graph.application.schedule_ready import (
+    Admission,
+    NodeState,
+    predecessors_admission,
+)
 from bounded_loops.graph.application.node_spend import (
     NodeSpend,
     consumed_spend_from,
@@ -19,7 +23,10 @@ from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode, Resolved
 
 
 _ALLOWED = {
-    "PENDING": frozenset({"READY"}),
+    # PENDING has TWO exits since edge guards became enforceable. SKIPPED is reached when every
+    # incoming edge was explicitly guarded and excluded — the branch was not taken. See the
+    # admission check below: BOTH exits are causality decisions and both are verified.
+    "PENDING": frozenset({"READY", "SKIPPED"}),
     "READY": frozenset({"STARTING", "AWAITING_APPROVAL"}),
     # STARTING -> FAILED is a real outcome, not a corruption: a node can be dispatched and then
     # refused before it ever runs — a denied execution policy, no connector worker wired, a
@@ -40,6 +47,7 @@ _ALLOWED = {
     "GATING": frozenset({"SUCCEEDED", "RUNNING", "FAILED"}),
     "SUCCEEDED": frozenset(),
     "FAILED": frozenset(),
+    "SKIPPED": frozenset(),
 }
 # A new attempt re-enters RUNNING from exactly these states.
 _RETRY_FROM = frozenset({"RUNNING", "GATING"})
@@ -49,7 +57,7 @@ _RETRY_FROM = frozenset({"RUNNING", "GATING"})
 # raise KeyError.  A tripwire test asserts these two sets stay identical.
 _LIFECYCLE_EVENTS = frozenset({
     "node.ready", "node.starting", "node.running", "node.awaiting_approval",
-    "node.gating", "node.succeeded", "node.failed",
+    "node.gating", "node.succeeded", "node.failed", "node.skipped",
 })
 
 
@@ -60,7 +68,13 @@ def _attempt_is_consistent(
 
     Three cases: admission out of PENDING and a retry edge both ADVANCE the attempt by
     one; every other transition moves within a single attempt and must not change it.
+
+    SKIPPED is the exception to the PENDING rule. It is the other exit from PENDING, but no
+    attempt was ever made — the branch was not taken — so the count must NOT advance. Advancing it
+    would assert an attempt that never ran.
     """
+    if next_state == "SKIPPED":
+        return attempt == current_attempt
     if current_state == "PENDING" or (next_state == "RUNNING" and current_state in _RETRY_FROM):
         return attempt == current_attempt + 1
     return attempt == current_attempt
@@ -223,11 +237,19 @@ def latest_node_states(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ..
             raise GraphIntegrityError("Arena receipt node lifecycle is invalid")
         if not _attempt_is_consistent(next_state, current_state, attempt, current_attempt):
             raise GraphIntegrityError("Arena receipt node attempt sequence is invalid")
-        # A node may only ever leave PENDING via READY (`_ALLOWED`); that single
-        # admission edge is where cross-node causality is decided, and predecessor
-        # states are monotonic thereafter, so one check here is sufficient and sound.
-        if current_state == "PENDING" and next_state == "READY":
-            _assert_causal_admission(nodes_by_id[node_id], predecessors[node_id], values)
+        # PENDING has exactly TWO exits (`_ALLOWED`): READY and SKIPPED. Both are cross-node
+        # causality decisions, and predecessor states are monotonic thereafter, so checking each
+        # exit once here is sufficient and sound.
+        #
+        # Checking only READY — which was sound while READY was the sole exit — would leave SKIPPED
+        # as an unguarded back door: a forged, fully re-hash-chained log could mark a node SKIPPED to
+        # walk past an unsatisfied dependency, or claim SKIPPED for a node whose branch was in fact
+        # taken. Each exit is therefore matched against the verdict that exit REQUIRES.
+        if current_state == "PENDING" and next_state in ("READY", "SKIPPED"):
+            _assert_causal_admission(
+                nodes_by_id[node_id], predecessors[node_id], values,
+                expected=Admission.ADMIT if next_state == "READY" else Admission.SKIP,
+            )
         # AWAITING_APPROVAL is an approval-node-only human hold. `_ALLOWED` is
         # kind-agnostic, so enforce the kind here: no other node kind may reach it,
         # in an honest OR a fully re-hash-chained log — a non-approval node still
@@ -262,29 +284,32 @@ def _assert_causal_admission(
     node: PlannedNode,
     predecessors: tuple[tuple[str, str | None], ...],
     values: dict[str, dict[str, object]],
+    *,
+    expected: Admission,
 ) -> None:
-    """Fail closed if a node left PENDING before its DAG predecessors admitted it.
+    """Fail closed if a node left PENDING on an exit its predecessors did not authorise.
 
     This is the receipt-time dual of the scheduler's admission rule
-    (``predecessors_admit``): the SAME predicate that lets ``derive_ready_nodes``
-    dispatch a node must hold over the predecessor states rebuilt from the receipt
+    (``predecessors_admission``): the SAME predicate that decides what ``derive_ready_nodes`` and
+    ``derive_skipped_nodes`` may do must hold over the predecessor states rebuilt from the receipt
     sequence so far. A tampered, fully re-hash-chained log that inverts DAG order — a
     child reaching READY (and thus SUCCEEDED) before its parents — is rejected here even
     though every per-node ``_ALLOWED`` lifecycle is individually legal. Join semantics
-    are honored exactly, because the check and the scheduler share one predicate."""
+    are honored exactly, because the check and the scheduler share one predicate.
+
+    ``expected`` is the verdict the taken exit requires: ADMIT for READY, SKIP for SKIPPED. Matching
+    the exit against its own verdict is what stops the two exits being interchangeable — a log may
+    not skip a node whose branch was taken, nor dispatch one whose branch was not."""
     parents: list[tuple[NodeState, str | None]] = []
     for source, guard in predecessors:
         state = values[source]["state"]
         if not isinstance(state, str) or state not in NodeState.__members__:
             raise GraphIntegrityError("Arena receipt node state is invalid")
         parents.append((NodeState(state), guard))
-    # ``predecessors_admit`` is the ADMIT-only face of the predicate, which is what this check wants:
-    # a receipt claiming a node reached READY when admission says its branch should have been SKIPPED
-    # is a causality violation, not an alternative path.
-    if not predecessors_admit(node.kind, node.approval_policy, tuple(parents)):
+    if predecessors_admission(node.kind, node.approval_policy, tuple(parents)) is not expected:
         raise GraphIntegrityError(
             f"Arena receipt violates DAG causality: node {node.node_id!r} left PENDING "
-            "before its plan predecessors admitted it"
+            f"on an exit its plan predecessors did not authorise (required {expected.value})"
         )
 
 
