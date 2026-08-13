@@ -43,6 +43,11 @@ from bounded_loops.graph.adapters.enforcement.egress_proxy import LoopbackEgress
 from bounded_loops.graph.adapters.enforcement.sandbox import build_seatbelt_allowlist_profile, seatbelt_argv
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, NetworkMode
+from bounded_loops.graph.adapters.connectors.cli_envelope import (
+    CliEnvelope,
+    parse_claude_envelope,
+    parse_grok_envelope,
+)
 from bounded_loops.graph.application.node_contracts import WorkerResult
 from bounded_loops.graph.domain.artifacts import ArtifactPolicy
 from bounded_loops.graph.domain.connections import ResolvedRoute
@@ -107,6 +112,12 @@ class CliProfile:
     # on top of the base allowlist — for a CLI whose own tooling reads a key from the
     # environment. Deliberately empty by default: a grant is an explicit operator decision.
     env_grant: tuple[str, ...] = ()
+    # How to ask this CLI for a machine-readable envelope instead of bare text, and which
+    # parser reads it. Empty means this CLI cannot report what it spent — an honest statement,
+    # not an oversight, and a node declaring a spend cap on it fails closed rather than being
+    # metered as free. Per provider because each CLI's flag and output shape differ.
+    usage_args: tuple[str, ...] = ()
+    envelope: str = ""
 
     def __post_init__(self) -> None:
         if self.prompt_via not in ("stdin", "arg"):
@@ -133,9 +144,27 @@ class LocalCliConnectorPort(Protocol):
 # take the prompt as a positional argument, and `codex exec` needs --skip-git-repo-check to run
 # outside a git repo.
 CLI_PROFILES: Mapping[str, CliProfile] = {
-    "claude": CliProfile("claude", ("-p",), prompt_via="stdin", unset_env=("CLAUDE_CONFIG_DIR",)),
+    # `--output-format json` yields the reply under `result` PLUS real usage and the
+    # provider's own `total_cost_usd`. Verified live on this host (2026-08-13): a one-word reply
+    # reported input_tokens 2 with cache_creation 40413 and cache_read 6351 — so a token cap
+    # that ignored cache tokens would have under-counted 47_001 as 2.
+    "claude": CliProfile(
+        "claude", ("-p",), prompt_via="stdin", unset_env=("CLAUDE_CONFIG_DIR",),
+        usage_args=("--output-format", "json"), envelope="claude",
+    ),
+    # Verified live (2026-08-13): the reply is under `text`, and usage.total_tokens is Grok's
+    # own prompt+cache+output arithmetic (90082 + 128 + 0 + 41 = 90251). Cost arrives as an
+    # INTEGER `total_cost_usd_ticks` at 1e-10 USD, so micro-USD needs no float at all.
+    "grok": CliProfile(
+        "grok", ("-p",), prompt_via="arg",
+        usage_args=("--output-format", "json"), envelope="grok",
+    ),
+    # codex and muse emit JSONL EVENT STREAMS (`--json`), not a single envelope, and the usage
+    # payload on their terminal event has not been read off a live run on this host. Inventing a
+    # parser from a --help string is exactly how a spend total ends up wrong in the safe-looking
+    # direction, so these stay honestly unmetered: a spend cap on them fails closed naming the
+    # provider, rather than metering their calls as free.
     "codex": CliProfile("codex", ("exec", "--skip-git-repo-check"), prompt_via="arg"),
-    "grok": CliProfile("grok", ("-p",), prompt_via="arg"),
     "muse": CliProfile("muse", ("exec",), prompt_via="arg"),
     "agy": CliProfile("agy", ("-p",), prompt_via="arg"),
 }
@@ -216,6 +245,14 @@ class LocalCliConnectorWorker:
             inner_argv.append(invocation.prompt)
         else:
             stdin_text = invocation.prompt
+        # usage_args go LAST, after the prompt, and never between a flag and its value. Placing
+        # them right after `args` broke Grok outright: `-p` is an alias for `--single <PROMPT>`,
+        # so `grok -p --output-format json <prompt>` made `-p` swallow the flag and the CLI
+        # exited with "a value is required for '--single <PROMPT>'". Found by running the real
+        # cross-CLI graph — the unit fixtures never build a real argv.
+        # They ride the same inner_argv the cage wraps, so a sandboxed run cannot silently drop
+        # back to unmetered text output.
+        inner_argv.extend(invocation.profile.usage_args)
 
         env = self._child_env(invocation.profile)
         argv: list[str] = inner_argv
@@ -259,9 +296,26 @@ class LocalCliConnectorWorker:
                 f"shell, forward it by NAME via {_ENV_GRANT_VAR}=VAR1,VAR2)"
             )
 
-        reply = (result.stdout or "").encode("utf-8")
+        stdout = result.stdout or ""
+        parsed = self._read_envelope(invocation.profile, stdout)
+        # The envelope's `result` field is the reply the CLI would have printed in text mode, so
+        # asking for JSON does not change what the artifact contains — only what we additionally
+        # learn about its cost. If the envelope cannot be read (a CLI upgrade, an unknown shape)
+        # this degrades to the raw stdout with no usage, and a declared cap then fails closed.
+        reply = (parsed.reply if parsed is not None else stdout).encode("utf-8")
+        usage = parsed.usage if parsed is not None else None
         digest = self._store.put(BytesIO(reply), self._policy(attempt)).digest
-        return WorkerResult((digest,), route, transport)
+        return WorkerResult((digest,), route, transport, usage=usage)
+
+    @staticmethod
+    def _read_envelope(profile: CliProfile, stdout: str) -> CliEnvelope | None:
+        """Parse this CLI's machine-readable envelope, or ``None`` if it has none / is unreadable."""
+        reported_by = f"cli:{profile.binary}"
+        if profile.envelope == "claude":
+            return parse_claude_envelope(stdout, reported_by=reported_by)
+        if profile.envelope == "grok":
+            return parse_grok_envelope(stdout, reported_by=reported_by)
+        return None
 
     def _caged_argv(
         self, *, node: PlannedNode, inner_argv: list[str], workdir: Path, env: dict[str, str], proxy_port: int,

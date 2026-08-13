@@ -21,7 +21,15 @@ from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode, Resolved
 _ALLOWED = {
     "PENDING": frozenset({"READY"}),
     "READY": frozenset({"STARTING", "AWAITING_APPROVAL"}),
-    "STARTING": frozenset({"RUNNING"}),
+    # STARTING -> FAILED is a real outcome, not a corruption: a node can be dispatched and then
+    # refused before it ever runs — a denied execution policy, no connector worker wired, a
+    # budget already spent. Omitting it made EVERY such run permanently unreadable to the Arena,
+    # `bl graph status` and resume; a real `bl graph run --execute` against a policy-denied node
+    # crashed with "Arena receipt node lifecycle is invalid" instead of reporting the failure.
+    # Found by running the CLI for real — no unit test reached it, because the fixtures all
+    # authorise every node. It opens no path to SUCCEEDED, so the independent-gate invariant is
+    # untouched.
+    "STARTING": frozenset({"RUNNING", "FAILED"}),
     # RUNNING -> RUNNING and GATING -> RUNNING are the two retry edges of a bounded
     # loop: the next attempt re-enters RUNNING either after the gate rejected it
     # (from GATING) or after a worker/artifact fault that never reached the gate
