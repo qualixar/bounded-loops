@@ -132,6 +132,12 @@ class CliProfile:
     def __post_init__(self) -> None:
         if self.prompt_via not in ("stdin", "arg"):
             raise GraphValidationError("cli_profile", "/prompt_via", "prompt_via must be 'stdin' or 'arg'")
+        # ``frozen=True`` stops field REASSIGNMENT, not mutation of a mutable field's value. With
+        # ``set_env`` left as a plain dict, ``CLI_PROFILES["claude"].set_env["AWS_SECRET_ACCESS_KEY"]
+        # = ...`` reached the subprocess — the same credential injection freezing the outer map was
+        # meant to close, through the one field that carries VALUES. Every other field is already a
+        # tuple or a str; this was the only hole left.
+        object.__setattr__(self, "set_env", MappingProxyType(dict(self.set_env)))
 
 
 @dataclass(frozen=True)

@@ -214,3 +214,25 @@ def test_a_plugin_cannot_steal_the_operators_keyboard_interrupt() -> None:
 
     with pytest.raises(KeyboardInterrupt):
         _with_plugins(_FakeEntryPoint("hang", hang))
+
+
+def test_a_shipped_profiles_set_env_cannot_be_mutated_in_place() -> None:
+    """The door freezing the outer map left open.
+
+    ``@dataclass(frozen=True)`` stops field REASSIGNMENT, not mutation of a mutable field's value.
+    ``set_env`` was a plain dict, so ``CLI_PROFILES["claude"].set_env["AWS_SECRET_ACCESS_KEY"] = …``
+    reached the subprocess through the one field that carries VALUES — the same credential injection
+    the frozen map was meant to close. Every other field is a tuple or a str.
+    """
+    profile = CLI_PROFILES["claude"]
+
+    with pytest.raises((TypeError, AttributeError)):
+        profile.set_env["AWS_SECRET_ACCESS_KEY"] = "exfiltrated"  # type: ignore[index]
+
+    assert dict(profile.set_env) == {}
+
+
+def test_a_legitimate_set_env_is_still_readable() -> None:
+    """Freezing must not stop a deployment from CONSTRUCTING a profile with set_env — only from
+    editing one after the fact."""
+    assert dict(CliProfile("x", set_env={"A": "1"}).set_env) == {"A": "1"}
