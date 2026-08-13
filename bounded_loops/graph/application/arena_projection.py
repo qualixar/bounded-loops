@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from bounded_loops.graph.application.graph_ports import EventLogPort
+from bounded_loops.graph.application.failure_policy import RUN_SUCCEEDS_ON
 from bounded_loops.graph.application.schedule_ready import (
     Admission,
     NodeState,
@@ -51,6 +52,8 @@ _ALLOWED = {
 }
 # A new attempt re-enters RUNNING from exactly these states.
 _RETRY_FROM = frozenset({"RUNNING", "GATING"})
+#: The same rule as the controller's, as receipt STATE NAMES — one source, two spellings.
+_RUN_SUCCEEDS_ON_NAMES = frozenset(state.value for state in RUN_SUCCEEDS_ON)
 # The node lifecycle event types, which are the ONLY ones carrying a ``state``.
 # Mirrors ``event_log._NODE_EVENTS``; filtering on the ``node.`` prefix instead would
 # also catch the additive ``node.attempt.failed``, which carries no state and would
@@ -158,8 +161,18 @@ def read_arena_projection(
     snapshot = event_log.verified_snapshot()
     receipt_verifier.verify(identity, snapshot.receipts)
     latest = latest_node_states(plan, snapshot.receipts)
-    if snapshot.projection.state == "SUCCEEDED" and any(value["state"] != "SUCCEEDED" for value in latest.values()):
-        raise GraphIntegrityError("Arena succeeded receipt has a planned node that is not succeeded")
+    # SKIPPED counts, exactly as it does for the controller's own terminal verdict
+    # (``failure_policy.RUN_SUCCEEDS_ON``): a conditional graph whose untaken branch was correctly
+    # skipped did succeed. Requiring every node to be SUCCEEDED made the Arena contradict the
+    # controller — the run sealed SUCCEEDED and then could not be read back at all.
+    # Found by the P4.25a dual audit (Grok): RUN_SUCCEEDS_ON was threaded into run_graph and nowhere
+    # else, so the two halves of one rule disagreed.
+    if snapshot.projection.state == "SUCCEEDED" and any(
+        value["state"] not in _RUN_SUCCEEDS_ON_NAMES for value in latest.values()
+    ):
+        raise GraphIntegrityError(
+            "Arena succeeded receipt has a planned node that neither succeeded nor was skipped"
+        )
     bindings = {binding.binding_id: binding for binding in plan.connection_bindings}
     spend = consumed_spend_from(plan, snapshot.receipts)
     total = run_spend(spend)

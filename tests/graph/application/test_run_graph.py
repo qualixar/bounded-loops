@@ -14,6 +14,7 @@ from bounded_loops.graph.application.execution_policy import (
 from bounded_loops.graph.application.run_graph import GraphRunController
 from bounded_loops.graph.application.arena_projection import latest_node_states
 from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
+from bounded_loops.graph.application.resume_states import states_from_receipts
 from bounded_loops.graph.application.schedule_ready import NodeState
 from bounded_loops.graph.application.validate_graph import validate_authoring_graph
 from bounded_loops.graph.domain.connections import ResolvedRoute
@@ -566,11 +567,14 @@ def test_resume_refuses_to_redrive_an_effectful_node_interrupted_mid_execution(t
     """An external/irreversible-effect node interrupted mid-execution must fail closed
     (a resume idempotency key is required, ADR-12 D7) — never blindly re-executed."""
     plan = _effectful_plan()
-    controller = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", _identity(plan)), _Worker([]))
     with pytest.raises(GraphIntegrityError, match="idempotency key"):
-        controller._states_from({"pay": {"state": "RUNNING", "attempt": 1}})
+        states_from_receipts(
+            plan, {"pay": {"state": "RUNNING", "attempt": 1}}, continue_on_failure=False,
+        )
     # A never-started effectful node (PENDING) is fine to (re-)drive.
-    assert controller._states_from({"pay": {"state": "PENDING", "attempt": 0}})["pay"] is NodeState.PENDING
+    assert states_from_receipts(
+        plan, {"pay": {"state": "PENDING", "attempt": 0}}, continue_on_failure=False,
+    )["pay"] is NodeState.PENDING
 
 
 def _raw_append(store: GraphEventLog, head: str, event_type: str, key: str, payload: dict[str, object]) -> str:
@@ -989,3 +993,39 @@ def test_an_unconditional_plan_is_unaffected_by_that_refusal(tmp_path):
     plan = _continue_plan(None)
     log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
     assert _controller(plan, log, _Worker([])).run().state == "SUCCEEDED"
+
+
+def test_a_resumed_run_keeps_driving_past_a_FAILED_node_under_continuation(tmp_path):
+    """Fixing the resume seal exposed the next bug: states_from_receipts raised on a FAILED node,
+    so continue_declared worked on a fresh run and broke the moment the run was resumed."""
+    plan = _continue_plan("failed")
+    latest = {
+        "a": {"state": "FAILED", "attempt": 1},
+        "b": {"state": "PENDING", "attempt": 0},
+    }
+
+    states = states_from_receipts(plan, latest, continue_on_failure=True)
+
+    assert states["a"] is NodeState.FAILED   # settled, not re-driven, not an error
+    assert states["b"] is NodeState.PENDING  # still drivable via its ``failed`` condition
+
+
+def test_a_resumed_run_refuses_a_FAILED_node_when_it_must_halt(tmp_path):
+    """Under a halting fail mode resume() finalizes before reaching here, so this stays a
+    defensive guard rather than a reachable path."""
+    plan = _continue_plan(None)
+    with pytest.raises(GraphIntegrityError, match="has already failed"):
+        states_from_receipts(
+            plan, {"a": {"state": "FAILED", "attempt": 1}, "b": {"state": "PENDING", "attempt": 0}},
+            continue_on_failure=False,
+        )
+
+
+def test_a_resumed_run_does_not_re_open_a_SKIPPED_branch(tmp_path):
+    plan = _continue_plan("failed")
+    states = states_from_receipts(
+        plan,
+        {"a": {"state": "SUCCEEDED", "attempt": 1}, "b": {"state": "SKIPPED", "attempt": 0}},
+        continue_on_failure=True,
+    )
+    assert states["b"] is NodeState.SKIPPED

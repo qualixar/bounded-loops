@@ -32,7 +32,6 @@ from bounded_loops.graph.application.node_receipts import (
     verdict_is_wellformed,
 )
 from bounded_loops.graph.application.node_spend import (
-    EFFECTFUL_EFFECTS,
     MAX_REDRIVES_PER_ATTEMPT,
     NodeSpend,
     ResumeCursor,
@@ -57,6 +56,7 @@ from bounded_loops.graph.application.failure_policy import (
     may_continue,
     unhonourable_edge_conditions,
 )
+from bounded_loops.graph.application.resume_states import states_from_receipts
 from bounded_loops.graph.application.skip_untaken import untaken_branches
 from bounded_loops.graph.domain.authoring import NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError, WorkerContractError
@@ -239,41 +239,17 @@ class GraphRunController:
         # A crash between node.failed and run.failed leaves a RUNNING stream with a
         # FAILED node; finalize the terminal deterministically rather than re-drive a
         # run that has already failed.
-        if any(observed["state"] == "FAILED" for observed in latest.values()):
+        #
+        # NOT under a continue fail mode. There, a FAILED node does not mean the run is over — a
+        # failure-conditioned branch or an independent branch may still have work — so sealing here
+        # made continue_declared work on a fresh run and silently stop working across a resume.
+        # Found by the P4.25a dual audit (Grok), which exercised the production resume path.
+        if not self._continue_on_failure and any(
+            observed["state"] == "FAILED" for observed in latest.values()
+        ):
             self._receipts.append("run.failed", "run.failed", {"state": "FAILED"})
             return self.event_log.replay_projection()
-        return self._run_loop(self._states_from(latest), consumed_attempts_from(self.plan, receipts))
-
-    def _states_from(self, latest: dict[str, dict[str, object]]) -> dict[str, NodeState]:
-        """Map rebuilt receipt states to controller states: a SUCCEEDED node stays
-        done; every other node re-drives from PENDING. An EFFECTFUL node interrupted
-        mid-execution (STARTING/RUNNING/GATING) cannot be re-driven safely without a
-        resume idempotency key (ADR-12 D7), so it fails closed rather than risk a
-        double external / irreversible effect."""
-        states: dict[str, NodeState] = {}
-        for node in self.plan.nodes:
-            observed = latest[node.node_id]["state"]
-            if observed == "SUCCEEDED":
-                states[node.node_id] = NodeState.SUCCEEDED
-                continue
-            if observed == "FAILED":
-                # Unreachable via resume() (the FAILED-finalize gate precedes this) —
-                # a defensive guard so the helper stays safe if ever reused: a run
-                # that already failed is finalized, never re-driven.
-                raise GraphIntegrityError(f"cannot resume: node {node.node_id!r} has already failed")
-            if observed == "AWAITING_APPROVAL":
-                # Paused for a human decision: no worker ran and no effect fired
-                # (approval GATES the effect), so re-driving only re-consults the
-                # decision. Safe to re-drive even for an effectful approval node.
-                states[node.node_id] = NodeState.PENDING
-                continue
-            if observed in ("STARTING", "RUNNING", "GATING") and (node.required_effects & EFFECTFUL_EFFECTS):
-                raise GraphIntegrityError(
-                    f"cannot safely resume: node {node.node_id!r} carries an external / irreversible effect and "
-                    "was interrupted mid-execution; a resume idempotency key (D7) is required before re-driving it"
-                )
-            states[node.node_id] = NodeState.PENDING
-        return states
+        return self._run_loop(states_from_receipts(self.plan, latest, continue_on_failure=self._continue_on_failure), consumed_attempts_from(self.plan, receipts))
 
     def _assert_can_drive_this_plan(self) -> None:
         """Refuse to DRIVE a plan whose conditions this controller cannot honour — fail closed
