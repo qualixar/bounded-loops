@@ -37,7 +37,7 @@ restricted answer is the contribution precisely because the general case is not 
 
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Mapping, Protocol
 
 from bounded_loops.graph.application.failure_policy import MAY_CONTINUE_AFTER
 from bounded_loops.graph.domain.errors import GraphIntegrityError
@@ -224,3 +224,38 @@ def next_repair_round(
         if target is not None and states.get(node.node_id) == "FAILED":
             return node.node_id, target, spent + 1
     return None
+
+
+class RoundWriter(Protocol):
+    """The receipt-writing surface a boundary needs. Keeps this module free of the writer class."""
+
+    def open_repair_round(
+        self, *, round_index: int, target_node: str, trigger_node: str, reason: str,
+    ) -> None: ...
+
+    def append_node_repaired(self, node_id: str, from_state: str) -> None: ...
+
+
+def write_repair_boundary(
+    plan: ExecutionPlan,
+    receipts: RoundWriter,
+    states: dict[str, str],
+    *,
+    trigger: str,
+    target: str,
+    round_index: int,
+) -> tuple[str, ...]:
+    """Record the boundary and return the nodes to reset, in a stable order.
+
+    The caller applies the reset to its own state map. Suffix locality lives here: only
+    ``descendants(target)`` is recorded and returned, so a boundary can never quietly redo unrelated
+    work — condition 1 of the termination bound.
+    """
+    receipts.open_repair_round(
+        round_index=round_index, target_node=target, trigger_node=trigger,
+        reason=f"node {trigger!r} failed; repairing {target!r}",
+    )
+    reset = tuple(sorted(descendants(plan, target)))
+    for node_id in reset:
+        receipts.append_node_repaired(node_id, states[node_id])
+    return reset

@@ -54,6 +54,7 @@ def label_node_outcome(
     artifact_digest: str,
     timestamp: str,
     sequence: int = 1,
+    repair_round: int = 0,
 ) -> None:
     """Append one ground-truth label for ``node_id``'s ``attempt``.
 
@@ -65,6 +66,13 @@ def label_node_outcome(
     ``sequence`` distinguishes successive labels for the same attempt — a re-review, or a
     second labeller. It keeps the idempotency key unique so a genuine second opinion is
     recorded rather than silently de-duplicated as a repeat of the first.
+
+    ``repair_round`` names which round's attempt is being judged. A repair re-runs a node from
+    attempt 1, so ``(node, attempt)`` REPEATS across rounds — two different pieces of work with the
+    same coordinates. Without the round a reviewer could not say which one they looked at, the two
+    labels would collide on one idempotency key, and the gate metrics (which key on the round) would
+    never match a label to its verdict, silently reporting every repaired attempt as unlabelled.
+    Found by the P4.25 dual audit (Grok finding 5).
     """
     if not node_id:
         raise GraphIntegrityError("a label requires a node id")
@@ -76,10 +84,16 @@ def label_node_outcome(
         raise GraphIntegrityError("a label requires a labeller identity")
     if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
         raise GraphIntegrityError("a label requires a positive sequence")
-    _require_the_attempt_produced_that_artifact(event_log, node_id, attempt, artifact_digest)
+    _require_the_attempt_produced_that_artifact(
+        event_log, node_id, attempt, artifact_digest, repair_round,
+    )
 
     identity = event_log.identity
-    key = f"{identity.run_id}:{node_id}:{_LABEL_EVENT}:{attempt}:{sequence}"
+    if isinstance(repair_round, bool) or not isinstance(repair_round, int) or repair_round < 0:
+        raise GraphIntegrityError("a label requires a non-negative repair round")
+    # Round 0 keeps the pre-repair key EXACTLY, so existing labels stay addressable.
+    round_key = "" if repair_round == 0 else f":r{repair_round}"
+    key = f"{identity.run_id}:{node_id}:{_LABEL_EVENT}:{attempt}:{sequence}{round_key}"
     event_log.append(
         event_log.replay_projection().head_hash,
         UnsignedGraphEvent(
@@ -95,6 +109,7 @@ def label_node_outcome(
                 "labeller": labeller,
                 "artifact_digest": artifact_digest,
                 "sequence": sequence,
+                **({"repair_round": repair_round} if repair_round else {}),
             },
         ),
     )
@@ -102,6 +117,7 @@ def label_node_outcome(
 
 def _require_the_attempt_produced_that_artifact(
     event_log: EventLogPort, node_id: str, attempt: int, artifact_digest: str,
+    repair_round: int = 0,
 ) -> None:
     """Refuse a label that does not bind to real work in THIS run.
 
@@ -120,6 +136,12 @@ def _require_the_attempt_produced_that_artifact(
     for stored in event_log.replay():
         payload = stored.event.payload
         if payload.get("node_id") != node_id:
+            continue
+        declared_round = payload.get("repair_round")
+        event_round = declared_round if isinstance(declared_round, int) and not isinstance(
+            declared_round, bool
+        ) else 0
+        if event_round != repair_round:
             continue
         if payload.get("attempt") == attempt:
             seen_attempt = True

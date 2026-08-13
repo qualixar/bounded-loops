@@ -225,8 +225,11 @@ def predecessors_admission(
         # makes this join permanently unadmittable rather than merely not-yet-ready.
         return _blocked_or_unreachable(live)
     if mode == "any_successful":
-        return (
-            Admission.ADMIT if any(state is NodeState.SUCCEEDED for state in states)
-            else Admission.BLOCK
-        )
+        if any(state is NodeState.SUCCEEDED for state in states):
+            return Admission.ADMIT
+        # "Any one is enough" and NONE can ever succeed now: every live parent is terminal and every
+        # one was skipped. Blocking here stranded the join PENDING and the run then reported FAILED
+        # with zero failed nodes — a lie. ``all_successful`` already routed through this predicate;
+        # this mode did not. Found by the P4.25 dual audit (Grok finding 4).
+        return _blocked_or_unreachable(live)
     raise GraphValidationError("join_mode", "/approval_policy/join_mode", "compiled join mode is missing")

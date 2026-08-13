@@ -14,7 +14,9 @@ from typing import Mapping
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import StoredGraphEvent
 from bounded_loops.graph.domain.authoring import NETWORK_EFFECTS
+from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
+from bounded_loops.graph.domain.pricing import PriceTable
 from bounded_loops.graph.domain.usage import WorkerUsage, usage_from_payload
 
 #: Receipt kinds that carry per-node consumption. Listed explicitly rather than matched by
@@ -500,3 +502,41 @@ def _round_of(payload: Mapping[str, object]) -> int:
     if isinstance(declared, bool) or not isinstance(declared, int):
         return 0
     return declared
+
+
+def can_start_another_attempt(node: PlannedNode, spend: NodeSpend) -> bool:
+    """Whether ``node`` could begin one more attempt under its own spend caps.
+
+    Used before opening a repair round. A round boundary resets attempt counters, but a node's cost
+    and token caps are LIFETIME sums across every round — so a target with no spend headroom would be
+    reset, immediately refused, and that refusal is halt-class (``SPEND_EXHAUSTED``): the repair would
+    burn a round and convert a continue-eligible failure into a hard stop.
+    """
+    max_tokens, max_cost = spend_caps(node)
+    return spend_refusal(
+        spend=spend, max_tokens=max_tokens, max_cost_microunits=max_cost,
+        scope=f"node {node.node_id!r}",
+    ) is None
+
+
+def priced_usage(
+usage: WorkerUsage | None, route: ResolvedRoute | None, price_table: PriceTable,
+) -> WorkerUsage | None:
+    """Annotate a worker's report with a price-table charge, where one can be computed.
+
+    Additive only: the worker's own figures are never overwritten, so a provider-reported
+    charge always stays distinguishable from arithmetic over a rate card. Returns the
+    report unchanged when the provider already billed us, when the route is unpriced, or
+    when tokens are only half measured — each of which is a real gap that a derived 0
+    would misreport as free work.
+    """
+    if usage is None or usage.cost_microunits is not None:
+        return usage
+    estimated = price_table.cost_microunits(
+        provider_id=route.provider_id if route else None,
+        model_id=route.model_id if route else None,
+        input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
+    )
+    if estimated is None:
+        return usage
+    return usage.with_estimated_cost(estimated, estimated_by=price_table.source)

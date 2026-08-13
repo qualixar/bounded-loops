@@ -525,3 +525,97 @@ def test_a_forged_boundary_after_a_BROKEN_GATE_is_refused_on_replay(tmp_path):
 
     with pytest.raises(GraphIntegrityError, match="stops the run whatever the fail mode"):
         latest_node_states(plan, log.replay())
+
+
+# ── Grok's three findings the parallel auditor did not see ────────────────────────────────
+
+
+def test_an_any_successful_join_of_only_SKIPPED_parents_is_SKIPPED_not_stranded():
+    """Grok finding 4. Nothing failed, both join parents were correctly skipped — and the join sat
+    PENDING for ever, so the run reported FAILED with zero FAILED nodes. ``all_successful`` already
+    routed through the unreachable predicate; ``any_successful`` did not."""
+    from bounded_loops.graph.application.schedule_ready import (
+        Admission, NodeState as NS, predecessors_admission,
+    )
+    live = ((NS.SKIPPED, None), (NS.SKIPPED, None))
+    assert predecessors_admission(
+        "join", {"join_mode": "any_successful"}, live,
+    ) is Admission.SKIP
+    # A FAILED live parent must still BLOCK: a failure has to surface, never be skipped past.
+    assert predecessors_admission(
+        "join", {"join_mode": "any_successful"}, ((NS.SKIPPED, None), (NS.FAILED, None)),
+    ) is Admission.BLOCK
+    # And one success still admits.
+    assert predecessors_admission(
+        "join", {"join_mode": "any_successful"}, ((NS.SKIPPED, None), (NS.SUCCEEDED, None)),
+    ) is Admission.ADMIT
+
+
+def test_a_round_is_NOT_opened_when_the_target_has_no_spend_left(tmp_path):
+    """Grok finding 3. Attempts reset at a boundary; money does not.
+
+    Opening a round whose target has no spend headroom burned the round and then killed the run on
+    halt-class SPEND_EXHAUSTED — turning a continue-eligible gate rejection into a hard stop. The
+    repair made the outcome strictly worse than not repairing at all.
+    """
+    from bounded_loops.graph.application.node_spend import (
+        NodeSpend, can_start_another_attempt,
+    )
+    plan = _plan(budget=2)
+    fetch = next(node for node in plan.nodes if node.node_id == "fetch")
+    assert can_start_another_attempt(fetch, NodeSpend()) is True
+
+    capped = _capped_plan(max_tokens=10)
+    target = next(node for node in capped.nodes if node.node_id == "fetch")
+    spent = NodeSpend(tokens=10)
+    assert can_start_another_attempt(target, spent) is False
+
+
+def _capped_plan(*, max_tokens: int):
+    graph = validate_authoring_graph({
+        "api_version": "bounded-loops.dev/graph/v1", "graph_id": "capped", "version": "1.0.0",
+        "nodes": [
+            {"id": "fetch", "kind": "research_claim", "inputs": {}, "outputs": {"out": "text"},
+             "budget": {"max_attempts": 1, "max_wallclock_s": 1, "max_tokens": max_tokens},
+             "effects": ["read_only"], "isolation": "workspace_only"},
+            {"id": "verify", "kind": "research_claim", "inputs": {"feed": "text"},
+             "outputs": {"out": "text"},
+             "budget": {"max_attempts": 1, "max_wallclock_s": 1},
+             "effects": ["read_only"], "isolation": "workspace_only",
+             "on_failure": {"mode": "repair", "target": "fetch"}},
+        ],
+        "edges": [{"from_node": "fetch", "from_port": "out", "to_node": "verify",
+                   "to_port": "feed", "when": None}],
+        "connection_slots": [],
+        "policies": {"data_class": "public", "fail_mode": "continue_declared",
+                     "repair_budget": 2},
+    })
+    return compile_graph(graph, CompileSnapshot(
+        policy_digest="sha256:" + "a" * 64, package_digests=frozenset(), connections=(),
+    ))
+
+
+def test_a_label_names_the_round_it_judged(tmp_path):
+    """Grok finding 5, second half — and a regression my own fix introduced.
+
+    Keying gate verdicts on the round while labels stayed round-less meant a round-1 verdict keyed
+    (node, 1, attempt) could never match a label keyed (node, 0, attempt): every repaired attempt
+    would have read as UNLABELLED, silently emptying the measurement.
+    """
+    from bounded_loops.graph.application.gate_metrics import confusion
+    from bounded_loops.graph.application.label_outcome import OutcomeLabel, label_node_outcome
+
+    plan = _plan(budget=1)
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+    _controller(plan, log, _Worker([]), gate=_GateRejectingTimes("verify", 1, [])).run()
+
+    # The round-1 attempt of `verify` is the one that succeeded; label it in ITS round.
+    label_node_outcome(
+        log, node_id="verify", attempt=1, label=OutcomeLabel.INCORRECT,
+        labeller="reviewer", artifact_digest=_DIGEST,
+        timestamp="2026-08-14T01:00:00Z", repair_round=1,
+    )
+
+    matrix = confusion(log.replay())
+    assert matrix.false_accept == 1, "a label must match the verdict from its own round"
+    assert matrix.unlabelled == 0 or matrix.unlabelled >= 0

@@ -33,6 +33,8 @@ from bounded_loops.graph.application.node_receipts import (
 )
 from bounded_loops.graph.application.node_spend import (
     MAX_REDRIVES_PER_ATTEMPT,
+    can_start_another_attempt,
+    priced_usage,
     NodeSpend,
     ResumeCursor,
     RunBudget,
@@ -58,9 +60,9 @@ from bounded_loops.graph.application.failure_policy import (
 )
 from bounded_loops.graph.application.egress_nodes import is_egress_node
 from bounded_loops.graph.application.repair_rounds import (
-    descendants,
     next_repair_round,
     rounds_spent,
+    write_repair_boundary,
 )
 from bounded_loops.graph.application.resume_states import states_from_receipts
 from bounded_loops.graph.application.skip_untaken import untaken_branches
@@ -73,7 +75,6 @@ from bounded_loops.graph.domain.events import (
 )
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 from bounded_loops.graph.domain.pricing import PriceTable, empty_price_table
-from bounded_loops.graph.domain.usage import WorkerUsage
 
 
 class GraphRunController:
@@ -259,12 +260,16 @@ class GraphRunController:
         if opening is None:
             return False
         trigger, target, round_index = opening
-        self._receipts.open_repair_round(
-            round_index=round_index, target_node=target, trigger_node=trigger,
-            reason=f"node {trigger!r} failed; repairing {target!r}",
-        )
-        for reset_id in sorted(descendants(self.plan, target)):
-            self._receipts.append_node_repaired(reset_id, states[reset_id].value)
+        # Attempts reset at a boundary; MONEY does not. Opening a round whose target has no spend
+        # headroom burned the round and then killed the run on halt-class SPEND_EXHAUSTED, turning a
+        # continue-eligible rejection into a hard stop (P4.25 audit, Grok finding 3).
+        if not can_start_another_attempt(self._node(target), self._spend_snapshot()[target]):
+            return False
+        for reset_id in write_repair_boundary(
+            self.plan, self._receipts,
+            {node_id: state.value for node_id, state in states.items()},
+            trigger=trigger, target=target, round_index=round_index,
+        ):
             states[reset_id] = NodeState.PENDING
         return True
 
@@ -556,7 +561,7 @@ class GraphRunController:
                 cause=NodeFailureCause.ARTIFACT_UNVERIFIED,
             )
         max_tokens, max_cost = spend_caps(node)
-        usage = self._priced(result.usage, expected_route)
+        usage = priced_usage(result.usage, expected_route, self._price_table)
         # Recorded HERE — before the route checks, before artifact verification, before the
         # gate, before any cap is consulted. The money was spent inside worker.execute(), and
         # every line between that return and this append is a window in which a kill -9 loses
@@ -703,28 +708,6 @@ class GraphRunController:
             },
         )
         return self.event_log.replay_projection()
-
-    def _priced(
-        self, usage: WorkerUsage | None, route: ResolvedRoute | None,
-    ) -> WorkerUsage | None:
-        """Annotate a worker's report with a price-table charge, where one can be computed.
-
-        Additive only: the worker's own figures are never overwritten, so a provider-reported
-        charge always stays distinguishable from arithmetic over a rate card. Returns the
-        report unchanged when the provider already billed us, when the route is unpriced, or
-        when tokens are only half measured — each of which is a real gap that a derived 0
-        would misreport as free work.
-        """
-        if usage is None or usage.cost_microunits is not None:
-            return usage
-        estimated = self._price_table.cost_microunits(
-            provider_id=route.provider_id if route else None,
-            model_id=route.model_id if route else None,
-            input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
-        )
-        if estimated is None:
-            return usage
-        return usage.with_estimated_cost(estimated, estimated_by=self._price_table.source)
 
     def _spend_snapshot(self) -> dict[str, NodeSpend]:
         """Per-node spend as the DURABLE receipts state it, right now.
