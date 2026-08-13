@@ -26,10 +26,9 @@ from bounded_loops.graph.application.execution_policy import (
     ExecutionEnvelope,
     NetworkMode,
 )
-from bounded_loops.graph.application.run_graph import (
-    _MAX_REDRIVES_PER_ATTEMPT,
+from bounded_loops.graph.application.run_graph import _MAX_REDRIVES_PER_ATTEMPT, GraphRunController
+from bounded_loops.graph.application.node_contracts import (
     GateVerdict,
-    GraphRunController,
     IndependentGatePort,
     NodeWorkerPort,
     WorkerResult,

@@ -10,7 +10,7 @@ semantic overlay layered on top of this primitive.
 from __future__ import annotations
 
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
-from bounded_loops.graph.application.run_graph import GateVerdict, WorkerResult
+from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
 from bounded_loops.graph.domain.artifacts import ArtifactAccess, ArtifactRef
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 

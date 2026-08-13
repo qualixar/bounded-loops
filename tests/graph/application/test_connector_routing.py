@@ -19,7 +19,8 @@ from bounded_loops.graph.application.execution_policy import (
     ExecutionEnvelope,
     NetworkMode,
 )
-from bounded_loops.graph.application.run_graph import GateVerdict, GraphRunController, WorkerResult
+from bounded_loops.graph.application.run_graph import GraphRunController
+from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
 from bounded_loops.graph.application.validate_graph import validate_authoring_graph
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.events import GraphRunIdentity

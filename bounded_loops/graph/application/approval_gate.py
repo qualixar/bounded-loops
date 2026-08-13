@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from bounded_loops.graph.application.approvals import ApprovalCommit
-from bounded_loops.graph.application.run_graph import ApprovalOutcome
+from bounded_loops.graph.application.node_contracts import ApprovalOutcome
 from bounded_loops.graph.domain.approvals import ApprovalRequest
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import GraphRunIdentity

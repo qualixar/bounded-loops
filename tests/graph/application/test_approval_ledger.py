@@ -19,7 +19,7 @@ import pytest
 
 from bounded_loops.graph.application.approval_gate import RecordedApprovalResolver
 from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
-from bounded_loops.graph.application.run_graph import ApprovalOutcome
+from bounded_loops.graph.application.node_contracts import ApprovalOutcome
 from bounded_loops.graph.application.validate_graph import parse_authoring_graph_yaml
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import GraphRunIdentity

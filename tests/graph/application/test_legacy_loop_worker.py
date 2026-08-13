@@ -16,7 +16,8 @@ from bounded_loops.graph.application.execution_policy import (
     ExecutionEnvelope,
     NetworkMode,
 )
-from bounded_loops.graph.application.run_graph import GateVerdict, GraphRunController
+from bounded_loops.graph.application.run_graph import GraphRunController
+from bounded_loops.graph.application.node_contracts import GateVerdict
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import GraphRunIdentity
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode

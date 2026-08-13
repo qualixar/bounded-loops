@@ -23,7 +23,7 @@ from typing import Protocol
 
 from bounded_loops.graph.application.connector_forward import ConnectorInvocation, ConnectorInvoker
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope
-from bounded_loops.graph.application.run_graph import WorkerResult
+from bounded_loops.graph.application.node_contracts import WorkerResult
 from bounded_loops.graph.domain.connections import ExecutionGrant, ResolvedRoute
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode

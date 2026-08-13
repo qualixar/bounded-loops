@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
-from typing import Callable, Mapping, Protocol
+from typing import Callable
 
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
 from bounded_loops.graph.application.arena_projection import latest_node_states
@@ -14,15 +13,32 @@ from bounded_loops.graph.application.execution_policy import (
     ExecutionPolicyPort,
     validate_execution_envelope,
 )
+from bounded_loops.graph.application.node_contracts import (
+    ApprovalOutcome,
+    ApprovalResolverPort,
+    ArtifactVerifierPort,
+    GateVerdict,
+    IndependentGatePort,
+    NodeWorkerPort,
+)
+from bounded_loops.graph.application.node_receipts import (
+    isolation_payload,
+    node_event_key,
+    route_payload,
+    validate_observed_route,
+    validate_observed_transport,
+    validate_worker_result,
+    verdict_body,
+    verdict_is_wellformed,
+)
+from bounded_loops.graph.application.node_spend import ResumeCursor, consumed_attempts_from
 from bounded_loops.graph.application.schedule_ready import NodeState, derive_ready_nodes, dispatch_node
 from bounded_loops.graph.domain.authoring import NETWORK_EFFECTS, NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.events import (
-    GraphRunIdentity,
     NodeFailureCause,
     GraphRunProjection,
-    StoredGraphEvent,
     UnsignedGraphEvent,
 )
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
@@ -34,37 +50,6 @@ from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 # an idempotency key.  They are kept as separate names to preserve the distinct
 # semantic axes (ARCH-03).
 _EFFECTFUL_EFFECTS = NETWORK_EFFECTS
-
-
-@dataclass(frozen=True)
-class WorkerResult:
-    """Declared immutable artifacts produced by one worker attempt.
-
-    ``isolation_provider_id`` and ``enforced_controls`` are the honest per-node
-    isolation receipt — which provider ran the node and the per-dimension controls
-    it actually enforced ({net, fs_write, fs_read, pid, user, kernel, egress}).
-    They are optional so a gate or a legacy worker may return only digests.
-    """
-
-    output_artifact_digests: tuple[str, ...]
-    observed_route: ResolvedRoute | None = None
-    observed_transport: str | None = None
-    isolation_provider_id: str | None = None
-    enforced_controls: Mapping[str, str] | None = None
-
-
-@dataclass(frozen=True)
-class GateVerdict:
-    """The result of a gate evaluated outside the producer interface.
-
-    ``evidence_digest`` optionally binds the gate's full evaluation record (a
-    content-addressed artifact) so the verdict externalized into the receipt is
-    tamper-evident, not merely a human-readable reason.
-    """
-
-    passed: bool
-    reason: str
-    evidence_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -89,30 +74,6 @@ class _AttemptOutcome:
     terminal: GraphRunProjection | None = None
 
 
-@dataclass(frozen=True)
-class _ResumeCursor:
-    """What the receipts say about work already done, per node.
-
-    ``spent`` — attempts that RECORDED their own failure; those are consumed.
-    ``started`` — the highest attempt with a ``node.running`` receipt, so the controller can
-    tell a fresh attempt from a re-drive of one that never completed.
-    ``redrives`` — how many re-drives have already been recorded for that node.
-    """
-
-    spent: Mapping[str, int]
-    started: Mapping[str, int]
-    #: Keyed on (node_id, attempt), NOT on node_id alone. A per-node total would charge one
-    #: attempt's re-drives against every later attempt, so a node that legitimately advanced
-    #: could be refused a re-drive it had never used — starved by the history of an attempt
-    #: that already completed.
-    redrives: Mapping[tuple[str, int], int]
-
-    @classmethod
-    def empty(cls, node_ids: tuple[str, ...]) -> "_ResumeCursor":
-        zeros = {node_id: 0 for node_id in node_ids}
-        return cls(spent=zeros, started=dict(zeros), redrives={})
-
-
 # An attempt that never completes can be re-driven once per resume, and the prefix events
 # de-duplicate, so nothing in the log advances.  This caps that: an external loop killing
 # the worker before it reaches its gate can no longer buy unbounded executions against a
@@ -126,24 +87,6 @@ _DEFAULT_MAX_ATTEMPTS = 1
 # retry budget multiplies the gate's per-attempt false-accept probability, so a very
 # large budget silently degrades the guarantee the gate is there to provide.
 _MAX_ATTEMPTS_CEILING = 100
-
-
-def _node_event_key(node_id: str, event_type: str, attempt: int) -> str:
-    """The idempotency key for one node lifecycle event.
-
-    Attempt 1 keeps the pre-retry key format EXACTLY — ``node_id:event_type`` — so
-    run directories written before retry existed still replay and resume.  Later
-    attempts append the attempt number because the log raises
-    ``GraphIntegrityError`` when one key is reused with a different payload
-    (see ``GraphEventLog.append``), which would otherwise make a second
-    ``node.running`` crash the run rather than record it.
-
-    Do NOT "tidy" this into one uniform format: doing so silently breaks resume of
-    every run directory produced before this change.
-    """
-    if attempt <= 1:
-        return f"{node_id}:{event_type}"
-    return f"{node_id}:{event_type}:{attempt}"
 
 
 def _max_attempts(node: PlannedNode) -> int:
@@ -172,58 +115,6 @@ def _max_attempts(node: PlannedNode) -> int:
             "retry without a per-effect idempotency key (D7); declare max_attempts: 1"
         )
     return raw
-
-
-class NodeWorkerPort(Protocol):
-    """Executes a planned node without deciding whether its output is valid.
-
-    ``attempt`` is the 1-based attempt number of the bounded loop.  It is REQUIRED, with
-    no default: a worker that silently assumed 1 would stamp attempt-3 work as attempt 1,
-    which is what made per-attempt credential audiences and artifact provenance impossible
-    to scope once retry existed.
-    """
-
-    def execute(
-        self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
-        attempt: int,
-    ) -> WorkerResult: ...
-
-
-class IndependentGatePort(Protocol):
-    """Evaluates a worker result without executing the producer node."""
-
-    def evaluate(
-        self, *, plan: ExecutionPlan, node: PlannedNode, result: WorkerResult,
-    ) -> GateVerdict: ...
-
-
-class ArtifactVerifierPort(Protocol):
-    """Confirms declared output digests exist for the owning graph tenant."""
-
-    def verify(self, *, identity: GraphRunIdentity, digests: tuple[str, ...]) -> None: ...
-
-
-class ApprovalOutcome(str, Enum):
-    """The decision the controller reads for a node paused awaiting a human.
-
-    ``PENDING`` is the fail-closed default: with no decided outcome the run stays
-    paused rather than proceeding.
-    """
-
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-
-
-class ApprovalResolverPort(Protocol):
-    """Reports whether a human has decided an approval node for THIS run/attempt.
-
-    The controller never itself validates a human decision (roles, signatures,
-    nonces live in the approvals use case); it only asks this port for the already
-    recorded outcome, and treats ``PENDING`` as "keep waiting".
-    """
-
-    def resolve(self, *, identity: GraphRunIdentity, node: PlannedNode, attempt: int) -> "ApprovalOutcome": ...
 
 
 def is_egress_node(plan: ExecutionPlan, node: PlannedNode, egress_transports: frozenset[str]) -> bool:
@@ -307,7 +198,7 @@ class GraphRunController:
         self._append("run.started", "run.started", {"state": "RUNNING"})
         states = {node.node_id: NodeState.PENDING for node in self.plan.nodes}
         return self._run_loop(
-            states, _ResumeCursor.empty(tuple(node.node_id for node in self.plan.nodes)),
+            states, ResumeCursor.empty(tuple(node.node_id for node in self.plan.nodes)),
         )
 
     def resume(self) -> GraphRunProjection:
@@ -356,78 +247,7 @@ class GraphRunController:
         if any(observed["state"] == "FAILED" for observed in latest.values()):
             self._append("run.failed", "run.failed", {"state": "FAILED"})
             return self.event_log.replay_projection()
-        return self._run_loop(self._states_from(latest), self._consumed_from(receipts))
-
-    def _consumed_from(self, receipts: tuple[StoredGraphEvent, ...]) -> _ResumeCursor:
-        """How many attempts each node has ALREADY spent, so a resume continues the count.
-
-        Without this the retry loop restarts at attempt 1 on every resume, which is wrong
-        twice over: it re-grants the whole budget each time a run is resumed (so total
-        attempts are bounded only by the number of resumes, not by the budget), and it can
-        append a LOWER attempt number after a higher one, which makes the finished run
-        permanently unreadable to the lifecycle validation in ``latest_node_states``.
-
-        An attempt is spent exactly when it RECORDED its own failure — that is, when a
-        ``node.attempt.failed`` receipt exists for it. Counting those is what separates the
-        two cases that matter:
-
-        * Interrupted before recording anything (killed during the worker or the gate): no
-          attempt record, so it is not spent and is RE-DRIVEN under its own number. This is
-          what keeps the documented at-least-once resume contract. Its prefix events
-          re-append as head-safe no-ops — ``_same_logical_event`` compares payloads with
-          the timestamp excluded, so a resume under a different clock still de-duplicates —
-          and no lower attempt number ever follows a higher one.
-        * Recorded its failure, then the process died before the node's terminal receipt:
-          the attempt IS spent. Re-driving it would let one attempt number carry both a
-          rejection and a later acceptance — a contradiction that corrupts the gate
-          rejection rate — and a second rejection with a different reason would collide
-          with the existing attempt-record key and wedge the resume outright.
-
-        Deriving this from the attempt records rather than from the latest lifecycle state
-        is why the raw receipts are needed here: ``latest_node_states`` deliberately ignores
-        additive events, so it cannot see them.
-
-        What this bounds is the number of DISTINCT attempts, the quantity that multiplies
-        the gate's false-accept probability. It does NOT bound repeated re-driving of an
-        attempt that never recorded anything — an external loop that kills the worker before
-        it reaches the gate can re-drive forever. There is no run-level spend budget yet, so
-        that residual is currently unbounded, not merely deferred.
-        """
-        node_ids = tuple(node.node_id for node in self.plan.nodes)
-        spent = {node_id: 0 for node_id in node_ids}
-        started = {node_id: 0 for node_id in node_ids}
-        redrives: dict[tuple[str, int], int] = {}
-        for stored in receipts:
-            event_type = stored.event.event_type
-            if event_type not in ("node.attempt.failed", "node.running", "node.redrive"):
-                continue
-            node_id = stored.event.payload["node_id"]
-            if node_id not in spent:
-                raise GraphIntegrityError("receipt references a node outside the plan")
-            attempt = stored.event.payload["attempt"]
-            if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
-                raise GraphIntegrityError("receipt attempt count is invalid")
-            if event_type == "node.attempt.failed":
-                spent[node_id] = max(spent[node_id], attempt)
-            elif event_type == "node.running":
-                started[node_id] = max(started[node_id], attempt)
-            else:
-                redrives[(node_id, attempt)] = redrives.get((node_id, attempt), 0) + 1
-        for node_id, spent_attempt in spent.items():
-            started_attempt = started[node_id]
-            # An honest controller writes node.running for attempt n before any attempt
-            # record for it, and never skips a number: so started is n or n+1 relative to
-            # spent, never more and never less. A hash-valid but impossible log — forged, or
-            # left by a partial upgrade — otherwise makes resume WRITE a receipt whose
-            # attempt number the Arena's lifecycle validation rejects, turning a readable
-            # (if corrupt) stream into a permanently unreadable one. Fail closed instead of
-            # amplifying it.
-            if started_attempt > spent_attempt + 1 or spent_attempt > started_attempt:
-                raise GraphIntegrityError(
-                    f"node {node_id!r} receipts are inconsistent: {spent_attempt} attempt(s) "
-                    f"recorded a failure but the highest started attempt is {started_attempt}"
-                )
-        return _ResumeCursor(spent=spent, started=started, redrives=redrives)
+        return self._run_loop(self._states_from(latest), consumed_attempts_from(self.plan, receipts))
 
     def _states_from(self, latest: dict[str, dict[str, object]]) -> dict[str, NodeState]:
         """Map rebuilt receipt states to controller states: a SUCCEEDED node stays
@@ -461,7 +281,7 @@ class GraphRunController:
         return states
 
     def _run_loop(
-        self, states: dict[str, NodeState], cursor: _ResumeCursor,
+        self, states: dict[str, NodeState], cursor: ResumeCursor,
     ) -> GraphRunProjection:
         while True:
             ready = derive_ready_nodes(self.plan, states)
@@ -533,7 +353,7 @@ class GraphRunController:
         envelope: ExecutionEnvelope,
         egress: bool,
         worker: NodeWorkerPort,
-        cursor: _ResumeCursor,
+        cursor: ResumeCursor,
     ) -> GraphRunProjection | None:
         """Attempt one node until its independent gate accepts, or the budget runs out.
 
@@ -642,9 +462,9 @@ class GraphRunController:
         expected_route = self._expected_route_for(node)
         expected_transport = self._expected_transport_for(node)
         try:
-            self._validate_result(result)
-            self._validate_observed_route(expected_route, result.observed_route)
-            self._validate_observed_transport(expected_transport, result.observed_transport)
+            validate_worker_result(result)
+            validate_observed_route(expected_route, result.observed_route)
+            validate_observed_transport(expected_transport, result.observed_transport)
             self._artifact_verifier.verify(
                 identity=self.event_log.identity,
                 digests=result.output_artifact_digests,
@@ -663,7 +483,7 @@ class GraphRunController:
                 states, node_id, "independent gate evaluation failed", attempt=attempt,
                 cause=NodeFailureCause.GATE_BROKEN,
             ))
-        if not isinstance(verdict, GateVerdict) or not self._verdict_is_wellformed(verdict):
+        if not isinstance(verdict, GateVerdict) or not verdict_is_wellformed(verdict):
             # A broken gate, not a failed attempt: retrying would spend the budget
             # against a verdict this controller cannot interpret, and would hide the
             # defect behind an eventual budget-exhausted failure.
@@ -679,16 +499,16 @@ class GraphRunController:
                 NodeState.SUCCEEDED,
                 attempt=attempt,
                 artifact_digests=list(result.output_artifact_digests),
-                verdict=self._verdict_body(verdict),
-                **({"route": self._route_payload(expected_route)} if expected_route else {}),
+                verdict=verdict_body(verdict),
+                **({"route": route_payload(expected_route)} if expected_route else {}),
                 **({"transport": expected_transport} if expected_transport else {}),
-                **self._isolation_payload(result),
+                **isolation_payload(result),
             )
             return _AttemptOutcome(succeeded=True)
         return _AttemptOutcome(
             failure="independent gate rejected output",
             cause=NodeFailureCause.GATE_REJECTED,
-            verdict=self._verdict_body(verdict),
+            verdict=verdict_body(verdict),
         )
 
     def _append_attempt_failed(
@@ -702,7 +522,7 @@ class GraphRunController:
         gate error rate is computed from the log.
 
         Writing this record is also what marks the attempt SPENT for a later resume — see
-        ``_consumed_from`` — so it must be appended before the node's terminal receipt.
+        ``consumed_attempts_from`` — so it must be appended before the node's terminal receipt.
         """
         payload: dict[str, object] = {
             "node_id": node_id, "attempt": attempt, "reason": reason, "cause": cause.value,
@@ -798,74 +618,6 @@ class GraphRunController:
             if binding.binding_id == node.binding_id
         )
 
-    @staticmethod
-    def _validate_observed_route(expected: ResolvedRoute | None, observed: ResolvedRoute | None) -> None:
-        if expected != observed:
-            raise GraphIntegrityError("worker route identity does not match immutable execution plan")
-
-    @staticmethod
-    def _validate_observed_transport(expected: str | None, observed: str | None) -> None:
-        if expected != observed:
-            raise GraphIntegrityError("worker transport does not match immutable execution plan")
-
-    @staticmethod
-    def _isolation_payload(result: WorkerResult) -> dict[str, object]:
-        """The per-node isolation receipt for the durable ``node.succeeded`` event.
-
-        Empty when the worker did not report one (e.g. a legacy worker), so the
-        event schema stays backward compatible.
-        """
-        if not result.isolation_provider_id or result.enforced_controls is None:
-            return {}
-        return {
-            "isolation": {
-                "provider_id": result.isolation_provider_id,
-                "controls": {str(dim): str(status) for dim, status in dict(result.enforced_controls).items()},
-            }
-        }
-
-    @staticmethod
-    def _route_payload(route: ResolvedRoute) -> dict[str, object]:
-        return {
-            "provider_id": route.provider_id,
-            "model_id": route.model_id,
-            "region": route.region,
-            "fallback": route.fallback,
-            "policy_digest": route.policy_digest,
-        }
-
-    @staticmethod
-    def _verdict_is_wellformed(verdict: GateVerdict) -> bool:
-        """A gate that returns an empty reason or a non-digest evidence reference is
-        malformed; the controller fails the node closed here rather than let a bad
-        verdict reach (and be rejected by) the durable log as an uncaught error."""
-        if not isinstance(verdict.passed, bool):
-            return False
-        if not isinstance(verdict.reason, str) or not verdict.reason:
-            return False
-        digest = verdict.evidence_digest
-        if digest is not None and not (
-            isinstance(digest, str)
-            and digest.startswith("sha256:")
-            and len(digest) == 71
-            and all(character in "0123456789abcdef" for character in digest[7:])
-        ):
-            return False
-        return True
-
-    @staticmethod
-    def _verdict_body(verdict: GateVerdict) -> dict[str, object]:
-        """The externalized independent-gate verdict for the durable receipt.
-
-        Records the gate's boolean decision and reason (and, when the gate supplies
-        one, a content-addressed evidence digest) so a node's terminal state is
-        gate-attested in the log, never inferred from the producer.
-        """
-        body: dict[str, object] = {"passed": verdict.passed, "reason": verdict.reason}
-        if verdict.evidence_digest is not None:
-            body["evidence_digest"] = verdict.evidence_digest
-        return body
-
     def _fail_node(
         self, states: dict[str, NodeState], node_id: str, reason: str,
         *, cause: NodeFailureCause, verdict: dict[str, object] | None = None,
@@ -898,7 +650,7 @@ class GraphRunController:
         **extra: object,
     ) -> None:
         payload = {"node_id": node_id, "state": state.value, "attempt": attempt, **extra}
-        self._append(_node_event_key(node_id, event_type, attempt), event_type, payload)
+        self._append(node_event_key(node_id, event_type, attempt), event_type, payload)
 
     def _append(self, key: str, event_type: str, payload: dict[str, object]) -> None:
         stored = self.event_log.append(
@@ -921,15 +673,3 @@ class GraphRunController:
         if stored.previous_hash == self._head:
             self._head = stored.event_hash
 
-    @staticmethod
-    def _validate_result(result: WorkerResult) -> None:
-        if not isinstance(result, WorkerResult):
-            raise GraphIntegrityError("worker must return WorkerResult")
-        if not all(isinstance(value, str) and value.startswith("sha256:") and len(value) == 71 for value in result.output_artifact_digests):
-            raise GraphIntegrityError("worker result contains an invalid artifact digest")
-        if result.observed_route is not None and not isinstance(result.observed_route, ResolvedRoute):
-            raise GraphIntegrityError("worker result contains an invalid route identity")
-        if result.observed_transport is not None and (
-            not isinstance(result.observed_transport, str) or not result.observed_transport
-        ):
-            raise GraphIntegrityError("worker result contains an invalid transport identity")

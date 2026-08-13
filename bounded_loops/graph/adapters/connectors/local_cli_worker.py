@@ -43,7 +43,7 @@ from bounded_loops.graph.adapters.enforcement.egress_proxy import LoopbackEgress
 from bounded_loops.graph.adapters.enforcement.sandbox import build_seatbelt_allowlist_profile, seatbelt_argv
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, NetworkMode
-from bounded_loops.graph.application.run_graph import WorkerResult
+from bounded_loops.graph.application.node_contracts import WorkerResult
 from bounded_loops.graph.domain.artifacts import ArtifactPolicy
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError

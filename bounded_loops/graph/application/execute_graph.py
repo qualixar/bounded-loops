@@ -77,12 +77,8 @@ from bounded_loops.graph.application.execution_policy import (
 )
 from bounded_loops.graph.domain.authoring import AuthoringGraphSpec, IsolationLevel, NodeKind, _NULL_POLICY_DIGEST
 from bounded_loops.graph.application.approval_ledger import build_durable_approval_resolver
-from bounded_loops.graph.application.run_graph import (
-    ApprovalResolverPort,
-    GraphRunController,
-    WorkerResult,
-    is_egress_node,
-)
+from bounded_loops.graph.application.run_graph import GraphRunController, is_egress_node
+from bounded_loops.graph.application.node_contracts import ApprovalResolverPort, WorkerResult
 from bounded_loops.graph.application.validate_graph import (
     parse_authoring_graph_json,
     parse_authoring_graph_yaml,

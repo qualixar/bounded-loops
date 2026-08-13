@@ -13,7 +13,7 @@ from bounded_loops.application.loop_bridge import (
 from bounded_loops.application.manifest import LoopManifest
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, validate_execution_envelope
-from bounded_loops.graph.application.run_graph import WorkerResult
+from bounded_loops.graph.application.node_contracts import WorkerResult
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import GraphRunIdentity
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode

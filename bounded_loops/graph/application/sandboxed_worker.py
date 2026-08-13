@@ -56,7 +56,7 @@ from bounded_loops.graph.application.execution_policy import (
     NetworkMode,
     validate_execution_envelope,
 )
-from bounded_loops.graph.application.run_graph import WorkerResult
+from bounded_loops.graph.application.node_contracts import WorkerResult
 from bounded_loops.graph.application.workspace_promotion import (
     ArtifactWriterPort,
     WorkspaceInput,

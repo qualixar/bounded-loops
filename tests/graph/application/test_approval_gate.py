@@ -25,11 +25,8 @@ from bounded_loops.graph.application.approvals import (
 )
 from bounded_loops.graph.application.arena_projection import latest_node_states
 from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
-from bounded_loops.graph.application.run_graph import (
-    ApprovalOutcome,
-    GateVerdict,
-    GraphRunController,
-)
+from bounded_loops.graph.application.run_graph import GraphRunController
+from bounded_loops.graph.application.node_contracts import ApprovalOutcome, GateVerdict
 from bounded_loops.graph.application.validate_graph import validate_authoring_graph
 from bounded_loops.graph.domain.approvals import ApprovalDecision, ApprovalRequest
 from bounded_loops.graph.domain.authoring import Effect
