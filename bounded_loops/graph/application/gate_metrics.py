@@ -192,7 +192,14 @@ def _wilson(successes: int, trials: int, z: float = 1.959963984540054) -> Interv
     seen nothing. Wilson keeps the interval inside [0, 1] and stays sane at the boundaries, which is
     where a gate evaluation actually lives: the interesting runs have very few false accepts.
     """
-    if trials <= 0:
+    if successes < 0 or trials < 0 or successes > trials:
+        # Impossible counts mean a caller invariant broke — today ``_rate`` is always called with a
+        # numerator drawn from its own denominator, so this cannot fire through the public API. It
+        # raises rather than returning [0, 1] because a silent uninformative interval would let a
+        # counting bug reach a results table looking like an honest absence of evidence. Found by
+        # probing ``_wilson(3, 2)``, which used to surface as a bare ``math domain error``.
+        raise ValueError(f"cannot form an interval from {successes} successes in {trials} trials")
+    if trials == 0:
         return Interval(0.0, 1.0)
     phat = successes / trials
     denominator = 1 + z * z / trials

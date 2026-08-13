@@ -86,7 +86,9 @@ def cmd_graph_metrics(args: argparse.Namespace) -> int:
         plan, identity = load_plan_from_run_dir(run_dir)[:2]
         log = GraphEventLog(run_dir / "controller-events.jsonl", identity)
         receipts = log.replay()
-    except (GraphIntegrityError, GraphValidationError, OSError) as exc:
+    except (GraphIntegrityError, GraphValidationError, OSError, ValueError) as exc:
+        # ValueError included because ``load_plan_from_run_dir``'s symlink guard raises one, so
+        # ``bl graph metrics --run /tmp`` printed a traceback instead of saying what was wrong.
         _err(f"graph metrics: {exc}")
         return 2
 
@@ -105,6 +107,16 @@ def cmd_graph_metrics(args: argparse.Namespace) -> int:
 
     print("Gate performance — computed from the receipt stream, nothing else")
     print("=" * 70)
+    gated = overall.labelled + overall.unlabelled + overall.unknown_label
+    if gated == 0:
+        # A DIFFERENT fact from "unlabelled", and it was printed identically: this run has nothing to
+        # measure because the gate never evaluated anything — every attempt failed before reaching it,
+        # or the run has no gated nodes. Saying "no labels" here would send a reader off to label
+        # attempts that do not exist.
+        print("NO GATED ATTEMPTS in this run — the gate never evaluated anything.")
+        print("Every attempt failed before the gate (worker fault, policy denial, unverified")
+        print("artifact), or the run has no connector nodes. There is nothing to measure here.")
+        return 0
     if overall.labelled == 0:
         # Said first and plainly. The most likely state of a young run is "no ground truth yet", and
         # a table of zeroes would read as "the gate made no mistakes".
@@ -113,7 +125,7 @@ def cmd_graph_metrics(args: argparse.Namespace) -> int:
         print("label_node_outcome(...) and re-run; until then this run measures nothing.")
         return 0
 
-    print(f"  gated attempts           {overall.labelled + overall.unlabelled + overall.unknown_label}")
+    print(f"  gated attempts           {gated}")
     print(f"  labelled                 {overall.labelled}")
     print(f"  unlabelled               {overall.unlabelled}")
     print(f"  reviewed but undecidable {overall.unknown_label}")

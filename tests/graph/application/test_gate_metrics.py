@@ -305,3 +305,60 @@ class TestTheCompoundingBaseline:
         doc = naive_compounded_false_accept.__doc__ or ""
         assert "FALSIFY" in doc
         assert "not a budget recommender" in doc
+
+
+class TestTheIntervalMathsItself:
+    """These numbers would go in a paper, so the formula is checked against published values."""
+
+    @pytest.mark.parametrize(
+        ("successes", "trials", "low", "high"),
+        [
+            (0, 10, 0.0000, 0.2775),
+            (1, 10, 0.0179, 0.4041),
+            (5, 10, 0.2366, 0.7634),
+            (9, 10, 0.5958, 0.9821),
+            (10, 10, 0.7225, 1.0000),
+            (2, 20, 0.0277, 0.3015),
+        ],
+    )
+    def test_it_matches_published_wilson_intervals(
+        self, successes: int, trials: int, low: float, high: float,
+    ) -> None:
+        """Standard Wilson 95% values (Newcombe 1998). A formula that is subtly wrong here produces
+        confident-looking bounds that are simply false, which no amount of surrounding care fixes."""
+        from bounded_loops.graph.application.gate_metrics import _wilson
+
+        interval = _wilson(successes, trials)
+
+        assert interval.low == pytest.approx(low, abs=5e-4)
+        assert interval.high == pytest.approx(high, abs=5e-4)
+
+    def test_impossible_counts_raise_instead_of_a_math_domain_error(self) -> None:
+        """``_wilson(3, 2)`` used to surface as a bare ``ValueError: math domain error``.
+
+        It raises deliberately rather than returning an uninformative [0, 1]: more successes than
+        trials means a counting bug upstream, and a silent wide interval would carry that bug into a
+        results table looking like an honest absence of evidence.
+        """
+        from bounded_loops.graph.application.gate_metrics import _wilson
+
+        with pytest.raises(ValueError, match="cannot form an interval"):
+            _wilson(3, 2)
+        with pytest.raises(ValueError, match="cannot form an interval"):
+            _wilson(-1, 5)
+
+    @pytest.mark.parametrize(("successes", "trials"), [(0, 0), (0, 1), (1, 1), (0, 3), (7, 7)])
+    def test_no_interval_ever_escapes_zero_to_one_or_inverts(
+        self, successes: int, trials: int,
+    ) -> None:
+        from bounded_loops.graph.application.gate_metrics import _wilson
+
+        interval = _wilson(successes, trials)
+
+        assert 0.0 <= interval.low <= interval.high <= 1.0
+
+    def test_an_empty_sample_yields_the_uninformative_interval_not_a_claim(self) -> None:
+        """0 of 0 is the widest possible statement: the rate could be anything."""
+        from bounded_loops.graph.application.gate_metrics import _wilson
+
+        assert (_wilson(0, 0).low, _wilson(0, 0).high) == (0.0, 1.0)
