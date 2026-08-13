@@ -78,6 +78,8 @@ from bounded_loops.graph.application.execution_policy import (
 from bounded_loops.graph.domain.authoring import AuthoringGraphSpec, IsolationLevel, NodeKind, _NULL_POLICY_DIGEST
 from bounded_loops.graph.application.approval_ledger import build_durable_approval_resolver
 from bounded_loops.graph.application.run_graph import GraphRunController, is_egress_node
+from bounded_loops.graph.application.node_spend import RunBudget
+from bounded_loops.graph.domain.pricing import PriceTable
 from bounded_loops.graph.application.node_contracts import ApprovalResolverPort, WorkerResult
 from bounded_loops.graph.application.validate_graph import (
     parse_authoring_graph_json,
@@ -305,6 +307,11 @@ def build_execution_controller(
     byok_credential_resolver: object = None,
     byok_tls_context: ssl.SSLContext | None = None,
     approval_resolver: ApprovalResolverPort | None = None,
+    # Operator spend controls. None means no ceiling and no rates — how every pre-0.5 caller
+    # behaves: nothing capped, and a node declaring a cost cap fails closed as unmeasurable
+    # rather than running against prices nobody supplied.
+    run_budget: RunBudget | None = None,
+    price_table: PriceTable | None = None,
 ) -> tuple[GraphRunController, LocalArtifactStore, GraphEventLog]:
     """Shared controller-assembly helper for ``execute_graph_run`` and ``LocalGraphRuntimeFacade``.
     Builds the full wiring (platform-caps check, artifact store, event log, workers, policy)
@@ -408,6 +415,8 @@ def build_execution_controller(
         connector_worker=connector_worker,  # type: ignore[arg-type]
         egress_transports=egress_transports,
         approval_resolver=approval_resolver,
+        run_budget=run_budget,
+        price_table=price_table,
     )
     return controller, store, event_log
 
@@ -439,6 +448,11 @@ def execute_graph_run(
     # as ``audit-plan.json`` in the run directory for read-side arena projection.
     # Does NOT affect the controller loop — read-side only.
     audit_plan_json: str | None = None,
+    # Operator spend controls. Default to no ceiling and no rates, which is exactly how every
+    # pre-0.5 caller behaves: nothing is capped, and any node declaring a cost cap fails closed
+    # as unmeasurable rather than running against prices nobody supplied.
+    run_budget: RunBudget | None = None,
+    price_table: PriceTable | None = None,
 ) -> int:
     """Compile a user manifest and run its admitted connector nodes for real.
 
@@ -517,6 +531,8 @@ def execute_graph_run(
             byok_credential_resolver=byok_credential_resolver,
             byok_tls_context=byok_tls_context,
             approval_resolver=approval_resolver,
+            run_budget=run_budget,
+            price_table=price_table,
         )
     except GraphValidationError as exc:
         return _fail(json_out, f"execution enforcement refused before run: {exc.message}")

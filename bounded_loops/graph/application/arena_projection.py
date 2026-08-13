@@ -8,6 +8,11 @@ from typing import Protocol
 
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
 from bounded_loops.graph.application.schedule_ready import NodeState, predecessors_admit
+from bounded_loops.graph.application.node_spend import (
+    NodeSpend,
+    consumed_spend_from,
+    run_spend,
+)
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import GraphRunIdentity, StoredGraphEvent
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode, ResolvedBinding
@@ -83,6 +88,12 @@ class ArenaNodeProjection:
     artifact_digests: tuple[str, ...]
     route: tuple[str, str, str, bool, str] | None
     transport: str | None
+    #: What this node has spent across ALL its attempts, from the receipts. ``spend_complete``
+    #: is False when some attempt reported nothing, which makes the totals a LOWER BOUND — a
+    #: surface that showed an under-count as a measurement would be worse than showing nothing.
+    spend_tokens: int = 0
+    spend_cost_microunits: int = 0
+    spend_complete: bool = True
 
 
 @dataclass(frozen=True)
@@ -99,6 +110,16 @@ class ArenaProjection:
     nodes: tuple[ArenaNodeProjection, ...]
     edges: tuple[tuple[str, str], ...]
     levels: tuple[tuple[str, ...], ...]
+    #: Why the run stopped, when it stopped on the operator's total rather than on its own
+    #: work. A run that is RUNNING but going nowhere is otherwise indistinguishable, in every
+    #: surface, from one still making progress.
+    budget_pause: dict[str, object] | None = None
+    #: The whole run's spend, so a surface can show one number without summing nodes itself.
+    #: ``spend_complete`` False means the totals are a LOWER BOUND: some attempt reported
+    #: nothing, and presenting an under-count as a measurement is worse than showing nothing.
+    spend_tokens: int = 0
+    spend_cost_microunits: int = 0
+    spend_complete: bool = True
 
 
 def read_arena_projection(
@@ -118,6 +139,8 @@ def read_arena_projection(
     if snapshot.projection.state == "SUCCEEDED" and any(value["state"] != "SUCCEEDED" for value in latest.values()):
         raise GraphIntegrityError("Arena succeeded receipt has a planned node that is not succeeded")
     bindings = {binding.binding_id: binding for binding in plan.connection_bindings}
+    spend = consumed_spend_from(plan, snapshot.receipts)
+    total = run_spend(spend)
     return ArenaProjection(
         organization_id=identity.organization_id,
         project_id=identity.project_id,
@@ -128,7 +151,14 @@ def read_arena_projection(
         run_state=snapshot.projection.state,
         receipt_sequence=snapshot.projection.sequence,
         receipt_head_hash=snapshot.projection.head_hash,
-        nodes=tuple(_node_projection(node, latest[node.node_id], bindings) for node in plan.nodes),
+        budget_pause=_budget_pause(snapshot.receipts),
+        spend_tokens=total.tokens,
+        spend_cost_microunits=total.cost_microunits,
+        spend_complete=total.complete,
+        nodes=tuple(
+            _node_projection(node, latest[node.node_id], bindings, spend[node.node_id])
+            for node in plan.nodes
+        ),
         edges=tuple((edge.from_node, edge.to_node) for edge in plan.edges),
         levels=tuple(tuple(level) for level in plan.levels),
     )
@@ -244,6 +274,7 @@ def _node_projection(
     node: PlannedNode,
     receipt: dict[str, object],
     bindings: dict[str, ResolvedBinding],
+    spend: NodeSpend,
 ) -> ArenaNodeProjection:
     route = _route(receipt.get("route"))
     transport = receipt.get("transport")
@@ -263,7 +294,22 @@ def _node_projection(
         required_effects=tuple(sorted(effect.value for effect in node.required_effects)),
         isolation=node.isolation.value, hard_deadline_ms=node.hard_deadline_ms,
         artifact_digests=tuple(artifacts), route=route, transport=transport,
+        spend_tokens=spend.tokens, spend_cost_microunits=spend.cost_microunits,
+        spend_complete=spend.complete,
     )
+
+
+def _budget_pause(receipts: tuple[StoredGraphEvent, ...]) -> dict[str, object] | None:
+    """The most recent budget pause, or ``None`` if the run never hit the operator's total.
+
+    Read from the receipts rather than tracked separately, for the same reason spend is: the
+    log is the only thing that survives the process that wrote it. Only surfaced while the run
+    is still going — a pause that was later resumed past is history, not the current state.
+    """
+    for stored in reversed(receipts):
+        if stored.event.event_type == "run.budget.paused":
+            return dict(stored.event.payload)
+    return None
 
 
 def _route(value: object) -> tuple[str, str, str, bool, str] | None:

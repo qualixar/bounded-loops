@@ -36,6 +36,9 @@ from bounded_loops.graph.application.compile_graph import (
     compile_graph,
 )
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
+from bounded_loops.graph.application.node_spend import RunBudget
+from bounded_loops.graph.domain.errors import GraphIntegrityError
+from bounded_loops.graph.domain.pricing import PriceTable
 from bounded_loops.graph.application.validate_graph import (
     parse_authoring_graph_json,
     parse_authoring_graph_yaml,
@@ -318,6 +321,31 @@ def cmd_graph_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_budget(args: argparse.Namespace) -> tuple["RunBudget", "PriceTable"]:
+    """The run's spend ceilings and the rates that price them, file first then flags.
+
+    A file holds the deployment's standing numbers; a flag is typed deliberately for the run
+    in front of you, so a flag wins. Overriding happens per dimension: setting --max-tokens
+    says nothing about a cost ceiling in the file, and silently dropping that would remove a
+    bound the operator still expects to hold.
+    """
+    from bounded_loops.graph.application.budget_config import (
+        load_budget_file,
+        resolve_run_budget,
+    )
+    from bounded_loops.graph.domain.pricing import empty_price_table
+
+    from_file, table = RunBudget(), empty_price_table()
+    if getattr(args, "budget_file", None):
+        from_file, table = load_budget_file(Path(args.budget_file))
+    budget = resolve_run_budget(
+        from_file=from_file,
+        max_tokens=getattr(args, "max_tokens", None),
+        max_cost_usd=getattr(args, "max_cost_usd", None),
+    )
+    return budget, table
+
+
 def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) -> int:
     """Read a user manifest (+ optional --connections/--inputs/--admitted) and run it for real.
 
@@ -399,6 +427,12 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
             _err(f"graph run: cannot load --audit-plan — {exc}")
             return 2
 
+    try:
+        run_budget, price_table = _resolve_budget(args)
+    except GraphIntegrityError as exc:
+        _err(f"graph run: {exc}")
+        return 2
+
     from bounded_loops.graph.application.execute_graph import execute_graph_run
     return execute_graph_run(
         manifest_text=text,
@@ -412,6 +446,8 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
         json_out=getattr(args, "json", False),
         admitted_connections=admitted_connections,
         audit_plan_json=audit_plan_json_text,
+        run_budget=run_budget,
+        price_table=price_table,
     )
 
 
@@ -636,6 +672,35 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
             "When supplied, the plan is persisted in the run directory so "
             "`bl graph arena` can render the coverage cells and release decision. "
             "Does not affect the run itself — read-side projection only."
+        ),
+    )
+    run_p.add_argument(
+        "--max-tokens", default=None, type=int, metavar="<n>",
+        help=(
+            "Ceiling on the tokens this WHOLE run may spend, across every node. Reaching it "
+            "PAUSES the run — it stays resumable — rather than failing it, so no completed "
+            "work is thrown away. Resume with a higher ceiling to continue. Overrides "
+            "max_tokens from --budget-file."
+        ),
+    )
+    run_p.add_argument(
+        "--max-cost-usd", default=None, metavar="<amount>",
+        help=(
+            "Ceiling on what this whole run may cost, in USD (e.g. 2.50). Needs rates: a "
+            "provider reports tokens, not money, so supply a price table via --budget-file or "
+            "every cost cap fails closed as unmeasurable. Overrides max_cost_usd from "
+            "--budget-file."
+        ),
+    )
+    run_p.add_argument(
+        "--budget-file", default=None, metavar="<json>",
+        help=(
+            "Path to a JSON budget file: {\"max_tokens\": N, \"max_cost_usd\": \"2.50\", "
+            "\"prices\": {\"provider/model\": {\"input_microunits_per_mtok\": N, "
+            "\"output_microunits_per_mtok\": N}}}. NO default prices ship — a table baked "
+            "into the package would be wrong the week a provider repriced, and a stale low "
+            "price under-charges, which is the direction that lets a cap permit unauthorised "
+            "spend. Explicit flags override this file per dimension."
         ),
     )
     run_p.add_argument("--json", action="store_true", help="Emit JSON output.")

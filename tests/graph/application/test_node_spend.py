@@ -763,3 +763,100 @@ def test_a_pause_records_the_ceiling_it_reached(tmp_path: Path) -> None:
 def test_a_negative_run_ceiling_is_refused(field: str) -> None:
     with pytest.raises(GraphIntegrityError, match="non-negative"):
         RunBudget(**{field: -1})  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------------------
+# What an operator actually sees.
+# --------------------------------------------------------------------------------------
+
+
+class _AlwaysAuthorized:
+    def authorize(self, request: object) -> bool:  # noqa: ARG002
+        return True
+
+
+class _NoOpReceiptVerifier:
+    def verify(self, identity: object, receipts: object) -> None:  # noqa: ARG002
+        return None
+
+
+def _projection(controller: GraphRunController) -> object:
+    from bounded_loops.graph.application.arena_projection import (
+        ArenaReadRequest, read_arena_projection,
+    )
+
+    return read_arena_projection(
+        controller.plan, controller.event_log,
+        ArenaReadRequest(
+            subject_id="operator", organization_id="org-1", project_id="project-1",
+            run_id="graph-run-1",
+        ),
+        _AlwaysAuthorized(), _NoOpReceiptVerifier(),
+    )
+
+
+def test_the_arena_reports_spend_per_node_and_for_the_run(tmp_path: Path) -> None:
+    """Enforced but invisible is not good enough: an operator has to see where it went."""
+    controller = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(cost_microunits=1_200), gate=_Gate(reject_first=99),
+        run_budget=RunBudget(max_tokens=150), budgets={"max_attempts": 10},
+    )
+    controller.run()
+
+    projection = _projection(controller)
+
+    assert projection.spend_tokens == 200  # type: ignore[attr-defined]
+    assert projection.spend_cost_microunits == 2_400  # type: ignore[attr-defined]
+    assert projection.spend_complete is True  # type: ignore[attr-defined]
+    assert projection.nodes[0].spend_tokens == 200  # type: ignore[attr-defined]
+    assert projection.budget_pause is not None  # type: ignore[attr-defined]
+
+
+def test_a_budget_paused_run_does_not_render_as_making_progress(tmp_path: Path) -> None:
+    """Without this the operator's own surface says "Running: worker-node".
+
+    Nothing is running and nothing will until they act. A pause that is indistinguishable from
+    progress is the one failure the pause exists to avoid — it is worse than a plain failure,
+    because a failure at least tells them to look.
+    """
+    from bounded_loops.graph.application.state_document import render_state_markdown
+
+    controller = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
+        run_budget=RunBudget(max_tokens=150), budgets={"max_attempts": 10},
+    )
+    controller.run()
+
+    document = render_state_markdown(_projection(controller))  # type: ignore[arg-type]
+
+    assert "Paused on budget" in document
+    assert "Running:" not in document
+    assert "--max-tokens" in document, "the operator is told how to continue"
+    assert "**200** tokens" in document
+
+
+def test_an_incomplete_spend_total_is_labelled_as_a_floor(tmp_path: Path) -> None:
+    """"1,200 tokens" and "at least 1,200 tokens" support different decisions."""
+    from bounded_loops.graph.application.state_document import render_state_markdown
+
+    controller = _budgeted_run(
+        # A worker that raises leaves an attempt recorded with no usage, so the total becomes a
+        # lower bound rather than a measurement.
+        tmp_path, worker=_SometimesRaisingMeteredWorker(), gate=_Gate(reject_first=99),
+        run_budget=RunBudget(), budgets={"max_attempts": 3},
+    )
+    controller.run()
+
+    projection = _projection(controller)
+    assert projection.spend_complete is False  # type: ignore[attr-defined]
+    assert "at least" in render_state_markdown(projection)  # type: ignore[arg-type]
+
+
+class _SometimesRaisingMeteredWorker(_MeteredWorker):
+    """Reports usage, then crashes — an attempt that spent money it could not report."""
+
+    def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
+        self.calls += 1
+        if self.calls == 1:
+            return WorkerResult(output_artifact_digests=(_DIGEST,), usage=self._usage)
+        raise RuntimeError("crashed before it could measure itself")
