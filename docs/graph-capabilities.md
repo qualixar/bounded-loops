@@ -174,8 +174,9 @@ Repair is a **bounded outer loop, not a cycle**. Nothing is revived: a round bou
 recorded as `run.repair.round`, each reset node gets a `node.repaired` receipt naming the
 terminal state it left, and every receipt in a round carries that round. Within a round the
 state machine is unchanged, so the audit trail stays verifiable — a replay refuses a boundary
-whose trigger did not fail, whose target the trigger did not declare, that is numbered out of
-sequence, or that exceeds the budget.
+whose trigger did not fail, whose failure was not one a run may continue past (a broken gate or a
+denied policy cannot be repaired), whose target the trigger did not declare, that is numbered out
+of sequence, or that exceeds the budget.
 
 Refused at validation: a target that is not a strict ancestor (including the node itself), a
 target that does not exist, `repair` with a `repair_budget` of 0, and `repair` under

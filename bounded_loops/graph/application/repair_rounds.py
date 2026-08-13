@@ -39,8 +39,9 @@ from __future__ import annotations
 
 from typing import Mapping
 
+from bounded_loops.graph.application.failure_policy import MAY_CONTINUE_AFTER
 from bounded_loops.graph.domain.errors import GraphIntegrityError
-from bounded_loops.graph.domain.events import StoredGraphEvent
+from bounded_loops.graph.domain.events import NodeFailureCause, StoredGraphEvent
 from bounded_loops.graph.domain.plan import ExecutionPlan
 
 #: Receipt written at a round boundary. Additive: it transitions no node, so a reader that ignores it
@@ -100,11 +101,15 @@ def total_execution_bound(plan: ExecutionPlan) -> int:
     iterates ``range(1, max_attempts + 1)``. See the module docstring on why ``Σ (max_attempts + 1)``
     would be wrong.
 
-    This is the quantity arXiv:2604.11378 Theorem 6.2 gets wrong under repair. Its bound is
-    ``Σ_v τ_v·(b_v + 1)`` — the same per-round total as ours — but its proof depends on terminal
-    states being absorbing. A repair breaks that premise, so the true bound carries the ``(1 + R)``
-    factor; with ``R`` unbounded their bound does not exist at all. The disagreement is about the
-    FACTOR, not the per-round sum, and the paper must say so precisely or it is attacking a straw man.
+    Relation to arXiv:2604.11378 Theorem 6.2, stated precisely because the paper will be read by a
+    referee. Their bound is ``Σ_v τ_v·(b_v + 1)`` — the same per-round total as ours — and it is
+    CORRECT on its own premise, which they state explicitly: terminal states are absorbing, and
+    parent-chain rollback is excluded from their design. So their theorem is not mistaken. What is
+    true is narrower and must be written that way: **once repair is added their premise no longer
+    holds, so their bound no longer applies to the run** — and under our repair semantics the tight
+    bound carries the ``(1 + R)`` factor. Saying they "got it wrong" would imply they claimed to cover
+    repair, which they did not; that is a straw man and a referee would say so.
+    Flagged by the P4.25 dual audit (Muse finding 5).
     """
     per_round = 0
     for node in plan.nodes:
@@ -120,6 +125,7 @@ def assert_boundary_is_legal(
     trigger_node: str,
     target_node: str,
     trigger_state: str,
+    trigger_cause: object = None,
 ) -> None:
     """Refuse a repair-round boundary a run could not legitimately have opened.
 
@@ -127,14 +133,40 @@ def assert_boundary_is_legal(
     re-hash-chained log could write one boundary and erase any inconvenient failure — the terminal
     states it resets are exactly the evidence a reader relies on.
 
-    Four checks, mirroring the authoring rules so the runtime cannot be laxer than the validator:
-    the trigger must have FAILED, it must actually declare a repair, the target must be the one it
-    declared, and the round must be inside the global budget.
+    Five checks, mirroring the authoring and continuation rules so the runtime cannot be laxer than
+    the validator: the trigger must have FAILED, its failure must have been CONTINUE-ELIGIBLE, it must
+    actually declare a repair, the target must be the one it declared, and the round must be inside the
+    global budget.
+
+    The cause check closes a real hole. Checking only the STATE let a hand-chained log repair past a
+    HALT-class failure — a broken gate, a denied policy or isolation refusal, a rejected approval, an
+    exhausted spend cap — and so rewind a run the live controller would have sealed. The live path
+    could not do it, because a halting cause never reaches a repair; replay accepted it. Found by the
+    P4.25 dual audit (Muse finding 3).
+
+    A missing cause is REFUSED, not waved through: pre-0.5 logs have no repair boundaries at all, so
+    an absent cause on one can only mean a forgery or a corruption.
     """
     if trigger_state != "FAILED":
         raise GraphIntegrityError(
             f"repair round {round_index} claims node {trigger_node!r} triggered it, but that node "
             f"is {trigger_state}, not FAILED"
+        )
+    if not isinstance(trigger_cause, str) or not trigger_cause:
+        raise GraphIntegrityError(
+            f"repair round {round_index} names trigger {trigger_node!r} with no recorded failure "
+            "cause; a repair may only follow a failure whose cause is known"
+        )
+    try:
+        cause = NodeFailureCause(trigger_cause)
+    except ValueError:
+        raise GraphIntegrityError(
+            f"repair round {round_index} names an unknown failure cause {trigger_cause!r}"
+        ) from None
+    if cause not in MAY_CONTINUE_AFTER:
+        raise GraphIntegrityError(
+            f"repair round {round_index} was triggered by a {trigger_cause!r} failure, which stops "
+            "the run whatever the fail mode; only a node's own bounded-loop outcome may be repaired"
         )
     declared = repair_targets(plan).get(trigger_node)
     if declared is None:

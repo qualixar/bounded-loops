@@ -221,24 +221,24 @@ def _rate(numerator: int, denominator: int) -> Rate:
     return Rate(numerator, denominator, numerator / denominator, _wilson(numerator, denominator))
 
 
-def _labels(receipts: Sequence[StoredGraphEvent]) -> dict[tuple[str, int], str]:
-    """Latest ground-truth label per ``(node_id, attempt)``.
+def _labels(receipts: Sequence[StoredGraphEvent]) -> dict[tuple[str, int, int], str]:
+    """Latest ground-truth label per ``(node_id, repair_round, attempt)``.
 
     Labels are append-only and may be superseded, so the LAST one wins — the disagreement history
     stays in the log as evidence, while the measurement uses the current conclusion.
     """
-    out: dict[tuple[str, int], str] = {}
+    out: dict[tuple[str, int, int], str] = {}
     for stored in receipts:
         if stored.event.event_type != _LABEL_EVENT:
             continue
         payload = stored.event.payload
         node_id, attempt, label = payload.get("node_id"), payload.get("attempt"), payload.get("label")
         if isinstance(node_id, str) and isinstance(attempt, int) and isinstance(label, str):
-            out[(node_id, attempt)] = label
+            out[(node_id, _repair_round_of(payload), attempt)] = label
     return out
 
 
-def _gate_verdicts(receipts: Sequence[StoredGraphEvent]) -> dict[tuple[str, int], bool]:
+def _gate_verdicts(receipts: Sequence[StoredGraphEvent]) -> dict[tuple[str, int, int], bool]:
     """Per attempt: did the GATE pass it? Attempts the gate never saw are absent.
 
     An attempt that failed before the gate ran — a worker crash, a policy denial, an unverified
@@ -247,7 +247,7 @@ def _gate_verdicts(receipts: Sequence[StoredGraphEvent]) -> dict[tuple[str, int]
     happened to be broken. ``NodeFailureCause.GATE_REJECTED`` is the only cause that means the gate
     looked and said no.
     """
-    out: dict[tuple[str, int], bool] = {}
+    out: dict[tuple[str, int, int], bool] = {}
     for stored in receipts:
         event_type = stored.event.event_type
         payload = stored.event.payload
@@ -260,10 +260,10 @@ def _gate_verdicts(receipts: Sequence[StoredGraphEvent]) -> dict[tuple[str, int]
             # credits the gate for a judgement it did not make. Same reasoning as excluding worker
             # faults from the denominator; found by the P4 audit.
             if "verdict" in payload:
-                out[(node_id, attempt)] = True
+                out[(node_id, _repair_round_of(payload), attempt)] = True
         elif event_type in (_ATTEMPT_FAILED, _FAILED):
             if payload.get("cause") == NodeFailureCause.GATE_REJECTED.value:
-                out[(node_id, attempt)] = False
+                out[(node_id, _repair_round_of(payload), attempt)] = False
     return out
 
 
@@ -282,9 +282,13 @@ def confusion_by_attempt(receipts: Sequence[StoredGraphEvent]) -> Mapping[int, C
     """
     verdicts = _gate_verdicts(receipts)
     labels = _labels(receipts)
-    by_index: dict[int, dict[tuple[str, int], bool]] = {}
+    # key is (node_id, repair_round, attempt) — slice on the ATTEMPT, which is index 2. It was
+    # index 1 before the round joined the key, and leaving it there would have silently sliced the
+    # alpha-drift curve by repair round instead of by attempt index: the headline measurement,
+    # computed over the wrong axis. Caught while closing Muse finding 2.
+    by_index: dict[int, dict[tuple[str, int, int], bool]] = {}
     for key, passed in verdicts.items():
-        by_index.setdefault(key[1], {})[key] = passed
+        by_index.setdefault(key[2], {})[key] = passed
     return {
         index: _confusion_from(slice_verdicts, labels)
         for index, slice_verdicts in sorted(by_index.items())
@@ -292,7 +296,8 @@ def confusion_by_attempt(receipts: Sequence[StoredGraphEvent]) -> Mapping[int, C
 
 
 def _confusion_from(
-    verdicts: Mapping[tuple[str, int], bool], labels: Mapping[tuple[str, int], str],
+    verdicts: Mapping[tuple[str, int, int], bool],
+    labels: Mapping[tuple[str, int, int], str],
 ) -> Confusion:
     counts = {
         "true_accept": 0, "false_accept": 0, "true_reject": 0, "false_reject": 0,
@@ -313,3 +318,18 @@ def _confusion_from(
             # cannot read is a schema change, and pooling it would move counts between cells.
             counts["unknown_label"] += 1
     return Confusion(**counts)
+
+
+def _repair_round_of(payload: Mapping[str, object]) -> int:
+    """Which repair round a receipt belongs to. Absent means round 0 — every pre-repair receipt.
+
+    A repair re-runs a node from attempt 1, so ``(node, attempt)`` REPEATS across rounds. Keying gate
+    verdicts and labels on that pair alone let a second round silently overwrite the first: a run that
+    the gate rejected twice counted as one rejection, and the published false-accept rate was computed
+    over the wrong denominator. Found by the P4.25 dual audit (Muse finding 2) — every other
+    repair-aware reader already keys on the round, and this one did not.
+    """
+    declared = payload.get("repair_round")
+    if isinstance(declared, bool) or not isinstance(declared, int):
+        return 0
+    return declared

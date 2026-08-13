@@ -253,6 +253,7 @@ def latest_node_states(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ..
             assert_boundary_is_legal(
                 plan, round_index=rounds, trigger_node=trigger, target_node=target,
                 trigger_state=str(values[trigger]["state"]),
+                trigger_cause=values[trigger].get("cause"),
             )
             # Suffix locality: reset the target and its descendants, nothing else. Resetting a wider
             # set would silently redo unrelated work and break the bound's first condition.

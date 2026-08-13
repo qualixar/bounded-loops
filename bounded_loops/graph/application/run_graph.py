@@ -57,7 +57,11 @@ from bounded_loops.graph.application.failure_policy import (
     unhonourable_edge_conditions,
 )
 from bounded_loops.graph.application.egress_nodes import is_egress_node
-from bounded_loops.graph.application.repair_rounds import descendants, next_repair_round
+from bounded_loops.graph.application.repair_rounds import (
+    descendants,
+    next_repair_round,
+    rounds_spent,
+)
 from bounded_loops.graph.application.resume_states import states_from_receipts
 from bounded_loops.graph.application.skip_untaken import untaken_branches
 from bounded_loops.graph.domain.authoring import NodeKind
@@ -157,7 +161,9 @@ class GraphRunController:
         projection = self.event_log.replay_projection()
         if projection.state != "EMPTY":
             raise GraphIntegrityError("fresh controller refuses to resume a non-empty graph stream; call resume()")
-        self._receipts.resync(projection.head_hash)
+        self._receipts.resync(
+            projection.head_hash, repair_round=rounds_spent(self.event_log.replay()),
+        )
         self._receipts.append("run.created", "run.created", {"state": "PENDING"})
         self._receipts.append("run.started", "run.started", {"state": "RUNNING"})
         states = {node.node_id: NodeState.PENDING for node in self.plan.nodes}
@@ -185,7 +191,9 @@ class GraphRunController:
             return projection
         if projection.state not in ("PENDING", "RUNNING"):
             raise GraphIntegrityError(f"cannot resume from graph state {projection.state}")
-        self._receipts.resync(projection.head_hash)
+        self._receipts.resync(
+            projection.head_hash, repair_round=rounds_spent(self.event_log.replay()),
+        )
         # A crash between run.created and run.started leaves a non-empty PENDING
         # stream that run() refuses; complete the start so it is never wedged.
         if projection.state == "PENDING":

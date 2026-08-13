@@ -314,7 +314,7 @@ def _repaired_run(tmp_path, plan):
     return log
 
 
-def _log_with_failed(tmp_path, plan, failed: str):
+def _log_with_failed(tmp_path, plan, failed: str, cause: str = "gate_rejected"):
     """An honest prefix, hand-built through the production writer, ending with ``failed`` FAILED and
     ZERO repair rounds spent.
 
@@ -322,7 +322,7 @@ def _log_with_failed(tmp_path, plan, failed: str):
     a repair round of its own — leaving no budget, so the budget check would mask the specific check
     each attack below is aiming at.
     """
-    log = GraphEventLog(tmp_path / f"events-{failed}.jsonl", _identity(plan))
+    log = GraphEventLog(tmp_path / f"events-{failed}-{cause}.jsonl", _identity(plan))
     head = log.append("0" * 64, UnsignedGraphEvent(
         event_id="c", idempotency_key="c", event_type="run.created",
         timestamp="t", actor="controller", payload={"state": "PENDING"},
@@ -346,8 +346,11 @@ def _log_with_failed(tmp_path, plan, failed: str):
                 event_type="node.failed", timestamp="t", actor="controller",
                 payload={
                     "node_id": node_id, "state": "FAILED", "attempt": 1,
-                    "reason": "gate rejected", "cause": "gate_rejected",
-                    "verdict": {"passed": False, "reason": "no"},
+                    "reason": f"failed: {cause}", "cause": cause,
+                    **(
+                        {"verdict": {"passed": False, "reason": "no"}}
+                        if cause == "gate_rejected" else {}
+                    ),
                 },
             )).event_hash
             break
@@ -426,12 +429,13 @@ def test_a_boundary_beyond_the_GLOBAL_budget_is_refused():
     # Round 1 is legal on this graph...
     assert_boundary_is_legal(
         plan, round_index=1, trigger_node="verify", target_node="fetch", trigger_state="FAILED",
+        trigger_cause="gate_rejected",
     )
     # ...round 2 is one too many, even though everything else about it is honest.
     with pytest.raises(GraphIntegrityError, match="exceeds the graph's global repair budget"):
         assert_boundary_is_legal(
             plan, round_index=2, trigger_node="verify", target_node="fetch",
-            trigger_state="FAILED",
+            trigger_state="FAILED", trigger_cause="gate_rejected",
         )
 
 
@@ -440,7 +444,7 @@ def test_a_zero_round_boundary_is_refused():
     with pytest.raises(GraphIntegrityError, match="exceeds the graph's global repair budget"):
         assert_boundary_is_legal(
             _plan(budget=2), round_index=0, trigger_node="verify", target_node="fetch",
-            trigger_state="FAILED",
+            trigger_state="FAILED", trigger_cause="gate_rejected",
         )
 
 
@@ -465,4 +469,59 @@ def test_a_boundary_naming_a_node_outside_the_plan_is_refused(tmp_path):
     })
 
     with pytest.raises(GraphIntegrityError, match="outside the immutable plan"):
+        latest_node_states(plan, log.replay())
+
+
+@pytest.mark.parametrize(
+    "halting",
+    ["gate_broken", "policy_denied", "environment_denied", "approval_rejected",
+     "spend_exhausted", "no_worker", "worker_contract", "budget_unmeasurable"],
+)
+def test_a_HALT_class_failure_may_not_be_repaired(halting):
+    """Muse finding 3. Checking only the STATE let a hand-chained log repair past a broken gate or a
+    denied policy — rewinding a run the live controller would have sealed.
+
+    The live path could never do it (a halting cause never reaches a repair), so this was a
+    replay-only hole: exactly the kind a forged-but-hash-valid log exploits.
+    """
+    with pytest.raises(GraphIntegrityError, match="stops the run whatever the fail mode"):
+        assert_boundary_is_legal(
+            _plan(budget=2), round_index=1, trigger_node="verify", target_node="fetch",
+            trigger_state="FAILED", trigger_cause=halting,
+        )
+
+
+@pytest.mark.parametrize(
+    "continuable",
+    ["gate_rejected", "worker_fault", "artifact_unverified", "budget_spent", "redrive_exhausted"],
+)
+def test_every_continue_eligible_failure_may_be_repaired(continuable):
+    """The other direction: a repair must remain possible after the node's own bounded-loop outcome,
+    or the feature is unreachable."""
+    assert_boundary_is_legal(
+        _plan(budget=2), round_index=1, trigger_node="verify", target_node="fetch",
+        trigger_state="FAILED", trigger_cause=continuable,
+    )
+
+
+@pytest.mark.parametrize("missing", [None, "", 7, "not_a_cause"])
+def test_a_boundary_with_no_usable_failure_cause_is_refused(missing):
+    """Refused rather than waved through: pre-0.5 logs carry no repair boundaries at all, so an
+    absent or unknown cause on one can only be a forgery or a corruption."""
+    with pytest.raises(GraphIntegrityError):
+        assert_boundary_is_legal(
+            _plan(budget=2), round_index=1, trigger_node="verify", target_node="fetch",
+            trigger_state="FAILED", trigger_cause=missing,
+        )
+
+
+def test_a_forged_boundary_after_a_BROKEN_GATE_is_refused_on_replay(tmp_path):
+    """The same rule through the log path, which is where the attack actually lands."""
+    plan = _plan(budget=2)
+    log = _log_with_failed(tmp_path, plan, "verify", cause="gate_broken")
+    _forge(log, REPAIR_ROUND_EVENT, "forged-halt-repair", {
+        "round": 1, "target_node": "fetch", "trigger_node": "verify", "reason": "forged",
+    })
+
+    with pytest.raises(GraphIntegrityError, match="stops the run whatever the fail mode"):
         latest_node_states(plan, log.replay())

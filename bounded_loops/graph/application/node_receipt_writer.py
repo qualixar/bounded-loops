@@ -45,9 +45,21 @@ class NodeReceiptWriter:
     def head(self) -> str:
         return self._head
 
-    def resync(self, head: str) -> None:
-        """Adopt the head of a freshly read projection (resume, or a re-read mid-run)."""
+    def resync(self, head: str, *, repair_round: int = 0) -> None:
+        """Adopt the head of a freshly read projection (resume, or a re-read mid-run).
+
+        ``repair_round`` must be restored too, and forgetting it was a CRITICAL bug. Every node,
+        spend and attempt receipt keys off the round; a resumed writer that started back at 0 wrote
+        round-1 work under round-0 keys. Either the append collided with the historical event and
+        returned it idempotently — making a whole round of real work invisible while the run hung —
+        or it produced a second outcome for one (node, attempt) and the integrity readers correctly
+        declared the log unreadable. Found by the P4.25 dual audit (Muse finding 1).
+
+        The round is derived from the RECEIPTS, never carried in memory, for the same reason the
+        budget is: an in-memory counter resets on every process restart.
+        """
         self._head = head
+        self._repair_round = repair_round
 
     def append(self, key: str, event_type: str, payload: dict[str, object]) -> None:
         stored = self._log.append(
