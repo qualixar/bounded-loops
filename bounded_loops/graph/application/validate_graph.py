@@ -24,7 +24,7 @@ from bounded_loops.graph.domain.authoring import (
     canonical_json,
     digest,
 )
-from bounded_loops.graph.application.edge_guards import canonical_guard
+from bounded_loops.graph.application.edge_guards import EdgeGuard, canonical_guard
 from bounded_loops.graph.domain.errors import GraphValidationError
 
 
@@ -118,6 +118,7 @@ def validate_authoring_graph(raw: object) -> AuthoringGraphSpec:
     policies = _policies(graph["policies"])
     presentation = _mapping(graph.get("presentation", {}), "/presentation")
     _validate_references(nodes, edges, slots)
+    _refuse_unreachable_failure_routing(edges, policies)
     canonical = _canonical_graph(graph_id, version, nodes, edges, slots, policies, presentation)
     return AuthoringGraphSpec(
         api_version=_API_VERSION,
@@ -131,6 +132,40 @@ def validate_authoring_graph(raw: object) -> AuthoringGraphSpec:
         canonical_json=canonical_json(canonical),
         digest=digest(canonical),
     )
+
+
+#: Guards that can only ever be satisfied by a node that did NOT succeed, and therefore can only
+#: fire in a run that keeps going after a node fails.
+_POST_FAILURE_GUARDS = frozenset({
+    EdgeGuard.FAILED.value, EdgeGuard.SKIPPED.value, EdgeGuard.TERMINAL.value,
+})
+
+
+def _refuse_unreachable_failure_routing(
+    edges: tuple[AuthoringEdge, ...], policies: GraphPolicyIntent,
+) -> None:
+    """Refuse a failure-routed edge in a graph whose fail mode stops the run at the first failure.
+
+    Under ``fail_closed`` the controller returns a terminal projection the moment a node fails, so
+    the scheduler never gets another turn and a ``failed`` / ``skipped`` / ``terminal`` edge can
+    never be admitted. Accepting one would ship the exact defect this validation exists to close: a
+    condition the author wrote, the engine stored, and nothing ever applied.
+
+    ``fail_mode: continue_declared`` is the mode these guards need. It is currently DECLARED AND
+    UNIMPLEMENTED — it appears in this validator's allow-list and nowhere else in the engine — so the
+    message says so plainly rather than pointing at a mode that would not work either.
+    """
+    if policies.fail_mode != "fail_closed":
+        return
+    for index, edge in enumerate(edges):
+        if edge.when in _POST_FAILURE_GUARDS:
+            raise _error(
+                "edge_condition", f"/edges/{index}/when",
+                f"a {edge.when!r} condition can never be reached under "
+                "'fail_mode: fail_closed', because the run stops at the first node failure. "
+                "Routing around a failure needs a fail mode that keeps driving the graph, which "
+                "this version does not yet implement. Refused rather than accepted-and-ignored.",
+            )
 
 
 def _json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:

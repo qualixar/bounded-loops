@@ -33,10 +33,14 @@ def _node(node_id: str, kind: str = "research_claim", **extra: object) -> dict[s
 
 
 def _graph(nodes: list[dict[str, object]], edges: list[dict[str, object]]) -> dict[str, object]:
+    # ``continue_declared``, not ``fail_closed``: a failure-conditioned edge is unreachable under
+    # fail_closed (the run stops at the first failure) and validation refuses it there. These tests
+    # exercise the SCHEDULER's semantics, which is the mode where those edges can be admitted.
+    # The controller does not yet honour this mode — see the reachability tests in test_run_graph.
     return {
         "api_version": "bounded-loops.dev/graph/v1", "graph_id": "guards", "version": "1.0.0",
         "nodes": nodes, "edges": edges, "connection_slots": [],
-        "policies": {"data_class": "public", "fail_mode": "fail_closed"},
+        "policies": {"data_class": "public", "fail_mode": "continue_declared"},
     }
 
 

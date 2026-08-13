@@ -12,6 +12,7 @@ from bounded_loops.graph.application.execution_policy import (
     NetworkMode,
 )
 from bounded_loops.graph.application.run_graph import GraphRunController
+from bounded_loops.graph.application.arena_projection import latest_node_states
 from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
 from bounded_loops.graph.application.schedule_ready import NodeState
 from bounded_loops.graph.application.validate_graph import validate_authoring_graph
@@ -722,3 +723,62 @@ def test_a_non_bool_verdict_decision_fails_the_node_closed(tmp_path):
     assert failed.event.payload["reason"] == "independent gate returned an invalid verdict"
     assert GraphEventLog(tmp_path / "events.jsonl", _identity(plan)).replay_projection().state == "FAILED"
 
+
+
+# ── conditional edges end to end (P4.25a) ────────────────────────────────────────────────
+
+
+def _guarded_graph(guard: str, fail_mode: str = "fail_closed") -> dict[str, object]:
+    return {
+        "api_version": "bounded-loops.dev/graph/v1",
+        "graph_id": "guarded-run",
+        "version": "1.0.0",
+        "nodes": [
+            {"id": "a", "kind": "research_claim", "inputs": {}, "outputs": {"claim": "text"},
+             "budget": {"max_attempts": 1, "max_wallclock_s": 1}, "effects": ["read_only"],
+             "isolation": "workspace_only"},
+            {"id": "b", "kind": "research_claim", "inputs": {"ctx": "text"},
+             "outputs": {"claim": "text"},
+             "budget": {"max_attempts": 1, "max_wallclock_s": 1}, "effects": ["read_only"],
+             "isolation": "workspace_only"},
+        ],
+        "edges": [{"from_node": "a", "from_port": "claim", "to_node": "b", "to_port": "ctx",
+                   "when": guard}],
+        "connection_slots": [],
+        "policies": {"data_class": "public", "fail_mode": fail_mode},
+    }
+
+
+@pytest.mark.parametrize("guard", ["failed", "skipped", "terminal"])
+def test_a_failure_conditioned_edge_is_REFUSED_under_fail_closed(guard):
+    """The reachability rule, and the reason this phase is not finished.
+
+    Under ``fail_closed`` the controller returns a terminal projection at the FIRST node failure, so
+    the scheduler never runs again and a failure-conditioned edge can never be admitted. Accepting
+    one would ship precisely the defect enforcing ``when`` was meant to close: a condition the
+    author wrote, the engine stored, and nothing ever applied.
+
+    This mirrors the existing ``_ON_FAILURE_UNIMPLEMENTED`` rule, which already refuses
+    ``on_failure: continue|repair|await_human`` for the same reason.
+    """
+    with pytest.raises(GraphValidationError, match="can never be reached"):
+        validate_authoring_graph(_guarded_graph(guard))
+
+
+def test_a_succeeded_condition_is_accepted_because_it_is_reachable():
+    graph = validate_authoring_graph(_guarded_graph("succeeded"))
+    assert [edge.when for edge in graph.edges] == ["succeeded"]
+
+
+def test_an_unconditional_graph_still_runs_unchanged(tmp_path):
+    """The backward-compatibility lock: enforcing guards must not alter an unguarded run."""
+    plan = _two_node_plan()
+    worker = _Worker([])
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    projection = _controller(plan, log, worker).run()
+
+    assert projection.state == "SUCCEEDED"
+    assert worker.calls == ["a", "b"]
+    assert "node.skipped" not in [e.event.event_type for e in log.replay()]
+    assert latest_node_states(plan, log.replay())["b"]["state"] == "SUCCEEDED"

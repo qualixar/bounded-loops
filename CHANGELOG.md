@@ -3,6 +3,37 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Conditional edges (`when`) now actually apply.** An edge's `when` was accepted,
+  validated and stored — then ignored by the scheduler, so a graph with a condition on
+  an edge ran that edge unconditionally and nothing warned you. Conditions are now
+  enforced.
+
+  **Breaking:** `when` accepts only the source node's outcome — `succeeded`, `failed`,
+  `skipped`, or `terminal` (or `null` for the default, `succeeded`). Anything else is now
+  refused when the graph is validated instead of being silently dropped. If a graph of
+  yours stops compiling, that condition was never being applied — the error tells you
+  which edge and what the accepted values are.
+
+  Data-dependent conditions such as `result.status == 'failed'` are not supported.
+
+- **A condition that could never fire is refused too.** `when: failed`, `skipped`, and
+  `terminal` are rejected under `fail_mode: fail_closed`, because that mode stops the run at
+  the first node failure — so such an edge could never apply. Routing around a failure needs
+  a fail mode that keeps driving the graph, which this version does not yet implement. Same
+  rule that already applies to `on_failure: continue|repair|await_human`.
+
+### Added
+
+- **Untaken branches are recorded, not stranded.** A node whose every incoming condition
+  excluded it is marked SKIPPED, with the reason on its receipt, and a run whose only
+  unfinished work was an untaken branch completes successfully instead of reporting a
+  failure. A node that failed still fails the run. (Reachable once a continue-after-failure
+  fail mode lands — see above.)
+
 ## [0.4.0] — 2026-08-12
 
 The headline of this line is **the bounded-loops graph engine** (`bl graph`): a

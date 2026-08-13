@@ -88,6 +88,53 @@ The run-time prompt (`inputs.json`: `node_id -> prompt string`) is not persisted
 the run directory. A prompt may contain a secret; the content-addressed reply
 artifact is the durable receipt.
 
+**Conditional edges (`when`)** — an edge fires only when its SOURCE node reached the
+outcome the edge names. Four values, and nothing else:
+
+| `when` | The edge applies when its source | Use |
+|---|---|---|
+| `null` (default) | SUCCEEDED | ordinary data dependency; identical to pre-0.5 behaviour |
+| `succeeded` | SUCCEEDED | the same rule, stated explicitly |
+| `failed` | FAILED | route around a failure — cleanup, notify, fall back |
+| `skipped` | SKIPPED | distinguish "upstream failed" from "upstream never ran" |
+| `terminal` | any terminal state | a branch that must run whatever happened |
+
+`failed` means FAILED and nothing else. A run-level stop — a fail-closed halt, an operator
+cancel, an expired deadline — satisfies neither `succeeded` nor `failed`, so a recovery
+branch does **not** fire on one and the halt propagates. Use `terminal` if you want a
+branch to run on those too.
+
+Two rules decide admission, and the distinction between them matters:
+
+- **A condition only ever removes an edge from consideration.** It never overrides the
+  join. `all_selected` still tolerates a failed parent and `any_successful` still admits
+  as soon as one parent succeeds — those are the join's decisions, not the condition's.
+- **An unconditional edge whose dependency failed still blocks.** Only an edge you
+  explicitly conditioned can be excluded. This is what keeps a failed dependency from
+  becoming a green light when a node has several parents.
+
+A node whose every incoming edge was excluded is marked **SKIPPED** — its branch was not
+taken — and the skip cascades to the rest of that branch. A run ends SUCCEEDED when every
+node either succeeded or was skipped; a FAILED node still fails the run, even if a
+`failed`-conditioned branch handled it.
+
+Data-dependent conditions (`result.status == 'failed'`) are **not** supported: anything
+outside the five values above is refused when the graph is validated. Versions up to 0.4.0
+accepted such strings and then ignored them, so those edges never applied their condition.
+
+**Not yet reachable: `failed`, `skipped`, `terminal`.** Under `fail_mode: fail_closed` — the
+only fail mode this version implements — the run stops at the *first* node failure, so the
+scheduler never gets another turn and a failure-conditioned edge could never be admitted.
+Authoring one is therefore **refused at validation** rather than accepted and silently
+ignored, and the error says so. Routing around a failure needs a fail mode that keeps
+driving the graph (`continue_declared` is declared in the schema but not yet honoured by the
+runtime), which is also what `on_failure: continue|repair|await_human` is waiting on — those
+are refused today for the same reason.
+
+So in this version `when` is usefully limited to `succeeded` (and `null`), which behave
+exactly as before. The scheduler, the receipt vocabulary, and the replay verifier already
+implement the full set; only the run loop's continue-after-failure behaviour is missing.
+
 **Fail-closed preflight** (checked before any node runs):
 - `approval` nodes are **not refused at preflight** — they are skipped during
   preflight and the run pauses (exit code 3) when execution reaches them.  Use
