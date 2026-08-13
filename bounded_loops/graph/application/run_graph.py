@@ -60,6 +60,7 @@ from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 from bounded_loops.graph.domain.pricing import PriceTable, empty_price_table
 from bounded_loops.graph.domain.usage import WorkerUsage
 
+
 @dataclass(frozen=True)
 class _AttemptOutcome:
     """The result of one attempt of a bounded loop node.
@@ -214,6 +215,10 @@ class GraphRunController:
         if projection.state == "PENDING":
             self._append("run.started", "run.started", {"state": "RUNNING"})
         receipts = self.event_log.replay()
+        # Checked before the resume is recorded, so a continuation that is going to be refused
+        # leaves no trace: appending run.resumed first meant every rejected poll wrote an event
+        # attesting a resume that did nothing.
+        self._require_a_ceiling_if_this_run_already_paused(receipts)
         # Record the resume itself before doing any work. Previously a resume left no trace
         # at all, so neither an operator nor the Arena could tell a run had been resumed —
         # let alone how often.
@@ -227,7 +232,6 @@ class GraphRunController:
                 f"run.resumed:{resumes + 1}", "run.resumed", {"resume_ordinal": resumes + 1},
             )
         receipts = self.event_log.replay()
-        self._require_a_ceiling_if_this_run_already_paused(receipts)
         latest = latest_node_states(self.plan, receipts)
         # A crash between node.failed and run.failed leaves a RUNNING stream with a
         # FAILED node; finalize the terminal deterministically rather than re-drive a

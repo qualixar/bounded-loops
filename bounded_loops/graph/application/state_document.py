@@ -146,9 +146,10 @@ def _next_actions(p: ArenaProjection) -> str:
         return (
             "## Next actions\n\n"
             f"**Paused on budget** — {_cell(str(reason))}\n\n"
-            "Resume with a higher ceiling to continue: "
-            "`bl graph run --execute <manifest> --out <dir> --max-tokens <n>` "
-            "(or `--max-cost-usd <amount>`)."
+            "Continue with a higher ceiling:\n\n"
+            "```\nbl graph resume --run <dir> --max-tokens <n>\n```\n\n"
+            "Or `--max-cost-usd <amount>`, or `--budget-file <json>`. A LOWER ceiling stops "
+            "the run sooner — the same command either way."
         )
     if p.run_state == "SUCCEEDED":
         return "## Next actions\n\nRun complete — all nodes succeeded."

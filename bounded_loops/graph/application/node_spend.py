@@ -209,7 +209,18 @@ def unmeasurable_dimension(
     silence as protection. That is the precise failure this rule exists to prevent, so it has
     to name the dimension rather than take a general answer.
     """
-    if max_tokens is not None and (usage is None or usage.total_tokens is None):
+    if max_tokens is not None and (
+        usage is None or usage.total_tokens is None or usage.total_tokens == 0
+    ):
+        # Zero counts as unreported, not as free. A real model call cannot consume zero input
+        # tokens — the prompt itself is input — so a reported 0 means the metering is not
+        # trustworthy, whether the provider is broken or lying. Treating it as a measurement
+        # made every token cap a no-op while the total called itself exact: a worker reporting
+        # 0/0 ran all ten of its attempts under a cap of 1.
+        #
+        # Cost is deliberately NOT treated this way. A charge of zero is entirely credible — a
+        # free tier, a local model, a zero-priced route — and refusing it would break the
+        # ``max_cost_microunits: 0`` case that exists precisely to permit free work.
         return "tokens"
     if max_cost_microunits is not None and (
         usage is None or usage.chargeable_cost_microunits is None

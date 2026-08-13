@@ -678,3 +678,98 @@ def test_resume_detects_conflict_across_attempts(tmp_path):
     })
     with pytest.raises(GraphIntegrityError, match="conflicting"):
         _bare_facade(runs_root).resume(_request())
+
+
+# ── spend ceilings must reach the controller from every continue path ─────────
+# Grok audit round 1, MAJOR: resume() and approve() built the controller with no run_budget
+# and no price_table. The controller refuses to continue a budget-paused run with no ceiling
+# declared, so a paused run could not be continued from ANY shipped entry point — the pause
+# was a dead end instead of a decision point.
+
+def test_resume_carries_a_new_spend_ceiling_to_the_controller(tmp_path, monkeypatch):
+    """Raising the ceiling is one call. Without this the pause could not be continued at all."""
+    from bounded_loops.graph.application import graph_runtime_facade as module
+    from bounded_loops.graph.application.node_spend import RunBudget
+    from bounded_loops.graph.domain.pricing import ModelPrice, PriceTable
+
+    _build_run(tmp_path)
+    seen: dict[str, object] = {}
+    real = module.build_execution_controller
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(module, "build_execution_controller", _capture)
+    facade = _facade(tmp_path, node_prompts={"agent": "test prompt"})
+    table = PriceTable(
+        prices={("anthropic", "claude-opus-5"): ModelPrice(3_000_000, 15_000_000)},
+        source="price-table:test",
+    )
+
+    facade.resume(_request(), run_budget=RunBudget(max_tokens=500_000), price_table=table)
+
+    assert seen["run_budget"] == RunBudget(max_tokens=500_000)
+    assert seen["price_table"] is table
+
+
+def test_approve_carries_a_spend_ceiling_too(tmp_path, monkeypatch):
+    """Approving a checkpoint continues the run, and continuing spends money."""
+    from bounded_loops.graph.application import graph_runtime_facade as module
+    from bounded_loops.graph.application.node_spend import RunBudget
+
+    runs_root = _build_approval_run(tmp_path)
+    seen: dict[str, object] = {}
+    real = module.build_execution_controller
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(module, "build_execution_controller", _capture)
+    facade = LocalGraphRuntimeFacade(
+        runs_root=runs_root,
+        arena_authorizer=SameTenantArenaAuthorizer(),
+        cli_profiles={},
+        environ={},
+        node_prompts={},
+    )
+    request = ArenaReadRequest(
+        subject_id=_ORG, organization_id=_ORG, project_id=_PROJECT, run_id=_RUN_ID,
+    )
+
+    final = facade.approve(
+        request, node_id="checkpoint", decision="approved",
+        run_budget=RunBudget(max_tokens=42),
+    )
+
+    assert final.run_state == "SUCCEEDED"
+    assert seen["run_budget"] == RunBudget(max_tokens=42)
+
+
+def test_the_facades_own_ceiling_applies_when_a_call_supplies_none(tmp_path, monkeypatch):
+    """A deployment can set a standing ceiling once instead of on every call."""
+    from bounded_loops.graph.application import graph_runtime_facade as module
+    from bounded_loops.graph.application.node_spend import RunBudget
+
+    _build_run(tmp_path)
+    seen: dict[str, object] = {}
+    real = module.build_execution_controller
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(module, "build_execution_controller", _capture)
+    facade = LocalGraphRuntimeFacade(
+        runs_root=tmp_path / "runs",
+        arena_authorizer=SameTenantArenaAuthorizer(),
+        cli_profiles={"claude": CliProfile(_standin(tmp_path))},
+        environ={"PATH": os.environ.get("PATH", "")},
+        node_prompts={"agent": "test prompt"},
+        run_budget=RunBudget(max_cost_microunits=250_000),
+    )
+
+    facade.resume(_request())
+
+    assert seen["run_budget"] == RunBudget(max_cost_microunits=250_000)

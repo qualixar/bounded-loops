@@ -1013,3 +1013,85 @@ def test_a_run_that_never_paused_needs_no_ceiling_to_resume(tmp_path: Path) -> N
     ).resume()
 
     assert resumed.state == "SUCCEEDED"
+
+
+def test_a_finished_run_stays_readable_without_a_ceiling(tmp_path: Path) -> None:
+    """The ceiling guard must not fire on a run that paused, was raised, and COMPLETED.
+
+    Nothing more can be spent by a terminal run, so refusing to read it would be pure noise —
+    and it would break `status`-style idempotent reads of any run that ever paused. Correct by
+    construction rather than by a special case: resume() returns every terminal state before
+    the guard is reached. Pinned here so that ordering cannot drift.
+    """
+    budgets: dict[str, object] = {"max_attempts": 10}
+    controller = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=2),
+        run_budget=RunBudget(max_tokens=150), budgets=budgets,
+    )
+    assert controller.run().state == "RUNNING"
+    assert _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=0),
+        run_budget=RunBudget(max_tokens=100_000), budgets=budgets,
+    ).resume().state == "SUCCEEDED"
+
+    # Now with no ceiling at all: an idempotent read, not a refusal.
+    assert _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=0),
+        run_budget=RunBudget(), budgets=budgets,
+    ).resume().state == "SUCCEEDED"
+
+
+def test_a_refused_continuation_writes_nothing_at_all(tmp_path: Path) -> None:
+    """The ceiling check runs BEFORE the resume is recorded.
+
+    Appending run.resumed first meant every rejected poll wrote an event attesting a resume
+    that did nothing — the log grew once per poll while no work happened.
+    """
+    budgets: dict[str, object] = {"max_attempts": 10}
+    _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
+        run_budget=RunBudget(max_tokens=150), budgets=budgets,
+    ).run()
+    before = len(_events(tmp_path))
+
+    for _ in range(3):
+        with pytest.raises(GraphIntegrityError, match="explicit ceiling"):
+            _budgeted_run(
+                tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
+                run_budget=RunBudget(), budgets=budgets,
+            ).resume()
+
+    assert len(_events(tmp_path)) == before
+
+
+def test_a_reported_zero_token_count_is_not_a_measurement(tmp_path: Path) -> None:
+    """Grok MAJOR, proved. A worker reporting 0/0 made every token cap a no-op.
+
+    Ten calls ran under a cap of 1, SUCCEEDED, with the total at 0 and complete claiming it
+    exact. A real model call cannot consume zero input tokens — the prompt itself is input — so
+    a reported 0 means the metering is not trustworthy, whether the provider is broken or lying.
+    """
+    worker = _MeteredWorker(input_tokens=0, output_tokens=0)
+
+    projection = _budgeted_run(
+        tmp_path, worker=worker, gate=_Gate(reject_first=9),
+        run_budget=RunBudget(max_tokens=1), budgets={"max_attempts": 10},
+    ).run()
+
+    assert projection.state == "FAILED"
+    assert worker.calls == 1
+    assert _of_type(tmp_path, "node.failed")[0]["cause"] == "budget_unmeasurable"
+
+
+def test_a_zero_cost_is_still_a_real_measurement(tmp_path: Path) -> None:
+    """Cost is deliberately NOT treated like tokens: a charge of zero is entirely credible.
+
+    A free tier, a local model, a zero-priced route. Refusing it would break the
+    ``max_cost_microunits: 0`` case that exists precisely to permit free work.
+    """
+    projection = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(cost_microunits=0), gate=_Gate(reject_first=0),
+        run_budget=RunBudget(max_cost_microunits=0), budgets={"max_attempts": 3},
+    ).run()
+
+    assert projection.state == "SUCCEEDED"

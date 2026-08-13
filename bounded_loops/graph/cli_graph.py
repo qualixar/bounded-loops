@@ -706,6 +706,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     run_p.add_argument("--json", action="store_true", help="Emit JSON output.")
     run_p.set_defaults(func=cmd_graph_run)
 
+    # resume (handler lives in cli_graph_resume.py to keep this file within budget)
+    from bounded_loops.graph.cli_graph_resume import add_resume_parser
+    add_resume_parser(graph_subs)
+
     # approve (handler lives in cli_graph_approve.py to keep this file within budget)
     approve_p = graph_subs.add_parser(
         "approve",

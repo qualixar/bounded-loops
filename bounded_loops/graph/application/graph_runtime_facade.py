@@ -79,6 +79,8 @@ from bounded_loops.graph.application.approvals import (
     approve as _approve_use_case,
     request_digest as _request_digest,
 )
+from bounded_loops.graph.application.node_spend import RunBudget
+from bounded_loops.graph.domain.pricing import PriceTable
 from bounded_loops.graph.application.arena_projection import (
     ArenaAuthorizationPort,
     ArenaProjection,
@@ -382,6 +384,13 @@ class LocalGraphRuntimeFacade:
     environ: Mapping[str, str] | None = None
     node_prompts: Mapping[str, str] = field(default_factory=dict)
     admitted_connections: Mapping[str, AdmittedConnectionRecord] | None = None
+    #: The operator's spend ceilings for the runs this facade drives, and the rates that price
+    #: them. Present here because a paused run has to be CONTINUABLE: the pause asks the
+    #: operator to raise the ceiling, and if no continue path can carry a new one then the
+    #: pause is a dead end rather than a decision point. ``resume`` also takes a per-call
+    #: override, which is the ordinary way a ceiling gets raised or lowered.
+    run_budget: RunBudget | None = None
+    price_table: PriceTable | None = None
     byok_egress_broker: EgressBroker | None = None
     byok_credential_resolver: object = None
     byok_tls_context: ssl.SSLContext | None = None
@@ -490,8 +499,17 @@ class LocalGraphRuntimeFacade:
             self.arena_authorizer, _NoopArenaReceiptVerifier(),
         )
 
-    def resume(self, request: ArenaReadRequest) -> ArenaProjection:
+    def resume(
+        self, request: ArenaReadRequest, *, run_budget: RunBudget | None = None,
+        price_table: PriceTable | None = None,
+    ) -> ArenaProjection:
         """Resume an interrupted run, returning the post-resume projection.
+
+        ``run_budget`` raises or lowers the spend ceiling for this continuation, overriding the
+        facade's own. That is the entire answer to "the run paused, now what": one call with a
+        new number. Without it a budget-paused run could not be continued from any shipped
+        entry point — the controller refuses to continue one with no ceiling declared, and
+        every caller here passed none.
 
         FAILS CLOSED if any connector node is non-terminal (not SUCCEEDED/FAILED) and its
         node_id is absent from ``node_prompts`` — prompts are not persisted, so re-supply
@@ -520,6 +538,8 @@ class LocalGraphRuntimeFacade:
                 byok_credential_resolver=self.byok_credential_resolver,
                 byok_tls_context=self.byok_tls_context,
                 approval_resolver=resolver,
+                run_budget=run_budget if run_budget is not None else self.run_budget,
+                price_table=price_table if price_table is not None else self.price_table,
             )
         except GraphValidationError as exc:
             raise GraphIntegrityError(f"resume: controller wiring failed — {exc.message}") from exc
@@ -535,8 +555,13 @@ class LocalGraphRuntimeFacade:
         *,
         node_id: str,
         decision: str,
+        run_budget: RunBudget | None = None,
+        price_table: PriceTable | None = None,
     ) -> ArenaProjection:
         """Record a human decision for an approval node and resume the run.
+
+        Takes the same spend override as ``resume``: approving a checkpoint continues the run,
+        and continuing spends money, so this path needs a ceiling exactly as much.
 
         For ``decision == "approved"``, the full ``approvals.approve`` use case is run
         (validates authority, signature, effects, nonce) and the decision is durably persisted
@@ -595,6 +620,8 @@ class LocalGraphRuntimeFacade:
                 byok_credential_resolver=self.byok_credential_resolver,
                 byok_tls_context=self.byok_tls_context,
                 approval_resolver=resolver,
+                run_budget=run_budget if run_budget is not None else self.run_budget,
+                price_table=price_table if price_table is not None else self.price_table,
             )
         except GraphValidationError as exc:
             raise GraphIntegrityError(f"approve: controller wiring failed — {exc.message}") from exc

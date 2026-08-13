@@ -65,6 +65,13 @@ def extract_provider_usage(
             # key "usage" with different field names, so the first match on the container
             # name is not necessarily the right shape.
             continue
+        if not input_tokens and not output_tokens:
+            # Present, but both zero. A real call cannot consume zero input tokens, so this is
+            # not the dialect that carries this response's counts — a proxy that emits BOTH
+            # dialects put OpenAI's zeros first and hid Anthropic's real 9999/9999, which
+            # under-charges. Keep looking; if every shape is zero the caller ends up with no
+            # token counts at all, and a declared token cap then fails closed.
+            continue
         try:
             return WorkerUsage(
                 input_tokens=input_tokens, output_tokens=output_tokens,
