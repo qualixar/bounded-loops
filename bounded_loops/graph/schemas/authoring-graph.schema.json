@@ -1,76 +1,509 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://bounded-loops.dev/schemas/v1/authoring-graph.schema.json",
-  "title": "AuthoringGraphSpec",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["api_version", "graph_id", "version", "nodes", "edges", "connection_slots", "policies"],
-  "properties": {
-    "api_version": {"const": "bounded-loops.dev/graph/v1"},
-    "graph_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
-    "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"},
-    "nodes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/node"}},
-    "edges": {"type": "array", "items": {"$ref": "#/$defs/edge"}},
-    "connection_slots": {"type": "array", "items": {"$ref": "#/$defs/slot"}},
-    "policies": {"$ref": "#/$defs/policies"},
-    "presentation": {"type": "object"}
-  },
   "$defs": {
-    "budget": {
-      "type": "object", "additionalProperties": false,
-      "required": ["max_attempts", "max_wallclock_s"],
-      "properties": {
-        "max_attempts": {"type": "integer", "minimum": 1, "maximum": 100},
-        "max_wallclock_s": {"type": "integer", "minimum": 1, "maximum": 86400},
-        "max_tokens": {"type": ["integer", "null"], "minimum": 1},
-        "max_cost_microunits": {"type": ["integer", "null"], "minimum": 0}
-      }
-    },
     "baseNode": {
-      "type": "object",
-      "required": ["id", "kind", "inputs", "outputs", "budget", "effects", "isolation"],
       "properties": {
-        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,62}$"},
-        "kind": {"type": "string"},
-        "inputs": {"type": "object", "additionalProperties": {"type": "string"}},
-        "outputs": {"type": "object", "additionalProperties": {"type": "string"}},
-        "budget": {"$ref": "#/$defs/budget"},
-        "effects": {"type": "array", "uniqueItems": true, "items": {"enum": ["read_only", "workspace_write", "external_write", "financial", "irreversible"]}},
-        "isolation": {"enum": ["workspace_only", "process_restricted", "container_restricted", "customer_managed_worker"]},
-        "connection_slot": {"type": ["string", "null"]},
-        "on_failure": {"enum": ["fail_graph", "continue", "repair", "await_human"]}
-      }
+        "budget": {
+          "$ref": "#/$defs/budget"
+        },
+        "connection_slot": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "effects": {
+          "items": {
+            "enum": [
+              "read_only",
+              "workspace_write",
+              "external_write",
+              "financial",
+              "irreversible"
+            ]
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,62}$",
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "isolation": {
+          "enum": [
+            "workspace_only",
+            "process_restricted",
+            "container_restricted",
+            "customer_managed_worker"
+          ]
+        },
+        "kind": {
+          "type": "string"
+        },
+        "on_failure": {
+          "oneOf": [
+            {
+              "enum": [
+                "fail_graph",
+                "continue",
+                "repair",
+                "await_human"
+              ]
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "mode": {
+                  "const": "repair"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "mode",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "outputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "inputs",
+        "outputs",
+        "budget",
+        "effects",
+        "isolation"
+      ],
+      "type": "object"
+    },
+    "budget": {
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_cost_microunits": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_tokens": {
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_wallclock_s": {
+          "maximum": 86400,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_attempts",
+        "max_wallclock_s"
+      ],
+      "type": "object"
+    },
+    "digestRef": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "edge": {
+      "additionalProperties": false,
+      "properties": {
+        "from_node": {
+          "type": "string"
+        },
+        "from_port": {
+          "type": "string"
+        },
+        "to_node": {
+          "type": "string"
+        },
+        "to_port": {
+          "type": "string"
+        },
+        "when": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "from_node",
+        "from_port",
+        "to_node",
+        "to_port"
+      ],
+      "type": "object"
     },
     "node": {
       "oneOf": [
-        {"allOf": [{"$ref": "#/$defs/baseNode"}, {"type": "object", "required": ["loop_package"], "properties": {"kind": {"const": "loop"}, "loop_package": {"$ref": "#/$defs/digestRef"}}}]},
-        {"allOf": [{"$ref": "#/$defs/baseNode"}, {"type": "object", "required": ["tool_ref"], "properties": {"kind": {"const": "tool"}, "tool_ref": {"type": "string"}}}]},
-        {"allOf": [{"$ref": "#/$defs/baseNode"}, {"type": "object", "required": ["routes"], "properties": {"kind": {"const": "router"}, "routes": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}}, "default_route": {"type": ["string", "null"]}}}]},
-        {"allOf": [{"$ref": "#/$defs/baseNode"}, {"type": "object", "required": ["mode"], "properties": {"kind": {"const": "join"}, "mode": {"enum": ["all_selected", "all_successful", "any_successful"]}}}]},
-        {"allOf": [{"$ref": "#/$defs/baseNode"}, {"type": "object", "required": ["required_role"], "properties": {"kind": {"const": "approval"}, "required_role": {"type": "string"}}}]},
-        {"allOf": [{"$ref": "#/$defs/baseNode"}, {"type": "object", "required": ["audit_profile"], "properties": {"kind": {"const": "audit"}, "audit_profile": {"type": "string"}}}]},
-        {"allOf": [{"$ref": "#/$defs/baseNode"}, {"type": "object", "required": ["source_policy"], "properties": {"kind": {"const": "research_source"}, "source_policy": {"type": "string"}}}]},
-        {"allOf": [{"$ref": "#/$defs/baseNode"}, {"type": "object", "properties": {"kind": {"const": "research_claim"}}}]},
-        {"allOf": [{"$ref": "#/$defs/baseNode"}, {"type": "object", "required": ["graph_package"], "properties": {"kind": {"const": "subgraph"}, "graph_package": {"$ref": "#/$defs/digestRef"}}}]},
-        {"allOf": [{"$ref": "#/$defs/baseNode"}, {"type": "object", "required": ["publication_policy"], "properties": {"kind": {"const": "publish"}, "publication_policy": {"type": "string"}}}]}
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/baseNode"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "loop"
+                },
+                "loop_package": {
+                  "$ref": "#/$defs/digestRef"
+                }
+              },
+              "required": [
+                "loop_package"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/baseNode"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "tool"
+                },
+                "tool_ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool_ref"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/baseNode"
+            },
+            {
+              "properties": {
+                "default_route": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "const": "router"
+                },
+                "routes": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "minProperties": 1,
+                  "type": "object"
+                }
+              },
+              "required": [
+                "routes"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/baseNode"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "join"
+                },
+                "mode": {
+                  "enum": [
+                    "all_selected",
+                    "all_successful",
+                    "any_successful"
+                  ]
+                }
+              },
+              "required": [
+                "mode"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/baseNode"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "approval"
+                },
+                "required_role": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "required_role"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/baseNode"
+            },
+            {
+              "properties": {
+                "audit_profile": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "audit"
+                }
+              },
+              "required": [
+                "audit_profile"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/baseNode"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "research_source"
+                },
+                "source_policy": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source_policy"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/baseNode"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "research_claim"
+                }
+              },
+              "type": "object"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/baseNode"
+            },
+            {
+              "properties": {
+                "graph_package": {
+                  "$ref": "#/$defs/digestRef"
+                },
+                "kind": {
+                  "const": "subgraph"
+                }
+              },
+              "required": [
+                "graph_package"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/baseNode"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "publish"
+                },
+                "publication_policy": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "publication_policy"
+              ],
+              "type": "object"
+            }
+          ]
+        }
       ],
       "unevaluatedProperties": false
     },
-    "digestRef": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-    "edge": {
-      "type": "object", "additionalProperties": false,
-      "required": ["from_node", "from_port", "to_node", "to_port"],
-      "properties": {"from_node": {"type": "string"}, "from_port": {"type": "string"}, "to_node": {"type": "string"}, "to_port": {"type": "string"}, "when": {"type": ["string", "null"]}}
+    "policies": {
+      "additionalProperties": false,
+      "properties": {
+        "data_class": {
+          "enum": [
+            "public",
+            "internal",
+            "confidential",
+            "restricted"
+          ]
+        },
+        "fail_mode": {
+          "enum": [
+            "fail_closed",
+            "continue_declared"
+          ]
+        },
+        "repair_budget": {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "required_audit_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data_class",
+        "fail_mode"
+      ],
+      "type": "object"
     },
     "slot": {
-      "type": "object", "additionalProperties": false,
-      "required": ["id", "requires", "data_class_max"],
-      "properties": {"id": {"type": "string"}, "requires": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}}, "data_class_max": {"enum": ["public", "internal", "confidential", "restricted"]}, "preferred_modalities": {"type": "array", "items": {"type": "string"}}}
+      "additionalProperties": false,
+      "properties": {
+        "data_class_max": {
+          "enum": [
+            "public",
+            "internal",
+            "confidential",
+            "restricted"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "preferred_modalities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requires": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "requires",
+        "data_class_max"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://bounded-loops.dev/schemas/v1/authoring-graph.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "api_version": {
+      "const": "bounded-loops.dev/graph/v1"
+    },
+    "connection_slots": {
+      "items": {
+        "$ref": "#/$defs/slot"
+      },
+      "type": "array"
+    },
+    "edges": {
+      "items": {
+        "$ref": "#/$defs/edge"
+      },
+      "type": "array"
+    },
+    "graph_id": {
+      "pattern": "^[a-z][a-z0-9-]{0,62}$",
+      "type": "string"
+    },
+    "nodes": {
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "minItems": 1,
+      "type": "array"
     },
     "policies": {
-      "type": "object", "additionalProperties": false,
-      "required": ["data_class", "fail_mode"],
-      "properties": {"data_class": {"enum": ["public", "internal", "confidential", "restricted"]}, "fail_mode": {"enum": ["fail_closed", "continue_declared"]}, "required_audit_profile": {"type": ["string", "null"]}}
+      "$ref": "#/$defs/policies"
+    },
+    "presentation": {
+      "type": "object"
+    },
+    "version": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$",
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "api_version",
+    "graph_id",
+    "version",
+    "nodes",
+    "edges",
+    "connection_slots",
+    "policies"
+  ],
+  "title": "AuthoringGraphSpec",
+  "type": "object"
 }

@@ -104,6 +104,10 @@ class AuthoringNode:
     connection_slot: str | None
     on_failure: str | None
     details: Mapping[str, object]
+    #: For ``on_failure: repair`` — the ANCESTOR to re-execute when this node exhausts its budget.
+    #: Named rather than implied, because the termination theorem's suffix-locality condition is only
+    #: checkable against an explicit target. ``None`` for every other failure policy.
+    repair_target: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "inputs", _freeze(self.inputs))
@@ -125,6 +129,13 @@ class GraphPolicyIntent:
     data_class: DataClass
     fail_mode: str
     required_audit_profile: str | None
+    #: A GLOBAL bound on repair rounds for the whole run — never per node. 0 disables repair.
+    #: Global is the load-bearing choice: bound repairs per node instead and two nodes can repair
+    #: each other for ever, each seeing its own counter as unspent. That is the reset-arc
+    #: construction whose soundness is undecidable in general, and a single global counter is what
+    #: makes a restricted answer possible. Total executions are bounded by
+    #: ``(1 + repair_budget) * Σ_v (max_attempts_v + 1)``.
+    repair_budget: int = 0
 
 
 @dataclass(frozen=True)

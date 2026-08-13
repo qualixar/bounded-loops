@@ -149,12 +149,12 @@ def test_invalid_json_is_rejected():
             "on_failure",
         ),
         # on_failure_unimplemented: a value the SCHEMA declares but the RUNTIME does not
-        # route.  GraphRunController sends every failure to fail_graph, so accepting
-        # these would return a plan whose declared failure policy is silently discarded.
-        # Refusing is the same fail-closed rule this project applies to its connectors.
+        # route.  Accepting these would return a plan whose declared failure policy is
+        # silently discarded. Refusing is the same fail-closed rule this project applies to
+        # its connectors. ``repair`` LEFT this set in P4.25b — see the repair cases below.
         (
             lambda g: g["nodes"][0].update({"on_failure": "repair"}),
-            "on_failure_unimplemented",
+            "on_failure",  # now: repair must name its target
         ),
         (
             lambda g: g["nodes"][0].update({"on_failure": "continue"}),
