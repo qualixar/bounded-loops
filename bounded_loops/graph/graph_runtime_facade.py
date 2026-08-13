@@ -101,6 +101,10 @@ from bounded_loops.graph.application.arena_projection import (
 from bounded_loops.graph.application.egress_broker import EgressBroker
 from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
 from bounded_loops.graph.adapters.enforcement import probe_platform
+from bounded_loops.graph.application.failure_policy import (
+    continues_after_failure,
+    recorded_fail_mode,
+)
 from bounded_loops.graph.graph_composition import (
     _ALL_EXECUTOR_TRANSPORTS,
     build_execution_controller,
@@ -392,6 +396,9 @@ class LocalGraphRuntimeFacade:
         try:
             controller, _store, event_log = build_execution_controller(
                 plan=plan,
+                # A continuation must drive the graph the way the original run did, so the fail
+                # mode is read back from the run directory rather than re-derived or assumed.
+                continue_on_failure=continues_after_failure(recorded_fail_mode(_meta)),
                 identity=identity,
                 out_dir=run_dir,
                 node_prompts=self.node_prompts,
@@ -460,7 +467,12 @@ class LocalGraphRuntimeFacade:
         # every later approve failing identically. That is the P2-B closed door exactly: a new
         # refusal that wedges a previously-continuable run. A dry assembly costs one object
         # construction and keeps the ledger untouched when the wiring cannot work.
-        capabilities = self._assert_assemblable(plan=plan, identity=identity, run_dir=run_dir)
+        capabilities = self._assert_assemblable(
+            plan=plan, identity=identity, run_dir=run_dir,
+            # Same flag the real assembly below uses, so the pre-write probe cannot pass a plan
+            # the continuation would then refuse — or refuse one it would accept.
+            continue_on_failure=continues_after_failure(recorded_fail_mode(_meta)),
+        )
 
         if decision == "approved":
             self._record_approval(
@@ -483,6 +495,9 @@ class LocalGraphRuntimeFacade:
         try:
             controller, _store, event_log = build_execution_controller(
                 plan=plan,
+                # A continuation must drive the graph the way the original run did, so the fail mode
+                # is read back from the run directory rather than re-derived or assumed.
+                continue_on_failure=continues_after_failure(recorded_fail_mode(_meta)),
                 identity=identity,
                 out_dir=run_dir,
                 node_prompts=self.node_prompts,
@@ -692,6 +707,7 @@ class LocalGraphRuntimeFacade:
 
     def _assert_assemblable(
         self, *, plan: ExecutionPlan, identity: GraphRunIdentity, run_dir: Path,
+        continue_on_failure: bool,
     ) -> PlatformCapabilities:
         """Raise if this deployment could not build a controller for *plan* — before any write.
 
@@ -708,6 +724,7 @@ class LocalGraphRuntimeFacade:
         try:
             build_execution_controller(
                 plan=plan,
+                continue_on_failure=continue_on_failure,
                 identity=identity,
                 out_dir=run_dir,
                 node_prompts=self.node_prompts,

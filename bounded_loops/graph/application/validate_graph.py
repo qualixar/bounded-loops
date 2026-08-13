@@ -144,9 +144,9 @@ def _refuse_unreachable_failure_routing(
     never be admitted. Accepting one would ship the exact defect this validation exists to close: a
     condition the author wrote, the engine stored, and nothing ever applied.
 
-    ``fail_mode: continue_declared`` is the mode these guards need. It is currently DECLARED AND
-    UNIMPLEMENTED — it appears in this validator's allow-list and nowhere else in the engine — so the
-    message says so plainly rather than pointing at a mode that would not work either.
+    ``fail_mode: continue_declared`` is the mode these guards need, and the message names it. That
+    mode was itself declared-and-unimplemented until P4.25a-2 — present in this allow-list and
+    nowhere else in the engine — which is why this check was written before the mode worked.
     """
     if policies.fail_mode != "fail_closed":
         return
@@ -156,8 +156,8 @@ def _refuse_unreachable_failure_routing(
                 "edge_condition", f"/edges/{index}/when",
                 f"a {edge.when!r} condition can never be reached under "
                 "'fail_mode: fail_closed', because the run stops at the first node failure. "
-                "Routing around a failure needs a fail mode that keeps driving the graph, which "
-                "this version does not yet implement. Refused rather than accepted-and-ignored.",
+                "Set 'fail_mode: continue_declared' to keep driving the graph past a node "
+                "failure. Refused rather than accepted-and-ignored.",
             )
 
 

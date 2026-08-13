@@ -122,18 +122,27 @@ Data-dependent conditions (`result.status == 'failed'`) are **not** supported: a
 outside the five values above is refused when the graph is validated. Versions up to 0.4.0
 accepted such strings and then ignored them, so those edges never applied their condition.
 
-**Not yet reachable: `failed`, `skipped`, `terminal`.** Under `fail_mode: fail_closed` — the
-only fail mode this version implements — the run stops at the *first* node failure, so the
+**`failed`, `skipped` and `terminal` require `fail_mode: continue_declared`.** Under
+`fail_mode: fail_closed` (the default) the run stops at the *first* node failure, so the
 scheduler never gets another turn and a failure-conditioned edge could never be admitted.
-Authoring one is therefore **refused at validation** rather than accepted and silently
-ignored, and the error says so. Routing around a failure needs a fail mode that keeps
-driving the graph (`continue_declared` is declared in the schema but not yet honoured by the
-runtime), which is also what `on_failure: continue|repair|await_human` is waiting on — those
-are refused today for the same reason.
+Authoring one there is **refused at validation** rather than accepted and silently ignored,
+and the error names the mode to switch to.
 
-So in this version `when` is usefully limited to `succeeded` (and `null`), which behave
-exactly as before. The scheduler, the receipt vocabulary, and the replay verifier already
-implement the full set; only the run loop's continue-after-failure behaviour is missing.
+`continue_declared` keeps driving the graph after a node fails — but only past the node's
+own bounded-loop outcome: a gate rejection, a worker fault, an unverified artifact, a spent
+retry budget, exhausted re-drives. A **broken gate**, a denied execution policy or isolation
+refusal, a missing worker, a rejected or unresolved human approval, an exhausted spend cap, a
+broken worker contract, or an unmeasurable budget all still stop the run whatever the mode:
+continuing past those would keep spending money, trust a gate that has already proved
+unreliable, or route around a control that said no.
+
+An unconditional edge whose dependency failed still blocks in either mode. A run that had any
+FAILED node still reports FAILED, even when a `failed`-conditioned branch handled it —
+whether a handled failure clears the run is a repair-semantics question, not this one.
+
+The mode is recorded in the run directory's `run-meta.json`, so `resume` and `approve` drive
+the graph exactly the way the original run did. A run directory written before the mode was
+recorded reduces to `fail_closed`, which is how it originally executed.
 
 **Fail-closed preflight** (checked before any node runs):
 - `approval` nodes are **not refused at preflight** — they are skipped during

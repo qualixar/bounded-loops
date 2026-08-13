@@ -26,10 +26,7 @@ The per-node prompt is RUN-TIME input (``node_id -> prompt``), never baked into 
 
 from __future__ import annotations
 
-import hashlib
-import json
 import ssl
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -57,6 +54,10 @@ from bounded_loops.graph.application.arena_projection import (
     read_arena_projection,
 )
 from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
+from bounded_loops.graph.application.run_dir_persistence import persist_run_dir
+from bounded_loops.graph.application.failure_policy import (
+    continues_after_failure,
+)
 from bounded_loops.graph.adapters.workers.connector_worker import ConnectorNodeWorker
 from bounded_loops.graph.application.egress_broker import EgressBroker
 from bounded_loops.graph.adapters.enforcement.egress_posture_policy import resolve_local_cli_egress_decision
@@ -454,6 +455,9 @@ def build_execution_controller(
     # rather than running against prices nobody supplied.
     run_budget: RunBudget | None = None,
     price_table: PriceTable | None = None,
+    # The graph's fail mode, reduced to one bit. False (halt at the first node failure) is every
+    # pre-0.5 caller's behaviour, so an un-updated caller cannot silently gain continuation.
+    continue_on_failure: bool = False,
 ) -> tuple[GraphRunController, LocalArtifactStore, GraphEventLog]:
     """Shared controller-assembly helper for ``execute_graph_run`` and ``LocalGraphRuntimeFacade``.
     Builds the full wiring (platform-caps check, artifact store, event log, workers, policy)
@@ -572,6 +576,7 @@ def build_execution_controller(
         approval_resolver=approval_resolver,
         run_budget=run_budget,
         price_table=price_table,
+        continue_on_failure=continue_on_failure,
     )
     return controller, store, event_log
 
@@ -678,6 +683,7 @@ def execute_graph_run(
     try:
         controller, store, event_log = build_execution_controller(
             plan=plan,
+            continue_on_failure=continues_after_failure(graph.policies.fail_mode),
             identity=identity,
             out_dir=out_dir,
             node_prompts=node_prompts,
@@ -718,10 +724,10 @@ def execute_graph_run(
                 f"approved|rejected` — {exc}",
             )
         return _fail(json_out, f"run integrity failure — {exc}")
-    _persist_run_dir(
+    persist_run_dir(
         out_dir, plan, manifest_text, connections_raw, identity,
         mode=mode_label, audit_plan_json=audit_plan_json,
-        provider_catalog=provider_catalog,
+        provider_catalog=provider_catalog, fail_mode=graph.policies.fail_mode,
     )
     arena = read_arena_projection(
         plan,
@@ -738,63 +744,3 @@ def execute_graph_run(
     return _report(json_out, out_dir, projection.state, arena, mode=mode_label)
 
 
-def _persist_run_dir(
-    out_dir: Path,
-    plan: ExecutionPlan,
-    manifest_text: str,
-    connections_raw: Sequence[object],
-    identity: GraphRunIdentity,
-    *,
-    mode: str = "local_cli",
-    audit_plan_json: str | None = None,
-    provider_catalog: Path | None = None,
-) -> None:
-    """Persist the four files ``bl graph status`` / ``arena`` reconstruct any run from. Written
-    after the run so a crash never leaves a half-written receipt claiming success. Run-time inputs
-    (prompts) are deliberately NOT persisted — a prompt may carry a secret, and the content-addressed
-    reply artifact is the durable receipt; the portable graph reconstructs from manifest+connections.
-
-    When ``audit_plan_json`` is supplied it is written verbatim as ``audit-plan.json`` in the run
-    directory so ``bl graph arena`` can later compute the cross-model audit coverage projection.
-    The controller loop is NOT involved in this persistence — it is a read-side concern only.
-    """
-    (out_dir / "plan.json").write_bytes(plan.canonical_json)
-    (out_dir / "manifest.yaml").write_text(manifest_text, encoding="utf-8")
-    (out_dir / "connections.json").write_text(
-        json.dumps(list(connections_raw), sort_keys=True), encoding="utf-8"
-    )
-    run_meta = {
-        "execution": True,
-        "mode": mode,
-        "organization_id": identity.organization_id,
-        "plan_id": plan.plan_id,
-        "policy_digest": plan.policy_digest,
-        "project_id": identity.project_id,
-        "run_id": identity.run_id,
-        "platform": sys.platform,
-    }
-    if provider_catalog is not None:
-        # Recorded so every CONTINUE path resolves the same provider map this run used. Without it,
-        # a catalog that overrode a shipped name (an operator pointing ``claude`` at their own
-        # wrapper) was silently dropped on resume/approve, and the continuation invoked — and paid
-        # for — the shipped binary instead. The digest turns a catalog EDITED between the run and the
-        # resume from an invisible difference into a warning.
-        # Absolute: a relative string resolves against the CWD of whichever process reads it
-        # later, so a resume from another directory opened a different file or none.
-        run_meta["provider_catalog"] = str(provider_catalog.resolve())
-        try:
-            run_meta["provider_catalog_sha256"] = hashlib.sha256(
-                provider_catalog.read_bytes()
-            ).hexdigest()
-        except OSError:
-            run_meta["provider_catalog_sha256"] = ""
-    (out_dir / "run-meta.json").write_text(json.dumps(run_meta, sort_keys=True), encoding="utf-8")
-    if audit_plan_json is not None:
-        (out_dir / "audit-plan.json").write_text(audit_plan_json, encoding="utf-8")
-
-
-# A paused run is neither a success (0) nor a failure (2) — it is durably waiting on a
-# human decision, and the CLI must never let a caller (or a CI script checking for a
-# non-zero exit) mistake "paused" for "broken". Exit code 3 is otherwise unused across
-# the graph CLI (0/1/2 already carry meaning: 0=success, 1=CLI usage error, 2=refused
-# or failed run) so it cannot collide with an existing convention.

@@ -22,17 +22,29 @@ All notable changes to bounded-loops are documented here. This project follows
 
 - **A condition that could never fire is refused too.** `when: failed`, `skipped`, and
   `terminal` are rejected under `fail_mode: fail_closed`, because that mode stops the run at
-  the first node failure — so such an edge could never apply. Routing around a failure needs
-  a fail mode that keeps driving the graph, which this version does not yet implement. Same
-  rule that already applies to `on_failure: continue|repair|await_human`.
+  the first node failure — so such an edge could never apply. The error names the mode to use
+  instead. Same rule that already applies to `on_failure: continue|repair|await_human`.
+- **`fail_mode: continue_declared` now does something.** It was accepted by the schema and
+  ignored by the runtime, so every run was fail-closed whatever the graph declared.
 
 ### Added
 
+- **Route around a failed node.** With `fail_mode: continue_declared`, `when: failed` runs a
+  downstream node only when its upstream failed — a cleanup, notification, or fallback
+  branch. `when: terminal` runs a branch whatever the outcome.
+
+  Continuation is deliberately narrow: the run keeps going only past the node's own
+  bounded-loop outcome (gate rejection, worker fault, unverified artifact, spent budget,
+  exhausted re-drives). A broken gate, a denied policy or isolation refusal, a missing
+  worker, a rejected or unresolved approval, an exhausted spend cap, a broken worker
+  contract, or an unmeasurable budget still stop the run — continuing past those would keep
+  spending, trust an unreliable gate, or route around a control.
 - **Untaken branches are recorded, not stranded.** A node whose every incoming condition
   excluded it is marked SKIPPED, with the reason on its receipt, and a run whose only
   unfinished work was an untaken branch completes successfully instead of reporting a
-  failure. A node that failed still fails the run. (Reachable once a continue-after-failure
-  fail mode lands — see above.)
+  failure. A node that failed still fails the run.
+- **A run's fail mode is durable.** Recorded in `run-meta.json`, so `resume` and `approve`
+  drive the graph the way the original run did.
 
 ## [0.4.0] — 2026-08-12
 

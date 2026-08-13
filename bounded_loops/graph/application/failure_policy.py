@@ -55,3 +55,30 @@ def may_continue(cause: NodeFailureCause, *, continue_on_failure: bool) -> bool:
     (``fail_mode: fail_closed``) this is always ``False``, so behaviour is unchanged.
     """
     return continue_on_failure and cause in MAY_CONTINUE_AFTER
+
+
+#: The authoring fail mode that stops a run at the first node failure. Anything else keeps driving
+#: the graph, which is what a failure-conditioned edge needs to be admitted at all.
+HALT_AT_FIRST_FAILURE = "fail_closed"
+
+
+def continues_after_failure(fail_mode: str | None) -> bool:
+    """Reduce a graph's ``fail_mode`` to the one bit the controller acts on.
+
+    ``None`` or an unknown value reduces to False — halt. A run directory written before the fail
+    mode was recorded has no value to read, and defaulting to the stricter behaviour keeps such a
+    run replaying exactly as it originally ran. A plan that actually NEEDS continuation is not
+    silently downgraded: the controller refuses to be built at all in that case.
+    """
+    return fail_mode is not None and fail_mode != HALT_AT_FIRST_FAILURE
+
+
+def recorded_fail_mode(meta: dict[str, object]) -> str | None:
+    """The fail mode a run was STARTED under, as recorded in its ``run-meta.json``.
+
+    ``None`` when absent — a run directory written before the mode was recorded. Paired with
+    ``continues_after_failure`` that reduces to halt-at-first-failure, which is exactly how such a
+    run originally executed, so a resume cannot change a completed run's semantics.
+    """
+    value = meta.get("fail_mode")
+    return value if isinstance(value, str) and value else None
