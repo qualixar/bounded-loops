@@ -20,7 +20,7 @@ from bounded_loops.graph.adapters.enforcement.capabilities import (
 )
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, NetworkDestination, NetworkMode
-from bounded_loops.graph.application.sandboxed_worker import (
+from bounded_loops.graph.adapters.workers.sandboxed_worker import (
     NodeExecutionSpec,
     SandboxedNodeWorker,
 )

@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
+from bounded_loops.graph.application.graph_ports import EventLogPort
 from bounded_loops.graph.application.schedule_ready import NodeState, predecessors_admit
 from bounded_loops.graph.application.node_spend import (
     NodeSpend,
@@ -132,7 +132,7 @@ class ArenaProjection:
 
 def read_arena_projection(
     plan: ExecutionPlan,
-    event_log: GraphEventLog,
+    event_log: EventLogPort,
     request: ArenaReadRequest,
     authorizer: ArenaAuthorizationPort,
     receipt_verifier: ArenaReceiptVerifierPort,

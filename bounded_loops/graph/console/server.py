@@ -41,8 +41,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
 from bounded_loops.graph.application.arena_projection import ArenaProjection, ArenaReadRequest
-from bounded_loops.graph.application.execute_graph import _awaiting_approval_nodes
-from bounded_loops.graph.application.graph_runtime_facade import LocalGraphRuntimeFacade
+from bounded_loops.graph.graph_composition import _awaiting_approval_nodes
+from bounded_loops.graph.graph_runtime_facade import LocalGraphRuntimeFacade
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
 from bounded_loops.graph.console.rendering import render_console_page
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError

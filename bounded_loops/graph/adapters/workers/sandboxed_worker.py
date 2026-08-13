@@ -38,7 +38,7 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Callable, Mapping, Protocol, cast
+from typing import Callable, Mapping, Protocol
 from uuid import uuid4
 
 from bounded_loops.adapters._env import build_subprocess_env
@@ -50,7 +50,7 @@ from bounded_loops.graph.adapters.enforcement.provider import EnforcedControls
 from bounded_loops.graph.adapters.enforcement.providers.remote_exec import RemoteExecTransport
 from bounded_loops.graph.adapters.enforcement.registry import IsolationProviderRegistry, default_registry
 from bounded_loops.graph.adapters.enforcement.sandbox import SEATBELT_BINARY
-from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
+from bounded_loops.graph.application.graph_ports import ArtifactStorePort
 from bounded_loops.graph.application.execution_policy import (
     ExecutionEnvelope,
     NetworkMode,
@@ -58,7 +58,6 @@ from bounded_loops.graph.application.execution_policy import (
 )
 from bounded_loops.graph.application.node_contracts import WorkerResult
 from bounded_loops.graph.application.workspace_promotion import (
-    ArtifactWriterPort,
     WorkspaceInput,
     WorkspacePromotionPolicy,
     materialize_workspace_inputs,
@@ -139,7 +138,7 @@ class SandboxedNodeWorker:
     """A ``NodeWorkerPort`` that runs each node inside a native OS sandbox."""
 
     identity: GraphRunIdentity
-    artifact_store: LocalArtifactStore
+    artifact_store: ArtifactStorePort
     resolver: NodeExecutionResolver
     capabilities: PlatformCapabilities
     workspace_root: Path
@@ -321,12 +320,11 @@ class SandboxedNodeWorker:
             sensitivity=self.sensitivity,
             retention_class=self.retention_class,
         )
-        # The store's put_many accepts BinaryIO; promotion needs only a
-        # read()-able source (it streams _BoundedReader). The store satisfies the
-        # writer port structurally at runtime; cast bridges the narrower nominal type.
-        records = promote_workspace_outputs(
-            outputs, policy, cast(ArtifactWriterPort, self.artifact_store),
-        )
+        # No cast needed since P3: ``artifact_store`` is an ``ArtifactStorePort``, which
+        # already extends ``ArtifactWriterPort``. The cast that used to sit here bridged a
+        # nominal gap the seam removes — and a cast is exactly how a real mismatch would
+        # have gone unnoticed.
+        records = promote_workspace_outputs(outputs, policy, self.artifact_store)
         digests = tuple(record.digest for record in records)
         self._mechanism_used[node.node_id] = _MECHANISM_BY_ARGV0.get(launch.argv[0], selection.provider_id)
         self._provider_used[node.node_id] = selection.provider_id

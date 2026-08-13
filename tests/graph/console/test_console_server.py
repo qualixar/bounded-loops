@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 import pytest
 
 from bounded_loops.graph.application.arena_projection import ArenaProjection
-from bounded_loops.graph.application.execute_graph import execute_graph_run
+from bounded_loops.graph.graph_composition import execute_graph_run
 from bounded_loops.graph.console.server import (
     ConsoleOpenError,
     ConsoleRequestHandler,

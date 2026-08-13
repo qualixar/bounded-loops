@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
+from bounded_loops.graph.application.graph_ports import EventLogPort
 from bounded_loops.graph.application.arena_projection import latest_node_states
 from bounded_loops.graph.application.execution_policy import (
     ExecutionEnvelope,
@@ -127,7 +127,7 @@ class GraphRunController:
         self,
         *,
         plan: ExecutionPlan,
-        event_log: GraphEventLog,
+        event_log: EventLogPort,
         worker: NodeWorkerPort,
         gate: IndependentGatePort,
         artifact_verifier: ArtifactVerifierPort,

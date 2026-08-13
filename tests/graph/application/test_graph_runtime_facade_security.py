@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from bounded_loops.graph.application.arena_projection import ArenaReadRequest
-from bounded_loops.graph.application.graph_runtime_facade import (
+from bounded_loops.graph.graph_runtime_facade import (
     LocalGraphRuntimeFacade,
     SameTenantArenaAuthorizer,
     _load_approvals,

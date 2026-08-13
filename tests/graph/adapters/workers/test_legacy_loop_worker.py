@@ -10,7 +10,7 @@ from bounded_loops.domain.models import Bounds, Outcome, Rung, Spec, Status
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.adapters.persistence.artifact_verifier import LocalArtifactVerifier
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
-from bounded_loops.graph.application.legacy_loop_worker import LegacyLoopWorker
+from bounded_loops.graph.adapters.workers.legacy_loop_worker import LegacyLoopWorker
 from bounded_loops.graph.application.execution_policy import (
     ConfiguredExecutionPolicy,
     ExecutionEnvelope,

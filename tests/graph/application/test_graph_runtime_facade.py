@@ -22,8 +22,8 @@ import pytest
 
 from bounded_loops.graph.adapters.connectors.local_cli_worker import CliProfile
 from bounded_loops.graph.application.arena_projection import ArenaReadRequest
-from bounded_loops.graph.application.execute_graph import execute_graph_run
-from bounded_loops.graph.application.graph_runtime_facade import (
+from bounded_loops.graph.graph_composition import execute_graph_run
+from bounded_loops.graph.graph_runtime_facade import (
     LocalGraphRuntimeFacade,
     SameTenantArenaAuthorizer,
 )
@@ -629,7 +629,7 @@ def test_commit_port_refuses_approval_when_rejection_exists(tmp_path):
     """PORT-level mirror guard (re-audit N1): `_FileApprovalCommandPort.commit` refuses to approve a
     node that already carries a durable rejection, even under concurrency (the facade pre-check is
     serial-only). This holds the 'never both' invariant at the durable-write boundary itself."""
-    from bounded_loops.graph.application.graph_runtime_facade import _FileApprovalCommandPort
+    from bounded_loops.graph.graph_runtime_facade import _FileApprovalCommandPort
     from bounded_loops.graph.application.approvals import ApprovalCommand, AuthenticatedApprovalContext
     from bounded_loops.graph.domain.approvals import ApprovalRequest, ApprovalDecision
 
@@ -688,7 +688,7 @@ def test_resume_detects_conflict_across_attempts(tmp_path):
 
 def test_resume_carries_a_new_spend_ceiling_to_the_controller(tmp_path, monkeypatch):
     """Raising the ceiling is one call. Without this the pause could not be continued at all."""
-    from bounded_loops.graph.application import graph_runtime_facade as module
+    from bounded_loops.graph import graph_runtime_facade as module
     from bounded_loops.graph.application.node_spend import RunBudget
     from bounded_loops.graph.domain.pricing import ModelPrice, PriceTable
 
@@ -715,7 +715,7 @@ def test_resume_carries_a_new_spend_ceiling_to_the_controller(tmp_path, monkeypa
 
 def test_approve_carries_a_spend_ceiling_too(tmp_path, monkeypatch):
     """Approving a checkpoint continues the run, and continuing spends money."""
-    from bounded_loops.graph.application import graph_runtime_facade as module
+    from bounded_loops.graph import graph_runtime_facade as module
     from bounded_loops.graph.application.node_spend import RunBudget
 
     runs_root = _build_approval_run(tmp_path)
@@ -749,7 +749,7 @@ def test_approve_carries_a_spend_ceiling_too(tmp_path, monkeypatch):
 
 def test_the_facades_own_ceiling_applies_when_a_call_supplies_none(tmp_path, monkeypatch):
     """A deployment can set a standing ceiling once instead of on every call."""
-    from bounded_loops.graph.application import graph_runtime_facade as module
+    from bounded_loops.graph import graph_runtime_facade as module
     from bounded_loops.graph.application.node_spend import RunBudget
 
     _build_run(tmp_path)

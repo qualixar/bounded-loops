@@ -16,8 +16,8 @@ import json
 from pathlib import Path
 
 from bounded_loops.graph.application.arena_projection import ArenaReadRequest
-from bounded_loops.graph.application.execute_graph import execute_graph_run
-from bounded_loops.graph.application.graph_runtime_facade import LocalGraphRuntimeFacade
+from bounded_loops.graph.graph_composition import execute_graph_run
+from bounded_loops.graph.graph_runtime_facade import LocalGraphRuntimeFacade
 
 # `execute_graph_run` writes the run under these local defaults.
 _ORG, _PROJECT = "local-org", "local-project"

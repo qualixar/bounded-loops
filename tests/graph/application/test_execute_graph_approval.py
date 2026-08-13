@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bounded_loops.graph.application.execute_graph import execute_graph_run
+from bounded_loops.graph.graph_composition import execute_graph_run
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir as _load_plan_from_run_dir
 from bounded_loops.graph.application.arena_projection import (
     ArenaNodeProjection,
@@ -335,7 +335,7 @@ def test_report_prefers_failed_over_paused_when_both_present(
     """A run whose authoritative run_state is FAILED must report failure (rc=2), never
     PAUSED (rc=3) — even if a node's last durable receipt still shows
     AWAITING_APPROVAL. PAUSED implies the run is still resumable; a FAILED run is not."""
-    from bounded_loops.graph.application.execute_graph import _report
+    from bounded_loops.graph.graph_composition import _report
 
     arena = _arena_with_failed_run_and_awaiting_node()
     rc = _report(False, tmp_path, "FAILED", arena, mode="local_cli")
@@ -345,7 +345,7 @@ def test_report_prefers_failed_over_paused_when_both_present(
 
 
 def test_report_json_prefers_failed_over_paused(tmp_path: Path, capsys) -> None:
-    from bounded_loops.graph.application.execute_graph import _report
+    from bounded_loops.graph.graph_composition import _report
 
     arena = _arena_with_failed_run_and_awaiting_node()
     rc = _report(True, tmp_path, "FAILED", arena, mode="local_cli")

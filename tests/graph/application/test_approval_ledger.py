@@ -287,10 +287,10 @@ def test_load_approvals_with_boolean_resource_version_fails_closed(tmp_path: Pat
 
 def test_graph_runtime_facade_reexports_load_approvals() -> None:
     """The facade's existing tests import `_load_approvals` from
-    `bounded_loops.graph.application.graph_runtime_facade` — the extraction must keep
+    `bounded_loops.graph.graph_runtime_facade` — the extraction must keep
     that import path working via re-export, not just move the code out from under it."""
     from bounded_loops.graph.application.approval_ledger import _load_approvals as ledger_fn
-    from bounded_loops.graph.application.graph_runtime_facade import _load_approvals as facade_fn
+    from bounded_loops.graph.graph_runtime_facade import _load_approvals as facade_fn
 
     assert facade_fn is ledger_fn
 
@@ -301,7 +301,7 @@ def test_graph_runtime_facade_reexports_build_durable_approval_resolver() -> Non
     from bounded_loops.graph.application.approval_ledger import (
         build_durable_approval_resolver as ledger_fn,
     )
-    from bounded_loops.graph.application.execute_graph import (
+    from bounded_loops.graph.graph_composition import (
         build_durable_approval_resolver as execute_graph_fn,
     )
 

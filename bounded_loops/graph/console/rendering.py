@@ -21,7 +21,7 @@ from pathlib import Path
 
 from bounded_loops.graph.domain.usage import MICROUNITS_PER_USD
 from bounded_loops.graph.application.arena_projection import ArenaNodeProjection, ArenaProjection
-from bounded_loops.graph.application.execute_graph import _awaiting_approval_nodes
+from bounded_loops.graph.graph_composition import _awaiting_approval_nodes
 from bounded_loops.graph.domain.events import GraphRunIdentity
 
 _TEMPLATE_PATH = Path(__file__).with_name("console_template.html")

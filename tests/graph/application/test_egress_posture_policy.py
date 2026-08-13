@@ -22,7 +22,7 @@ from __future__ import annotations
 import pytest
 
 from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
-from bounded_loops.graph.application.egress_posture_policy import resolve_local_cli_egress_decision
+from bounded_loops.graph.adapters.enforcement.egress_posture_policy import resolve_local_cli_egress_decision
 from bounded_loops.graph.application.execution_policy import NetworkDestination, NetworkMode
 from bounded_loops.graph.domain.authoring import Effect, IsolationLevel
 from bounded_loops.graph.domain.errors import GraphValidationError

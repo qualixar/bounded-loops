@@ -11,7 +11,7 @@ from bounded_loops.application.loop_bridge import (
     wire_loop_for_graph,
 )
 from bounded_loops.application.manifest import LoopManifest
-from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
+from bounded_loops.graph.application.graph_ports import ArtifactStorePort
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, validate_execution_envelope
 from bounded_loops.graph.application.node_contracts import WorkerResult
 from bounded_loops.graph.domain.errors import GraphIntegrityError
@@ -33,7 +33,7 @@ class LegacyLoopWorker:
         identity: GraphRunIdentity,
         resolve_manifest: Callable[[str], LoopManifest],
         controller_root: Path,
-        artifact_store: LocalArtifactStore,
+        artifact_store: ArtifactStorePort,
         wire_loop: Callable[[LoopManifest, LoopExecutionRequest], WiredLoopExecution] = wire_loop_for_graph,
     ) -> None:
         self._identity = identity

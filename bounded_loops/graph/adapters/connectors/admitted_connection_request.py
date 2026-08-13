@@ -47,7 +47,7 @@ from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidati
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
 # Import ConnectorCall locally to avoid a circular import via connector_worker -> connector_forward
-from bounded_loops.graph.application.connector_worker import ConnectorCall
+from bounded_loops.graph.adapters.workers.connector_worker import ConnectorCall
 
 # Reuse compile_graph / validate_graph patterns for secret detection. "credential" is deliberately
 # NOT here — the legitimate field ``credential_env_var_name`` contains it; "key" alone is too broad.

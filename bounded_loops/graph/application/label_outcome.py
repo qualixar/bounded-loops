@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
+from bounded_loops.graph.application.graph_ports import EventLogPort
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import UnsignedGraphEvent
 
@@ -45,7 +45,7 @@ class OutcomeLabel(str, Enum):
 
 
 def label_node_outcome(
-    event_log: GraphEventLog,
+    event_log: EventLogPort,
     *,
     node_id: str,
     attempt: int,
@@ -101,7 +101,7 @@ def label_node_outcome(
 
 
 def _require_the_attempt_produced_that_artifact(
-    event_log: GraphEventLog, node_id: str, attempt: int, artifact_digest: str,
+    event_log: EventLogPort, node_id: str, attempt: int, artifact_digest: str,
 ) -> None:
     """Refuse a label that does not bind to real work in THIS run.
 

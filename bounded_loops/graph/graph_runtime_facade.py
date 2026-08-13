@@ -89,7 +89,7 @@ from bounded_loops.graph.application.arena_projection import (
     read_arena_projection,
 )
 from bounded_loops.graph.application.egress_broker import EgressBroker
-from bounded_loops.graph.application.execute_graph import (
+from bounded_loops.graph.graph_composition import (
     _ALL_EXECUTOR_TRANSPORTS,
     build_execution_controller,
 )

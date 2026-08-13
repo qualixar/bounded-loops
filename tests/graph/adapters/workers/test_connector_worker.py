@@ -18,7 +18,7 @@ from bounded_loops.graph.application.connector_forward import (
     ConnectorInvoker,
     ConnectorResult,
 )
-from bounded_loops.graph.application.connector_worker import ConnectorCall, ConnectorNodeWorker
+from bounded_loops.graph.adapters.workers.connector_worker import ConnectorCall, ConnectorNodeWorker
 from bounded_loops.graph.application.credential_broker import OpaqueCredentialBroker
 from bounded_loops.graph.application.egress_broker import EgressBroker
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, NetworkMode

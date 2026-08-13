@@ -9,7 +9,7 @@ semantic overlay layered on top of this primitive.
 
 from __future__ import annotations
 
-from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
+from bounded_loops.graph.application.graph_ports import ArtifactReaderPort
 from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
 from bounded_loops.graph.domain.artifacts import ArtifactAccess, ArtifactRef
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
@@ -19,7 +19,7 @@ class StructuralAcceptanceGate:
     """Independent gate: pass only if the node's promoted artifact is a non-empty UTF-8 reply."""
 
     def __init__(
-        self, store: LocalArtifactStore, *, organization_id: str, project_id: str,
+        self, store: ArtifactReaderPort, *, organization_id: str, project_id: str,
     ) -> None:
         self._store = store
         self._organization_id = organization_id

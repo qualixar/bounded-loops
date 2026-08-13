@@ -433,7 +433,7 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
         _err(f"graph run: {exc}")
         return 2
 
-    from bounded_loops.graph.application.execute_graph import execute_graph_run
+    from bounded_loops.graph.graph_composition import execute_graph_run
     return execute_graph_run(
         manifest_text=text,
         manifest_suffix=".json" if suffix == ".json" else ".yaml",
@@ -464,7 +464,7 @@ def cmd_graph_run(args: argparse.Namespace) -> int:
         manifest = getattr(args, "manifest", None)
         if not manifest:
             # No manifest → the built-in native-sandbox demonstration (unchanged).
-            from bounded_loops.graph.application.sandbox_demo import run_sandbox_demo
+            from bounded_loops.graph.sandbox_demo import run_sandbox_demo
             return run_sandbox_demo(Path(out), json_out=getattr(args, "json", False))
         # A user manifest → REAL execution of its admitted local-CLI connector nodes.
         return _execute_manifest(args, manifest, Path(out))

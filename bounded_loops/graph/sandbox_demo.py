@@ -32,7 +32,7 @@ from bounded_loops.graph.application.execution_policy import (
 )
 from bounded_loops.graph.application.run_graph import GraphRunController
 from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
-from bounded_loops.graph.application.sandboxed_worker import (
+from bounded_loops.graph.adapters.workers.sandboxed_worker import (
     NodeExecutionSpec,
     SandboxedNodeWorker,
 )

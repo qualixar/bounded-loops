@@ -24,9 +24,8 @@ import json
 from dataclasses import dataclass
 from typing import cast
 
-from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
-from bounded_loops.graph.adapters.persistence.audit_store import result_from_mapping  # public canonical deserialization
-from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
+from bounded_loops.graph.domain.audit_serde import result_from_mapping  # public canonical deserialization
+from bounded_loops.graph.application.graph_ports import ArtifactReaderPort, EventLogPort
 from bounded_loops.graph.application.arena_projection import latest_node_states
 from bounded_loops.graph.application.audit_reconciliation import reconcile_audit
 from bounded_loops.graph.domain.artifacts import ArtifactAccess, ArtifactRef
@@ -79,8 +78,8 @@ class AuditCoverageProjection:
 def read_audit_projection(
     *,
     plan: ExecutionPlan,
-    event_log: GraphEventLog,
-    artifact_store: LocalArtifactStore,
+    event_log: EventLogPort,
+    artifact_store: ArtifactReaderPort,
     audit_plan: AuditPlan,
     organization_id: str,
     project_id: str,

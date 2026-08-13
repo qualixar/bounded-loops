@@ -56,7 +56,7 @@ from bounded_loops.graph.adapters.enforcement.egress_posture import EgressPostur
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.adapters.persistence.artifact_verifier import LocalArtifactVerifier
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
-from bounded_loops.graph.application.acceptance_gate import StructuralAcceptanceGate
+from bounded_loops.graph.adapters.workers.acceptance_gate import StructuralAcceptanceGate
 from bounded_loops.graph.application.arena_projection import (
     ArenaProjection,
     ArenaReadRequest,
@@ -64,10 +64,10 @@ from bounded_loops.graph.application.arena_projection import (
 )
 from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
 from bounded_loops.graph.application.connector_forward import ConnectorInvoker
-from bounded_loops.graph.application.connector_worker import ConnectorNodeWorker
+from bounded_loops.graph.adapters.workers.connector_worker import ConnectorNodeWorker
 from bounded_loops.graph.application.credential_broker import OpaqueCredentialBroker
 from bounded_loops.graph.application.egress_broker import EgressBroker
-from bounded_loops.graph.application.egress_posture_policy import resolve_local_cli_egress_decision
+from bounded_loops.graph.adapters.enforcement.egress_posture_policy import resolve_local_cli_egress_decision
 from bounded_loops.graph.application.execution_policy import (
     ConfiguredExecutionPolicy,
     ExecutionEnvelope,

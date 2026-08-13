@@ -35,7 +35,7 @@ from bounded_loops.application.run_store import (
     read_run_receipt,
     write_run_metadata,
 )
-from bounded_loops.graph.application.runner_preflight import (
+from bounded_loops.graph.adapters.preflight.runner_preflight import (
     default_runner_profiles,
     preflight_runners,
 )

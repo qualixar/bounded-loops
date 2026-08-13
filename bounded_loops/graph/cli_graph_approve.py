@@ -56,12 +56,12 @@ import sys
 from pathlib import Path
 from bounded_loops.graph.application.approval_ledger import _load_approvals
 from bounded_loops.graph.application.arena_projection import ArenaProjection, ArenaReadRequest
-from bounded_loops.graph.application.execute_graph import (
+from bounded_loops.graph.graph_composition import (
     _EXIT_PAUSED,
     _awaiting_approval_nodes,
     approve_command_hint,
 )
-from bounded_loops.graph.application.graph_runtime_facade import LocalGraphRuntimeFacade
+from bounded_loops.graph.graph_runtime_facade import LocalGraphRuntimeFacade
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity

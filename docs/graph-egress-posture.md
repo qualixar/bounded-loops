@@ -239,7 +239,7 @@ config path in every mode. See `bounded_loops/graph/init/config_writer.py`.
 `LocalGraphRuntimeFacade.resume`/`.approve`) calls this once, before any store/worker is built:
 
 ```python
-from bounded_loops.graph.application.egress_posture_policy import resolve_local_cli_egress_decision
+from bounded_loops.graph.adapters.enforcement.egress_posture_policy import resolve_local_cli_egress_decision
 
 # Raises GraphValidationError for a local_cli plan under broker, or under allowlist without
 # the cage (see above); otherwise returns the generic decision — OPEN or ALLOWLIST (with the

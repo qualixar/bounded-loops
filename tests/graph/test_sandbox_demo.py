@@ -15,8 +15,8 @@ import pytest
 
 from bounded_loops.graph.adapters.enforcement import probe_platform
 from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
-from bounded_loops.graph.application import sandbox_demo
-from bounded_loops.graph.application.sandbox_demo import run_sandbox_demo
+from bounded_loops.graph import sandbox_demo
+from bounded_loops.graph.sandbox_demo import run_sandbox_demo
 from bounded_loops.graph.cli_graph import cmd_graph_run
 
 _LIVE = probe_platform()
