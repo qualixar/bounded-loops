@@ -164,24 +164,14 @@ def test_invalid_json_is_rejected():
             lambda g: g["nodes"][0].update({"on_failure": "await_human"}),
             "on_failure_unimplemented",
         ),
-        # budget_unenforced: token and cost caps are validated and compiled into the plan
-        # but NOTHING meters them, and WorkerResult has no field through which a worker
-        # could report spend.  The failure direction is what makes refusal mandatory: an
-        # ignored attempt budget grants fewer attempts, an ignored token cap grants no
-        # limit at all.  Refused until spend accounting is real.
-        # max_tokens hits a DIFFERENT, pre-existing guard first: _reject_nonportable
-        # substring-matches _SECRET_WORDS, and "max_tokens" contains "token". So the field
-        # has never been authorable at all — it is in the JSON schema, the closed
-        # allowed-set, GraphBudget, and the compiled plan, yet no manifest naming it can
-        # validate. Asserted truthfully here; the false positive is fixed in the budget
-        # phase, at which point budget_unenforced becomes the reason instead.
+        # Spend caps are no longer refused — the runtime meters them (see
+        # test_node_spend.py). What IS still refused is a cap below its floor: a node that
+        # may not use one single token cannot do anything, so that is a mis-authored graph
+        # rather than a policy. A cost cap of 0 is meaningful ("must not cost money") and is
+        # accepted, which test_a_spend_cap_is_now_authorable pins.
         (
-            lambda g: g["nodes"][0]["budget"].update({"max_tokens": 50_000}),
-            "secret_field",
-        ),
-        (
-            lambda g: g["nodes"][0]["budget"].update({"max_cost_microunits": 1_000_000}),
-            "budget_unenforced",
+            lambda g: g["nodes"][0]["budget"].update({"max_tokens": 0}),
+            "range",
         ),
         # max_attempts: above the ceiling the controller enforces.  Narrowed from 1000
         # because the retry budget multiplies the gate's per-attempt false-accept
@@ -223,3 +213,62 @@ def test_additional_graph_validation_error_codes(mutate, code):
     assert raised.value.code == code, (
         f"expected code={code!r}, got code={raised.value.code!r}"
     )
+
+
+@pytest.mark.parametrize(
+    ("budget", "expected_tokens", "expected_cost"),
+    [
+        ({"max_tokens": 50_000}, 50_000, None),
+        ({"max_cost_microunits": 1_000_000}, None, 1_000_000),
+        ({"max_tokens": 1, "max_cost_microunits": 0}, 1, 0),
+    ],
+)
+def test_a_spend_cap_is_now_authorable(budget, expected_tokens, expected_cost):
+    """These fields were refused outright ("no component meters it") until spend landed.
+
+    A cost cap of 0 is a real declaration — "this node must not cost money" — so it is
+    accepted, not treated as a missing value. The runtime honours it by permitting free work
+    and refusing the first attempt that charges anything.
+    """
+    graph = _graph()
+    graph["nodes"][0]["budget"].update(budget)
+
+    spec = validate_authoring_graph(graph)
+
+    assert spec.nodes[0].budget.max_tokens == expected_tokens
+    assert spec.nodes[0].budget.max_cost_microunits == expected_cost
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "accepted"),
+    [
+        # The false positive that made max_tokens unauthorable: _SECRET_WORDS is matched as
+        # a substring, and the counting vocabulary of an LLM orchestrator is full of it.
+        ("max_tokens", 50_000, True),
+        ("token_limit", 4_096, True),
+        ("secret_count", 3, True),
+        ("cost_per_token", 1.5, True),
+        # No integer is an API key, but everything else under a secret-shaped name still is
+        # one as far as this check is concerned.
+        ("api_key", "sk-live-not-a-real-key", False),
+        ("auth_token", "ghp_not-a-real-token", False),
+        ("tokens", ["one", "two"], False),
+        ("credential", {"nested": "value"}, False),
+        # bool is an int subclass; a flag named `secret` is worth looking at, not a count.
+        ("password", True, False),
+    ],
+)
+def test_the_secret_shaped_field_check_keys_on_the_value_not_only_the_name(
+    field, value, accepted,
+):
+    graph = _graph()
+    # ``presentation`` is the graph's open sub-mapping, so an arbitrary key here reaches the
+    # secret check without first hitting the closed allowed-set on a node.
+    graph["presentation"] = {field: value}
+
+    if accepted:
+        assert validate_authoring_graph(graph).presentation[field] == value
+        return
+    with pytest.raises(GraphValidationError) as raised:
+        validate_authoring_graph(graph)
+    assert raised.value.code == "secret_field"

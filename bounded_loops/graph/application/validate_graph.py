@@ -49,14 +49,6 @@ _ON_FAILURE_DECLARED = frozenset({"fail_graph", "continue", "repair", "await_hum
 # currently becomes fail_graph.  Accepting these would silently discard the author's
 # declared policy, so validation refuses them until the runtime honours them.
 _ON_FAILURE_UNIMPLEMENTED = frozenset({"continue", "repair", "await_human"})
-# Budget fields the authoring schema accepts that NOTHING meters: they are validated here and
-# compiled into the immutable plan, but no executing component reads them, and ``WorkerResult``
-# has no field through which a worker could even report spend.  Refused rather than accepted,
-# because the failure direction is unsafe: an ignored attempt budget silently grants FEWER
-# attempts, whereas an ignored token or cost cap silently grants NO LIMIT — and that is money.
-# Lifted once spend accounting is real (per-attempt metering, run-level accumulator, and a
-# pause-for-approval gate when a total is reached).
-_BUDGETS_UNENFORCED = ("max_tokens", "max_cost_microunits")
 # Mirrors ``run_graph._MAX_ATTEMPTS_CEILING`` so an over-large budget is refused when the
 # graph is authored rather than when it runs.  Narrowed from 1000: the retry budget
 # multiplies the gate's per-attempt false-accept probability, so a very large budget
@@ -380,13 +372,6 @@ def _budget(raw: object, pointer: str) -> GraphBudget:
     budget = _mapping(raw, pointer)
     _closed(budget, {"max_attempts", "max_wallclock_s", "max_tokens", "max_cost_microunits"}, pointer)
     _required(budget, {"max_attempts", "max_wallclock_s"}, pointer)
-    for field in _BUDGETS_UNENFORCED:
-        if budget.get(field) is not None:
-            raise _error(
-                "budget_unenforced", f"{pointer}/{field}",
-                f"{field} is declared but no component meters it, so the run would spend "
-                "without limit; omit it until spend accounting lands",
-            )
     return GraphBudget(
         max_attempts=_bounded_int(
             budget["max_attempts"], f"{pointer}/max_attempts", 1, _MAX_ATTEMPTS_CEILING,
@@ -417,7 +402,7 @@ def _reject_nonportable(value: object, pointer: str) -> None:
     if isinstance(value, Mapping):
         for key, child in value.items():
             lowered = str(key).lower()
-            if any(word in lowered for word in _SECRET_WORDS):
+            if any(word in lowered for word in _SECRET_WORDS) and not _is_number(child):
                 raise _error("secret_field", pointer, "authoring graphs cannot contain secret-shaped fields")
             _reject_nonportable(child, f"{pointer}/{key}")
     elif isinstance(value, list):
@@ -425,6 +410,26 @@ def _reject_nonportable(value: object, pointer: str) -> None:
             _reject_nonportable(child, f"{pointer}/{index}")
     elif isinstance(value, str) and _ABSOLUTE.match(value):
         raise _error("absolute_path", pointer, "authoring graphs cannot contain absolute local paths")
+
+
+def _is_number(value: object) -> bool:
+    """Whether a value is a plain number, and therefore cannot be a credential.
+
+    ``_SECRET_WORDS`` is matched as a SUBSTRING, which is right for catching ``auth_token``
+    and ``github_api_key`` but wrong for the counting vocabulary an LLM orchestrator is made
+    of: ``max_tokens``, ``token_limit``, ``secret_count``. That false positive was not
+    cosmetic — it made ``max_tokens`` unauthorable in every manifest while the field sat in
+    the JSON schema, the closed allowed-set, GraphBudget and the compiled plan.
+
+    Keying on the VALUE fixes the whole class rather than one field, and does not weaken the
+    check: no integer is an API key. Anything else under a secret-shaped name — a string, a
+    list, a nested object — is still refused, so a list of keys under ``tokens`` cannot slip
+    through on its container's type.
+
+    ``bool`` is excluded deliberately: it is an int subclass, and ``secret: true`` is a flag
+    worth looking at rather than a quantity.
+    """
+    return value is None or (isinstance(value, (int, float)) and not isinstance(value, bool))
 
 
 def _mapping(value: object, pointer: str) -> Mapping[str, object]:
