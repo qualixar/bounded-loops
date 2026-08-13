@@ -111,6 +111,13 @@ _AUDIT_EVENTS = frozenset({
     # actually true are different facts, and conflating them would make the gate's own error
     # rate uncomputable.
     "node.outcome.labeled",
+    # What ONE execution of one attempt consumed, written the instant the worker returns —
+    # before artifact verification and before the gate. Money is spent inside the worker, so
+    # any receipt written later can be lost to a kill -9 in between, and a lost spend record
+    # reads as free work: four paid executions once measured 0 against a 50-token ceiling.
+    # This is the ONLY event carrying usage; the outcome receipts do not, so one number cannot
+    # exist in two places and drift.
+    "node.spend",
     # The run stopped because the OPERATOR's total budget was reached. Additive on purpose:
     # the run stays RUNNING and therefore resumable, which is the whole difference between
     # pausing for a decision and failing. A failure would discard the run's completed work.
@@ -374,7 +381,8 @@ def _validate_node_event(
         if on_append:
             required.add("cause")
     if event_type == "node.succeeded":
-        allowed = required | {"route", "transport", "isolation", "verdict", "usage"}
+        # No "usage": spend lives on node.spend alone, written earlier and never lost.
+        allowed = required | {"route", "transport", "isolation", "verdict"}
     elif event_type == "node.failed":
         # budget_exhausted appears only when a retry budget above one was spent, so a
         # reader can separate "ran out of attempts" from "failed on its only attempt".
@@ -405,7 +413,6 @@ def _validate_node_event(
             _validate_isolation(payload["isolation"])
         if "verdict" in payload:
             _validate_verdict(payload["verdict"], True)
-        _validate_usage(payload, event_type)
     if event_type == "node.failed" and (not isinstance(payload["reason"], str) or not payload["reason"]):
         raise GraphIntegrityError("node.failed requires a non-empty reason")
     if event_type == "node.failed" and "cause" in payload:
@@ -567,6 +574,18 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise GraphIntegrityError(f"node.redrive {field} must be a positive integer")
 
+    elif event_type == "node.spend":
+        required = {"node_id", "attempt", "execution"}
+        if set(payload) - {"usage"} != required:
+            raise GraphIntegrityError("node.spend payload has an invalid shape")
+        if not isinstance(payload["node_id"], str) or not payload["node_id"]:
+            raise GraphIntegrityError("node.spend node_id must be a non-empty string")
+        for field in ("attempt", "execution"):
+            value = payload[field]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise GraphIntegrityError(f"node.spend {field} must be a positive integer")
+        _validate_usage(payload, event_type)
+
     elif event_type == "run.budget.paused":
         required = {"node_id", "attempt", "reason", "tokens", "cost_microunits"}
         if set(payload) - {"max_tokens", "max_cost_microunits"} != required:
@@ -598,7 +617,7 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
         # gate rejection and a worker fault — which is what makes the per-attempt
         # gate error rate computable without parsing the free-text ``reason``.
         required = {"node_id", "attempt", "reason", "cause"}
-        if set(payload) - {"verdict", "usage"} != required:
+        if set(payload) - {"verdict"} != required:
             raise GraphIntegrityError("node.attempt.failed payload has an invalid shape")
         _validate_cause(payload["cause"], "node.attempt.failed")
         if not isinstance(payload["node_id"], str) or not payload["node_id"]:
@@ -608,7 +627,6 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
             raise GraphIntegrityError("node.attempt.failed attempt must be a positive integer")
         if not isinstance(payload["reason"], str) or not payload["reason"]:
             raise GraphIntegrityError("node.attempt.failed reason must be a non-empty string")
-        _validate_usage(payload, event_type)
         if (payload["cause"] == NodeFailureCause.GATE_REJECTED.value) != ("verdict" in payload):
             # The two must agree, in both directions: a gate rejection is the only cause that
             # carries a verdict, and a verdict without that cause would be counted as a

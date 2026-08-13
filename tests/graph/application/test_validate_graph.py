@@ -242,23 +242,31 @@ def test_a_spend_cap_is_now_authorable(budget, expected_tokens, expected_cost):
 @pytest.mark.parametrize(
     ("field", "value", "accepted"),
     [
-        # The false positive that made max_tokens unauthorable: _SECRET_WORDS is matched as
-        # a substring, and the counting vocabulary of an LLM orchestrator is full of it.
+        # The exemption is a narrow ALLOWLIST of the two budget field names whose names collide
+        # with a secret word, and only when they hold an integer.
         ("max_tokens", 50_000, True),
-        ("token_limit", 4_096, True),
-        ("secret_count", 3, True),
-        ("cost_per_token", 1.5, True),
-        # No integer is an API key, but everything else under a secret-shaped name still is
-        # one as far as this check is concerned.
+        ("max_cost_microunits", 1_000_000, True),
+        ("max_tokens", "sk-live-not-a-real-key", False),  # belt and braces
+        ("max_tokens", True, False),                      # a flag is not a quantity
+        # Everything else under a secret-shaped name stays refused — INCLUDING numbers. A
+        # broader "any number cannot be a credential" rule was tried first and let
+        # api_key: 999999 through. Numeric identifiers, PINs and account numbers are real, so
+        # that is an assumption this check has no business making.
+        ("api_key", 999_999, False),
+        ("api_key", 1.5, False),
+        ("api_key", None, False),
         ("api_key", "sk-live-not-a-real-key", False),
         ("auth_token", "ghp_not-a-real-token", False),
         ("tokens", ["one", "two"], False),
         ("credential", {"nested": "value"}, False),
-        # bool is an int subclass; a flag named `secret` is worth looking at, not a count.
         ("password", True, False),
+        # Collateral: a legitimate quantity NOT on the allowlist is refused too. Accepted as
+        # the cost of not assuming numbers are safe; the fix for an author who hits it is a
+        # rename, and the alternative was a numeric credential passing validation.
+        ("token_limit", 4_096, False),
     ],
 )
-def test_the_secret_shaped_field_check_keys_on_the_value_not_only_the_name(
+def test_only_named_budget_quantities_are_exempt_from_the_secret_shape_check(
     field, value, accepted,
 ):
     graph = _graph()

@@ -202,13 +202,16 @@ def test_every_attempt_records_what_it_spent_including_the_rejected_ones(tmp_pat
     ).run()
 
     assert projection.state == "SUCCEEDED"
-    rejected = _of_type(tmp_path, "node.attempt.failed")
-    assert [entry["usage"]["input_tokens"] for entry in rejected] == [40, 40]
-    assert all(entry["usage"]["reported_by"] == "test-provider" for entry in rejected)
-    accepted = _of_type(tmp_path, "node.succeeded")
-    assert accepted[0]["usage"] == {
-        "input_tokens": 40, "output_tokens": 60, "reported_by": "test-provider",
-    }
+    # One spend record per EXECUTION, written before the gate ran — so the two rejected
+    # attempts are measured too, not only the one that passed.
+    spend_records = _of_type(tmp_path, "node.spend")
+    assert [entry["attempt"] for entry in spend_records] == [1, 2, 3]
+    assert all(entry["execution"] == 1 for entry in spend_records)
+    assert all(entry["usage"]["input_tokens"] == 40 for entry in spend_records)
+    assert all(entry["usage"]["reported_by"] == "test-provider" for entry in spend_records)
+    # The outcome receipts carry no usage at all: one number, one place, no drift.
+    assert all("usage" not in e for e in _of_type(tmp_path, "node.attempt.failed"))
+    assert "usage" not in _of_type(tmp_path, "node.succeeded")[0]
 
 
 def test_the_spend_total_comes_from_the_log_not_from_memory(tmp_path: Path) -> None:
@@ -316,7 +319,10 @@ def test_a_resumed_run_does_not_get_its_spend_budget_back(tmp_path: Path) -> Non
     # Two attempts recorded their rejections at 100 tokens each; the third was interrupted
     # mid-flight, so the run is still RUNNING and genuinely resumable.
     spent = consumed_spend_from(first.plan, first.event_log.replay())[_NODE_ID].tokens
-    assert spent == 200
+    # Three executions are recorded, not two: the interrupted third attempt's charge is
+    # written before the gate runs, so the money it spent is durable even though it never
+    # reached a verdict. That is the fix for Grok's in-flight-spend CRITICAL.
+    assert spent == 300
     assert first.event_log.replay_projection().state == "RUNNING"
 
     # A fresh controller over the SAME run directory: exactly what a crash-restart looks
@@ -327,9 +333,9 @@ def test_a_resumed_run_does_not_get_its_spend_budget_back(tmp_path: Path) -> Non
     ).resume()
 
     assert resumed.state == "FAILED"
-    # The interrupted attempt 3 is re-driven (at-least-once), reaching 300 tokens — and then
-    # the cap stops attempt 4, with 7 retry attempts still unspent. Money ran out, not tries.
-    assert resumed_worker.calls == 1
+    # The cap was already reached by the recorded 300, so no further execution is bought at
+    # all — the resumed worker never runs. Before the in-flight fix it ran again for free.
+    assert resumed_worker.calls == 0
     failed = _of_type(tmp_path, "node.failed")
     assert failed[0]["cause"] == "spend_exhausted"
     assert consumed_spend_from(_plan({}), GraphEventLog(tmp_path / "events.jsonl", _identity()).replay())[
@@ -348,6 +354,7 @@ def test_the_terminal_receipt_never_carries_usage(tmp_path: Path) -> None:
     assert len(_of_type(tmp_path, "node.attempt.failed")) == 2
     spend = consumed_spend_from(_plan({}), GraphEventLog(tmp_path / "events.jsonl", _identity()).replay())
     assert spend[_NODE_ID].tokens == 200, "two attempts at 100, counted once each"
+    assert len(_of_type(tmp_path, "node.spend")) == 2
 
 
 def test_a_hand_forged_refund_cannot_buy_attempts_past_the_cap(tmp_path: Path) -> None:
@@ -361,10 +368,10 @@ def test_a_hand_forged_refund_cannot_buy_attempts_past_the_cap(tmp_path: Path) -
 
     with pytest.raises(GraphIntegrityError, match="invalid usage block"):
         log.append(head, UnsignedGraphEvent(
-            event_id="f", idempotency_key="f", event_type="node.attempt.failed",
+            event_id="f", idempotency_key="f", event_type="node.spend",
             timestamp="2026-08-12T00:00:00Z", actor="t",
             payload={
-                "node_id": _NODE_ID, "attempt": 1, "reason": "r", "cause": "worker_fault",
+                "node_id": _NODE_ID, "attempt": 1, "execution": 1,
                 "usage": {"input_tokens": -5_000, "reported_by": "forged"},
             },
         ))
@@ -390,11 +397,10 @@ def test_a_pre_0_5_receipt_without_usage_still_replays(tmp_path: Path) -> None:
 
     spend = consumed_spend_from(_plan({}), log.replay())
 
-    assert spend[_NODE_ID].attempts_recorded == 1
+    # A 0.4.0 log has no node.spend records at all, so nothing is recorded and nothing is
+    # claimed — honest, rather than a measurement of zero spend.
+    assert spend[_NODE_ID].attempts_recorded == 0
     assert spend[_NODE_ID].tokens == 0
-    assert not spend[_NODE_ID].complete, (
-        "an attempt that reported nothing must not read as an attempt that spent nothing"
-    )
 
 
 def test_spend_appears_in_the_events_a_reader_would_query(tmp_path: Path) -> None:
@@ -462,7 +468,7 @@ def test_wallclock_alone_is_fine_when_no_spend_cap_asks_for_more(tmp_path: Path)
     ).run()
 
     assert projection.state == "SUCCEEDED"
-    assert _of_type(tmp_path, "node.succeeded")[0]["usage"] == {
+    assert _of_type(tmp_path, "node.spend")[0]["usage"] == {
         "wallclock_ms": 1_200, "reported_by": "local-cli",
     }
 
@@ -567,7 +573,7 @@ def test_a_price_table_turns_tokens_into_a_cost_cap_that_works(tmp_path: Path) -
 
     # The estimate is attributed to the table, and kept apart from cost_microunits, which
     # stays absent because this provider reported no charge of its own.
-    usage = _of_type(tmp_path, "node.attempt.failed")[0]["usage"]
+    usage = _of_type(tmp_path, "node.spend")[0]["usage"]
     assert usage["estimated_cost_microunits"] == 10_500
     assert usage["estimated_by"] == "price-table:test-v1"
     assert "cost_microunits" not in usage
@@ -594,7 +600,7 @@ def test_a_provider_reported_charge_beats_the_tables_estimate(tmp_path: Path) ->
 
     assert controller.run().state == "SUCCEEDED"
 
-    usage = _of_type(tmp_path, "node.succeeded")[0]["usage"]
+    usage = _of_type(tmp_path, "node.spend")[0]["usage"]
     assert usage["cost_microunits"] == 9_999
     # No estimate is even computed once the provider has billed us: the worker's own report is
     # not second-guessed, and an estimate beside a bill would only invite the wrong one to be
@@ -860,3 +866,150 @@ class _SometimesRaisingMeteredWorker(_MeteredWorker):
         if self.calls == 1:
             return WorkerResult(output_artifact_digests=(_DIGEST,), usage=self._usage)
         raise RuntimeError("crashed before it could measure itself")
+
+
+# --------------------------------------------------------------------------------------
+# Audit round 1 (Muse + Grok). Each test is the probe that proved the finding.
+# --------------------------------------------------------------------------------------
+
+
+def test_raising_the_ceiling_too_little_does_not_wedge_the_run(tmp_path: Path) -> None:
+    """A1 — Muse MAJOR, proved. The most ordinary path there is, and it destroyed the run.
+
+    An operator raises the ceiling a little, it is still below what was already spent, and the
+    second pause re-used the first pause's key with a different payload — which the log refuses
+    outright ("idempotency key was reused with a different event"). The run then could not be
+    resumed AT ALL, which is the exact opposite of what a pause is for.
+    """
+    budgets: dict[str, object] = {"max_attempts": 10}
+    controller = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
+        run_budget=RunBudget(max_tokens=150), budgets=budgets,
+    )
+    assert controller.run().state == "RUNNING"
+
+    # Each raise is still below the 200 already spent, so each pauses again — and each is a
+    # distinct authorised ceiling, so each gets its own record rather than colliding.
+    for ceiling in (151, 152, 199):
+        resumed = _budgeted_run(
+            tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
+            run_budget=RunBudget(max_tokens=ceiling), budgets=budgets,
+        ).resume()
+        assert resumed.state == "RUNNING", f"ceiling {ceiling} wedged the run"
+
+    ceilings = [entry["max_tokens"] for entry in _of_type(tmp_path, "run.budget.paused")]
+    assert ceilings == [150, 151, 152, 199]
+    # And an identical pause still de-duplicates, so polling one ceiling stays free.
+    _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
+        run_budget=RunBudget(max_tokens=199), budgets=budgets,
+    ).resume()
+    assert len(_of_type(tmp_path, "run.budget.paused")) == 4
+
+
+def test_one_attempt_cannot_carry_two_outcomes(tmp_path: Path) -> None:
+    """A2 — Muse CRITICAL, proved. 200 tokens spent read as 400, and complete said "exact".
+
+    An honest controller cannot produce both receipts: recording a failure marks the attempt
+    spent, so the next takes a new number. But a hash-valid log can carry both — the two use
+    different idempotency keys, and node.attempt.failed is additive so the lifecycle validation
+    never sees it. The charge was then summed twice while the total still reported itself as a
+    measurement. A doubled number wearing the face of a measurement is worse than an obvious
+    gap, because it gets acted on.
+    """
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity())
+    head = log.replay_projection().head_hash
+    for key, event_type, payload in (
+        ("c", "run.created", {"state": "PENDING"}),
+        ("s", "run.started", {"state": "RUNNING"}),
+        ("r", "node.ready", {"node_id": _NODE_ID, "state": "READY", "attempt": 1}),
+        ("st", "node.starting", {"node_id": _NODE_ID, "state": "STARTING", "attempt": 1}),
+        ("ru", "node.running", {"node_id": _NODE_ID, "state": "RUNNING", "attempt": 1}),
+        ("g", "node.gating", {"node_id": _NODE_ID, "state": "GATING", "attempt": 1}),
+        ("af", "node.attempt.failed", {
+            "node_id": _NODE_ID, "attempt": 1, "reason": "r", "cause": "worker_fault",
+        }),
+        ("su", "node.succeeded", {
+            "node_id": _NODE_ID, "state": "SUCCEEDED", "attempt": 1,
+            "artifact_digests": [_DIGEST],
+        }),
+    ):
+        head = log.append(head, UnsignedGraphEvent(
+            event_id=key, idempotency_key=key, event_type=event_type,
+            timestamp="2026-08-12T00:00:00Z", actor="test", payload=payload,
+        )).event_hash
+
+    with pytest.raises(GraphIntegrityError, match="two outcomes"):
+        consumed_spend_from(_plan({}), log.replay())
+
+
+def test_a_run_ceiling_also_requires_the_spend_to_be_measurable(tmp_path: Path) -> None:
+    """A3 — Grok hypothesis, proved. The unmeasurable rule was applied only to NODE caps.
+
+    A silent worker under a 10-token RUN ceiling ran all 20 of its attempts while the run total
+    sat at 0 and the ceiling never tripped. Exactly the same hole as the dimension-blind check,
+    one level up: a cap checked against a quantity nobody reports can never fire, and that is
+    indistinguishable from protection.
+    """
+    worker = _SilentWorker()
+
+    projection = _budgeted_run(
+        tmp_path, worker=worker, gate=_Gate(reject_first=99),
+        run_budget=RunBudget(max_tokens=10), budgets={"max_attempts": 20},
+    ).run()
+
+    assert projection.state == "FAILED"
+    assert worker.calls == 1, "must refuse on the first attempt, not run all 20"
+    failed = _of_type(tmp_path, "node.failed")
+    assert failed[0]["cause"] == "budget_unmeasurable"
+    assert "tokens" in failed[0]["reason"]
+
+
+def test_a_budget_paused_run_cannot_be_resumed_with_no_ceiling_at_all(tmp_path: Path) -> None:
+    """A4 — Grok hypothesis, proved. Omitting the flag silently meant unlimited.
+
+    A run paused at 200 of an authorised 150 resumed straight through to 2000 tokens. Omitting
+    the flag is the EASY mistake, and an automated retry loop makes exactly that call.
+
+    The refusal stores no grant: the log only records that a ceiling was in force, and the
+    operator still supplies the new number themselves. A refusal cannot escalate; a stored
+    grant could be replayed to buy the same spend twice.
+    """
+    budgets: dict[str, object] = {"max_attempts": 20}
+    controller = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
+        run_budget=RunBudget(max_tokens=150), budgets=budgets,
+    )
+    controller.run()
+    spent_at_pause = run_spend(consumed_spend_from(controller.plan, controller.event_log.replay()))
+
+    with pytest.raises(GraphIntegrityError, match="explicit ceiling"):
+        _budgeted_run(
+            tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
+            run_budget=RunBudget(), budgets=budgets,
+        ).resume()
+
+    # Nothing ran, so nothing more was spent.
+    after = run_spend(consumed_spend_from(controller.plan, controller.event_log.replay()))
+    assert after.tokens == spent_at_pause.tokens == 200
+
+
+def test_a_run_that_never_paused_needs_no_ceiling_to_resume(tmp_path: Path) -> None:
+    """The refusal above must be scoped to runs that actually hit a ceiling.
+
+    Every pre-0.5 run has no budget at all; if the guard leaked past the paused case it would
+    make all of them unresumable.
+    """
+    controller = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_CrashingGate(crash_on=2),
+        run_budget=RunBudget(), budgets={"max_attempts": 3},
+    )
+    with pytest.raises(KeyboardInterrupt):
+        controller.run()
+
+    resumed = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=0),
+        run_budget=RunBudget(), budgets={"max_attempts": 3},
+    ).resume()
+
+    assert resumed.state == "SUCCEEDED"

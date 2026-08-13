@@ -20,7 +20,6 @@ from bounded_loops.graph.application.node_contracts import (
     GateVerdict,
     IndependentGatePort,
     NodeWorkerPort,
-    WorkerResult,
 )
 from bounded_loops.graph.application.node_receipts import (
     isolation_payload,
@@ -54,6 +53,7 @@ from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.events import (
     NodeFailureCause,
     GraphRunProjection,
+    StoredGraphEvent,
     UnsignedGraphEvent,
 )
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
@@ -80,9 +80,20 @@ class _AttemptOutcome:
     cause: NodeFailureCause | None = None
     verdict: dict[str, object] | None = None
     terminal: GraphRunProjection | None = None
-    #: What the failed attempt consumed, when the worker got far enough to report it. A
-    #: rejected attempt still costs money, so this must survive onto its attempt record.
-    usage: WorkerUsage | None = None
+
+
+def _tightest(node_cap: int | None, run_cap: int | None) -> int | None:
+    """The binding cap for a dimension, or ``None`` when neither level declares one.
+
+    Only used to decide whether that dimension has to be MEASURABLE — the two caps are still
+    enforced separately, against their own totals. A dimension is measurable-or-refused as soon
+    as either level asks to be bounded on it.
+    """
+    if node_cap is None:
+        return run_cap
+    if run_cap is None:
+        return node_cap
+    return min(node_cap, run_cap)
 
 
 def is_egress_node(plan: ExecutionPlan, node: PlannedNode, egress_transports: frozenset[str]) -> bool:
@@ -216,6 +227,7 @@ class GraphRunController:
                 f"run.resumed:{resumes + 1}", "run.resumed", {"resume_ordinal": resumes + 1},
             )
         receipts = self.event_log.replay()
+        self._require_a_ceiling_if_this_run_already_paused(receipts)
         latest = latest_node_states(self.plan, receipts)
         # A crash between node.failed and run.failed leaves a RUNNING stream with a
         # FAILED node; finalize the terminal deterministically rather than re-drive a
@@ -405,7 +417,14 @@ class GraphRunController:
                 self._append_redrive(node_id, attempt, redrive)
             states[node_id] = NodeState.RUNNING
             self._append_node(node_id, "node.running", NodeState.RUNNING, attempt=attempt)
-            outcome = self._attempt_node(states, node_id, node, envelope, egress, worker, attempt)
+            outcome = self._attempt_node(
+                states, node_id, node, envelope, egress, worker, attempt,
+                # Which execution of THIS attempt: 1 for a fresh attempt, higher for a re-drive
+                # after an interrupted one. Each execution paid the provider, so each needs its
+                # own spend record — one keyed per attempt would collide with a different
+                # payload and wedge the run, the same way the pause key did.
+                execution=cursor.redrives.get((node_id, attempt), 0) + 1,
+            )
             if outcome.terminal is not None:
                 return outcome.terminal
             if outcome.succeeded:
@@ -417,9 +436,7 @@ class GraphRunController:
             # budget runs out ON a gate rejection, that rejection would appear solely on
             # the terminal node.failed and be missed.
             cause = outcome.cause or NodeFailureCause.WORKER_FAULT
-            self._append_attempt_failed(
-                node_id, attempt, reason, cause, outcome.verdict, outcome.usage,
-            )
+            self._append_attempt_failed(node_id, attempt, reason, cause, outcome.verdict)
             if attempt < budget:
                 continue
             return self._fail_node(
@@ -442,6 +459,7 @@ class GraphRunController:
         egress: bool,
         worker: NodeWorkerPort,
         attempt: int,
+        execution: int,
     ) -> _AttemptOutcome:
         """Run one attempt: enforce, execute, verify artifacts, then gate.
 
@@ -466,13 +484,35 @@ class GraphRunController:
                 plan=self.plan, node=node, envelope=envelope, attempt=attempt,
             )
         except Exception:
+            # It RAN. The provider may well have been billed before this raised, and we cannot
+            # know — so the execution is recorded with no usage, which is what makes the run
+            # total read as a lower bound instead of silently omitting a paid call.
+            self._append_spend(node_id, attempt, execution, None)
             return _AttemptOutcome(
                 failure="worker execution failed", cause=NodeFailureCause.WORKER_FAULT,
             )
         expected_route = self._expected_route_for(node)
         expected_transport = self._expected_transport_for(node)
+        # Validated on its own, and FIRST, for two reasons: reaching into ``result.usage`` on
+        # something that is not a WorkerResult would raise AttributeError and escape this method
+        # uncaught; and the spend record has to be written before anything else can fail.
         try:
             validate_worker_result(result)
+        except Exception:
+            self._append_spend(node_id, attempt, execution, None)
+            return _AttemptOutcome(
+                failure="worker output artifact verification failed",
+                cause=NodeFailureCause.ARTIFACT_UNVERIFIED,
+            )
+        max_tokens, max_cost = spend_caps(node)
+        usage = self._priced(result.usage, expected_route)
+        # Recorded HERE — before the route checks, before artifact verification, before the
+        # gate, before any cap is consulted. The money was spent inside worker.execute(), and
+        # every line between that return and this append is a window in which a kill -9 loses
+        # the charge; a lost charge reads as free work. That window measured 4 paid executions
+        # as 0 tokens against a 50-token ceiling, with the total still claiming to be exact.
+        self._append_spend(node_id, attempt, execution, usage)
+        try:
             validate_observed_route(expected_route, result.observed_route)
             validate_observed_transport(expected_transport, result.observed_transport)
             self._artifact_verifier.verify(
@@ -483,19 +523,16 @@ class GraphRunController:
             return _AttemptOutcome(
                 failure="worker output artifact verification failed",
                 cause=NodeFailureCause.ARTIFACT_UNVERIFIED,
-                # An attempt whose artifacts did not verify still burned whatever the worker
-                # reported. The isinstance guard is load-bearing: validate_worker_result is
-                # one of the things that may have raised here, so ``result`` is not yet known
-                # to be a WorkerResult and reading .usage off it blindly would raise again.
-                usage=result.usage if isinstance(result, WorkerResult) else None,
             )
-        # After validate_worker_result, never before: reaching into ``result.usage`` on
-        # something that is not a WorkerResult would raise AttributeError and escape this
-        # method uncaught, turning a misbehaving worker into a crashed run.
-        max_tokens, max_cost = spend_caps(node)
-        usage = self._priced(result.usage, expected_route)
+        # Measured against the node's caps AND the run's: a run-level ceiling is a cap like any
+        # other, and applying the unmeasurable rule only to node caps left it fully defeated —
+        # a silent worker under `--max-tokens 10` ran every one of its 20 attempts while the
+        # run total sat at 0 and the ceiling never tripped. Same hole as the dimension-blind
+        # check, one level up.
         unmeasurable = unmeasurable_dimension(
-            usage, max_tokens=max_tokens, max_cost_microunits=max_cost,
+            usage,
+            max_tokens=_tightest(max_tokens, self._run_budget.max_tokens),
+            max_cost_microunits=_tightest(max_cost, self._run_budget.max_cost_microunits),
         )
         if unmeasurable is not None:
             # The node asked to be bounded on this dimension and this worker cannot report it.
@@ -539,23 +576,36 @@ class GraphRunController:
                 **({"route": route_payload(expected_route)} if expected_route else {}),
                 **({"transport": expected_transport} if expected_transport else {}),
                 **isolation_payload(result),
-                **usage_payload(usage),
             )
             return _AttemptOutcome(succeeded=True)
         return _AttemptOutcome(
             failure="independent gate rejected output",
             cause=NodeFailureCause.GATE_REJECTED,
             verdict=verdict_body(verdict),
-            # A rejected attempt spent real money. Carrying its usage onto the attempt record
-            # is what makes retry spend visible at all: without it, the only measured attempts
-            # would be the ones that passed, and a node could retry its way through any cap
-            # while every recorded total looked small.
-            usage=usage,
         )
+
+    def _append_spend(
+        self, node_id: str, attempt: int, execution: int, usage: WorkerUsage | None,
+    ) -> None:
+        """Record what one EXECUTION of one attempt consumed.
+
+        Written even when nothing was measured, because "this execution happened and reported
+        nothing" is itself the fact that makes a total a lower bound rather than a measurement.
+        Dropping it is how a run with unmeasurable workers came to report an exact zero.
+
+        The key carries the execution ordinal, so a re-driven attempt's second payment gets its
+        own record instead of colliding with the first under a different payload — the same
+        collision that wedged the budget pause.
+        """
+        payload: dict[str, object] = {
+            "node_id": node_id, "attempt": attempt, "execution": execution,
+        }
+        payload.update(usage_payload(usage))
+        self._append(f"{node_id}:node.spend:{attempt}:{execution}", "node.spend", payload)
 
     def _append_attempt_failed(
         self, node_id: str, attempt: int, reason: str, cause: NodeFailureCause,
-        verdict: dict[str, object] | None, usage: WorkerUsage | None = None,
+        verdict: dict[str, object] | None,
     ) -> None:
         """Record one failed attempt without transitioning run state.
 
@@ -571,7 +621,6 @@ class GraphRunController:
         }
         if verdict is not None:
             payload["verdict"] = verdict
-        payload.update(usage_payload(usage))
         self._append(f"{node_id}:node.attempt.failed:{attempt}", "node.attempt.failed", payload)
 
     def _append_redrive(self, node_id: str, attempt: int, redrive: int) -> None:
@@ -641,6 +690,29 @@ class GraphRunController:
         # PENDING: no decision yet — stay paused; the hold receipt is already durable.
         return self.event_log.replay_projection()
 
+    def _require_a_ceiling_if_this_run_already_paused(
+        self, receipts: tuple[StoredGraphEvent, ...],
+    ) -> None:
+        """Refuse to continue a budget-paused run with no ceiling declared.
+
+        Omitting the flag is the EASY mistake and it silently meant unlimited: a run paused at
+        200 of an authorised 150 resumed straight through to 2000. An automated retry loop makes
+        exactly that call. The pause tells the operator to raise the ceiling, so continuing with
+        no ceiling at all cannot be what they meant.
+
+        This is a REFUSAL, not a grant. Nothing in the log authorises spend — the log only
+        records that a ceiling was in force, and the operator still has to supply the new number
+        themselves. A refusal can never escalate; a stored grant could be replayed.
+        """
+        if self._run_budget.declared:
+            return
+        if any(stored.event.event_type == "run.budget.paused" for stored in receipts):
+            raise GraphIntegrityError(
+                "this run paused because its spend ceiling was reached; resuming it requires an "
+                "explicit ceiling (--max-tokens / --max-cost-usd). Continuing without one would "
+                "mean no limit at all, which is not what a budget pause is asking for"
+            )
+
     def _run_budget_pause(self, node_id: str, *, attempt: int) -> GraphRunProjection | None:
         """Stop the run, resumably, when the operator's total is reached. ``None`` to proceed.
 
@@ -676,11 +748,17 @@ class GraphRunController:
         if refusal is None:
             return None
         total = run_spend(self._spend_snapshot())
-        # The key names where the pause happened, so a caller that polls resume() while the
-        # budget is still exhausted re-appends the identical event and it de-duplicates
-        # instead of growing the log once per poll.
+        # The key names where the pause happened AND under which ceilings, because both are in
+        # the payload. Keying on node and attempt alone wedged the run permanently on the most
+        # ordinary path there is: an operator raises the ceiling a little, it is still below what
+        # was spent, and the second pause re-uses the first key with a different payload — which
+        # the log refuses outright ("idempotency key was reused with a different event"). The run
+        # then could not be resumed at all, which is the exact opposite of what a pause is for.
+        # A pause under a different authorised ceiling IS a different fact and deserves its own
+        # record; an identical pause still de-duplicates, so polling stays free.
+        caps = f"{self._run_budget.max_tokens}:{self._run_budget.max_cost_microunits}"
         self._append(
-            f"run.budget.paused:{node_id}:{attempt}", "run.budget.paused",
+            f"run.budget.paused:{node_id}:{attempt}:{caps}", "run.budget.paused",
             {
                 "node_id": node_id, "attempt": attempt, "reason": refusal,
                 "tokens": total.tokens, "cost_microunits": total.cost_microunits,

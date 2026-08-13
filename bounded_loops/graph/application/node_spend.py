@@ -21,11 +21,14 @@ from bounded_loops.graph.domain.usage import WorkerUsage, usage_from_payload
 #: prefix so a newly added ``node.*`` event cannot silently start or stop counting.
 _CONSUMPTION_EVENTS = frozenset({"node.attempt.failed", "node.running", "node.redrive"})
 
-#: Receipt kinds that carry one attempt's measured spend — exactly one record per attempt.
-#: ``node.failed`` is deliberately NOT here: it is the terminal receipt for an attempt whose
-#: own spend already rode its ``node.attempt.failed`` record, so counting it too would double
-#: every failing attempt's charge.
-_SPEND_EVENTS = frozenset({"node.attempt.failed", "node.succeeded"})
+#: The ONE receipt kind carrying measured spend: one per EXECUTION of an attempt. Per
+#: execution, not per attempt, because a re-driven attempt really does spend again — an
+#: at-least-once resume pays the provider a second time, and the ledger has to say so.
+#: Nothing else carries usage, so no charge can be counted from two places.
+_SPEND_EVENTS = frozenset({"node.spend"})
+
+#: An attempt's outcome. Exactly one of these exists per (node, attempt) in an honest log.
+_OUTCOME_EVENTS = frozenset({"node.succeeded", "node.attempt.failed"})
 
 
 @dataclass(frozen=True)
@@ -128,6 +131,7 @@ def consumed_spend_from(
     way, by refusing a usage block on the terminal receipt.
     """
     spend = {node.node_id: NodeSpend() for node in plan.nodes}
+    _refuse_two_outcomes_for_one_attempt(plan, receipts)
     for stored in receipts:
         if stored.event.event_type not in _SPEND_EVENTS:
             continue
@@ -142,6 +146,42 @@ def consumed_spend_from(
             usage.chargeable_cost_microunits if usage else None,
         )
     return spend
+
+
+def _refuse_two_outcomes_for_one_attempt(
+    plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ...],
+) -> None:
+    """One attempt has exactly one outcome. Two means the log is corrupt — say so.
+
+    An honest controller cannot produce both: recording a failure marks the attempt spent, so
+    the next attempt takes a new number. But a hash-valid log can carry both — the two receipts
+    use different idempotency keys, and ``node.attempt.failed`` is additive so the lifecycle
+    validation never sees it. When usage rode the outcome receipts, that doubled the attempt's
+    charge while ``complete`` still reported the total as exact; usage now lives on node.spend
+    alone, so the doubling is gone, but the contradiction itself still means the log is wrong
+    about more than money.
+
+    Raising rather than ignoring, because every reader of such a log should find out here.
+    """
+    node_ids = {node.node_id for node in plan.nodes}
+    seen: dict[tuple[str, int], str] = {}
+    for stored in receipts:
+        if stored.event.event_type not in _OUTCOME_EVENTS:
+            continue
+        node_id = stored.event.payload.get("node_id")
+        if not isinstance(node_id, str) or node_id not in node_ids:
+            raise GraphIntegrityError("outcome receipt references a node outside the plan")
+        attempt = stored.event.payload.get("attempt")
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+            raise GraphIntegrityError("outcome receipt attempt count is invalid")
+        previous = seen.get((node_id, attempt))
+        if previous is not None:
+            raise GraphIntegrityError(
+                f"node {node_id!r} attempt {attempt} carries two outcomes ({previous} and "
+                f"{stored.event.event_type}); one attempt has exactly one, so nothing derived "
+                "from this log can be trusted"
+            )
+        seen[(node_id, attempt)] = stored.event.event_type
 
 
 def run_spend(spend: dict[str, NodeSpend]) -> NodeSpend:

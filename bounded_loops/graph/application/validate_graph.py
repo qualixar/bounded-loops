@@ -34,6 +34,9 @@ _VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ABSOLUTE = re.compile(r"^(?:/|\\\\|[A-Za-z]:[\\/]|~[\\/])")
 _SECRET_WORDS = frozenset({"api_key", "credential", "password", "secret", "token"})
+# The only budget field names that collide with a secret word. Exempted from the
+# secret-shape check when they hold an integer — see _is_declared_quantity.
+_BUDGET_QUANTITY_KEYS = frozenset({"max_tokens", "max_cost_microunits"})
 # Provider names that must NOT appear in a connection slot's ``requires``. A slot declares
 # CAPABILITIES so the graph stays portable across deployments; naming a provider there pins
 # the graph to one vendor. This is a DENYLIST for portability, not an allowlist of usable
@@ -402,7 +405,7 @@ def _reject_nonportable(value: object, pointer: str) -> None:
     if isinstance(value, Mapping):
         for key, child in value.items():
             lowered = str(key).lower()
-            if any(word in lowered for word in _SECRET_WORDS) and not _is_number(child):
+            if any(word in lowered for word in _SECRET_WORDS) and not _is_declared_quantity(lowered, child):
                 raise _error("secret_field", pointer, "authoring graphs cannot contain secret-shaped fields")
             _reject_nonportable(child, f"{pointer}/{key}")
     elif isinstance(value, list):
@@ -412,24 +415,27 @@ def _reject_nonportable(value: object, pointer: str) -> None:
         raise _error("absolute_path", pointer, "authoring graphs cannot contain absolute local paths")
 
 
-def _is_number(value: object) -> bool:
-    """Whether a value is a plain number, and therefore cannot be a credential.
+def _is_declared_quantity(key: str, value: object) -> bool:
+    """Whether this key is a NAMED budget quantity holding an integer.
 
-    ``_SECRET_WORDS`` is matched as a SUBSTRING, which is right for catching ``auth_token``
-    and ``github_api_key`` but wrong for the counting vocabulary an LLM orchestrator is made
-    of: ``max_tokens``, ``token_limit``, ``secret_count``. That false positive was not
-    cosmetic — it made ``max_tokens`` unauthorable in every manifest while the field sat in
-    the JSON schema, the closed allowed-set, GraphBudget and the compiled plan.
+    ``_SECRET_WORDS`` is matched as a SUBSTRING, which is right for catching ``auth_token`` and
+    ``github_api_key`` but wrong for ``max_tokens`` — a false positive that made the field
+    unauthorable in every manifest while it sat in the JSON schema, the closed allowed-set,
+    ``GraphBudget`` and the compiled plan.
 
-    Keying on the VALUE fixes the whole class rather than one field, and does not weaken the
-    check: no integer is an API key. Anything else under a secret-shaped name — a string, a
-    list, a nested object — is still refused, so a list of keys under ``tokens`` cannot slip
-    through on its container's type.
+    The exemption is an explicit ALLOWLIST of the two field names that needed it, not "any
+    number under any secret-shaped name". The broader rule was tried first and let
+    ``api_key: 999999`` through: numeric identifiers, PINs and account numbers are real, so
+    "no integer is a credential" is an assumption this check has no business making. Scoping to
+    named fields gives up nothing — those two are the only budget keys whose names collide with
+    a secret word — and it keeps the check refusing everything it refused before.
 
-    ``bool`` is excluded deliberately: it is an int subclass, and ``secret: true`` is a flag
-    worth looking at rather than a quantity.
+    The integer requirement is belt and braces: ``max_tokens: "sk-live-…"`` is still refused.
+    ``bool`` is excluded because it is an int subclass, and a flag is not a quantity.
     """
-    return value is None or (isinstance(value, (int, float)) and not isinstance(value, bool))
+    if key not in _BUDGET_QUANTITY_KEYS:
+        return False
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _mapping(value: object, pointer: str) -> Mapping[str, object]:

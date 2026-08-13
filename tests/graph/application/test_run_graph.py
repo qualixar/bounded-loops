@@ -174,7 +174,7 @@ def test_controller_records_worker_and_independent_gate_before_success(tmp_path)
     assert gate.calls == [("research", ("sha256:" + "d" * 64,))]
     assert [event.event.event_type for event in controller.event_log.replay()] == [
         "run.created", "run.started", "node.ready", "node.starting", "node.running",
-        "node.gating", "node.succeeded", "run.succeeded",
+        "node.spend", "node.gating", "node.succeeded", "run.succeeded",
     ]
     succeeded = controller.event_log.replay()[-2]
     assert succeeded.event.payload["route"] == {
@@ -409,7 +409,8 @@ def test_resume_redrives_a_node_interrupted_mid_execution(tmp_path):
     # resume left no trace, so re-executing an incomplete attempt was unobservable.
     assert [e.event.event_type for e in resumed.event_log.replay()] == [
         "run.created", "run.started", "node.ready", "node.starting", "node.running",
-        "run.resumed", "node.redrive", "node.gating", "node.succeeded", "run.succeeded",
+        "run.resumed", "node.redrive", "node.spend", "node.gating", "node.succeeded",
+        "run.succeeded",
     ]
 
 
@@ -477,7 +478,8 @@ def test_resume_tolerates_a_live_clock_different_from_the_crashed_run(tmp_path):
     assert worker.calls == ["research"]
     assert [e.event.event_type for e in resumed.event_log.replay()] == [
         "run.created", "run.started", "node.ready", "node.starting", "node.running",
-        "run.resumed", "node.redrive", "node.gating", "node.succeeded", "run.succeeded",
+        "run.resumed", "node.redrive", "node.spend", "node.gating", "node.succeeded",
+        "run.succeeded",
     ]
 
 
