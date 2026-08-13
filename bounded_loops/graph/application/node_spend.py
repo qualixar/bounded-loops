@@ -164,7 +164,10 @@ def _refuse_two_outcomes_for_one_attempt(
     Raising rather than ignoring, because every reader of such a log should find out here.
     """
     node_ids = {node.node_id for node in plan.nodes}
-    seen: dict[tuple[str, int], str] = {}
+    # Keyed by (node, repair round, attempt): a repair round legitimately re-runs a node from
+    # attempt 1, so (node, attempt) alone repeats across rounds and a second round's honest receipt
+    # would read as a duplicate outcome for the first round's attempt.
+    seen: dict[tuple[str, int, int], str] = {}
     for stored in receipts:
         if stored.event.event_type not in _OUTCOME_EVENTS:
             continue
@@ -174,14 +177,15 @@ def _refuse_two_outcomes_for_one_attempt(
         attempt = stored.event.payload.get("attempt")
         if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
             raise GraphIntegrityError("outcome receipt attempt count is invalid")
-        previous = seen.get((node_id, attempt))
+        key = (node_id, _round_of(stored.event.payload), attempt)
+        previous = seen.get(key)
         if previous is not None:
             raise GraphIntegrityError(
                 f"node {node_id!r} attempt {attempt} carries two outcomes ({previous} and "
                 f"{stored.event.event_type}); one attempt has exactly one, so nothing derived "
                 "from this log can be trusted"
             )
-        seen[(node_id, attempt)] = stored.event.event_type
+        seen[key] = stored.event.event_type
 
 
 def run_spend(spend: dict[str, NodeSpend]) -> NodeSpend:
@@ -488,3 +492,11 @@ def tightest_cap(node_cap: int | None, run_cap: int | None) -> int | None:
 # Named ``tightest_cap`` here rather than the controller's old private ``_tightest``: it is one of
 # the spend RULES, and every other one already lives in this module. A cap rule reachable only
 # through a controller private is a rule the next reader of the budget code will not find.
+
+
+def _round_of(payload: Mapping[str, object]) -> int:
+    """Which repair round a receipt belongs to. Absent means round 0 — every pre-repair receipt."""
+    declared = payload.get("repair_round")
+    if isinstance(declared, bool) or not isinstance(declared, int):
+        return 0
+    return declared

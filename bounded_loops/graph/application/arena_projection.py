@@ -8,6 +8,11 @@ from typing import Protocol
 
 from bounded_loops.graph.application.graph_ports import EventLogPort
 from bounded_loops.graph.application.failure_policy import RUN_SUCCEEDS_ON
+from bounded_loops.graph.application.repair_rounds import (
+    REPAIR_ROUND_EVENT,
+    assert_boundary_is_legal,
+    descendants,
+)
 from bounded_loops.graph.application.schedule_ready import (
     Admission,
     NodeState,
@@ -226,8 +231,34 @@ def latest_node_states(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ..
     values = {node.node_id: {"state": "PENDING", "attempt": 0} for node in plan.nodes}
     nodes_by_id = {node.node_id: node for node in plan.nodes}
     predecessors = _predecessors(plan)
+    rounds = 0
     for stored in receipts:
         event = stored.event
+        if event.event_type == REPAIR_ROUND_EVENT:
+            # A repair-round boundary is the ONE place state may move backward. Everything about it
+            # is verified first, because the terminal states it resets are exactly the evidence a
+            # reader relies on — an unchecked boundary would let a forged log erase any failure.
+            rounds += 1
+            target = str(event.payload["target_node"])
+            trigger = str(event.payload["trigger_node"])
+            if target not in values or trigger not in values:
+                raise GraphIntegrityError("repair round names a node outside the immutable plan")
+            # Numbering first: it is a property of the LOG, and a gap would let a stream hide a
+            # round — which is exactly the count the global budget is measured on.
+            declared_round = event.payload["round"]
+            if not isinstance(declared_round, int) or declared_round != rounds:
+                raise GraphIntegrityError(
+                    "repair rounds must be numbered consecutively from 1"
+                )
+            assert_boundary_is_legal(
+                plan, round_index=rounds, trigger_node=trigger, target_node=target,
+                trigger_state=str(values[trigger]["state"]),
+            )
+            # Suffix locality: reset the target and its descendants, nothing else. Resetting a wider
+            # set would silently redo unrelated work and break the bound's first condition.
+            for reset_id in descendants(plan, target):
+                values[reset_id] = {"state": "PENDING", "attempt": 0}
+            continue
         if event.event_type not in _LIFECYCLE_EVENTS:
             continue
         node_id = event.payload["node_id"]

@@ -14,7 +14,7 @@ from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.usage import WorkerUsage
 
 
-def node_event_key(node_id: str, event_type: str, attempt: int) -> str:
+def node_event_key(node_id: str, event_type: str, attempt: int, repair_round: int = 0) -> str:
     """The idempotency key for one node lifecycle event.
 
     Attempt 1 keeps the pre-retry key format EXACTLY — ``node_id:event_type`` — so
@@ -27,9 +27,15 @@ def node_event_key(node_id: str, event_type: str, attempt: int) -> str:
     Do NOT "tidy" this into one uniform format: doing so silently breaks resume of
     every run directory produced before this change.
     """
+    # A repair round re-runs a node from attempt 1, so without the round in the key the second
+    # round's receipts collide with the first round's and ``GraphEventLog.append`` returns the
+    # HISTORICAL event idempotently — making an entire round of real work invisible in the log it is
+    # supposed to be recorded in. Round 0 keeps the pre-repair key EXACTLY, so every existing run
+    # directory still replays and resumes.
+    suffix = "" if repair_round <= 0 else f":r{repair_round}"
     if attempt <= 1:
-        return f"{node_id}:{event_type}"
-    return f"{node_id}:{event_type}:{attempt}"
+        return f"{node_id}:{event_type}{suffix}"
+    return f"{node_id}:{event_type}:{attempt}{suffix}"
 
 
 def validate_worker_result(result: WorkerResult) -> None:

@@ -43,6 +43,22 @@ All notable changes to bounded-loops are documented here. This project follows
   excluded it is marked SKIPPED, with the reason on its receipt, and a run whose only
   unfinished work was an untaken branch completes successfully instead of reporting a
   failure. A node that failed still fails the run.
+- **Repair a node upstream (`on_failure: repair`).** When a node exhausts its retry budget it
+  can send the run back to an ancestor, which then re-runs along with everything downstream of
+  it. Write it as `on_failure: {mode: repair, target: <node_id>}` and set a
+  `policies.repair_budget`.
+
+  The budget is a **global** cap on repair rounds for the whole run, not per node, and that is
+  what makes the run provably finish: total node executions are bounded by
+  `(1 + repair_budget) × Σ(max_attempts + 1)`. Per-node retry budgets alone do not bound a
+  graph that can repair.
+
+  Every round is recorded — `run.repair.round` for the boundary, `node.repaired` for each node
+  reset, and the round number on every receipt in it — so a run that repaired is still fully
+  auditable, and a replay refuses a boundary it cannot prove legal.
+
+  Refused up front: a target that is not a strict ancestor, a missing target, a budget of 0, or
+  a halting fail mode where a repair could never begin.
 - **A run's fail mode is durable.** Recorded in `run-meta.json`, so `resume` and `approve`
   drive the graph the way the original run did.
 

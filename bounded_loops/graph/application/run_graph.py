@@ -56,6 +56,8 @@ from bounded_loops.graph.application.failure_policy import (
     may_continue,
     unhonourable_edge_conditions,
 )
+from bounded_loops.graph.application.egress_nodes import is_egress_node
+from bounded_loops.graph.application.repair_rounds import descendants, next_repair_round
 from bounded_loops.graph.application.resume_states import states_from_receipts
 from bounded_loops.graph.application.skip_untaken import untaken_branches
 from bounded_loops.graph.domain.authoring import NodeKind
@@ -68,22 +70,6 @@ from bounded_loops.graph.domain.events import (
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 from bounded_loops.graph.domain.pricing import PriceTable, empty_price_table
 from bounded_loops.graph.domain.usage import WorkerUsage
-
-
-def is_egress_node(plan: ExecutionPlan, node: PlannedNode, egress_transports: frozenset[str]) -> bool:
-    """A connector/EGRESS node's work is an authorized network call over an admitted connection
-    (a frontier model API), NOT a sandboxed subprocess — so it is routed to the connector worker
-    and does NOT pass the process-isolation enforcer (egress is authorized inside the connector
-    path). It is identified by being bound to a connection whose transport the deployment has
-    declared an egress transport; ``egress_transports`` defaults to empty, so nothing is egress
-    unless a deployment opts in (e.g. a local_cli connector stays a sandboxed subprocess)."""
-    if node.binding_id is None:
-        return False
-    transport = next(
-        (binding.transport for binding in plan.connection_bindings if binding.binding_id == node.binding_id),
-        None,
-    )
-    return transport is not None and transport in egress_transports
 
 
 class GraphRunController:
@@ -251,6 +237,29 @@ class GraphRunController:
             return self.event_log.replay_projection()
         return self._run_loop(states_from_receipts(self.plan, latest, continue_on_failure=self._continue_on_failure), consumed_attempts_from(self.plan, receipts))
 
+    def _open_repair_round_if_needed(self, states: dict[str, NodeState]) -> bool:
+        """Open a repair round when a node that declares one failed and rounds remain.
+
+        True means a boundary was opened, so the caller restarts its loop against the reset suffix
+        instead of sealing a run that still has work. Nothing is revived — see ``repair_rounds``.
+        """
+        opening = next_repair_round(
+            self.plan,
+            {node_id: state.value for node_id, state in states.items()},
+            self.event_log.replay(),
+        )
+        if opening is None:
+            return False
+        trigger, target, round_index = opening
+        self._receipts.open_repair_round(
+            round_index=round_index, target_node=target, trigger_node=trigger,
+            reason=f"node {trigger!r} failed; repairing {target!r}",
+        )
+        for reset_id in sorted(descendants(self.plan, target)):
+            self._receipts.append_node_repaired(reset_id, states[reset_id].value)
+            states[reset_id] = NodeState.PENDING
+        return True
+
     def _assert_can_drive_this_plan(self) -> None:
         """Refuse to DRIVE a plan whose conditions this controller cannot honour — fail closed
         rather than silently ignore a condition the author wrote. Checked when driving, not in
@@ -287,6 +296,11 @@ class GraphRunController:
                 if all(state in RUN_SUCCEEDS_ON for state in states.values()):
                     self._receipts.append("run.succeeded", "run.succeeded", {"state": "SUCCEEDED"})
                     return self.event_log.replay_projection()
+                # Nothing left to drive — but a declared repair may still have rounds left, and a
+                # repair is precisely the thing that turns "stuck with a failure" into more work.
+                # Tried LAST, immediately before sealing, so it can never pre-empt ordinary progress.
+                if self._open_repair_round_if_needed(states):
+                    continue
                 self._receipts.append("run.failed", "run.failed", {"state": "FAILED"})
                 return self.event_log.replay_projection()
             for node_id in ready:

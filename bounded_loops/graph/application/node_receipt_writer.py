@@ -37,6 +37,9 @@ class NodeReceiptWriter:
         self._timestamp = timestamp
         self._actor = actor
         self._head = head
+        # Which repair round this writer is recording. Every node receipt keys off it, so a
+        # second round's work cannot be de-duplicated against the first round's.
+        self._repair_round = 0
 
     @property
     def head(self) -> str:
@@ -62,11 +65,53 @@ class NodeReceiptWriter:
         if stored.previous_hash == self._head:
             self._head = stored.event_hash
 
+    @property
+    def repair_round(self) -> int:
+        return self._repair_round
+
+    def open_repair_round(
+        self, *, round_index: int, target_node: str, trigger_node: str, reason: str,
+    ) -> None:
+        """Record a repair-round boundary and switch this writer to the new round.
+
+        Additive: it transitions no node, so the run stays RUNNING across the boundary and therefore
+        stays resumable mid-repair. The receipt names WHO failed as well as what is being repaired,
+        because without the trigger a reader cannot reconstruct why the work was redone.
+        """
+        self._repair_round = round_index
+        self.append(
+            f"run.repair.round:{round_index}", "run.repair.round",
+            {
+                "round": round_index, "target_node": target_node,
+                "trigger_node": trigger_node, "reason": reason,
+            },
+        )
+
+    def append_node_repaired(self, node_id: str, from_state: str) -> None:
+        """One per node a boundary resets. ``from_state`` records the terminal state being abandoned,
+        so the trail shows a deliberate reset rather than a corrupted stream."""
+        self.append(
+            f"{node_id}:node.repaired:{self._repair_round}", "node.repaired",
+            {"node_id": node_id, "round": self._repair_round, "from_state": from_state},
+        )
+
     def append_node(
         self, node_id: str, event_type: str, state: str, *, attempt: int = 1, **extra: object,
     ) -> None:
-        payload = {"node_id": node_id, "state": state, "attempt": attempt, **extra}
-        self.append(node_event_key(node_id, event_type, attempt), event_type, payload)
+        payload: dict[str, object] = {
+            "node_id": node_id, "state": state, "attempt": attempt, **extra,
+        }
+        if self._repair_round:
+            # Also in the PAYLOAD, not only the key: every reader that derives state from the log
+            # keys on (node, attempt), and across a repair round that pair repeats. Without the round
+            # here, round 1's attempt 1 looks like a SECOND outcome for round 0's attempt 1 — which
+            # the integrity readers correctly reject as a corrupt log. Omitted at round 0, so every
+            # pre-repair receipt is byte-identical.
+            payload["repair_round"] = self._repair_round
+        self.append(
+            node_event_key(node_id, event_type, attempt, self._repair_round),
+            event_type, payload,
+        )
 
     def append_spend(
         self, node_id: str, attempt: int, execution: int, usage: WorkerUsage | None,
@@ -85,7 +130,12 @@ class NodeReceiptWriter:
             "node_id": node_id, "attempt": attempt, "execution": execution,
         }
         payload.update(usage_payload(usage))
-        self.append(f"{node_id}:node.spend:{attempt}:{execution}", "node.spend", payload)
+        if self._repair_round:
+            payload["repair_round"] = self._repair_round
+        self.append(
+            f"{node_id}:node.spend:{attempt}:{execution}{self._round_suffix()}",
+            "node.spend", payload,
+        )
 
     def append_attempt_failed(
         self, node_id: str, attempt: int, reason: str, cause: NodeFailureCause,
@@ -103,6 +153,8 @@ class NodeReceiptWriter:
         payload: dict[str, object] = {
             "node_id": node_id, "attempt": attempt, "reason": reason, "cause": cause.value,
         }
+        if self._repair_round:
+            payload["repair_round"] = self._repair_round
         if verdict is not None:
             payload["verdict"] = verdict
         if artifact_digests:
@@ -110,7 +162,10 @@ class NodeReceiptWriter:
             # artifact exists and a reviewer can judge whether refusing it was right. A worker fault
             # produced nothing and carries none.
             payload["artifact_digests"] = list(artifact_digests)
-        self.append(f"{node_id}:node.attempt.failed:{attempt}", "node.attempt.failed", payload)
+        self.append(
+            f"{node_id}:node.attempt.failed:{attempt}{self._round_suffix()}",
+            "node.attempt.failed", payload,
+        )
 
     def append_node_failed(
         self, node_id: str, reason: str, *, cause: NodeFailureCause,
@@ -141,6 +196,10 @@ class NodeReceiptWriter:
         de-duplicated no-op — which is precisely what makes them countable, and so boundable.
         """
         self.append(
-            f"{node_id}:node.redrive:{attempt}:{redrive}", "node.redrive",
+            f"{node_id}:node.redrive:{attempt}:{redrive}{self._round_suffix()}", "node.redrive",
             {"node_id": node_id, "attempt": attempt, "redrive": redrive},
         )
+
+    def _round_suffix(self) -> str:
+        """Round 0 adds nothing, so every pre-repair key is byte-identical."""
+        return "" if self._repair_round <= 0 else f":r{self._repair_round}"

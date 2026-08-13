@@ -144,6 +144,42 @@ The mode is recorded in the run directory's `run-meta.json`, so `resume` and `ap
 the graph exactly the way the original run did. A run directory written before the mode was
 recorded reduces to `fail_closed`, which is how it originally executed.
 
+**Repair a node upstream (`on_failure: repair`)** — a conditional edge points forward; a
+**repair** points backward. When a node exhausts its budget, the ancestor it names runs
+again, and everything reachable from that ancestor runs again after it.
+
+```yaml
+policies: {fail_mode: continue_declared, repair_budget: 2}
+nodes:
+  - id: verify
+    on_failure: {mode: repair, target: fetch}   # fetch is an ancestor of verify
+```
+
+The target is **named**, not implied, because the bound below is only checkable against an
+explicit target. The object form is required for `repair`; the other failure policies stay
+bare strings.
+
+`repair_budget` is a **global** bound on repair rounds for the whole run — never per node.
+That is deliberate: bound repairs per node instead and two nodes can repair each other
+forever, each seeing its own counter as unspent. One global counter is what makes the run
+provably terminate.
+
+**Total node executions are bounded by `(1 + repair_budget) × Σᵥ(max_attemptsᵥ + 1)`.**
+Per-node retry budgets alone do *not* bound a graph with repair — that is the whole point.
+
+Repair is a **bounded outer loop, not a cycle**. Nothing is revived: a round boundary is
+recorded as `run.repair.round`, each reset node gets a `node.repaired` receipt naming the
+terminal state it left, and every receipt in a round carries that round. Within a round the
+state machine is unchanged, so the audit trail stays verifiable — a replay refuses a boundary
+whose trigger did not fail, whose target the trigger did not declare, that is numbered out of
+sequence, or that exceeds the budget.
+
+Refused at validation: a target that is not a strict ancestor (including the node itself), a
+target that does not exist, `repair` with a `repair_budget` of 0, and `repair` under
+`fail_mode: fail_closed` — where the run stops at the first failure, so a repair could never
+begin. `on_failure: continue` and `await_human` remain declared-but-unimplemented and are
+still refused.
+
 **Fail-closed preflight** (checked before any node runs):
 - `approval` nodes are **not refused at preflight** — they are skipped during
   preflight and the run pauses (exit code 3) when execution reaches them.  Use

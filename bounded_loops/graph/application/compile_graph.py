@@ -121,7 +121,9 @@ def compile_graph(graph: AuthoringGraphSpec, snapshot: CompileSnapshot) -> Execu
     policy_digest = _digest(snapshot.policy_digest, "/policy_digest")
     _validate_packages(graph, snapshot.package_digests)
     bindings = _resolve_bindings(graph, snapshot)
-    nodes = tuple(_planned_node(node, bindings) for node in graph.nodes)
+    nodes = tuple(
+        _planned_node(node, bindings, graph.policies.repair_budget) for node in graph.nodes
+    )
     edges = tuple(PlannedEdge(edge.from_node, edge.from_port, edge.to_node, edge.to_port, edge.when) for edge in graph.edges)
     levels = _topological_levels(nodes, edges)
     canonical = _canonical_plan(graph, policy_digest, nodes, edges, levels, bindings)
@@ -254,7 +256,9 @@ def _resolve_bindings(graph: AuthoringGraphSpec, snapshot: CompileSnapshot) -> d
     return bindings
 
 
-def _planned_node(node: AuthoringNode, bindings: Mapping[str, ResolvedBinding]) -> PlannedNode:
+def _planned_node(
+    node: AuthoringNode, bindings: Mapping[str, ResolvedBinding], repair_budget: int = 0,
+) -> PlannedNode:
     # Kept separate from validation to preserve compiler purity over a frozen graph.
     package = None
     if node.kind is NodeKind.LOOP:
@@ -267,6 +271,14 @@ def _planned_node(node: AuthoringNode, bindings: Mapping[str, ResolvedBinding]) 
         "required": node.kind is NodeKind.APPROVAL,
         "required_role": node.details.get("required_role"),
     }
+    # Repair reaches the runtime through the node policy map, because the controller and the replay
+    # verifier both need it and neither holds the manifest. Added ONLY when declared, so a graph
+    # without repair serialises byte-identically and keeps its plan_id — and therefore keeps every
+    # existing run directory resumable.
+    if node.repair_target is not None:
+        approval["repair_target"] = node.repair_target
+    if repair_budget:
+        approval["repair_budget"] = repair_budget
     return PlannedNode(
         node_id=node.id,
         kind=node.kind.value,

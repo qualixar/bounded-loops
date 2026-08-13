@@ -38,6 +38,11 @@ _NODE_EVENTS = {
 # and replay (a hand-forged but correctly re-hash-chained log cannot slip a
 # malformed audit event past a consumer reading the raw stream).
 _AUDIT_EVENTS = frozenset({
+    # A repair-round boundary, and the nodes it resets. ADDITIVE on purpose: neither transitions a
+    # node, so a reader that ignores them still sees a consistent stream, and the run stays RUNNING
+    # across a boundary and therefore stays resumable mid-repair.
+    "run.repair.round",
+    "node.repaired",
     "audit.plan.created",
     "audit.result.published",
     "repair.attempt.created",
@@ -124,6 +129,12 @@ def _validate_node_event(
         allowed = required | {"reason"}
     else:
         allowed = required
+    # A repair round re-runs a node, so any lifecycle receipt may carry the round it belongs to.
+    allowed = allowed | {"repair_round"}
+    if "repair_round" in payload:
+        round_index = payload["repair_round"]
+        if isinstance(round_index, bool) or not isinstance(round_index, int) or round_index < 1:
+            raise GraphIntegrityError(f"{event_type} repair_round must be a positive integer")
     if not required <= set(payload) <= allowed:
         raise GraphIntegrityError(f"{event_type} payload has an invalid shape")
     if not isinstance(payload["node_id"], str) or not payload["node_id"]:
@@ -277,6 +288,17 @@ def _validate_usage(payload: Mapping[str, object], event_type: str) -> None:
 
 
 def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> None:
+    # A repair round re-runs a node, so a per-attempt audit receipt may name the round it belongs to.
+    # Stripped before the CLOSED shape checks below so each one keeps its exact required set.
+    if "repair_round" in payload:
+        round_index = payload["repair_round"]
+        if isinstance(round_index, bool) or not isinstance(round_index, int) or round_index < 1:
+            raise GraphIntegrityError(f"{event_type} repair_round must be a positive integer")
+        payload = {key: value for key, value in payload.items() if key != "repair_round"}
+    return _validate_audit_event_shape(event_type, payload)
+
+
+def _validate_audit_event_shape(event_type: str, payload: Mapping[str, object]) -> None:
     """Validate the payload of an additive audit trail event.
 
     Each type has a CLOSED required-key set (no extra keys allowed) and
@@ -284,6 +306,30 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
     matching the node-event pattern — so a malformed audit event is caught
     before it is durably written AND when re-reading an existing stream.
     """
+    if event_type == "run.repair.round":
+        required = {"round", "target_node", "trigger_node", "reason"}
+        if set(payload) != required:
+            raise GraphIntegrityError("run.repair.round payload has an invalid shape")
+        for field in ("target_node", "trigger_node", "reason"):
+            value = payload[field]
+            if not isinstance(value, str) or not value:
+                raise GraphIntegrityError(f"run.repair.round requires a non-empty {field}")
+        round_index = payload["round"]
+        if isinstance(round_index, bool) or not isinstance(round_index, int) or round_index < 1:
+            raise GraphIntegrityError("run.repair.round requires a round of at least 1")
+        return
+    if event_type == "node.repaired":
+        required = {"node_id", "round", "from_state"}
+        if set(payload) != required:
+            raise GraphIntegrityError("node.repaired payload has an invalid shape")
+        for field in ("node_id", "from_state"):
+            value = payload[field]
+            if not isinstance(value, str) or not value:
+                raise GraphIntegrityError(f"node.repaired requires a non-empty {field}")
+        round_index = payload["round"]
+        if isinstance(round_index, bool) or not isinstance(round_index, int) or round_index < 1:
+            raise GraphIntegrityError("node.repaired requires a round of at least 1")
+        return
     if event_type == "node.outcome.labeled":
         required = {"node_id", "attempt", "label", "labeller", "artifact_digest", "sequence"}
         if set(payload) != required:
