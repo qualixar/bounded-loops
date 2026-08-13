@@ -1,0 +1,145 @@
+"""``bl graph metrics`` — what the gate actually achieved on a persisted run.
+
+The evaluation harness as a command rather than a notebook, for one reason: every figure has to be
+reproducible from an archived receipt stream by someone who did not run it. A number a reviewer
+cannot regenerate is not evidence.
+
+It reads the log and nothing else. No store, no network, no clock.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
+from bounded_loops.graph.application.gate_metrics import (
+    ADVISORY_BLOCKED_PRECISION_BASELINE,
+    Confusion,
+    Rate,
+    confusion,
+    confusion_by_attempt,
+)
+from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
+from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
+
+
+def _err(message: str) -> None:
+    import sys
+
+    print(f"error: {message}", file=sys.stderr)
+
+
+def _rate_text(label: str, rate: Rate) -> str:
+    if not rate.reportable:
+        return (
+            f"  {label:<24} not reported — {rate.numerator}/{rate.denominator} labelled "
+            f"(too few to support a rate)"
+        )
+    assert rate.interval is not None
+    return (
+        f"  {label:<24} {rate.value:.4f}  [{rate.interval.low:.4f}, {rate.interval.high:.4f}] "
+        f"95% CI   from {rate.numerator}/{rate.denominator}"
+    )
+
+
+def _rate_dict(rate: Rate) -> dict[str, object]:
+    return {
+        "numerator": rate.numerator,
+        "denominator": rate.denominator,
+        "value": rate.value,
+        "interval": (
+            None if rate.interval is None
+            else {"low": rate.interval.low, "high": rate.interval.high}
+        ),
+        "reported": rate.reportable,
+    }
+
+
+def _confusion_dict(result: Confusion) -> dict[str, object]:
+    return {
+        "true_accept": result.true_accept,
+        "false_accept": result.false_accept,
+        "true_reject": result.true_reject,
+        "false_reject": result.false_reject,
+        "unknown_label": result.unknown_label,
+        "unlabelled": result.unlabelled,
+        "labelled": result.labelled,
+        "false_accept_rate": _rate_dict(result.false_accept_rate()),
+        "false_rejection_rate": _rate_dict(result.false_reject_rate()),
+        "blocked_precision": _rate_dict(result.blocked_precision()),
+    }
+
+
+def cmd_graph_metrics(args: argparse.Namespace) -> int:
+    """Report the gate's confusion matrix and the two curves, overall and per attempt index."""
+    run_dir = Path(args.run)
+    try:
+        plan, identity = load_plan_from_run_dir(run_dir)[:2]
+        log = GraphEventLog(run_dir / "controller-events.jsonl", identity)
+        receipts = log.replay()
+    except (GraphIntegrityError, GraphValidationError, OSError) as exc:
+        _err(f"graph metrics: {exc}")
+        return 2
+
+    overall = confusion(receipts)
+    per_attempt = confusion_by_attempt(receipts)
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "run": str(run_dir),
+            "overall": _confusion_dict(overall),
+            "by_attempt": {str(k): _confusion_dict(v) for k, v in per_attempt.items()},
+            "advisory_blocked_precision_baseline": ADVISORY_BLOCKED_PRECISION_BASELINE,
+        }, indent=2, sort_keys=True))
+        return 0
+
+    print("Gate performance — computed from the receipt stream, nothing else")
+    print("=" * 70)
+    if overall.labelled == 0:
+        # Said first and plainly. The most likely state of a young run is "no ground truth yet", and
+        # a table of zeroes would read as "the gate made no mistakes".
+        print(f"NO GROUND-TRUTH LABELS in this run ({overall.unlabelled} gated attempts unlabelled).")
+        print("Nothing about the gate's accuracy can be computed. Record labels with")
+        print("label_node_outcome(...) and re-run; until then this run measures nothing.")
+        return 0
+
+    print(f"  gated attempts           {overall.labelled + overall.unlabelled + overall.unknown_label}")
+    print(f"  labelled                 {overall.labelled}")
+    print(f"  unlabelled               {overall.unlabelled}")
+    print(f"  reviewed but undecidable {overall.unknown_label}")
+    print()
+    print(f"  accepted by the gate     {overall.accepted}  ({overall.false_accept} of them wrong)")
+    print(f"  blocked by the gate      {overall.rejected}  ({overall.false_reject} of them correct)")
+    print()
+    print(_rate_text("false-accept rate (α)", overall.false_accept_rate()))
+    print(_rate_text("false-REJECTION rate", overall.false_reject_rate()))
+    print(_rate_text("blocked precision", overall.blocked_precision()))
+    print(f"  {'advisory baseline':<24} {ADVISORY_BLOCKED_PRECISION_BASELINE:.4f} "
+          "(arXiv:2605.17998 — the number that demoted a gate to advisory)")
+
+    if len(per_attempt) > 1:
+        print()
+        print("  α by attempt index — a pooled α hides whether the gate degrades on retries:")
+        for index in sorted(per_attempt):
+            print(f"    attempt {index}" + _rate_text("", per_attempt[index].false_accept_rate()))
+    return 0
+
+
+def add_metrics_parser(graph_subs: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+    """Register ``bl graph metrics``."""
+    metrics_p = graph_subs.add_parser(
+        "metrics",
+        help="Report what the independent gate actually achieved on a run.",
+        description=(
+            "Compare the gate's verdicts against recorded ground-truth labels and report the "
+            "false-accept rate, the false-REJECTION rate, and blocked precision — each with a 95% "
+            "confidence interval, and each WITHHELD when too few labels exist to support it. "
+            "Computed from the receipt stream alone, so any figure can be regenerated from an "
+            "archived run."
+        ),
+    )
+    metrics_p.add_argument("--run", required=True, metavar="<dir>", help="Run directory to read.")
+    metrics_p.add_argument("--json", action="store_true", help="Emit JSON output.")
+    metrics_p.set_defaults(func=cmd_graph_metrics)

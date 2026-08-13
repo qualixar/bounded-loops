@@ -486,6 +486,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     from bounded_loops.graph.cli_graph_providers import add_providers_parser
     add_providers_parser(graph_subs)
 
+    from bounded_loops.graph.cli_graph_metrics import add_metrics_parser
+    add_metrics_parser(graph_subs)
+
     # resume (handler lives in cli_graph_resume.py to keep this file within budget)
     from bounded_loops.graph.cli_graph_resume import add_resume_parser
     add_resume_parser(graph_subs)
