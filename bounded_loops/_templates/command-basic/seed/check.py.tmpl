@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Gate script for {{LOOP_NAME}}: exits 0 when seed/status.json reports ready=true.
+
+Run from the loop workspace root:
+    python3 seed/check.py
+
+This script is the gate anchor — the agent must fix seed/status.json to pass;
+it must never edit this file. Protected by loop.yaml's forbid: ["seed/check.py"].
+"""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+TARGET = Path("seed") / "status.json"
+
+
+def _fail(msg: str) -> None:
+    print(f"FAIL: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def main() -> None:
+    if not TARGET.exists():
+        _fail(f"{TARGET} not found — agent must create it with ready=true")
+    try:
+        data = json.loads(TARGET.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        _fail(f"{TARGET} is not valid JSON: {exc}")
+    if not isinstance(data, dict):
+        _fail(f"{TARGET} must be a JSON object, got {type(data).__name__}")
+    if data.get("ready") is not True:
+        _fail(
+            f"{TARGET} has ready={data.get('ready')!r} — "
+            "set it to true to pass the gate"
+        )
+    print(f"PASS: {TARGET} reports ready=true")
+
+
+if __name__ == "__main__":
+    main()

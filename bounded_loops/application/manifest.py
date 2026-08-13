@@ -214,7 +214,12 @@ def load(loop_dir: Path) -> LoopManifest:
     if not isinstance(raw["rung"], str) or raw["rung"] not in VALID_RUNGS:
         raise ManifestError(f"rung must be L1|L2|L3, got {raw['rung']!r}")
     if not isinstance(raw["pattern"], str) or raw["pattern"] not in VALID_PATTERNS:
-        raise ManifestError(f"pattern {raw['pattern']!r} not in Anthropic's 7")
+        raise ManifestError(
+            f"loop.yaml: pattern {raw['pattern']!r} is not one of Anthropic's seven "
+            f"agentic patterns. Valid values: {sorted(VALID_PATTERNS)}. "
+            f"See https://www.anthropic.com/engineering/building-effective-agents "
+            f"for definitions."
+        )
     _validate_string_list(raw["role"], "role")
     if "forbid" in raw:
         _validate_string_list(raw["forbid"], "forbid", allow_empty=True)
@@ -270,11 +275,24 @@ def load(loop_dir: Path) -> LoopManifest:
     # ── Step 5: Validate gate ──
     gate_block = raw["gate"]
     if not isinstance(gate_block, dict) or "kind" not in gate_block:
-        raise ManifestError("gate.kind is required")
+        raise ManifestError(
+            "loop.yaml: gate.kind is required. "
+            "Add a gate block, for example:\n"
+            "  gate:\n"
+            "    kind: command\n"
+            "    run: \"python3 seed/check.py\""
+        )
     _validate_gate_config(gate_block, "gate")
     gate_kind = gate_block["kind"]
     if not isinstance(gate_kind, str) or gate_kind not in VALID_GATE_KINDS:
-        raise ManifestError(f"gate.kind {gate_kind!r} is not a recognized kind")
+        user_visible_kinds = sorted(VALID_GATE_KINDS - QUALIXAR_GATE_KINDS)
+        raise ManifestError(
+            f"loop.yaml: gate.kind {gate_kind!r} is not a recognized kind. "
+            f"Valid kinds: {user_visible_kinds}. "
+            f"Check for a typo. For Qualixar product gates (agentassert, agentassay, "
+            f"skillfortify, attestar), use --gate-override on the CLI instead of "
+            f"setting them in loop.yaml."
+        )
     if gate_kind in QUALIXAR_GATE_KINDS:
         raise ManifestError(
             f"gate.kind {gate_kind!r} is a Qualixar product gate and is FORBIDDEN "
@@ -282,7 +300,11 @@ def load(loop_dir: Path) -> LoopManifest:
         )
     gate_run = gate_block.get("run")  # str | None (required for kind=command)
     if gate_kind == "command" and gate_run is None:
-        raise ManifestError("gate.run is required when gate.kind=command")
+        raise ManifestError(
+            "loop.yaml: gate.run is required when gate.kind=command. "
+            "Add gate.run: \"<your-check-command>\" — for example: "
+            "gate.run: \"python3 seed/check.py\" or gate.run: \"pytest -q\"."
+        )
     if gate_kind == "composite":
         _validate_composite_gate(gate_block)
     # gate_config merges "run" + every other gate.* key into ONE dict —
@@ -369,7 +391,13 @@ def _load_yaml_mapping(path: Path, label: str) -> dict:
 def _reject_unknown_keys(values: Mapping[object, object], allowed: frozenset[str], section: str) -> None:
     unknown = sorted((key for key in values if key not in allowed), key=repr)
     if unknown:
-        raise ManifestError(f"{section}: unknown key {unknown[0]!r}")
+        # Name the file so the author knows exactly where to look.
+        file_hint = "bounds.yaml" if section == "bounds" else "loop.yaml"
+        raise ManifestError(
+            f"{file_hint} [{section}]: unknown key {unknown[0]!r}. "
+            f"Valid keys for this section: {sorted(allowed)}. "
+            f"Remove or rename this key, or check for a typo."
+        )
 
 
 def _require_nonempty_string(values: Mapping[object, object], field_name: str, section: str) -> str:

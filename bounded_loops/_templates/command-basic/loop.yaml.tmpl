@@ -1,0 +1,22 @@
+name: {{LOOP_NAME}}
+description: >
+  Drive an agent until seed/status.json reports {"ready": true}. The gate
+  is seed/check.py — a tiny stdlib-only checker shipped with the loop, so it
+  runs anywhere Python does: no network, no API key. Ships a deliberately
+  broken starting file so there is something concrete to fix on lap 1.
+pattern: evaluator-optimizer
+role:
+  - engineering
+rung: L1
+spec: PROMPT.md
+# The gate checker (seed/check.py) and the ground-truth schema it applies are
+# the anchors — the agent fixes the data file, never the checker.
+forbid:
+  - "seed/check.py"
+runner:
+  default: stub
+gate:
+  kind: command
+  run: "python3 seed/check.py"
+bounds: bounds.yaml
+memory: STATE.md

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# wreck.sh — the UNGATED version of {{LOOP_NAME}}. Same spec, no independent
+# schema validation. Demonstrates why a gate matters.
+#
+# Requirements: bash 3.2+, Python 3.11+, jsonschema (pip install jsonschema)
+
+set -euo pipefail
+
+LOOP_DIR="$(cd "$(dirname "$0")" && pwd)"
+MAX_ITER=10
+WORKSPACE="$(mktemp -d)"
+trap 'rm -rf "$WORKSPACE"' EXIT
+
+if [ -d "$LOOP_DIR/seed" ]; then
+    cp -r "$LOOP_DIR/seed" "$WORKSPACE/seed"
+fi
+
+AGENT_CLI="${AGENT_CLI:-bash $LOOP_DIR/cassettes/stub-agent.sh}"
+
+echo "=== {{LOOP_NAME}} — WRECKED (no gate) ==="
+echo "WARNING: this loop trusts the agent's own claim — it never validates output.json."
+echo ""
+
+i=0
+cd "$WORKSPACE"
+
+while [ "$i" -lt "$MAX_ITER" ]; do
+    i=$((i + 1))
+    echo "--- Lap $i (no gate) ---"
+    $AGENT_CLI < "$LOOP_DIR/PROMPT.md"
+    echo "(no schema check here — this is the point)"
+done
+
+echo ""
+echo "--- Diagnostic epilogue ---"
+if python3 -c "
+import json, jsonschema, sys, pathlib
+schema = json.loads(pathlib.Path('$LOOP_DIR/schema.json').read_text())
+target = pathlib.Path('output.json')
+if not target.exists():
+    print('output.json missing', file=sys.stderr); sys.exit(1)
+jsonschema.validate(json.loads(target.read_text()), schema)
+print('output.json actually validates')
+" 2>&1; then
+    echo "Schema actually passes — the fix happened to land anyway."
+    exit 0
+else
+    echo "The ungated loop ran to completion with no gate ever checking the result."
+    exit 1
+fi

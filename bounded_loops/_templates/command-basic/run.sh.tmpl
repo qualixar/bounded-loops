@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# run.sh — standalone bounded loop for {{LOOP_NAME}}
+# NO engine required — this script IS a minimal bounded loop on its own.
+#
+# Usage:
+#   ./run.sh                          # uses stub agent (fixes seed/status.json)
+#   AGENT_CLI="claude -p" ./run.sh    # plug in any agent CLI
+#   AGENT_CLI="codex exec" ./run.sh   # same, with Codex
+#
+# Requirements: bash 3.2+, Python 3.11+
+
+set -euo pipefail
+
+LOOP_DIR="$(cd "$(dirname "$0")" && pwd)"
+MAX_ITER=10
+WORKSPACE="$(mktemp -d)"
+trap 'rm -rf "$WORKSPACE"' EXIT
+
+# Copy seed into isolated workspace
+if [ -d "$LOOP_DIR/seed" ]; then
+    cp -r "$LOOP_DIR/seed" "$WORKSPACE/seed"
+fi
+
+AGENT_CLI="${AGENT_CLI:-bash $LOOP_DIR/cassettes/stub-agent.sh}"
+
+echo "=== {{LOOP_NAME}} — standalone run ==="
+echo "Workspace : $WORKSPACE"
+echo "Agent     : $AGENT_CLI"
+echo "Max laps  : $MAX_ITER"
+echo ""
+
+i=0
+cd "$WORKSPACE"
+
+while [ "$i" -lt "$MAX_ITER" ]; do
+    i=$((i + 1))
+    echo "--- Lap $i ---"
+
+    # Direct stdin redirection to avoid SIGPIPE when AGENT_CLI doesn't drain stdin.
+    $AGENT_CLI < "$LOOP_DIR/PROMPT.md"
+
+    if python3 seed/check.py; then
+        echo ""
+        echo "GREEN — gate passed on lap $i"
+        exit 0
+    fi
+
+    echo "Gate failed. Looping..."
+done
+
+echo "HALT — max iterations ($MAX_ITER) reached without green gate"
+exit 1

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# cassettes/stub-agent.sh — used only by the standalone run.sh/wreck.sh
+# scripts (NOT by `bl run`, which uses cassettes/default.json directly via
+# the stub runner adapter). Writes the fixed seed/status.json to the CURRENT
+# directory (cwd = workspace root — run.sh does NOT cd into seed/ first, so
+# the path here must be seed/status.json).
+set -euo pipefail
+
+cat > seed/status.json <<'JSON'
+{"ready": true}
+JSON
+
+echo "stub-agent: wrote seed/status.json"

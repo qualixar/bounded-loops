@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# wreck.sh — the UNGATED version of {{LOOP_NAME}}. Same spec, no independent
+# gate. Demonstrates why a gate matters: without one, the loop trusts
+# whatever the agent claims, even if the underlying status is still broken.
+#
+# Requirements: bash 3.2+, Python 3.11+
+
+set -euo pipefail
+
+LOOP_DIR="$(cd "$(dirname "$0")" && pwd)"
+MAX_ITER=10
+WORKSPACE="$(mktemp -d)"
+trap 'rm -rf "$WORKSPACE"' EXIT
+
+if [ -d "$LOOP_DIR/seed" ]; then
+    cp -r "$LOOP_DIR/seed" "$WORKSPACE/seed"
+fi
+
+AGENT_CLI="${AGENT_CLI:-bash $LOOP_DIR/cassettes/stub-agent.sh}"
+
+echo "=== {{LOOP_NAME}} — WRECKED (no gate) ==="
+echo "WARNING: this loop trusts the agent's own claim — it never runs python3 seed/check.py."
+echo ""
+
+i=0
+cd "$WORKSPACE"
+
+while [ "$i" -lt "$MAX_ITER" ]; do
+    i=$((i + 1))
+    echo "--- Lap $i (no gate) ---"
+    $AGENT_CLI < "$LOOP_DIR/PROMPT.md"
+    echo "(no gate check here — this is the point)"
+done
+
+echo ""
+echo "--- Diagnostic epilogue (NOT part of the wrecked loop's own logic) ---"
+if python3 seed/check.py 2>&1; then
+    echo "Gate actually passes — the fix happened to land anyway."
+    exit 0
+else
+    echo "The ungated loop ran to completion with no gate ever checking the result."
+    exit 1
+fi
