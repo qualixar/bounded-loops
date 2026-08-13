@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Iterator, Mapping
 
 from bounded_loops.graph.domain.errors import GraphIntegrityError
+from bounded_loops.graph.domain.usage import usage_from_payload
 from bounded_loops.graph.domain.events import (
     NodeFailureCause,
     GraphRunIdentity,
@@ -369,10 +370,14 @@ def _validate_node_event(
         if on_append:
             required.add("cause")
     if event_type == "node.succeeded":
-        allowed = required | {"route", "transport", "isolation", "verdict"}
+        allowed = required | {"route", "transport", "isolation", "verdict", "usage"}
     elif event_type == "node.failed":
         # budget_exhausted appears only when a retry budget above one was spent, so a
         # reader can separate "ran out of attempts" from "failed on its only attempt".
+        # No "usage": the terminal receipt describes an attempt whose own spend is already
+        # recorded on its node.attempt.failed record. Allowing it in both places would let a
+        # later writer double-count one attempt, and a spend total is the one number that
+        # must not drift.
         allowed = required | {"verdict", "budget_exhausted", "cause"}
     else:
         allowed = required
@@ -396,10 +401,12 @@ def _validate_node_event(
             _validate_isolation(payload["isolation"])
         if "verdict" in payload:
             _validate_verdict(payload["verdict"], True)
+        _validate_usage(payload, event_type)
     if event_type == "node.failed" and (not isinstance(payload["reason"], str) or not payload["reason"]):
         raise GraphIntegrityError("node.failed requires a non-empty reason")
     if event_type == "node.failed" and "cause" in payload:
         _validate_cause(payload["cause"], "node.failed")
+
         # BOTH directions, as node.attempt.failed already requires: a gate rejection must
         # carry the verdict it rejected on, and no other cause may carry one. One direction
         # alone lets a worker fault ride a verdict, so a reader keying on the verdict's
@@ -494,6 +501,24 @@ def _validate_verdict(value: object, expected_passed: bool) -> None:
         raise GraphIntegrityError("node verdict evidence digest is invalid")
 
 
+def _validate_usage(payload: Mapping[str, object], event_type: str) -> None:
+    """Reject a usage block this runtime would never write.
+
+    Runs on read as well as on append: a hand-forged but correctly re-hash-chained log
+    could otherwise carry a negative charge, which a spend total re-derived from the
+    receipts would apply as a REFUND and use to buy attempts past the cap.
+
+    Absence is always valid — it means nothing was measured, which is what a receipt
+    written before usage existed also says.
+    """
+    if "usage" not in payload:
+        return
+    try:
+        usage_from_payload(payload["usage"])
+    except GraphIntegrityError as exc:
+        raise GraphIntegrityError(f"{event_type} carries an invalid usage block: {exc}") from exc
+
+
 def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> None:
     """Validate the payload of an additive audit trail event.
 
@@ -545,7 +570,7 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
         # gate rejection and a worker fault — which is what makes the per-attempt
         # gate error rate computable without parsing the free-text ``reason``.
         required = {"node_id", "attempt", "reason", "cause"}
-        if set(payload) - {"verdict"} != required:
+        if set(payload) - {"verdict", "usage"} != required:
             raise GraphIntegrityError("node.attempt.failed payload has an invalid shape")
         _validate_cause(payload["cause"], "node.attempt.failed")
         if not isinstance(payload["node_id"], str) or not payload["node_id"]:
@@ -555,6 +580,7 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
             raise GraphIntegrityError("node.attempt.failed attempt must be a positive integer")
         if not isinstance(payload["reason"], str) or not payload["reason"]:
             raise GraphIntegrityError("node.attempt.failed reason must be a non-empty string")
+        _validate_usage(payload, event_type)
         if (payload["cause"] == NodeFailureCause.GATE_REJECTED.value) != ("verdict" in payload):
             # The two must agree, in both directions: a gate rejection is the only cause that
             # carries a verdict, and a verdict without that cause would be counted as a

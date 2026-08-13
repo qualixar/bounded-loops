@@ -14,10 +14,17 @@ from typing import Mapping
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import StoredGraphEvent
 from bounded_loops.graph.domain.plan import ExecutionPlan
+from bounded_loops.graph.domain.usage import usage_from_payload
 
 #: Receipt kinds that carry per-node consumption. Listed explicitly rather than matched by
 #: prefix so a newly added ``node.*`` event cannot silently start or stop counting.
 _CONSUMPTION_EVENTS = frozenset({"node.attempt.failed", "node.running", "node.redrive"})
+
+#: Receipt kinds that carry one attempt's measured spend — exactly one record per attempt.
+#: ``node.failed`` is deliberately NOT here: it is the terminal receipt for an attempt whose
+#: own spend already rode its ``node.attempt.failed`` record, so counting it too would double
+#: every failing attempt's charge.
+_SPEND_EVENTS = frozenset({"node.attempt.failed", "node.succeeded"})
 
 
 @dataclass(frozen=True)
@@ -42,6 +49,129 @@ class ResumeCursor:
     def empty(cls, node_ids: tuple[str, ...]) -> "ResumeCursor":
         zeros = {node_id: 0 for node_id in node_ids}
         return cls(spent=zeros, started=dict(zeros), redrives={})
+
+
+@dataclass(frozen=True)
+class NodeSpend:
+    """What the receipts say one node has consumed, summed over all its attempts.
+
+    ``complete`` is False when at least one recorded attempt reported no usage — a worker
+    that crashed before it could measure itself, or a pre-0.5 receipt. The totals are then a
+    LOWER BOUND, not the truth, and this flag is what stops a reader from presenting an
+    under-count as a measurement.
+    """
+
+    tokens: int = 0
+    cost_microunits: int = 0
+    attempts_recorded: int = 0
+    attempts_measured: int = 0
+
+    @property
+    def complete(self) -> bool:
+        return self.attempts_recorded == self.attempts_measured
+
+    def plus(self, tokens: int | None, cost_microunits: int | None) -> "NodeSpend":
+        """Add one attempt's spend. Unmeasured contributes nothing but is still counted."""
+        measured = tokens is not None or cost_microunits is not None
+        return NodeSpend(
+            tokens=self.tokens + (tokens or 0),
+            cost_microunits=self.cost_microunits + (cost_microunits or 0),
+            attempts_recorded=self.attempts_recorded + 1,
+            attempts_measured=self.attempts_measured + (1 if measured else 0),
+        )
+
+
+def consumed_spend_from(
+    plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ...],
+) -> dict[str, NodeSpend]:
+    """Per-node spend, re-derived from the durable receipts.
+
+    Derived rather than remembered for the same reason attempts are: a total held in a
+    process variable is reset by killing the process, so an external loop that crash-restarts
+    a run would be handed the full budget again on every restart.
+
+    Exactly one spend record exists per attempt (``_SPEND_EVENTS``), so this is a plain sum
+    with no de-duplication — and the closed key sets in the event log are what keep it that
+    way, by refusing a usage block on the terminal receipt.
+    """
+    spend = {node.node_id: NodeSpend() for node in plan.nodes}
+    for stored in receipts:
+        if stored.event.event_type not in _SPEND_EVENTS:
+            continue
+        node_id = stored.event.payload.get("node_id")
+        if not isinstance(node_id, str) or node_id not in spend:
+            raise GraphIntegrityError("spend receipt references a node outside the plan")
+        raw = stored.event.payload.get("usage")
+        usage = usage_from_payload(raw) if raw is not None else None
+        spend[node_id] = spend[node_id].plus(
+            usage.total_tokens if usage else None,
+            usage.cost_microunits if usage else None,
+        )
+    return spend
+
+
+def run_spend(spend: dict[str, NodeSpend]) -> NodeSpend:
+    """The whole run's consumption, so a run-level cap is checked against one number."""
+    total = NodeSpend()
+    for node_spend in spend.values():
+        total = NodeSpend(
+            tokens=total.tokens + node_spend.tokens,
+            cost_microunits=total.cost_microunits + node_spend.cost_microunits,
+            attempts_recorded=total.attempts_recorded + node_spend.attempts_recorded,
+            attempts_measured=total.attempts_measured + node_spend.attempts_measured,
+        )
+    return total
+
+
+def spend_refusal(
+    *, spend: NodeSpend, max_tokens: int | None, max_cost_microunits: int | None, scope: str,
+) -> str | None:
+    """Why no FURTHER attempt may start under this cap, or ``None`` to proceed.
+
+    The cap governs whether a new attempt may begin — never whether completed work counts.
+    An attempt whose output the gate already accepted is kept even if it overshot: the money
+    is spent either way, and discarding paid-for work that passed the gate is strictly worse
+    than keeping it. There is no way to retroactively refuse an expense.
+
+    So the guarantee is precisely this, and no more: total spend cannot exceed the cap by
+    more than ONE attempt's worth. The runtime cannot know an attempt's cost before making
+    it, so a cap of 1000 tokens does not stop a single 50_000-token attempt. Capping a
+    provider call itself needs the remaining budget pushed into the request (a per-provider
+    output cap), which is a separate mechanism from this accounting.
+
+    When ``spend`` is incomplete the totals are a lower bound, so this check can under-count;
+    what still bounds that case is the attempt cap, since each unmeasured attempt consumes one.
+    """
+    if _is_spent(spend.tokens, max_tokens):
+        return _spent_reason(scope, "token", spend.tokens, max_tokens, "", spend.complete)
+    if _is_spent(spend.cost_microunits, max_cost_microunits):
+        return _spent_reason(
+            scope, "cost", spend.cost_microunits, max_cost_microunits, " micro-USD",
+            spend.complete,
+        )
+    return None
+
+
+def _is_spent(spent: int, cap: int | None) -> bool:
+    """Whether ``cap`` leaves room for another attempt.
+
+    ``spent > 0`` is not redundant with ``spent >= cap``. A cost cap of 0 is a real and
+    useful declaration — "this node must not cost money" — and a free worker satisfies it, so
+    a cap of 0 with nothing spent must NOT refuse the first attempt. Without the first clause
+    every zero-cost node would be refused before it ran, on the arithmetic accident that
+    0 >= 0.
+    """
+    return cap is not None and spent > 0 and spent >= cap
+
+
+def _spent_reason(
+    scope: str, dimension: str, spent: int, cap: int | None, unit: str, complete: bool,
+) -> str:
+    qualifier = "" if complete else " (measured across only some attempts)"
+    return (
+        f"{scope} {dimension} budget is spent: {spent} of {cap}{unit}{qualifier} consumed, "
+        "so no further attempt may start"
+    )
 
 
 def consumed_attempts_from(

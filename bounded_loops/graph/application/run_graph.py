@@ -20,6 +20,7 @@ from bounded_loops.graph.application.node_contracts import (
     GateVerdict,
     IndependentGatePort,
     NodeWorkerPort,
+    WorkerResult,
 )
 from bounded_loops.graph.application.node_receipts import (
     isolation_payload,
@@ -27,11 +28,18 @@ from bounded_loops.graph.application.node_receipts import (
     route_payload,
     validate_observed_route,
     validate_observed_transport,
+    usage_payload,
     validate_worker_result,
     verdict_body,
     verdict_is_wellformed,
 )
-from bounded_loops.graph.application.node_spend import ResumeCursor, consumed_attempts_from
+from bounded_loops.graph.application.node_spend import (
+    NodeSpend,
+    ResumeCursor,
+    consumed_attempts_from,
+    consumed_spend_from,
+    spend_refusal,
+)
 from bounded_loops.graph.application.schedule_ready import NodeState, derive_ready_nodes, dispatch_node
 from bounded_loops.graph.domain.authoring import NETWORK_EFFECTS, NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError
@@ -42,6 +50,7 @@ from bounded_loops.graph.domain.events import (
     UnsignedGraphEvent,
 )
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
+from bounded_loops.graph.domain.usage import WorkerUsage
 
 # Effects whose real-world action cannot be safely repeated by an at-least-once
 # re-drive without a per-effect idempotency key (ADR-12 D7).  Aliased from
@@ -72,6 +81,9 @@ class _AttemptOutcome:
     cause: NodeFailureCause | None = None
     verdict: dict[str, object] | None = None
     terminal: GraphRunProjection | None = None
+    #: What the failed attempt consumed, when the worker got far enough to report it. A
+    #: rejected attempt still costs money, so this must survive onto its attempt record.
+    usage: WorkerUsage | None = None
 
 
 # An attempt that never completes can be re-driven once per resume, and the prefix events
@@ -87,6 +99,35 @@ _DEFAULT_MAX_ATTEMPTS = 1
 # retry budget multiplies the gate's per-attempt false-accept probability, so a very
 # large budget silently degrades the guarantee the gate is there to provide.
 _MAX_ATTEMPTS_CEILING = 100
+
+
+def _spend_caps(node: PlannedNode) -> tuple[int | None, int | None]:
+    """The node's ``(max_tokens, max_cost_microunits)`` caps, validated at the point of use.
+
+    Same reasoning as ``_max_attempts``: ``PlannedNode.budgets`` is untyped, and a plan can
+    be built programmatically through the runtime facade without passing the manifest
+    validator, so the value is checked here rather than trusted.
+
+    ``0`` is a legitimate cost cap — "this node may not spend money at all" — so the floor
+    differs per dimension: tokens must be at least 1 (a node that may not use a single token
+    cannot do anything, which is a mis-authored graph rather than a policy), cost may be 0.
+    """
+    return (
+        _optional_cap(node, "max_tokens", minimum=1),
+        _optional_cap(node, "max_cost_microunits", minimum=0),
+    )
+
+
+def _optional_cap(node: PlannedNode, field: str, *, minimum: int) -> int | None:
+    raw = node.budgets.get(field)
+    if raw is None:
+        return None
+    # bool is a subclass of int, so True would otherwise read as a cap of 1.
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise GraphIntegrityError(f"{field} must be an integer")
+    if raw < minimum:
+        raise GraphIntegrityError(f"{field} must be at least {minimum}")
+    return raw
 
 
 def _max_attempts(node: PlannedNode) -> int:
@@ -168,12 +209,13 @@ class GraphRunController:
             or identity.policy_digest != plan.policy_digest
         ):
             raise GraphIntegrityError("event log identity does not match immutable execution plan")
-        # Validate EVERY node's retry budget before any work starts, not when its node is
+        # Validate EVERY node's budgets before any work starts, not when its node is
         # reached.  Reaching a node can itself fail first (a denied envelope, for example),
         # which would leave an illegal budget — including an effectful node with a retry
         # budget it must never have — undetected on that run.
         for planned in plan.nodes:
             _max_attempts(planned)
+            _spend_caps(planned)
         self.plan = plan
         self.event_log = event_log
         self._worker = worker
@@ -379,7 +421,22 @@ class GraphRunController:
         # Starts at consumed + 1, so every attempt number written is strictly greater than
         # any already recorded.  A lower number appended after a higher one would make the
         # finished run unreadable to the lifecycle validation in latest_node_states.
+        max_tokens, max_cost = _spend_caps(node)
         for attempt in range(consumed + 1, budget + 1):
+            # Checked before EVERY attempt, and re-derived from the log rather than kept in a
+            # local accumulator, so the number enforced against cannot drift from the number a
+            # later reader computes from the same run directory. One extra replay per attempt
+            # is within the cost profile the log already accepts (every append replays).
+            refusal = spend_refusal(
+                spend=self._spend_snapshot()[node_id],
+                max_tokens=max_tokens, max_cost_microunits=max_cost,
+                scope=f"node {node_id!r}",
+            )
+            if refusal is not None:
+                return self._fail_node(
+                    states, node_id, refusal, attempt=max(attempt - 1, 1),
+                    cause=NodeFailureCause.SPEND_EXHAUSTED,
+                )
             if attempt <= cursor.started.get(node_id, 0):
                 # This attempt already has a node.running receipt, so a previous run started
                 # it and died before it completed. Its prefix events de-duplicate on
@@ -409,7 +466,9 @@ class GraphRunController:
             # budget runs out ON a gate rejection, that rejection would appear solely on
             # the terminal node.failed and be missed.
             cause = outcome.cause or NodeFailureCause.WORKER_FAULT
-            self._append_attempt_failed(node_id, attempt, reason, cause, outcome.verdict)
+            self._append_attempt_failed(
+                node_id, attempt, reason, cause, outcome.verdict, outcome.usage,
+            )
             if attempt < budget:
                 continue
             return self._fail_node(
@@ -473,7 +532,31 @@ class GraphRunController:
             return _AttemptOutcome(
                 failure="worker output artifact verification failed",
                 cause=NodeFailureCause.ARTIFACT_UNVERIFIED,
+                # An attempt whose artifacts did not verify still burned whatever the worker
+                # reported. The isinstance guard is load-bearing: validate_worker_result is
+                # one of the things that may have raised here, so ``result`` is not yet known
+                # to be a WorkerResult and reading .usage off it blindly would raise again.
+                usage=result.usage if isinstance(result, WorkerResult) else None,
             )
+        # After validate_worker_result, never before: reaching into ``result.usage`` on
+        # something that is not a WorkerResult would raise AttributeError and escape this
+        # method uncaught, turning a misbehaving worker into a crashed run.
+        max_tokens, max_cost = _spend_caps(node)
+        if (max_tokens is not None or max_cost is not None) and (
+            result.usage is None or not result.usage.measured_anything
+        ):
+            # The node asked to be bounded by spend and this worker cannot say what it spent.
+            # Metering it as free would leave the cap permanently untripped — a budget that can
+            # never fire, which is indistinguishable from protection until the bill arrives.
+            # Terminal rather than retried: the WIRING is what is wrong, so a further attempt
+            # would report exactly as little while costing exactly as much.
+            return _AttemptOutcome(terminal=self._fail_node(
+                states, node_id,
+                f"node {node_id!r} declares a spend budget but its worker reported no usage, "
+                "so spend cannot be metered; either remove the budget or bind the node to a "
+                "worker that reports usage",
+                attempt=attempt, cause=NodeFailureCause.BUDGET_UNMEASURABLE,
+            ))
         states[node_id] = NodeState.GATING
         self._append_node(node_id, "node.gating", NodeState.GATING, attempt=attempt)
         try:
@@ -503,17 +586,23 @@ class GraphRunController:
                 **({"route": route_payload(expected_route)} if expected_route else {}),
                 **({"transport": expected_transport} if expected_transport else {}),
                 **isolation_payload(result),
+                **usage_payload(result.usage),
             )
             return _AttemptOutcome(succeeded=True)
         return _AttemptOutcome(
             failure="independent gate rejected output",
             cause=NodeFailureCause.GATE_REJECTED,
             verdict=verdict_body(verdict),
+            # A rejected attempt spent real money. Carrying its usage onto the attempt record
+            # is what makes retry spend visible at all: without it, the only measured attempts
+            # would be the ones that passed, and a node could retry its way through any cap
+            # while every recorded total looked small.
+            usage=result.usage,
         )
 
     def _append_attempt_failed(
         self, node_id: str, attempt: int, reason: str, cause: NodeFailureCause,
-        verdict: dict[str, object] | None,
+        verdict: dict[str, object] | None, usage: WorkerUsage | None = None,
     ) -> None:
         """Record one failed attempt without transitioning run state.
 
@@ -529,6 +618,7 @@ class GraphRunController:
         }
         if verdict is not None:
             payload["verdict"] = verdict
+        payload.update(usage_payload(usage))
         self._append(f"{node_id}:node.attempt.failed:{attempt}", "node.attempt.failed", payload)
 
     def _append_redrive(self, node_id: str, attempt: int, redrive: int) -> None:
@@ -597,6 +687,16 @@ class GraphRunController:
             )
         # PENDING: no decision yet — stay paused; the hold receipt is already durable.
         return self.event_log.replay_projection()
+
+    def _spend_snapshot(self) -> dict[str, NodeSpend]:
+        """Per-node spend as the DURABLE receipts state it, right now.
+
+        Re-read rather than accumulated in a field on purpose. An in-memory total is a second
+        copy of a number that already exists on disk, and the two can disagree — after a
+        resume they certainly would, since the process that spent the money is gone. Reading
+        the one authoritative copy removes the possibility of drift rather than testing for it.
+        """
+        return consumed_spend_from(self.plan, self.event_log.replay())
 
     def _node(self, node_id: str) -> PlannedNode:
         return next(node for node in self.plan.nodes if node.node_id == node_id)

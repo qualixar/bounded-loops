@@ -52,6 +52,16 @@ class NodeFailureCause(str, Enum):
     BUDGET_SPENT = "budget_spent"
     #: One attempt was re-driven by resumes too many times without ever completing.
     REDRIVE_EXHAUSTED = "redrive_exhausted"
+    #: The node's token or cost budget was spent, so no further attempt could start.
+    #: Distinct from BUDGET_SPENT, which is about the ATTEMPT count: a node can exhaust
+    #: its money with attempts to spare, and conflating the two would misreport which
+    #: bound actually stopped the work.
+    SPEND_EXHAUSTED = "spend_exhausted"
+    #: The node declares a spend budget but its worker returned no usage, so the spend
+    #: could not be metered. Refused rather than metered as free: a budget checked against
+    #: an unmeasurable quantity never trips, which looks exactly like protection and is not.
+    #: Deterministic for a given wiring, so it is not retried.
+    BUDGET_UNMEASURABLE = "budget_unmeasurable"
 
 
 @dataclass(frozen=True)

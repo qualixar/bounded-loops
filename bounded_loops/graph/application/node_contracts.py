@@ -16,6 +16,7 @@ from typing import Mapping, Protocol
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.events import GraphRunIdentity
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
+from bounded_loops.graph.domain.usage import WorkerUsage
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope
 
 
@@ -27,6 +28,11 @@ class WorkerResult:
     isolation receipt — which provider ran the node and the per-dimension controls
     it actually enforced ({net, fs_write, fs_read, pid, user, kernel, egress}).
     They are optional so a gate or a legacy worker may return only digests.
+
+    ``usage`` is what this attempt consumed. ``None`` means the worker reports no usage at
+    all — which is honest, and is why a node that declares a spend budget refuses to run on
+    such a worker instead of metering it as free. New fields are appended, never inserted:
+    four of the five construction sites build this positionally.
     """
 
     output_artifact_digests: tuple[str, ...]
@@ -34,6 +40,7 @@ class WorkerResult:
     observed_transport: str | None = None
     isolation_provider_id: str | None = None
     enforced_controls: Mapping[str, str] | None = None
+    usage: WorkerUsage | None = None
 
 
 @dataclass(frozen=True)

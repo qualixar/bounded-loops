@@ -11,6 +11,7 @@ from __future__ import annotations
 from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.errors import GraphIntegrityError
+from bounded_loops.graph.domain.usage import WorkerUsage
 
 
 def node_event_key(node_id: str, event_type: str, attempt: int) -> str:
@@ -42,6 +43,24 @@ def validate_worker_result(result: WorkerResult) -> None:
         not isinstance(result.observed_transport, str) or not result.observed_transport
     ):
         raise GraphIntegrityError("worker result contains an invalid transport identity")
+    if result.usage is not None and not isinstance(result.usage, WorkerUsage):
+        # A worker handing back a bare dict here would defeat WorkerUsage's own
+        # validation, which is the only thing standing between the spend total and a
+        # negative "charge" that refunds budget.
+        raise GraphIntegrityError("worker result contains invalid usage")
+
+
+def usage_payload(usage: WorkerUsage | None) -> dict[str, object]:
+    """The ``usage`` block for a receipt, or empty when nothing was measured.
+
+    Empty rather than a zero-filled block: a receipt that says nothing about spend and one
+    that claims zero spend are different assertions, and only the first is true of a worker
+    that cannot meter itself.
+    """
+    if usage is None:
+        return {}
+    body = usage.payload()
+    return {"usage": body} if body else {}
 
 
 def validate_observed_route(expected: ResolvedRoute | None, observed: ResolvedRoute | None) -> None:
