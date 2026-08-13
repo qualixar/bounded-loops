@@ -24,6 +24,7 @@ from bounded_loops.graph.domain.authoring import (
     canonical_json,
     digest,
 )
+from bounded_loops.graph.application.edge_guards import canonical_guard
 from bounded_loops.graph.domain.errors import GraphValidationError
 
 
@@ -269,9 +270,10 @@ def _edges(raw: object, nodes: tuple[AuthoringNode, ...]) -> tuple[AuthoringEdge
             raise _error("missing_input_port", f"{pointer}/to_port", "target input does not exist")
         if known[from_node].outputs[from_port] != known[to_node].inputs[to_port]:
             raise _error("port_type_mismatch", pointer, "edge port types must match")
-        when = edge.get("when")
-        if when is not None and not isinstance(when, str):
-            raise _error("edge_condition", f"{pointer}/when", "must be a string or null")
+        # Resolve through the guard grammar, which REFUSES any condition it cannot enforce. Before
+        # this, every string was accepted here and then silently ignored by the scheduler, so an
+        # authored condition never applied. Refusing at authoring time is the fail-closed inversion.
+        when = canonical_guard(edge.get("when"), pointer=f"{pointer}/when")
         edges.append(AuthoringEdge(from_node, from_port, to_node, to_port, when))
     return tuple(edges)
 

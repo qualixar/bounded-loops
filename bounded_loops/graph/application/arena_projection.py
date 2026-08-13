@@ -244,17 +244,24 @@ def latest_node_states(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ..
     return values
 
 
-def _predecessors(plan: ExecutionPlan) -> dict[str, tuple[str, ...]]:
-    """Map each planned node to its DAG predecessors (edge sources), mirroring the
-    scheduler's construction in ``derive_ready_nodes``."""
-    sources: dict[str, list[str]] = {node.node_id: [] for node in plan.nodes}
+def _predecessors(plan: ExecutionPlan) -> dict[str, tuple[tuple[str, str | None], ...]]:
+    """Map each planned node to its DAG predecessors as (source id, edge guard) pairs, mirroring the
+    scheduler's construction in ``derive_ready_nodes``.
+
+    The guard travels with the source because admission depends on it. Carrying only the id — as this
+    did before edge guards were enforced — would let the verifier and the scheduler disagree the
+    moment a graph used a conditional edge, which is exactly the divergence this shared predicate
+    exists to prevent."""
+    sources: dict[str, list[tuple[str, str | None]]] = {node.node_id: [] for node in plan.nodes}
     for edge in plan.edges:
-        sources[edge.to_node].append(edge.from_node)
+        sources[edge.to_node].append((edge.from_node, edge.when))
     return {node_id: tuple(parents) for node_id, parents in sources.items()}
 
 
 def _assert_causal_admission(
-    node: PlannedNode, predecessors: tuple[str, ...], values: dict[str, dict[str, object]],
+    node: PlannedNode,
+    predecessors: tuple[tuple[str, str | None], ...],
+    values: dict[str, dict[str, object]],
 ) -> None:
     """Fail closed if a node left PENDING before its DAG predecessors admitted it.
 
@@ -265,12 +272,15 @@ def _assert_causal_admission(
     child reaching READY (and thus SUCCEEDED) before its parents — is rejected here even
     though every per-node ``_ALLOWED`` lifecycle is individually legal. Join semantics
     are honored exactly, because the check and the scheduler share one predicate."""
-    parents: list[NodeState] = []
-    for source in predecessors:
+    parents: list[tuple[NodeState, str | None]] = []
+    for source, guard in predecessors:
         state = values[source]["state"]
         if not isinstance(state, str) or state not in NodeState.__members__:
             raise GraphIntegrityError("Arena receipt node state is invalid")
-        parents.append(NodeState(state))
+        parents.append((NodeState(state), guard))
+    # ``predecessors_admit`` is the ADMIT-only face of the predicate, which is what this check wants:
+    # a receipt claiming a node reached READY when admission says its branch should have been SKIPPED
+    # is a causality violation, not an alternative path.
     if not predecessors_admit(node.kind, node.approval_policy, tuple(parents)):
         raise GraphIntegrityError(
             f"Arena receipt violates DAG causality: node {node.node_id!r} left PENDING "
