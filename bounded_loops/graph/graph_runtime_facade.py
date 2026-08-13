@@ -99,6 +99,8 @@ from bounded_loops.graph.application.arena_projection import (
     read_arena_projection,
 )
 from bounded_loops.graph.application.egress_broker import EgressBroker
+from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
+from bounded_loops.graph.adapters.enforcement import probe_platform
 from bounded_loops.graph.graph_composition import (
     _ALL_EXECUTOR_TRANSPORTS,
     build_execution_controller,
@@ -430,7 +432,7 @@ class LocalGraphRuntimeFacade:
         # every later approve failing identically. That is the P2-B closed door exactly: a new
         # refusal that wedges a previously-continuable run. A dry assembly costs one object
         # construction and keeps the ledger untouched when the wiring cannot work.
-        self._assert_assemblable(plan=plan, identity=identity, run_dir=run_dir)
+        capabilities = self._assert_assemblable(plan=plan, identity=identity, run_dir=run_dir)
 
         if decision == "approved":
             self._record_approval(
@@ -465,6 +467,10 @@ class LocalGraphRuntimeFacade:
                 approval_resolver=resolver,
                 run_budget=run_budget if run_budget is not None else self.run_budget,
                 price_table=price_table if price_table is not None else self.price_table,
+                # Reused from the dry assembly above, not re-probed: the platform probe is
+                # ~550 ms of docker-daemon check, and paying it twice to run a safety check is
+                # how the safety check ends up deleted later.
+                capabilities=capabilities,
             )
         except GraphValidationError as exc:
             raise GraphIntegrityError(f"approve: controller wiring failed — {exc.message}") from exc
@@ -658,13 +664,19 @@ class LocalGraphRuntimeFacade:
 
     def _assert_assemblable(
         self, *, plan: ExecutionPlan, identity: GraphRunIdentity, run_dir: Path,
-    ) -> None:
+    ) -> PlatformCapabilities:
         """Raise if this deployment could not build a controller for *plan* — before any write.
 
         Uses the same ``build_execution_controller`` the real continuation uses, so the check cannot
-        drift from what it is checking. Assembly reads and validates; it starts no node and appends
-        no receipt, so calling it twice costs one wasted object and no durable effect.
+        drift from what it is checking: a future refusal added there is automatically covered here.
+        Assembly reads and validates; it starts no node and appends no receipt.
+
+        Returns the platform probe so the real assembly can REUSE it. Measured: an assembly is
+        ~550 ms, almost all of it the docker-daemon reachability check, and paying that twice on a
+        human-facing ``approve`` to run a check is the kind of cost that gets a safety check deleted
+        later. Probing once keeps both the check and the latency.
         """
+        capabilities = probe_platform()
         try:
             build_execution_controller(
                 plan=plan,
@@ -679,12 +691,14 @@ class LocalGraphRuntimeFacade:
                 byok_tls_context=self.byok_tls_context,
                 run_budget=self.run_budget,
                 price_table=self.price_table,
+                capabilities=capabilities,
             )
         except GraphValidationError as exc:
             raise GraphIntegrityError(
                 f"approve: refusing to record a decision this deployment could not then act on — "
                 f"{exc.message}"
             ) from exc
+        return capabilities
 
     def _require_approval_node(self, plan: ExecutionPlan, node_id: str) -> PlannedNode:
         """Return the APPROVAL node with ``node_id`` or fail closed — a bogus or non-approval node_id
