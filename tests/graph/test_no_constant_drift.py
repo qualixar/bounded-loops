@@ -14,8 +14,8 @@ from pathlib import Path
 from bounded_loops.graph.adapters.connectors.local_cli_worker import CLI_PROFILES
 from bounded_loops.graph.adapters.persistence.event_log import _NODE_EVENTS
 from bounded_loops.graph.application.arena_projection import _ALLOWED, _LIFECYCLE_EVENTS
-from bounded_loops.graph.application.run_graph import _EFFECTFUL_EFFECTS
-from bounded_loops.graph.application.run_graph import _MAX_ATTEMPTS_CEILING as CONTROLLER_CEILING
+from bounded_loops.graph.application.node_spend import EFFECTFUL_EFFECTS
+from bounded_loops.graph.application.node_spend import MAX_ATTEMPTS_CEILING as CONTROLLER_CEILING
 from bounded_loops.graph.application.validate_graph import _PROVIDERS
 from bounded_loops.graph.application.validate_graph import _MAX_ATTEMPTS_CEILING as SCHEMA_CEILING
 from bounded_loops.graph.domain.authoring import NETWORK_EFFECTS, Effect
@@ -70,7 +70,7 @@ def test_the_portability_denylist_covers_every_shipped_provider() -> None:
 
 
 def test_adding_an_effect_forces_a_retry_safety_decision() -> None:
-    """``_EFFECTFUL_EFFECTS`` aliases ``NETWORK_EFFECTS``, which conflates two axes.
+    """``EFFECTFUL_EFFECTS`` aliases ``NETWORK_EFFECTS``, which conflates two axes.
 
     Retry safety and network posture happen to select the same three effects today, but they
     are different questions. Aliasing them means a new network-bearing effect that IS safe to
@@ -84,7 +84,7 @@ def test_adding_an_effect_forces_a_retry_safety_decision() -> None:
     assert {effect.value for effect in Effect} == {
         "read_only", "workspace_write", "external_write", "financial", "irreversible",
     }
-    assert _EFFECTFUL_EFFECTS == NETWORK_EFFECTS
+    assert EFFECTFUL_EFFECTS == NETWORK_EFFECTS
     assert NETWORK_EFFECTS == frozenset(
         {Effect.EXTERNAL_WRITE, Effect.FINANCIAL, Effect.IRREVERSIBLE}
     )

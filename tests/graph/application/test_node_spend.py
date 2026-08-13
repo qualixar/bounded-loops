@@ -20,9 +20,11 @@ from pathlib import Path
 import pytest
 
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
+from bounded_loops.graph.application.arena_projection import latest_node_states
 from bounded_loops.graph.application.node_contracts import WorkerResult
 from bounded_loops.graph.application.node_spend import (
     NodeSpend,
+    RunBudget,
     consumed_spend_from,
     run_spend,
     spend_refusal,
@@ -612,3 +614,152 @@ def test_an_unpriced_route_makes_a_cost_cap_fail_closed(tmp_path: Path) -> None:
     failed = _of_type(tmp_path, "node.failed")
     assert failed[0]["cause"] == "budget_unmeasurable"
     assert "cost" in failed[0]["reason"]
+
+
+# --------------------------------------------------------------------------------------
+# The run-level total: exhausting it PAUSES rather than fails.
+# --------------------------------------------------------------------------------------
+
+
+def _budgeted_run(
+    tmp_path: Path, *, worker: object, gate: object, run_budget: RunBudget,
+    budgets: dict[str, object],
+) -> GraphRunController:
+    plan = _plan(budgets)
+    return GraphRunController(
+        plan=plan, event_log=GraphEventLog(tmp_path / "events.jsonl", _identity()),
+        worker=worker, gate=gate, artifact_verifier=_PassingVerifier(),  # type: ignore[arg-type]
+        execution_policy=_policy(plan), execution_enforcer=_Enforcer(),
+        timestamp=lambda: "2026-08-12T00:00:00Z", run_budget=run_budget,
+    )
+
+
+def test_reaching_the_run_total_pauses_the_run_instead_of_failing_it(tmp_path: Path) -> None:
+    """The operator set this number, so reaching it stops and asks rather than discards work.
+
+    A node's own cap failing that node is proportionate — one step overran its allowance. A
+    run total is the operator's call, and failing the run would throw away everything already
+    completed and paid for.
+    """
+    worker = _MeteredWorker()  # 100 tokens per attempt
+    controller = _budgeted_run(
+        tmp_path, worker=worker, gate=_Gate(reject_first=99),
+        run_budget=RunBudget(max_tokens=150), budgets={"max_attempts": 10},
+    )
+
+    projection = controller.run()
+
+    # RUNNING, not FAILED: the run is still resumable, which is the entire difference between
+    # pausing for a decision and giving up.
+    assert projection.state == "RUNNING"
+    assert worker.calls == 2, "the third attempt must not start: 200 of 150 tokens spent"
+    paused = _of_type(tmp_path, "run.budget.paused")
+    assert len(paused) == 1
+    assert paused[0]["tokens"] == 200
+    assert paused[0]["max_tokens"] == 150
+    assert "this run" in paused[0]["reason"]
+    assert not _of_type(tmp_path, "node.failed"), "a pause is not a failure"
+
+
+def test_resuming_with_the_same_ceiling_pauses_again_without_growing_the_log(
+    tmp_path: Path,
+) -> None:
+    """Polling a paused run must be free. The pause key names where it happened, so the
+    identical event de-duplicates instead of appending once per poll."""
+    controller = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
+        run_budget=RunBudget(max_tokens=150), budgets={"max_attempts": 10},
+    )
+    controller.run()
+    events_after_pause = len(_events(tmp_path))
+
+    for _ in range(3):
+        resumed = _budgeted_run(
+            tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
+            run_budget=RunBudget(max_tokens=150), budgets={"max_attempts": 10},
+        ).resume()
+        assert resumed.state == "RUNNING"
+
+    assert len(_of_type(tmp_path, "run.budget.paused")) == 1
+    # One event for the first poll, and nothing at all after that. Two rules compose to give
+    # this: the pause re-appends an identical record that de-duplicates, which leaves
+    # run.resumed as the last event, which is exactly the condition under which the next
+    # resume skips recording itself. So a client can poll a budget-paused run forever without
+    # touching the log — while a resume that actually advances work is still recorded.
+    growth = len(_events(tmp_path)) - events_after_pause
+    assert growth == 1, f"polling a paused run must be free; it appended {growth} events"
+    assert [p["resume_ordinal"] for p in _of_type(tmp_path, "run.resumed")] == [1]
+
+
+def test_resuming_with_a_raised_ceiling_continues_the_run(tmp_path: Path) -> None:
+    """Continuing costs the operator an explicit new number — never a bypass grant.
+
+    A grant recorded in the log could be replayed to buy spend a second time. A ceiling passed
+    in at resume cannot: it is not in the log, it is the operator's decision for this attempt
+    at continuing, and the receipts show exactly what was spent under it.
+    """
+    controller = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=1),
+        run_budget=RunBudget(max_tokens=50), budgets={"max_attempts": 10},
+    )
+    assert controller.run().state == "RUNNING"
+    assert _of_type(tmp_path, "run.budget.paused")[0]["tokens"] == 100
+
+    resumed = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=0),
+        run_budget=RunBudget(max_tokens=100_000), budgets={"max_attempts": 10},
+    ).resume()
+
+    assert resumed.state == "SUCCEEDED"
+
+
+def test_a_run_with_no_declared_total_is_never_paused(tmp_path: Path) -> None:
+    """Every pre-0.5 run has no run budget; the pause must be invisible to them."""
+    projection = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=2),
+        run_budget=RunBudget(), budgets={"max_attempts": 5},
+    ).run()
+
+    assert projection.state == "SUCCEEDED"
+    assert not _of_type(tmp_path, "run.budget.paused")
+
+
+def test_a_pause_never_parks_the_node_on_awaiting_approval(tmp_path: Path) -> None:
+    """AWAITING_APPROVAL means a decision recorded against an approval node, with a resolver.
+
+    None of that exists for a budget pause, so claiming it would be a lie in the Arena. It is
+    also unreachable in general — a resumed node sits in STARTING, RUNNING or GATING, none of
+    which has an AWAITING_APPROVAL edge, and adding one would make
+    RUNNING -> AWAITING_APPROVAL -> SUCCEEDED reachable, letting a node succeed on a human
+    decision instead of on its independent gate.
+    """
+    controller = _budgeted_run(
+        tmp_path, worker=_MeteredWorker(), gate=_Gate(reject_first=99),
+        run_budget=RunBudget(max_tokens=150), budgets={"max_attempts": 10},
+    )
+    controller.run()
+
+    assert not _of_type(tmp_path, "node.awaiting_approval")
+    # And the run is still readable by the Arena and the resume path, which is what an
+    # illegal lifecycle transition would have destroyed.
+    states = latest_node_states(controller.plan, controller.event_log.replay())
+    assert states[_NODE_ID]["state"] in ("RUNNING", "GATING")
+
+
+def test_a_pause_records_the_ceiling_it_reached(tmp_path: Path) -> None:
+    """A pause the operator cannot check against what they authorised explains nothing."""
+    _budgeted_run(
+        tmp_path, worker=_MeteredWorker(cost_microunits=900), gate=_Gate(reject_first=99),
+        run_budget=RunBudget(max_cost_microunits=1_000), budgets={"max_attempts": 5},
+    ).run()
+
+    paused = _of_type(tmp_path, "run.budget.paused")[0]
+    assert paused["max_cost_microunits"] == 1_000
+    assert paused["cost_microunits"] == 1_800
+    assert "cost" in paused["reason"]
+
+
+@pytest.mark.parametrize("field", ["max_tokens", "max_cost_microunits"])
+def test_a_negative_run_ceiling_is_refused(field: str) -> None:
+    with pytest.raises(GraphIntegrityError, match="non-negative"):
+        RunBudget(**{field: -1})  # type: ignore[arg-type]

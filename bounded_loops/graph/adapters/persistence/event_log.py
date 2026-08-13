@@ -111,6 +111,10 @@ _AUDIT_EVENTS = frozenset({
     # actually true are different facts, and conflating them would make the gate's own error
     # rate uncomputable.
     "node.outcome.labeled",
+    # The run stopped because the OPERATOR's total budget was reached. Additive on purpose:
+    # the run stays RUNNING and therefore resumable, which is the whole difference between
+    # pausing for a decision and failing. A failure would discard the run's completed work.
+    "run.budget.paused",
 })
 
 
@@ -562,6 +566,30 @@ def _validate_audit_event(event_type: str, payload: Mapping[str, object]) -> Non
             value = payload[field]
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise GraphIntegrityError(f"node.redrive {field} must be a positive integer")
+
+    elif event_type == "run.budget.paused":
+        required = {"node_id", "attempt", "reason", "tokens", "cost_microunits"}
+        if set(payload) - {"max_tokens", "max_cost_microunits"} != required:
+            raise GraphIntegrityError("run.budget.paused payload has an invalid shape")
+        if not isinstance(payload["node_id"], str) or not payload["node_id"]:
+            raise GraphIntegrityError("run.budget.paused node_id must be a non-empty string")
+        if not isinstance(payload["reason"], str) or not payload["reason"]:
+            raise GraphIntegrityError("run.budget.paused reason must be a non-empty string")
+        attempt = payload["attempt"]
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+            raise GraphIntegrityError("run.budget.paused attempt must be a positive integer")
+        for field in ("tokens", "cost_microunits", "max_tokens", "max_cost_microunits"):
+            if field not in payload:
+                continue
+            value = payload[field]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise GraphIntegrityError(
+                    f"run.budget.paused {field} must be a non-negative integer"
+                )
+        if "max_tokens" not in payload and "max_cost_microunits" not in payload:
+            # A pause with no cap recorded cannot be explained to the operator it exists to
+            # inform, and cannot be checked against what they actually authorised.
+            raise GraphIntegrityError("run.budget.paused must record the cap it reached")
 
     elif event_type == "node.attempt.failed":
         # ``verdict`` is present EXACTLY when the attempt failed at the independent

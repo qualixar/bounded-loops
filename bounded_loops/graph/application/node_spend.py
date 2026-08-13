@@ -13,7 +13,8 @@ from typing import Mapping
 
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import StoredGraphEvent
-from bounded_loops.graph.domain.plan import ExecutionPlan
+from bounded_loops.graph.domain.authoring import NETWORK_EFFECTS
+from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 from bounded_loops.graph.domain.usage import WorkerUsage, usage_from_payload
 
 #: Receipt kinds that carry per-node consumption. Listed explicitly rather than matched by
@@ -79,6 +80,38 @@ class NodeSpend:
             attempts_recorded=self.attempts_recorded + 1,
             attempts_measured=self.attempts_measured + (1 if measured else 0),
         )
+
+
+@dataclass(frozen=True)
+class RunBudget:
+    """A ceiling on what the WHOLE run may spend, across every node.
+
+    Operational rather than authored: it arrives from the CLI, a budget file, or the UI, not
+    from the graph. A graph declares what each step needs; how much this particular execution
+    of it is allowed to cost is the operator's call, and it changes run to run.
+
+    Exhausting it PAUSES the run instead of failing it. A node's own cap failing that node is
+    proportionate — one step overran its allowance. A run total is different: the operator set
+    it, and the right response to reaching it is to stop and ask them, not to throw away a
+    run's completed work. Nothing is bypassed to continue: the operator resumes with a higher
+    ceiling, and the new ceiling is explicit rather than a grant that could be forged or
+    replayed.
+    """
+
+    max_tokens: int | None = None
+    max_cost_microunits: int | None = None
+
+    def __post_init__(self) -> None:
+        for field in ("max_tokens", "max_cost_microunits"):
+            value = getattr(self, field)
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise GraphIntegrityError(f"run budget {field} must be a non-negative integer")
+
+    @property
+    def declared(self) -> bool:
+        return self.max_tokens is not None or self.max_cost_microunits is not None
 
 
 def consumed_spend_from(
@@ -268,3 +301,84 @@ def consumed_attempts_from(
                 f"recorded a failure but the highest started attempt is {started_attempt}"
             )
     return ResumeCursor(spent=spent, started=started, redrives=redrives)
+
+
+# Effects whose real-world action cannot be safely repeated by an at-least-once
+# re-drive without a per-effect idempotency key (ADR-12 D7).  Aliased from
+# NETWORK_EFFECTS in authoring.py — the two sets name the same effects because
+# network-bearing effects are exactly those that cannot be safely retried without
+# an idempotency key.  They are kept as separate names to preserve the distinct
+# semantic axes (ARCH-03).
+EFFECTFUL_EFFECTS = NETWORK_EFFECTS
+
+
+# An attempt that never completes can be re-driven once per resume, and the prefix events
+# de-duplicate, so nothing in the log advances.  This caps that: an external loop killing
+# the worker before it reaches its gate can no longer buy unbounded executions against a
+# bounded attempt count.  Fails closed on exhaustion; the pause-for-approval upgrade
+# belongs with the run-level spend budget.
+MAX_REDRIVES_PER_ATTEMPT = 3
+
+DEFAULT_MAX_ATTEMPTS = 1
+# A ceiling exists so a typo in a manifest cannot request an effectively unbounded
+# loop.  It is deliberately far below the authoring schema's own 1..1000 range: the
+# retry budget multiplies the gate's per-attempt false-accept probability, so a very
+# large budget silently degrades the guarantee the gate is there to provide.
+MAX_ATTEMPTS_CEILING = 100
+
+
+def spend_caps(node: PlannedNode) -> tuple[int | None, int | None]:
+    """The node's ``(max_tokens, max_cost_microunits)`` caps, validated at the point of use.
+
+    Same reasoning as ``max_attempts``: ``PlannedNode.budgets`` is untyped, and a plan can
+    be built programmatically through the runtime facade without passing the manifest
+    validator, so the value is checked here rather than trusted.
+
+    ``0`` is a legitimate cost cap — "this node may not spend money at all" — so the floor
+    differs per dimension: tokens must be at least 1 (a node that may not use a single token
+    cannot do anything, which is a mis-authored graph rather than a policy), cost may be 0.
+    """
+    return (
+        _optional_cap(node, "max_tokens", minimum=1),
+        _optional_cap(node, "max_cost_microunits", minimum=0),
+    )
+
+
+def _optional_cap(node: PlannedNode, field: str, *, minimum: int) -> int | None:
+    raw = node.budgets.get(field)
+    if raw is None:
+        return None
+    # bool is a subclass of int, so True would otherwise read as a cap of 1.
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise GraphIntegrityError(f"{field} must be an integer")
+    if raw < minimum:
+        raise GraphIntegrityError(f"{field} must be at least {minimum}")
+    return raw
+
+
+def max_attempts(node: PlannedNode) -> int:
+    """The node's retry budget, validated at the point of use.
+
+    ``PlannedNode.budgets`` is ``Mapping[str, object]``, so the value is untyped and
+    must be checked rather than cast.  Validation lives here as well as in manifest
+    validation because a plan can be built programmatically through the runtime
+    facade without passing through the manifest validator, and an unbounded loop is
+    the one failure this component must never have.
+    """
+    raw = node.budgets.get("max_attempts", DEFAULT_MAX_ATTEMPTS)
+    # bool is a subclass of int in Python, so True would otherwise read as 1.
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise GraphIntegrityError("max_attempts must be an integer")
+    if raw < 1 or raw > MAX_ATTEMPTS_CEILING:
+        raise GraphIntegrityError(f"max_attempts must be between 1 and {MAX_ATTEMPTS_CEILING}")
+    if raw > 1 and (node.required_effects & EFFECTFUL_EFFECTS):
+        # The same D7 rule the resume path already enforces (see ``_states_from``): an
+        # external / irreversible effect cannot be re-driven without a per-effect
+        # idempotency key.  In-process retry is a re-drive too, so allowing a budget
+        # above one here would let a node repeat a payment or an external write that
+        # resume explicitly refuses to repeat — an asymmetry that double-spends.
+        raise GraphIntegrityError(
+            f"node {node.node_id!r} carries an external / irreversible effect, so it cannot "
+            "retry without a per-effect idempotency key (D7); declare max_attempts: 1"
+        )
+    return raw

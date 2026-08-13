@@ -26,7 +26,8 @@ from bounded_loops.graph.application.execution_policy import (
     ExecutionEnvelope,
     NetworkMode,
 )
-from bounded_loops.graph.application.run_graph import _MAX_REDRIVES_PER_ATTEMPT, GraphRunController
+from bounded_loops.graph.application.node_spend import MAX_REDRIVES_PER_ATTEMPT
+from bounded_loops.graph.application.run_graph import GraphRunController
 from bounded_loops.graph.application.node_contracts import (
     GateVerdict,
     IndependentGatePort,
@@ -576,7 +577,7 @@ def test_re_driving_one_attempt_forever_is_refused(tmp_path: Path) -> None:
     # Attempt 1 is started and then killed before its gate, over and over.
     with pytest.raises(KeyboardInterrupt):
         _controller_at(log_path, plan, _CrashingGate(crash_on=1), "2026-08-12T00:00:00Z").run()
-    for _ in range(_MAX_REDRIVES_PER_ATTEMPT):
+    for _ in range(MAX_REDRIVES_PER_ATTEMPT):
         with pytest.raises(KeyboardInterrupt):
             _controller_at(
                 log_path, plan, _CrashingGate(crash_on=1), "2026-08-12T00:00:00Z",
@@ -708,7 +709,7 @@ def test_one_attempts_redrives_do_not_starve_a_later_attempt(tmp_path: Path) -> 
     # under a per-node total, (2, 1) here would have been the fourth charge and the node
     # would have failed as redrive_exhausted instead of succeeding.
     assert redrives == [(1, 1), (1, 2), (1, 3), (2, 1)]
-    assert sum(1 for attempt, _ in redrives if attempt == 1) == _MAX_REDRIVES_PER_ATTEMPT
+    assert sum(1 for attempt, _ in redrives if attempt == 1) == MAX_REDRIVES_PER_ATTEMPT
     assert _of_type(tmp_path, "node.succeeded")[0]["attempt"] == 2
 
 
