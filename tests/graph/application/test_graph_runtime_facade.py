@@ -835,3 +835,35 @@ def test_a_recorded_catalog_that_moved_says_so_by_name(tmp_path, caplog) -> None
 
     assert "gone.toml" in caplog.text
     assert "--providers" in caplog.text
+
+
+def test_the_hosted_constructor_does_not_open_a_catalog_path_from_a_tenants_run_dir(tmp_path) -> None:
+    """The two addressing modes resolve providers differently, deliberately.
+
+    ``for_run_dir`` is the operator opening a directory on their own machine, so the catalog the run
+    recorded is their own file. The hosted ``runs_root`` constructor serves many tenants out of one
+    root, and the recorded path lives INSIDE a tenant's directory — honouring it would let a tenant
+    steer the server's file reads. The audit reported the asymmetry as a gap; it is the security
+    boundary, and this test is here so it does not get "fixed" into one.
+    """
+    import json
+
+    from bounded_loops.graph.adapters.persistence.local_arena_access import (
+        LocalSameTenantAuthorizer,
+    )
+
+    catalog = tmp_path / "tenant-supplied.toml"
+    catalog.write_text('[providers.smuggled]\nbinary = "/bin/echo"\n', encoding="utf-8")
+    run_dir = tmp_path / "roots" / "org" / "project" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run-meta.json").write_text(
+        json.dumps({"provider_catalog": str(catalog)}), encoding="utf-8"
+    )
+
+    hosted = LocalGraphRuntimeFacade(
+        runs_root=tmp_path / "roots",
+        arena_authorizer=LocalSameTenantAuthorizer(),
+        cli_profiles={"claude": CliProfile("claude")},
+    )
+
+    assert "smuggled" not in hosted.cli_profiles

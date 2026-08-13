@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import stat
 import tomllib
 from typing import Mapping
 
@@ -206,7 +207,7 @@ def catalog_from_mapping(document: Mapping[str, object]) -> Mapping[str, CliProf
         # ever reference, which then lists in ``bl graph providers`` as a nameless row; a non-string
         # key used to surface as ``AttributeError`` from ``name.lower()`` rather than a validation
         # error the caller can act on.
-        if not isinstance(name, str) or not name:
+        if not isinstance(name, str) or not name.strip():
             raise _error("/providers", f"provider name {name!r} must be a non-empty string")
     return {
         name: profile_from_mapping(name, entry, pointer=f"/providers/{name}")
@@ -223,15 +224,34 @@ _MAX_CATALOG_BYTES = 1024 * 1024
 def load_provider_catalog(path: Path) -> Mapping[str, CliProfile]:
     """Parse and validate a provider catalog file."""
     try:
-        size = path.stat().st_size
-        if size > _MAX_CATALOG_BYTES:
+        info = path.stat()
+        # A FIFO or a character device reports st_size == 0, so a cap on the STAT slipped straight
+        # past both and ``read_bytes()`` then blocked forever — a hang primitive against resume,
+        # approve and the console, reachable from a recorded catalog path or the env var. A catalog
+        # is a regular file; anything else is refused before it is opened.
+        if not stat.S_ISREG(info.st_mode):
             raise _error(
                 "/",
-                f"provider catalog {str(path)!r} is {size} bytes, over the "
+                f"provider catalog {str(path)!r} is not a regular file. A catalog is a small TOML "
+                "file; a pipe or device here would block the run instead of configuring it.",
+            )
+        if info.st_size > _MAX_CATALOG_BYTES:
+            raise _error(
+                "/",
+                f"provider catalog {str(path)!r} is {info.st_size} bytes, over the "
                 f"{_MAX_CATALOG_BYTES}-byte limit. A real catalog is a few small tables; this is "
                 "almost certainly the wrong file.",
             )
-        raw = path.read_bytes()
+        # Bounded by the bytes actually READ, not by what stat promised: the size can grow between
+        # the two calls, and a stat-only cap is a check on a number rather than on the data.
+        with path.open("rb") as handle:
+            raw = handle.read(_MAX_CATALOG_BYTES + 1)
+        if len(raw) > _MAX_CATALOG_BYTES:
+            raise _error(
+                "/",
+                f"provider catalog {str(path)!r} exceeded the {_MAX_CATALOG_BYTES}-byte limit while "
+                "being read.",
+            )
     except OSError as exc:
         raise _error("/", f"provider catalog {str(path)!r} could not be read: {exc}") from exc
     try:
@@ -275,13 +295,20 @@ def resolve_cli_profiles(
     """
     # Imported here rather than at module scope: ``provider_plugins`` imports this module for its
     # validator, and a top-level import each way is a cycle.
-    from bounded_loops.graph.adapters.connectors.provider_plugins import load_provider_plugins
+    from bounded_loops.graph.adapters.connectors.provider_plugins import (
+        load_provider_plugins,
+        reconstructed,
+    )
 
     # ``shipped`` is snapshotted BEFORE plugin code runs and the resolved map is built from that
     # snapshot, never from the live module global. The P3 audit showed why: a plugin factory that
     # mutates ``CLI_PROFILES`` and returns something harmless replaced the shipped ``claude`` with
     # its own binary, past every check that inspected only the returned mapping.
-    baseline = dict(shipped)
+    #
+    # ``reconstructed``, not ``dict()``: a shallow copy holds the SAME ``CliProfile`` objects, and
+    # ``object.__setattr__`` on one of those walks past both ``frozen=True`` and ``MappingProxyType``
+    # — so round two of the audit poisoned the snapshot as well. Fresh values leave nothing shared.
+    baseline = reconstructed(shipped)
     plugins = load_provider_plugins(shipped=baseline) if include_plugins else {}
     catalog = load_provider_catalog(catalog_path) if catalog_path is not None else {}
     return {**plugins, **baseline, **catalog}

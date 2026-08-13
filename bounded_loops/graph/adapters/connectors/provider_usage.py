@@ -14,11 +14,13 @@ numbers of unknown provenance. Refusing to guess is the whole posture.
 
 from __future__ import annotations
 
+from decimal import ROUND_CEILING, Decimal
 import json
+import math
 from typing import Mapping
 
 from bounded_loops.graph.domain.errors import GraphIntegrityError
-from bounded_loops.graph.domain.usage import WorkerUsage
+from bounded_loops.graph.domain.usage import MICROUNITS_PER_USD, WorkerUsage
 
 #: The three shapes every major provider uses, as ``(container, input key, output key)``.
 #: Tried in order; the first container present in the body wins. Listed explicitly rather
@@ -75,6 +77,7 @@ def extract_provider_usage(
         try:
             return WorkerUsage(
                 input_tokens=input_tokens, output_tokens=output_tokens,
+                cost_microunits=_cost_microunits(block.get("cost")),
                 wallclock_ms=wallclock_ms, reported_by=reported_by,
             )
         except GraphIntegrityError:
@@ -88,6 +91,36 @@ def extract_provider_usage(
     # by whatever the provider sent. Reporting it is honest and useful; it does NOT satisfy a
     # token or cost cap, because measurability is checked per dimension.
     return WorkerUsage(wallclock_ms=wallclock_ms, reported_by=reported_by)
+
+
+def _cost_microunits(raw: object) -> int | None:
+    """A provider's OWN reported charge, in integer micro-USD, or ``None``.
+
+    Found by running the real BYOK path against OpenRouter with live credentials: it reports
+    ``usage.cost`` in USD, the extractor read only token fields, and so a node declaring
+    ``max_cost_microunits`` on that connection **paid for the call and then failed as
+    ``budget_unmeasurable``** — with the exact cost sitting unread in the response. The same shape
+    P2-B found on the ``claude`` CLI, on the other transport.
+
+    A provider-reported charge is better than any price table: it is what will appear on the bill,
+    it needs no rates from the operator, and it cannot go stale when a provider reprices.
+
+    Two rules carried from P2-B, both about not under-counting:
+
+    * ``Decimal(str(...))``, never binary float arithmetic — ``0.1 * 1_000_000`` is not 100000 for
+      1196 of the two-decimal amounts under $10.
+    * Round **up**. A real charge of 4.158e-07 USD is 0.4158 micro-USD; truncating makes it free,
+      and "free" is the direction that lets a cap permit unauthorised spend. One micro-USD of
+      over-count is the honest error to prefer.
+    """
+    if raw is None or isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    if isinstance(raw, float) and not math.isfinite(raw):
+        return None
+    if raw < 0:
+        return None
+    exact = Decimal(str(raw)) * MICROUNITS_PER_USD
+    return int(exact.to_integral_value(rounding=ROUND_CEILING))
 
 
 def _parse(body: bytes) -> Mapping[str, object] | None:

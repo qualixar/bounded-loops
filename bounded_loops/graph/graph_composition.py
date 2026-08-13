@@ -36,15 +36,8 @@ from typing import Mapping, Sequence
 
 from bounded_loops.graph.adapters.connectors.admitted_connection_request import (
     AdmittedConnectionRecord,
-    AdmittedConnectionRequestBuilder,
     split_endpoint_host,
 )
-from bounded_loops.graph.adapters.connectors.artifact_body import LocalArtifactBody
-from bounded_loops.graph.adapters.connectors.credentials import (
-    CredentialSource,
-    EnvCredentialResolver,
-)
-from bounded_loops.graph.adapters.connectors.http_forwarder import HttpConnectorForwarder
 from bounded_loops.graph.adapters.connectors.local_cli_worker import (
     CLI_PROFILES,
     CliProfile,
@@ -60,12 +53,11 @@ from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
 from bounded_loops.graph.adapters.workers.acceptance_gate import StructuralAcceptanceGate
 from bounded_loops.graph.application.arena_projection import (
     ArenaReadRequest,
+    latest_node_states,
     read_arena_projection,
 )
 from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
-from bounded_loops.graph.application.connector_forward import ConnectorInvoker
 from bounded_loops.graph.adapters.workers.connector_worker import ConnectorNodeWorker
-from bounded_loops.graph.application.credential_broker import OpaqueCredentialBroker
 from bounded_loops.graph.application.egress_broker import EgressBroker
 from bounded_loops.graph.adapters.enforcement.egress_posture_policy import resolve_local_cli_egress_decision
 from bounded_loops.graph.application.execution_policy import (
@@ -85,12 +77,9 @@ from bounded_loops.graph.application.validate_graph import (
     parse_authoring_graph_json,
     parse_authoring_graph_yaml,
 )
-from bounded_loops.graph.domain.connections import (
-    CredentialBinding,
-    CredentialKind,
-)
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
+from bounded_loops.graph.byok_worker import _build_https_worker
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 from bounded_loops.graph.graph_run_report import (
     _fail,
@@ -355,6 +344,34 @@ def _preflight(
     return None
 
 
+def _refuse_unrunnable_providers(
+    plan: ExecutionPlan,
+    event_log: GraphEventLog,
+    cli_profiles: Mapping[str, CliProfile],
+) -> None:
+    """Refuse a local-CLI provider this deployment cannot run — for nodes that could still run.
+
+    A node already SUCCEEDED cannot execute again, so its provider is a historical fact rather than a
+    requirement. Reading the log costs one replay, which every assembly path does anyway.
+    """
+    try:
+        completed = {
+            node_id
+            for node_id, value in latest_node_states(plan, event_log.replay()).items()
+            if value.get("state") == "SUCCEEDED"
+        }
+    except (GraphIntegrityError, GraphValidationError):
+        completed = set()  # an unreadable log is the replay's problem to report, not this check's
+    for node in plan.nodes:
+        if node.kind == NodeKind.APPROVAL.value or node.node_id in completed:
+            continue
+        unknown_provider = unknown_local_cli_provider(plan, node, cli_profiles)
+        if unknown_provider is not None:
+            raise GraphValidationError(
+                "unknown_provider", f"/nodes/{node.node_id}", unknown_provider,
+            )
+
+
 def build_execution_controller(
     *,
     plan: ExecutionPlan,
@@ -409,20 +426,6 @@ def build_execution_controller(
             )
     enforcer = ExecutionEnforcer(caps)
 
-    # Every path that assembles a controller passes through here — ``execute_graph_run``, the
-    # facade's resume and approve, MCP, the console. ``_preflight`` only guards the first of those,
-    # so the provider check belongs at this chokepoint as well: a run created with a provider
-    # catalog and resumed without it names a provider that no longer exists, and the alternative is
-    # discovering that after the resume pass has already paid for the nodes upstream.
-    for node in plan.nodes:
-        if node.kind == NodeKind.APPROVAL.value:
-            continue
-        unknown_provider = unknown_local_cli_provider(plan, node, cli_profiles)
-        if unknown_provider is not None:
-            raise GraphValidationError(
-                "unknown_provider", f"/nodes/{node.node_id}", unknown_provider,
-            )
-
     # ── egress posture (Slice 2): resolved ONCE, before any store/worker is built ───────────
     local_cli_decision = resolve_local_cli_egress_decision(plan, environ=environ, capabilities=caps)
 
@@ -433,6 +436,19 @@ def build_execution_controller(
 
     store = LocalArtifactStore(out_dir / "artifacts")
     event_log = GraphEventLog(out_dir / "controller-events.jsonl", identity)
+
+    # Every path that assembles a controller passes through here — ``execute_graph_run``, the
+    # facade's resume and approve, MCP, the console. ``_preflight`` only guards the first of those,
+    # so the provider check belongs at this chokepoint too: a run created with a provider catalog and
+    # continued without it names a provider that no longer exists, and the alternative is discovering
+    # that after the pass has already paid for the nodes upstream.
+    #
+    # Scoped to nodes that could STILL RUN. The first version checked every node in the plan, which
+    # made a run whose nodes had ALL SUCCEEDED unresumable — resuming a finished run used to return
+    # its projection idempotently, and a check about what might execute next has no business refusing
+    # a run with nothing left to execute. Third time a new refusal in this phase has wedged a working
+    # path; hence the scope.
+    _refuse_unrunnable_providers(plan, event_log, cli_profiles)
 
     # ── transport detection + worker assembly ────────────────────────────────
     has_local_cli = any(is_egress_node(plan, n, _LOCAL_CLI_TRANSPORTS) for n in plan.nodes)
@@ -659,83 +675,6 @@ def execute_graph_run(
     return _report(json_out, out_dir, projection.state, arena, mode=mode_label)
 
 
-def _build_https_worker(
-    *,
-    plan: ExecutionPlan,
-    store: LocalArtifactStore,
-    run_id: str,
-    node_prompts: Mapping[str, str],
-    admitted: Mapping[str, AdmittedConnectionRecord],
-    organization_id: str,
-    project_id: str,
-    environ: Mapping[str, str] | None,
-    egress_broker: EgressBroker | None,
-    credential_resolver: object,
-    tls_context: ssl.SSLContext | None,
-) -> ConnectorNodeWorker:
-    """Assemble the real BYOK worker stack for https-transport connector nodes."""
-    # Collect bindings whose connection has an admitted record.
-    https_bindings = [
-        b for b in plan.connection_bindings
-        if b.connection_id in admitted
-    ]
-    # Build OpaqueCredentialBroker — one CredentialBinding per admitted https binding.
-    credential_bindings = [
-        CredentialBinding(
-            binding_id=b.binding_id,
-            connection_id=b.connection_id,
-            kind=CredentialKind.VAULT_REFERENCE,
-        )
-        for b in https_bindings
-    ]
-
-    # Build EnvCredentialResolver — or use the injected one (for tests).
-    if credential_resolver is None:
-        cred_sources = {
-            b.binding_id: CredentialSource(
-                env_var=admitted[b.connection_id].credential_env_var_name,
-                header_name=admitted[b.connection_id].credential_header_name,
-                value_prefix=admitted[b.connection_id].credential_header_prefix,
-            )
-            for b in https_bindings
-        }
-        resolved_credential_resolver = EnvCredentialResolver(cred_sources, environ=environ)
-    else:
-        resolved_credential_resolver = credential_resolver  # type: ignore[assignment]
-
-    artifact_body: LocalArtifactBody = LocalArtifactBody(
-        store,
-        organization_id=organization_id,
-        project_id=project_id,
-        producer_attempt=f"{run_id}-byok-response",
-    )
-
-    forwarder = HttpConnectorForwarder(
-        artifact_body=artifact_body,
-        credential_resolver=resolved_credential_resolver,
-        tls_context=tls_context,
-    )
-
-    resolved_egress_broker: EgressBroker = egress_broker if egress_broker is not None else EgressBroker()
-
-    invoker = ConnectorInvoker(
-        credential_broker=OpaqueCredentialBroker(credential_bindings),
-        egress_broker=resolved_egress_broker,
-        forwarder=forwarder,
-    )
-
-    request_port = AdmittedConnectionRequestBuilder(
-        records=admitted,
-        artifact_store=store,
-        run_id=run_id,
-        node_prompts=node_prompts,
-        organization_id=organization_id,
-        project_id=project_id,
-    )
-
-    return ConnectorNodeWorker(run_id=run_id, invoker=invoker, request_port=request_port)
-
-
 def _persist_run_dir(
     out_dir: Path,
     plan: ExecutionPlan,
@@ -777,7 +716,9 @@ def _persist_run_dir(
         # wrapper) was silently dropped on resume/approve, and the continuation invoked — and paid
         # for — the shipped binary instead. The digest turns a catalog EDITED between the run and the
         # resume from an invisible difference into a warning.
-        run_meta["provider_catalog"] = str(provider_catalog)
+        # Absolute: a relative string resolves against the CWD of whichever process reads it
+        # later, so a resume from another directory opened a different file or none.
+        run_meta["provider_catalog"] = str(provider_catalog.resolve())
         try:
             run_meta["provider_catalog_sha256"] = hashlib.sha256(
                 provider_catalog.read_bytes()

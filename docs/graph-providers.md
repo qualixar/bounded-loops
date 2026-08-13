@@ -97,9 +97,11 @@ a built-in provider, that key reached the CLI.
 still read on this path, so the *variable* keeps working — but the old name does **not** restore the
 old one-key behaviour, and nothing can, because that behaviour is the thing being fixed.
 
-To restore a grant, add the name to the provider's catalog entry:
+To restore a grant, add the name to the provider's catalog entry — **and make sure the process
+actually loads that catalog.** A file on disk is not a grant.
 
 ```toml
+# /etc/bounded-loops/providers.toml
 [providers.codex]
 binary = "codex"
 args = ["exec", "--skip-git-repo-check"]
@@ -108,8 +110,20 @@ env_grant = ["MY_KEY"]        # the provider's half
 ```
 
 ```bash
-export BOUNDED_LOOPS_ENV_PASSTHROUGH_ALLOW=MY_KEY   # your half
+export BOUNDED_LOOPS_PROVIDERS=/etc/bounded-loops/providers.toml  # load the catalog
+export BOUNDED_LOOPS_ENV_PASSTHROUGH_ALLOW=MY_KEY                # your half
 ```
+
+Check it took effect before you rely on it — this prints the names each provider asks for:
+
+```bash
+bl graph providers
+```
+
+If `codex` still shows `env names requested: none`, the catalog is not being loaded and the grant
+will not happen. (The P3 audit followed the first version of this recipe literally, without the
+`BOUNDED_LOOPS_PROVIDERS` line, and the grant silently did nothing — the recipe was wrong, not the
+reader.)
 
 The run logs a warning naming any variable you allowed that no provider asked for, and any variable
 a provider asked for that you did not allow — so a half-configured grant says so instead of failing

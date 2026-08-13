@@ -123,3 +123,79 @@ def test_a_partial_count_is_kept_as_partial() -> None:
     assert usage.input_tokens == 100
     assert usage.output_tokens is None
     assert usage.total_tokens is None
+
+
+class TestProviderReportedCost:
+    """A provider that tells us what it charged — found by running the real BYOK path.
+
+    OpenRouter returns ``usage.cost`` in USD alongside its token counts. The extractor read only
+    tokens, so a node declaring ``max_cost_microunits`` on that connection **paid for the call and
+    then failed as budget_unmeasurable**, with the exact cost sitting unread in the response. Same
+    shape P2-B found on the ``claude`` CLI, on the other transport — which is the argument for
+    testing both paths against real providers rather than one.
+    """
+
+    def test_a_reported_cost_becomes_the_metered_cost(self) -> None:
+        body = json.dumps({
+            "choices": [{"message": {"content": "pong"}}],
+            "usage": {"prompt_tokens": 17, "completion_tokens": 2, "cost": 0.25},
+        }).encode("utf-8")
+
+        usage = extract_provider_usage(body, reported_by="provider:openrouter.ai")
+
+        assert usage is not None
+        assert usage.cost_microunits == 250_000
+
+    def test_a_sub_micro_charge_rounds_UP_not_to_free(self) -> None:
+        """The measured real value: 4.158e-07 USD is 0.4158 micro-USD. Truncating makes a real
+        charge free, and free is the direction that lets a cap permit unauthorised spend."""
+        body = json.dumps({"usage": {"prompt_tokens": 17, "completion_tokens": 2, "cost": 4.158e-07}}).encode()
+
+        usage = extract_provider_usage(body, reported_by="provider:openrouter.ai")
+
+        assert usage is not None
+        assert usage.cost_microunits == 1
+
+    def test_a_two_decimal_amount_is_exact(self) -> None:
+        """``Decimal(str(x))``, not binary float arithmetic: ``0.1 * 1_000_000`` is not 100000 for
+        1196 of the two-decimal amounts under $10."""
+        body = json.dumps({"usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": 2.01}}).encode()
+
+        usage = extract_provider_usage(body, reported_by="p")
+
+        assert usage is not None
+        assert usage.cost_microunits == 2_010_000
+
+    @pytest.mark.parametrize("cost", [-1, True, "0.5", None, [0.5], {"a": 1}])
+    def test_a_cost_that_is_not_a_number_is_unmeasured_not_guessed(self, cost: object) -> None:
+        """Tokens still count; only the cost dimension goes unmeasured, so a token cap keeps
+        working while a cost cap on the same node fails closed."""
+        body = json.dumps({"usage": {"prompt_tokens": 5, "completion_tokens": 5, "cost": cost}}).encode()
+
+        usage = extract_provider_usage(body, reported_by="p")
+
+        assert usage is not None
+        assert usage.input_tokens == 5
+        assert usage.cost_microunits is None
+
+    @pytest.mark.parametrize("token", ["Infinity", "-Infinity", "NaN"])
+    def test_a_non_finite_cost_is_refused_rather_than_crashing(self, token: str) -> None:
+        """``json.loads`` accepts these tokens and ``int(inf)`` raises. A hostile response must not
+        crash a run — the P2-B lesson, re-applied on this transport."""
+        body = f'{{"usage": {{"prompt_tokens": 5, "completion_tokens": 5, "cost": {token}}}}}'.encode()
+
+        usage = extract_provider_usage(body, reported_by="p")
+
+        assert usage is not None
+        assert usage.cost_microunits is None
+
+    def test_no_cost_field_leaves_the_cost_dimension_unmeasured(self) -> None:
+        """Anthropic and OpenAI proper report no cost. Their tokens still meter; a cost cap on them
+        needs an operator price table, and says so."""
+        body = json.dumps({"usage": {"input_tokens": 9, "output_tokens": 3}}).encode()
+
+        usage = extract_provider_usage(body, reported_by="p")
+
+        assert usage is not None
+        assert usage.input_tokens == 9
+        assert usage.cost_microunits is None

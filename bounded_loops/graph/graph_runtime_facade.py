@@ -158,13 +158,20 @@ def _recorded_catalog(run_dir: Path) -> Path | None:
             # Named here, because the wiring check downstream can only say "this provider is
             # unknown" — true, but it does not tell the operator that the file this run was created
             # with has moved, which is the actual thing to fix.
+            fallback = default_catalog_path()
             _LOGGER.warning(
                 "this run was created with provider catalog %s, which can no longer be read. "
-                "Re-supply it with --providers <path> (or BOUNDED_LOOPS_PROVIDERS); any provider "
-                "it defined is about to be reported as unknown.",
+                "%s Re-supply it with --providers <path> if a provider it defined is reported "
+                "as unknown.",
                 recorded,
+                f"Falling back to {fallback}." if fallback is not None
+                else "No BOUNDED_LOOPS_PROVIDERS to fall back to.",
             )
-            return path
+            # Falling back rather than returning the dead path: a run whose catalog moved but whose
+            # providers are still defined in BOUNDED_LOOPS_PROVIDERS was unresumable without a flag,
+            # even though this process could resolve every provider it needed. Refusing there
+            # protected nothing — the map would have been identical.
+            return fallback
         if actual != expected:
             _LOGGER.warning(
                 "provider catalog %s has changed since this run was created; continuing with the "
@@ -190,6 +197,18 @@ class LocalGraphRuntimeFacade:
         for same-tenant local access.
     cli_profiles:
         Mapping of profile name → ``CliProfile`` forwarded to ``build_execution_controller``.
+
+        **The two addressing modes resolve this differently, on purpose.** ``for_run_dir`` reads the
+        provider catalog the run RECORDED in its own ``run-meta.json``, because that mode is the
+        operator opening a directory on their own machine — the recorded path is their file, and
+        resolving a continuation any other way is how a catalog that overrode ``claude`` silently
+        billed a call to the shipped binary instead.
+
+        The hosted ``runs_root`` constructor does **not** do that, and must not: the recorded path
+        lives inside a tenant's run directory, so honouring it would let a tenant point the server's
+        file reads anywhere. A hosted deployment supplies the providers it supports, and a plan
+        naming anything else is refused at the wiring chokepoint — which is correct, because such a
+        run could only have been created with providers that deployment had.
     environ:
         Environment overrides forwarded to workers.
     node_prompts:

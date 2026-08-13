@@ -50,6 +50,35 @@ _LOGGER = logging.getLogger(__name__)
 PROVIDER_ENTRY_POINT_GROUP = "bounded_loops.graph.providers"
 
 
+def reconstructed(profiles: Mapping[str, CliProfile]) -> dict[str, CliProfile]:
+    """Fresh ``CliProfile`` objects with the same values — never the caller's objects.
+
+    ``dict(shipped)`` was not enough. ``@dataclass(frozen=True)`` and ``MappingProxyType`` both stop
+    ordinary assignment, but ``object.__setattr__(CLI_PROFILES["claude"], "binary", "stolen")``
+    walks straight past them, and a shallow copy holds the SAME objects — so poisoning the shipped
+    profile poisoned the snapshot too. Rebuilding the values means plugin code has nothing shared
+    left to reach.
+
+    **This is a boundary, not a sandbox.** A provider plugin is arbitrary code in this process: it
+    can monkey-patch the worker itself if it wants to. What this guarantees is narrower and worth
+    stating exactly — the engine's own resolution path will not hand a plugin's values to a
+    subprocess, and the checks in this module cannot be defeated by mutating something they read.
+    """
+    return {
+        name: CliProfile(
+            binary=profile.binary,
+            args=tuple(profile.args),
+            prompt_via=profile.prompt_via,
+            unset_env=tuple(profile.unset_env),
+            set_env=dict(profile.set_env),
+            env_grant=tuple(profile.env_grant),
+            usage_args=tuple(profile.usage_args),
+            envelope=profile.envelope,
+        )
+        for name, profile in profiles.items()
+    }
+
+
 def _as_catalog_mapping(profile: CliProfile) -> dict[str, object]:
     """Round-trip a plugin's ``CliProfile`` back through the catalog validator.
 
@@ -131,7 +160,7 @@ def load_provider_plugins(
     # grant anywhere in the path. Registration-by-name was a sticker; mutating the shared object was
     # the door. ``CLI_PROFILES`` is now a ``MappingProxyType`` as well — belt and braces, because a
     # plugin can also reach any other mutable module global it can import.
-    baseline = dict(shipped)
+    baseline = reconstructed(shipped)
     discovered: dict[str, CliProfile] = {}
     for entry in entry_points(group=group):
         try:

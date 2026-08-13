@@ -63,21 +63,28 @@ def _imports(path: Path) -> tuple[str, ...]:
         if isinstance(node, ast.Import):
             found.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            if node.level == 0:
-                if node.module:
-                    found.append(node.module)
+            base = node.module or ""
+            if node.level > 0:
+                # Relative: resolve against this module's package so the rules below see the same
+                # absolute name an equivalent absolute import would have produced.
+                prefix = package.rsplit(".", node.level - 1)[0] if node.level > 1 else package
+                base = f"{prefix}.{node.module}" if node.module else prefix
+            if not base:
                 continue
-            # Relative: resolve against this module's package so the rules below see the same
-            # absolute name an equivalent absolute import would have produced.
-            base = package.rsplit(".", node.level - 1)[0] if node.level > 1 else package
-            found.append(f"{base}.{node.module}" if node.module else base)
+            found.append(base)
+            # ALSO record ``base.name`` for each imported symbol. ``from bounded_loops.graph import
+            # graph_composition`` records only ``bounded_loops.graph`` otherwise — a package name no
+            # rule matches — while binding the composition module itself. The audit found that route
+            # still open after the first fix.
+            found.extend(f"{base}.{alias.name}" for alias in node.names)
         elif isinstance(node, ast.Call):
             # ``importlib.import_module("x.y")`` / ``__import__("x.y")`` — the target is a literal
             # in every real use; a computed one would be unreachable for any static check, and is
-            # itself a review flag.
+            # itself a review flag. Both the attribute form and the bare NAME form
+            # (``from importlib import import_module``) count.
             target = node.func
             dynamic = (
-                (isinstance(target, ast.Name) and target.id == "__import__")
+                (isinstance(target, ast.Name) and target.id in ("__import__", "import_module"))
                 or (isinstance(target, ast.Attribute) and target.attr == "import_module")
             )
             if dynamic and node.args and isinstance(node.args[0], ast.Constant):
@@ -263,10 +270,14 @@ def test_every_controller_assembly_path_checks_the_provider_map() -> None:
     from bounded_loops.graph import graph_composition
 
     source = inspect.getsource(graph_composition.build_execution_controller)
-    assert "unknown_local_cli_provider" in source, (
+    assert "_refuse_unrunnable_providers" in source, (
         "build_execution_controller is the only assembly point the facade, MCP and console share; "
         "the provider check has to be here, not only in _preflight"
     )
+    # ...and it must be scoped to nodes that could still run: checking terminal nodes made a run
+    # whose nodes had all SUCCEEDED unresumable, which used to return its projection idempotently.
+    helper = inspect.getsource(graph_composition._refuse_unrunnable_providers)
+    assert "SUCCEEDED" in helper and "completed" in helper
 
 
 def test_the_provider_rule_has_no_skip_by_omission_default() -> None:
@@ -289,6 +300,11 @@ def test_the_provider_rule_has_no_skip_by_omission_default() -> None:
         "from ...graph.adapters.persistence.event_log import GraphEventLog",
         'importlib.import_module("bounded_loops.graph.adapters.persistence.event_log")',
         '__import__("bounded_loops.graph.adapters.persistence.event_log")',
+        # Routes the audit found still open after the first fix: a PACKAGE import that binds the
+        # submodule, and the bare-name form of import_module.
+        "from bounded_loops.graph.adapters.persistence import event_log",
+        "from bounded_loops.graph import adapters",
+        'import_module("bounded_loops.graph.adapters.persistence.event_log")',
     ],
 )
 def test_the_tripwire_sees_every_route_into_an_adapter(tmp_path: Path, snippet: str) -> None:
@@ -300,7 +316,10 @@ def test_the_tripwire_sees_every_route_into_an_adapter(tmp_path: Path, snippet: 
     """
     module = tmp_path / "bounded_loops" / "graph" / "application" / "probe.py"
     module.parent.mkdir(parents=True)
-    module.write_text(f"import importlib\n{snippet}\n", encoding="utf-8")
+    module.write_text(
+        f"import importlib\nfrom importlib import import_module\n{snippet}\n",
+        encoding="utf-8",
+    )
 
     global _ROOT
     original = _ROOT
