@@ -123,3 +123,55 @@ def test_a_partial_claude_usage_block_is_not_a_partial_total() -> None:
     envelope = parse_claude_envelope(json.dumps(partial), reported_by="cli:claude")
 
     assert envelope is not None and envelope.usage is None
+
+
+# Captured from `agy -p "..." --output-format json` on 2026-08-13.
+_AGY = {
+    "response": "OK\n",
+    "status": "ok",
+    "usage": {
+        "input_tokens": 22501, "output_tokens": 237, "thinking_tokens": 231,
+        "cache_read_tokens": 0, "total_tokens": 22738,
+    },
+}
+
+
+def test_agy_reports_tokens_but_no_cost() -> None:
+    """agy meters tokens and nothing else, so a cost cap on it needs an operator price table."""
+    from bounded_loops.graph.adapters.connectors.cli_envelope import parse_agy_envelope
+
+    envelope = parse_agy_envelope(json.dumps(_AGY), reported_by="cli:agy")
+
+    assert envelope is not None
+    assert envelope.reply == "OK\n"
+    assert envelope.usage is not None
+    assert envelope.usage.total_tokens == 22_738
+    assert envelope.usage.output_tokens == 237
+    assert envelope.usage.cost_microunits is None
+
+
+def test_agy_thinking_tokens_are_not_double_counted() -> None:
+    """231 thinking against 237 output: a subset of output, so adding it would count twice."""
+    from bounded_loops.graph.adapters.connectors.cli_envelope import parse_agy_envelope
+
+    envelope = parse_agy_envelope(json.dumps(_AGY), reported_by="cli:agy")
+
+    assert envelope is not None and envelope.usage is not None
+    assert envelope.usage.total_tokens == 22_501 + 237  # not + 231
+
+
+def test_agy_takes_the_larger_of_its_own_total_and_the_summed_parts() -> None:
+    """Whether agy folds cache reads into total_tokens is unverified — the live probe had 0.
+
+    Taking the larger cannot under-count, and under-counting is the direction that lets a cap
+    permit unauthorised spend.
+    """
+    from bounded_loops.graph.adapters.connectors.cli_envelope import parse_agy_envelope
+
+    understated = {**_AGY, "usage": {**_AGY["usage"], "cache_read_tokens": 5_000}}  # type: ignore[dict-item]
+
+    envelope = parse_agy_envelope(json.dumps(understated), reported_by="cli:agy")
+
+    assert envelope is not None and envelope.usage is not None
+    # 22501 + 5000 + 237 = 27738 exceeds agy's stale total of 22738, so the sum wins.
+    assert envelope.usage.total_tokens == 27_738

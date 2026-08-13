@@ -173,3 +173,48 @@ def _ticks_to_microunits(raw: object) -> int | None:
     if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
         return None
     return -(-raw // _TICKS_PER_MICROUNIT)
+
+#: agy's own token categories. ``thinking_tokens`` is not added: on a live reply it was 231
+#: against 237 output tokens, i.e. a SUBSET of output, and adding it would double-count.
+_AGY_INPUT_FIELDS = ("input_tokens", "cache_read_tokens")
+
+
+def parse_agy_envelope(stdout: str, *, reported_by: str) -> CliEnvelope | None:
+    """Parse ``agy -p --output-format json``. ``None`` when it is not that shape.
+
+    The reply is under ``response``. agy reports NO cost, so a cost cap on this provider needs an
+    operator price table — and fails closed without one, which is the honest outcome.
+    """
+    document = _load(stdout)
+    if document is None:
+        return None
+    reply = document.get("response")
+    if not isinstance(reply, str):
+        return None
+    return CliEnvelope(reply=reply, usage=_agy_usage(document, reported_by=reported_by))
+
+
+def _agy_usage(document: Mapping[str, object], *, reported_by: str) -> WorkerUsage | None:
+    block = document.get("usage")
+    if not isinstance(block, Mapping):
+        return None
+    output = _count(block.get("output_tokens"))
+    if output is None:
+        return None
+    parts = [_count(block.get(field)) for field in _AGY_INPUT_FIELDS]
+    if any(value is None for value in parts):
+        return None
+    summed = sum(value for value in parts if value is not None)
+    reported_total = _count(block.get("total_tokens"))
+    # Whichever is LARGER. On the live reply the two agreed (22501 + 0 + 237 = 22738), but the
+    # cache field was zero, so whether agy folds cache reads into its own total is unverified.
+    # Taking the larger cannot under-count, and under-counting is the direction that lets a cap
+    # permit unauthorised spend.
+    if reported_total is not None and reported_total > summed + output:
+        summed = reported_total - output
+    return WorkerUsage(
+        input_tokens=summed,
+        output_tokens=output,
+        # No cost field: a cost cap here needs an operator price table, or it fails closed.
+        reported_by=reported_by,
+    )

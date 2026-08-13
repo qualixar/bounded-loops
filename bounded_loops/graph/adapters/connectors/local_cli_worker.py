@@ -45,6 +45,7 @@ from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifac
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, NetworkMode
 from bounded_loops.graph.adapters.connectors.cli_envelope import (
     CliEnvelope,
+    parse_agy_envelope,
     parse_claude_envelope,
     parse_grok_envelope,
 )
@@ -159,14 +160,25 @@ CLI_PROFILES: Mapping[str, CliProfile] = {
         "grok", ("-p",), prompt_via="arg",
         usage_args=("--output-format", "json"), envelope="grok",
     ),
-    # codex and muse emit JSONL EVENT STREAMS (`--json`), not a single envelope, and the usage
-    # payload on their terminal event has not been read off a live run on this host. Inventing a
-    # parser from a --help string is exactly how a spend total ends up wrong in the safe-looking
-    # direction, so these stay honestly unmetered: a spend cap on them fails closed naming the
-    # provider, rather than metering their calls as free.
+    # codex and muse emit JSONL EVENT STREAMS (`--json`), not a single envelope. Both were
+    # probed live on 2026-08-13: muse's 26-event stream contains NO token, usage, cost or spend
+    # key anywhere in its payload tree — a verified absence, not an unread shape. codex did not
+    # return within the probe window (it is the Azure-hosted model whose connection drops on long
+    # jobs), so its stream is genuinely unread.
+    #
+    # Either way these stay unmetered, and that is stated rather than papered over: a spend cap
+    # on them fails closed naming the provider, instead of metering their calls as free. Guessing
+    # a parser from a --help string is exactly how a spend total ends up wrong in the
+    # safe-looking direction.
     "codex": CliProfile("codex", ("exec", "--skip-git-repo-check"), prompt_via="arg"),
     "muse": CliProfile("muse", ("exec",), prompt_via="arg"),
-    "agy": CliProfile("agy", ("-p",), prompt_via="arg"),
+    # Verified live (2026-08-13): reply under `response`, usage.total_tokens = input + output
+    # (22501 + 237 = 22738). agy reports NO cost, so a cost cap on it needs an operator price
+    # table and fails closed without one — tokens are metered, money is not.
+    "agy": CliProfile(
+        "agy", ("-p",), prompt_via="arg",
+        usage_args=("--output-format", "json"), envelope="agy",
+    ),
 }
 
 
@@ -315,6 +327,8 @@ class LocalCliConnectorWorker:
             return parse_claude_envelope(stdout, reported_by=reported_by)
         if profile.envelope == "grok":
             return parse_grok_envelope(stdout, reported_by=reported_by)
+        if profile.envelope == "agy":
+            return parse_agy_envelope(stdout, reported_by=reported_by)
         return None
 
     def _caged_argv(
