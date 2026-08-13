@@ -79,6 +79,10 @@ class LoopAttemptProjection:
     status: str | None
     reason: str | None
     sequence: int
+    #: Which bounded repair round this attempt belongs to; 0 for the original pass. Defaulted so
+    #: every existing construction site keeps working, and so a stream written before repair rounds
+    #: existed projects as round 0 rather than as an unknown.
+    repair_round: int = 0
 
 
 class HashChainEventStore:
@@ -181,7 +185,7 @@ class HashChainEventStore:
         first = events[0]
         if first.event_type != "loop.attempt.wired":
             raise EvidenceError("graph stream must begin with loop.attempt.wired")
-        node_id, attempt = _bridge_identity(first)
+        node_id, attempt, repair_round = _bridge_identity(first)
         state = LoopAttemptState.WIRED
         status: str | None = None
         reason: str | None = None
@@ -189,11 +193,16 @@ class HashChainEventStore:
         for event in events[1:]:
             if event.event_type != "loop.attempt.terminal":
                 raise EvidenceError(f"unexpected graph event: {event.event_type}")
-            event_node_id, event_attempt = _bridge_identity(event)
+            event_node_id, event_attempt, event_round = _bridge_identity(event)
             if event_node_id != node_id:
                 raise EvidenceError("graph event has different node_id")
             if event_attempt != attempt:
                 raise EvidenceError("graph event has different attempt")
+            if event_round != repair_round:
+                # Same reasoning as the two checks above: one inner run owns exactly one
+                # (node, attempt, round), so a terminal event claiming a different round means two
+                # attempts have been written into one stream and the projection would be a blend.
+                raise EvidenceError("graph event has different repair_round")
             if state is LoopAttemptState.TERMINAL:
                 raise EvidenceError("graph stream contains an event after terminal state")
             status, reason = _terminal_values(event)
@@ -207,6 +216,7 @@ class HashChainEventStore:
             status=status,
             reason=reason,
             sequence=len(events),
+            repair_round=repair_round,
         )
 
     def checkpoint(self, projection: Mapping[str, object]) -> EventCheckpoint:
@@ -345,12 +355,22 @@ def _parse_event(line: str, line_number: int) -> StoredEvent:
         raise EvidenceError(f"invalid event value at sequence {line_number}") from exc
 
 
-def _bridge_identity(event: StoredEvent) -> tuple[str, int]:
+def _bridge_identity(event: StoredEvent) -> tuple[str, int, int]:
+    """Read ``(node_id, attempt, repair_round)`` from a bridge event, or refuse the payload.
+
+    The schema stays CLOSED. ``repair_round`` is admitted as the single OPTIONAL field rather than
+    by relaxing the check to a subset test, because the exact-set equality here is what stops an
+    unrecognised payload key from riding along unnoticed.
+
+    Absent means round 0. The bridge omits the field for the original pass so that an event written
+    before repair rounds existed keeps its exact payload and its exact idempotency key — the same
+    omit-when-unset discipline that keeps ``plan_id`` stable for already-persisted graph runs.
+    """
     payload = event.payload
     expected = {"attempt", "node_id"}
     if event.event_type == "loop.attempt.terminal":
         expected = {"attempt", "node_id", "reason", "status"}
-    if set(payload) != expected:
+    if set(payload) - {"repair_round"} != expected:
         raise EvidenceError(f"invalid payload shape for {event.event_type}")
     node_id = payload["node_id"]
     attempt = payload["attempt"]
@@ -358,7 +378,14 @@ def _bridge_identity(event: StoredEvent) -> tuple[str, int]:
         raise EvidenceError("graph event node_id must be a non-empty string")
     if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
         raise EvidenceError("graph event attempt must be a positive integer")
-    return node_id, attempt
+    repair_round = payload.get("repair_round", 0)
+    if not isinstance(repair_round, int) or isinstance(repair_round, bool) or repair_round < 0:
+        raise EvidenceError("graph event repair_round must be a non-negative integer")
+    if repair_round == 0 and "repair_round" in payload:
+        # An explicit zero is the one way a writer can produce two different payloads meaning the
+        # same thing, which would give the same attempt two different projection digests.
+        raise EvidenceError("graph event repair_round 0 must be omitted, not written explicitly")
+    return node_id, attempt, repair_round
 
 
 def _terminal_values(event: StoredEvent) -> tuple[str, str]:
