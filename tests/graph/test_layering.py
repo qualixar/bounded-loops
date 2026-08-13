@@ -124,6 +124,25 @@ def test_the_composition_tier_modules_all_exist() -> None:
     assert missing == [], f"composition-tier modules named but absent: {missing}"
 
 
+#: Hard cap from the project's engineering rules: many small files beat few large ones.
+_MAX_LINES = 800
+
+
+def test_no_module_exceeds_the_line_cap() -> None:
+    """P3 brought six files back under this and this test is what keeps them there.
+
+    Every one of the six got there the same way — a module that was already the biggest in its
+    package was also the most convenient place to add the next thing. Nobody decided to write an
+    900-line file; the cap was simply not checked, so each addition was individually reasonable.
+    """
+    over = [
+        f"{name} ({len(path.read_text(encoding='utf-8').splitlines())})"
+        for name, path in _modules(_ROOT)
+        if len(path.read_text(encoding="utf-8").splitlines()) > _MAX_LINES
+    ]
+    assert over == [], f"modules over the {_MAX_LINES}-line cap:\n  " + "\n  ".join(over)
+
+
 def test_the_local_tenant_sentinels_are_declared_exactly_once() -> None:
     """``local-org`` / ``local-project`` / ``graph-run`` are single-tenant defaults for the local
     CLI. They were declared twice — in ``cli_graph`` and in ``graph_composition``'s function

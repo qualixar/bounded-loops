@@ -470,3 +470,21 @@ def max_attempts(node: PlannedNode) -> int:
             "retry without a per-effect idempotency key (D7); declare max_attempts: 1"
         )
     return raw
+
+
+def tightest_cap(node_cap: int | None, run_cap: int | None) -> int | None:
+    """The binding cap for a dimension, or ``None`` when neither level declares one.
+
+    Only used to decide whether that dimension has to be MEASURABLE — the two caps are still
+    enforced separately, against their own totals. A dimension is measurable-or-refused as soon
+    as either level asks to be bounded on it.
+    """
+    if node_cap is None:
+        return run_cap
+    if run_cap is None:
+        return node_cap
+    return min(node_cap, run_cap)
+
+# Named ``tightest_cap`` here rather than the controller's old private ``_tightest``: it is one of
+# the spend RULES, and every other one already lives in this module. A cap rule reachable only
+# through a controller private is a rule the next reader of the budget code will not find.

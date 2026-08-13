@@ -781,7 +781,7 @@ class _AlwaysAuthorized:
         return True
 
 
-class _NoOpReceiptVerifier:
+class UnverifiedReceiptReader:
     def verify(self, identity: object, receipts: object) -> None:  # noqa: ARG002
         return None
 
@@ -797,7 +797,7 @@ def _projection(controller: GraphRunController) -> object:
             subject_id="operator", organization_id="org-1", project_id="project-1",
             run_id="graph-run-1",
         ),
-        _AlwaysAuthorized(), _NoOpReceiptVerifier(),
+        _AlwaysAuthorized(), UnverifiedReceiptReader(),
     )
 
 

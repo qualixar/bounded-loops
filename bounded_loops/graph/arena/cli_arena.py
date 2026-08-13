@@ -26,16 +26,16 @@ def _err(msg: str) -> None:
 def cmd_graph_arena(args: argparse.Namespace) -> int:
     """Render one persisted run into a read-only, self-contained HTML page."""
     from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
+    from bounded_loops.graph.adapters.persistence.local_arena_access import (
+        LocalSameTenantAuthorizer,
+        UnverifiedReceiptReader,
+    )
     from bounded_loops.graph.application.arena_projection import (
         ArenaReadRequest,
         read_arena_projection,
     )
     from bounded_loops.graph.arena.render import render_arena_html
     from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
-    from bounded_loops.graph.cli_graph import (
-        _NoOpReceiptVerifier,
-        _TrivialAuthorizer,
-    )
     from bounded_loops.graph.domain.errors import GraphValidationError
 
     run_dir = Path(args.run)
@@ -54,7 +54,7 @@ def cmd_graph_arena(args: argparse.Namespace) -> int:
     )
     try:
         projection = read_arena_projection(
-            plan, event_log, request, _TrivialAuthorizer(), _NoOpReceiptVerifier(),
+            plan, event_log, request, LocalSameTenantAuthorizer(), UnverifiedReceiptReader(),
         )
     except Exception as exc:  # noqa: BLE001 - surfaced as a clean CLI error
         _err(f"graph arena: arena projection failed — {exc}")

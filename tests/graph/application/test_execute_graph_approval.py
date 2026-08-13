@@ -335,7 +335,7 @@ def test_report_prefers_failed_over_paused_when_both_present(
     """A run whose authoritative run_state is FAILED must report failure (rc=2), never
     PAUSED (rc=3) — even if a node's last durable receipt still shows
     AWAITING_APPROVAL. PAUSED implies the run is still resumable; a FAILED run is not."""
-    from bounded_loops.graph.graph_composition import _report
+    from bounded_loops.graph.graph_run_report import _report
 
     arena = _arena_with_failed_run_and_awaiting_node()
     rc = _report(False, tmp_path, "FAILED", arena, mode="local_cli")
@@ -345,7 +345,7 @@ def test_report_prefers_failed_over_paused_when_both_present(
 
 
 def test_report_json_prefers_failed_over_paused(tmp_path: Path, capsys) -> None:
-    from bounded_loops.graph.graph_composition import _report
+    from bounded_loops.graph.graph_run_report import _report
 
     arena = _arena_with_failed_run_and_awaiting_node()
     rc = _report(True, tmp_path, "FAILED", arena, mode="local_cli")

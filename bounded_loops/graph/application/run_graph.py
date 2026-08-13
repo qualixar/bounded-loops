@@ -21,13 +21,12 @@ from bounded_loops.graph.application.node_contracts import (
     IndependentGatePort,
     NodeWorkerPort,
 )
+from bounded_loops.graph.application.node_receipt_writer import NodeReceiptWriter
 from bounded_loops.graph.application.node_receipts import (
     isolation_payload,
-    node_event_key,
     route_payload,
     validate_observed_route,
     validate_observed_transport,
-    usage_payload,
     validate_worker_result,
     verdict_body,
     verdict_is_wellformed,
@@ -44,6 +43,7 @@ from bounded_loops.graph.application.node_spend import (
     max_attempts,
     run_spend,
     spend_caps,
+    tightest_cap,
     spend_refusal,
     unmeasurable_dimension,
 )
@@ -54,7 +54,6 @@ from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.events import (
     NodeFailureCause,
     GraphRunProjection,
-    UnsignedGraphEvent,
 )
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 from bounded_loops.graph.domain.pricing import PriceTable, empty_price_table
@@ -81,20 +80,6 @@ class _AttemptOutcome:
     cause: NodeFailureCause | None = None
     verdict: dict[str, object] | None = None
     terminal: GraphRunProjection | None = None
-
-
-def _tightest(node_cap: int | None, run_cap: int | None) -> int | None:
-    """The binding cap for a dimension, or ``None`` when neither level declares one.
-
-    Only used to decide whether that dimension has to be MEASURABLE — the two caps are still
-    enforced separately, against their own totals. A dimension is measurable-or-refused as soon
-    as either level asks to be bounded on it.
-    """
-    if node_cap is None:
-        return run_cap
-    if run_cap is None:
-        return node_cap
-    return min(node_cap, run_cap)
 
 
 def is_egress_node(plan: ExecutionPlan, node: PlannedNode, egress_transports: frozenset[str]) -> bool:
@@ -174,16 +159,27 @@ class GraphRunController:
         # wrong in the direction that permits more spend than was authorised.
         self._price_table = empty_price_table() if price_table is None else price_table
         self._run_budget = RunBudget() if run_budget is None else run_budget
-        self._head = "0" * 64
+        # The chain head lives on the writer, not here: it is only ever read or advanced by an
+        # append, and two owners of one hash is how a head moves backward unnoticed.
+        self._receipts = NodeReceiptWriter(
+            event_log, timestamp=timestamp, actor=actor, head="0" * 64,
+        )
+
+    def _append_node(
+        self, node_id: str, event_type: str, state: NodeState, *, attempt: int = 1, **extra: object,
+    ) -> None:
+        """Node lifecycle receipt. Unwraps ``NodeState`` here so the writer stays free of the
+        controller's state enum — the writer spells receipts, it does not model the machine."""
+        self._receipts.append_node(node_id, event_type, state.value, attempt=attempt, **extra)
 
     def run(self) -> GraphRunProjection:
         """Execute a NEW run from an empty stream; any gate rejection fails closed."""
         projection = self.event_log.replay_projection()
         if projection.state != "EMPTY":
             raise GraphIntegrityError("fresh controller refuses to resume a non-empty graph stream; call resume()")
-        self._head = projection.head_hash
-        self._append("run.created", "run.created", {"state": "PENDING"})
-        self._append("run.started", "run.started", {"state": "RUNNING"})
+        self._receipts.resync(projection.head_hash)
+        self._receipts.append("run.created", "run.created", {"state": "PENDING"})
+        self._receipts.append("run.started", "run.started", {"state": "RUNNING"})
         states = {node.node_id: NodeState.PENDING for node in self.plan.nodes}
         return self._run_loop(
             states, ResumeCursor.empty(tuple(node.node_id for node in self.plan.nodes)),
@@ -209,11 +205,11 @@ class GraphRunController:
             return projection
         if projection.state not in ("PENDING", "RUNNING"):
             raise GraphIntegrityError(f"cannot resume from graph state {projection.state}")
-        self._head = projection.head_hash
+        self._receipts.resync(projection.head_hash)
         # A crash between run.created and run.started leaves a non-empty PENDING
         # stream that run() refuses; complete the start so it is never wedged.
         if projection.state == "PENDING":
-            self._append("run.started", "run.started", {"state": "RUNNING"})
+            self._receipts.append("run.started", "run.started", {"state": "RUNNING"})
         receipts = self.event_log.replay()
         # A ceiling this run already paused on is STICKY: any dimension this continuation does
         # not mention is carried forward from the pause record. That one rule covers both holes
@@ -241,7 +237,7 @@ class GraphRunController:
         # without bound, one event per poll, with no work done between them.
         if receipts and receipts[-1].event.event_type != "run.resumed":
             resumes = sum(1 for stored in receipts if stored.event.event_type == "run.resumed")
-            self._append(
+            self._receipts.append(
                 f"run.resumed:{resumes + 1}", "run.resumed", {"resume_ordinal": resumes + 1},
             )
         receipts = self.event_log.replay()
@@ -250,7 +246,7 @@ class GraphRunController:
         # FAILED node; finalize the terminal deterministically rather than re-drive a
         # run that has already failed.
         if any(observed["state"] == "FAILED" for observed in latest.values()):
-            self._append("run.failed", "run.failed", {"state": "FAILED"})
+            self._receipts.append("run.failed", "run.failed", {"state": "FAILED"})
             return self.event_log.replay_projection()
         return self._run_loop(self._states_from(latest), consumed_attempts_from(self.plan, receipts))
 
@@ -292,9 +288,9 @@ class GraphRunController:
             ready = derive_ready_nodes(self.plan, states)
             if not ready:
                 if all(state is NodeState.SUCCEEDED for state in states.values()):
-                    self._append("run.succeeded", "run.succeeded", {"state": "SUCCEEDED"})
+                    self._receipts.append("run.succeeded", "run.succeeded", {"state": "SUCCEEDED"})
                     return self.event_log.replay_projection()
-                self._append("run.failed", "run.failed", {"state": "FAILED"})
+                self._receipts.append("run.failed", "run.failed", {"state": "FAILED"})
                 return self.event_log.replay_projection()
             for node_id in ready:
                 states[node_id] = NodeState.READY
@@ -438,7 +434,7 @@ class GraphRunController:
                         "completing; refusing to re-execute it again",
                         attempt=attempt, cause=NodeFailureCause.REDRIVE_EXHAUSTED,
                     )
-                self._append_redrive(node_id, attempt, redrive)
+                self._receipts.append_redrive(node_id, attempt, redrive)
                 execution = redrive + 1
             states[node_id] = NodeState.RUNNING
             self._append_node(node_id, "node.running", NodeState.RUNNING, attempt=attempt)
@@ -457,7 +453,7 @@ class GraphRunController:
             # budget runs out ON a gate rejection, that rejection would appear solely on
             # the terminal node.failed and be missed.
             cause = outcome.cause or NodeFailureCause.WORKER_FAULT
-            self._append_attempt_failed(node_id, attempt, reason, cause, outcome.verdict)
+            self._receipts.append_attempt_failed(node_id, attempt, reason, cause, outcome.verdict)
             if attempt < budget:
                 continue
             return self._fail_node(
@@ -510,7 +506,7 @@ class GraphRunController:
             # (a CLI whose envelope this version cannot read) fails identically on every attempt
             # and pays the provider each time: a closed door that spends more than the hole it
             # replaced. That is exactly how the first version of this refusal behaved.
-            self._append_spend(node_id, attempt, execution, None)
+            self._receipts.append_spend(node_id, attempt, execution, None)
             return _AttemptOutcome(terminal=self._fail_node(
                 states, node_id, str(broken) or "worker contract cannot be honoured",
                 attempt=attempt, cause=NodeFailureCause.WORKER_CONTRACT,
@@ -519,7 +515,7 @@ class GraphRunController:
             # It RAN. The provider may well have been billed before this raised, and we cannot
             # know — so the execution is recorded with no usage, which is what makes the run
             # total read as a lower bound instead of silently omitting a paid call.
-            self._append_spend(node_id, attempt, execution, None)
+            self._receipts.append_spend(node_id, attempt, execution, None)
             return _AttemptOutcome(
                 failure="worker execution failed", cause=NodeFailureCause.WORKER_FAULT,
             )
@@ -531,7 +527,7 @@ class GraphRunController:
         try:
             validate_worker_result(result)
         except Exception:
-            self._append_spend(node_id, attempt, execution, None)
+            self._receipts.append_spend(node_id, attempt, execution, None)
             return _AttemptOutcome(
                 failure="worker output artifact verification failed",
                 cause=NodeFailureCause.ARTIFACT_UNVERIFIED,
@@ -543,7 +539,7 @@ class GraphRunController:
         # every line between that return and this append is a window in which a kill -9 loses
         # the charge; a lost charge reads as free work. That window measured 4 paid executions
         # as 0 tokens against a 50-token ceiling, with the total still claiming to be exact.
-        self._append_spend(node_id, attempt, execution, usage)
+        self._receipts.append_spend(node_id, attempt, execution, usage)
         try:
             validate_observed_route(expected_route, result.observed_route)
             validate_observed_transport(expected_transport, result.observed_transport)
@@ -563,8 +559,8 @@ class GraphRunController:
         # check, one level up.
         unmeasurable = unmeasurable_dimension(
             usage,
-            max_tokens=_tightest(max_tokens, self._run_budget.max_tokens),
-            max_cost_microunits=_tightest(max_cost, self._run_budget.max_cost_microunits),
+            max_tokens=tightest_cap(max_tokens, self._run_budget.max_tokens),
+            max_cost_microunits=tightest_cap(max_cost, self._run_budget.max_cost_microunits),
         )
         if unmeasurable is not None:
             # The node asked to be bounded on this dimension and this worker cannot report it.
@@ -614,57 +610,6 @@ class GraphRunController:
             failure="independent gate rejected output",
             cause=NodeFailureCause.GATE_REJECTED,
             verdict=verdict_body(verdict),
-        )
-
-    def _append_spend(
-        self, node_id: str, attempt: int, execution: int, usage: WorkerUsage | None,
-    ) -> None:
-        """Record what one EXECUTION of one attempt consumed.
-
-        Written even when nothing was measured, because "this execution happened and reported
-        nothing" is itself the fact that makes a total a lower bound rather than a measurement.
-        Dropping it is how a run with unmeasurable workers came to report an exact zero.
-
-        The key carries the execution ordinal, so a re-driven attempt's second payment gets its
-        own record instead of colliding with the first under a different payload — the same
-        collision that wedged the budget pause.
-        """
-        payload: dict[str, object] = {
-            "node_id": node_id, "attempt": attempt, "execution": execution,
-        }
-        payload.update(usage_payload(usage))
-        self._append(f"{node_id}:node.spend:{attempt}:{execution}", "node.spend", payload)
-
-    def _append_attempt_failed(
-        self, node_id: str, attempt: int, reason: str, cause: NodeFailureCause,
-        verdict: dict[str, object] | None,
-    ) -> None:
-        """Record one failed attempt without transitioning run state.
-
-        ``verdict`` is present exactly when the attempt failed at the gate, so its
-        presence discriminates a gate rejection from a worker fault when the per-attempt
-        gate error rate is computed from the log.
-
-        Writing this record is also what marks the attempt SPENT for a later resume — see
-        ``consumed_attempts_from`` — so it must be appended before the node's terminal receipt.
-        """
-        payload: dict[str, object] = {
-            "node_id": node_id, "attempt": attempt, "reason": reason, "cause": cause.value,
-        }
-        if verdict is not None:
-            payload["verdict"] = verdict
-        self._append(f"{node_id}:node.attempt.failed:{attempt}", "node.attempt.failed", payload)
-
-    def _append_redrive(self, node_id: str, attempt: int, redrive: int) -> None:
-        """Record that an incomplete attempt is being re-executed by a resume.
-
-        The key includes the ordinal so successive re-drives are distinct events rather than
-        one de-duplicated no-op — which is precisely what makes them countable, and so
-        boundable.
-        """
-        self._append(
-            f"{node_id}:node.redrive:{attempt}:{redrive}", "node.redrive",
-            {"node_id": node_id, "attempt": attempt, "redrive": redrive},
         )
 
     def _resolve_approval(
@@ -766,7 +711,7 @@ class GraphRunController:
         # A pause under a different authorised ceiling IS a different fact and deserves its own
         # record; an identical pause still de-duplicates, so polling stays free.
         caps = f"{self._run_budget.max_tokens}:{self._run_budget.max_cost_microunits}"
-        self._append(
+        self._receipts.append(
             f"run.budget.paused:{node_id}:{attempt}:{caps}", "run.budget.paused",
             {
                 "node_id": node_id, "attempt": attempt, "reason": refusal,
@@ -850,39 +795,5 @@ class GraphRunController:
         self._append_node(
             node_id, "node.failed", NodeState.FAILED, attempt=attempt, reason=reason, **extra,
         )
-        self._append("run.failed", "run.failed", {"state": "FAILED"})
+        self._receipts.append("run.failed", "run.failed", {"state": "FAILED"})
         return self.event_log.replay_projection()
-
-    def _append_node(
-        self,
-        node_id: str,
-        event_type: str,
-        state: NodeState,
-        *,
-        attempt: int = 1,
-        **extra: object,
-    ) -> None:
-        payload = {"node_id": node_id, "state": state.value, "attempt": attempt, **extra}
-        self._append(node_event_key(node_id, event_type, attempt), event_type, payload)
-
-    def _append(self, key: str, event_type: str, payload: dict[str, object]) -> None:
-        stored = self.event_log.append(
-            self._head,
-            UnsignedGraphEvent(
-                event_id=f"{self.event_log.identity.run_id}:{key}",
-                idempotency_key=f"{self.event_log.identity.run_id}:{key}",
-                event_type=event_type,
-                timestamp=self._timestamp(),
-                actor=self._actor,
-                payload=payload,
-            ),
-        )
-        # Advance the head only when this append EXTENDED the chain from the current
-        # head (a new tip). When a resumed node re-drives its already-logged, fully
-        # deterministic prefix (node.ready/starting/running/…), append() returns the
-        # historical event idempotently; that event's previous_hash is not the live
-        # head, so we must NOT move the head backward. The first genuinely-missing
-        # event chains from the live head and advances it normally.
-        if stored.previous_hash == self._head:
-            self._head = stored.event_hash
-

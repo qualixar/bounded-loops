@@ -56,7 +56,7 @@ import sys
 from pathlib import Path
 from bounded_loops.graph.application.approval_ledger import _load_approvals
 from bounded_loops.graph.application.arena_projection import ArenaProjection, ArenaReadRequest
-from bounded_loops.graph.graph_composition import (
+from bounded_loops.graph.graph_run_report import (
     _EXIT_PAUSED,
     _awaiting_approval_nodes,
     approve_command_hint,

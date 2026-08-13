@@ -335,7 +335,7 @@ def test_cli_graph_approve_imports_exit_paused_not_redefines_it() -> None:
     import re
 
     from bounded_loops.graph import cli_graph_approve
-    from bounded_loops.graph.graph_composition import _EXIT_PAUSED
+    from bounded_loops.graph.graph_run_report import _EXIT_PAUSED
 
     source = inspect.getsource(cli_graph_approve)
     assert not re.search(r"(?m)^_EXIT_PAUSED\s*=\s*\d+", source), (
@@ -475,7 +475,7 @@ def test_multi_gate_first_approval_returns_exit_code_paused(tmp_path: Path, caps
     """After approving the first gate in a two-gate run, the second gate is still
     awaiting. The approve command must return _EXIT_PAUSED (3), not 0.
     Covers the 'still_paused' branch (line 213) of _report_approve."""
-    from bounded_loops.graph.graph_composition import _EXIT_PAUSED
+    from bounded_loops.graph.graph_run_report import _EXIT_PAUSED
 
     report = _execute(tmp_path, _TWO_GATE_MANIFEST, "run-two-gate-exit", capsys)
     real_out = report["out"]
