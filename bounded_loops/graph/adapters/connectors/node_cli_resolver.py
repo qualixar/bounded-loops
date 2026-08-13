@@ -18,7 +18,11 @@ from bounded_loops.graph.adapters.connectors.local_cli_worker import (
     CliProfile,
 )
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope
-from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
+from bounded_loops.graph.domain.errors import (
+    GraphIntegrityError,
+    GraphValidationError,
+    WorkerContractError,
+)
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode, ResolvedBinding
 
 
@@ -42,7 +46,12 @@ class NodeCliResolver:
         profile = self._profiles.get(binding.provider_id)
         if profile is None:
             known = ", ".join(sorted(self._profiles)) or "(none configured)"
-            raise GraphIntegrityError(
+            # ``WorkerContractError``, not a bare ``GraphIntegrityError``: an unknown provider is
+            # DETERMINISTIC. As a plain exception the controller read it as a transient
+            # ``WORKER_FAULT`` and retried to ``max_attempts``, every attempt failing identically.
+            # Preflight now refuses this before the run starts; this is the second line of defence
+            # for a deployment that supplies profiles directly to the resolver and bypasses it.
+            raise WorkerContractError(
                 f"local-CLI node {node.node_id!r} binds provider {binding.provider_id!r}, "
                 f"which is not a known agent CLI ({known})"
             )

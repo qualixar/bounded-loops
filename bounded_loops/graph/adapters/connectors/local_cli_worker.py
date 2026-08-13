@@ -35,7 +35,12 @@ import tempfile
 from typing import Callable, Mapping, Protocol
 from uuid import uuid4
 
-from bounded_loops.adapters._env import ENV_ALLOWLIST, sanitize_path
+from bounded_loops.adapters._env import (
+    ENV_ALLOWLIST,
+    ENV_PASSTHROUGH_ALLOW_VAR,
+    operator_env_grants,
+    sanitize_path,
+)
 from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn
 from bounded_loops.domain.models import TurnState
 from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities, probe_platform
@@ -44,10 +49,8 @@ from bounded_loops.graph.adapters.enforcement.sandbox import build_seatbelt_allo
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope, NetworkMode
 from bounded_loops.graph.adapters.connectors.cli_envelope import (
+    ENVELOPE_PARSERS,
     CliEnvelope,
-    parse_agy_envelope,
-    parse_claude_envelope,
-    parse_grok_envelope,
 )
 from bounded_loops.graph.application.node_contracts import WorkerResult
 from bounded_loops.graph.domain.artifacts import ArtifactPolicy
@@ -78,7 +81,8 @@ _PROXY_ENV_VARS = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "AL
 _CLI_ENV_ALLOWLIST = ENV_ALLOWLIST | {"USER", "LOGNAME", "TERM"}
 # Operator escape hatch: comma-separated NAMES (never values) of extra variables to forward.
 # Needed for a CLI whose own tooling reads a key from the environment.
-_ENV_GRANT_VAR = "BOUNDED_LOOPS_CLI_ENV_GRANT"
+#: Kept as the message-facing name for the hint in the "looks like you meant a value" error.
+_ENV_GRANT_VAR = ENV_PASSTHROUGH_ALLOW_VAR
 
 
 def _redact_secrets(text: str) -> str:
@@ -336,14 +340,10 @@ class LocalCliConnectorWorker:
     @staticmethod
     def _read_envelope(profile: CliProfile, stdout: str) -> CliEnvelope | None:
         """Parse this CLI's machine-readable envelope, or ``None`` if it has none / is unreadable."""
-        reported_by = f"cli:{profile.binary}"
-        if profile.envelope == "claude":
-            return parse_claude_envelope(stdout, reported_by=reported_by)
-        if profile.envelope == "grok":
-            return parse_grok_envelope(stdout, reported_by=reported_by)
-        if profile.envelope == "agy":
-            return parse_agy_envelope(stdout, reported_by=reported_by)
-        return None
+        parser = ENVELOPE_PARSERS.get(profile.envelope)
+        if parser is None:
+            return None
+        return parser(stdout, reported_by=f"cli:{profile.binary}")
 
     def _caged_argv(
         self, *, node: PlannedNode, inner_argv: list[str], workdir: Path, env: dict[str, str], proxy_port: int,
@@ -403,17 +403,39 @@ class LocalCliConnectorWorker:
         output redaction cannot help: by then the value has already left the machine.
 
         Some CLIs genuinely need more than the base set, so a variable can be granted
-        EXPLICITLY — per profile (``CliProfile.env_grant``) or by the operator via
-        ``BOUNDED_LOOPS_CLI_ENV_GRANT`` (comma-separated names). Verified empirically on
-        this host: ``claude``, ``grok``, ``muse`` and ``agy`` all work on the base set
-        alone, while ``codex`` needs one granted key because the MCP servers it launches
-        read it. A grant is deliberately a NAME, never a value — the engine still never
-        reads, stores or logs a credential; it only decides which names to forward.
+        EXPLICITLY, and since P3 that takes TWO independent keys, not one:
+
+        1. the provider DECLARES the name — ``CliProfile.env_grant``, which an operator can set
+           from a provider catalog without touching code, and
+        2. the operator ALLOWS the name — ``BOUNDED_LOOPS_ENV_PASSTHROUGH_ALLOW`` (the legacy
+           ``BOUNDED_LOOPS_CLI_ENV_GRANT`` is still honoured on this path).
+
+        The intersection, not the union. Before P3 the operator variable alone was enough here,
+        while the base engine had always required the workload to ask as well — one product, one
+        security concern, two different answers. Two keys means a hostile or careless provider
+        entry cannot open the channel by itself, and neither can an operator grant that some
+        forgotten export left lying in a shell profile.
+
+        Verified empirically on this host: ``claude``, ``grok``, ``muse`` and ``agy`` all work on
+        the base set alone, while ``codex`` needs one granted key because the MCP servers it
+        launches read it — so that name must now appear in codex's catalog entry as well as in the
+        operator's allow-list. A grant is deliberately a NAME, never a value: the engine still
+        never reads, stores or logs a credential; it only decides which names to forward.
         """
         source = self._environ if self._environ is not None else os.environ
-        granted = set(profile.env_grant)
-        raw_grant = source.get(_ENV_GRANT_VAR, "")
-        granted.update(name.strip() for name in raw_grant.split(",") if name.strip())
+        declared = set(profile.env_grant)
+        allowed_by_operator = operator_env_grants(source, include_legacy_cli_alias=True)
+        granted = declared & allowed_by_operator
+        refused = sorted(declared - allowed_by_operator)
+        if refused:
+            # Loud, by name: a provider asked for something the operator never authorized. Silence
+            # here would look exactly like a working setup until the CLI failed for reasons that
+            # point nowhere near the missing grant.
+            _LOGGER.warning(
+                "local-CLI %s declares env name(s) %s that no operator grant authorizes; "
+                "not forwarding them. Add them to %s to allow.",
+                profile.binary, ", ".join(refused), ENV_PASSTHROUGH_ALLOW_VAR,
+            )
         allowed = _CLI_ENV_ALLOWLIST | granted
 
         env = {key: value for key, value in source.items() if key in allowed}

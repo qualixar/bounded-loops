@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -44,6 +45,10 @@ from bounded_loops.graph.application.validate_graph import (
     parse_authoring_graph_yaml,
 )
 from bounded_loops.graph.domain.authoring import _NULL_POLICY_DIGEST
+from bounded_loops.graph.adapters.connectors.provider_catalog import (
+    describe as _describe_providers,
+    resolve_cli_profiles,
+)
 from bounded_loops.graph.domain.errors import GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
 # cmd_graph_artifacts, cmd_graph_approve, and cmd_graph_demo live in sibling modules to
@@ -69,9 +74,12 @@ from bounded_loops.graph.cli_graph_demo import (
 # public-contract debt (it silently changed `--out`'s meaning and only existed to reuse
 # that path math). `bl graph approve` now opens `--out <dir>` literally via
 # `LocalGraphRuntimeFacade.for_run_dir`, so the nesting is gone.
-_CLI_EXECUTE_ORG = "local-org"
-_CLI_EXECUTE_PROJECT = "local-project"
-_CLI_EXECUTE_RUN_ID = "graph-run"
+# Imported, not re-declared: these used to be a second copy of the same three strings.
+from bounded_loops.graph.graph_composition import (  # noqa: E402
+    LOCAL_ORGANIZATION_ID as _CLI_EXECUTE_ORG,
+    LOCAL_PROJECT_ID as _CLI_EXECUTE_PROJECT,
+    LOCAL_RUN_ID as _CLI_EXECUTE_RUN_ID,
+)
 
 
 class _TrivialAuthorizer:
@@ -433,8 +441,15 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
         _err(f"graph run: {exc}")
         return 2
 
+    try:
+        cli_profiles = resolve_cli_profiles(catalog_path=_catalog_path(args))
+    except GraphValidationError as exc:
+        _err(f"graph run: provider catalog rejected — [{exc.code}] {exc.pointer} — {exc.message}")
+        return 2
+
     from bounded_loops.graph.graph_composition import execute_graph_run
     return execute_graph_run(
+        cli_profiles=cli_profiles,
         manifest_text=text,
         manifest_suffix=".json" if suffix == ".json" else ".yaml",
         connections_raw=list(connections_raw),
@@ -449,6 +464,53 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
         run_budget=run_budget,
         price_table=price_table,
     )
+
+
+def _catalog_path(args: argparse.Namespace) -> Path | None:
+    """The provider catalog to use: ``--providers``, else ``BOUNDED_LOOPS_PROVIDERS``, else none.
+
+    An env var as well as a flag because the operator who configures providers is often not the
+    person typing the command — and a provider set that only a flag can express cannot be made
+    the default for a whole machine.
+    """
+    explicit = getattr(args, "providers", None)
+    if explicit:
+        return Path(explicit)
+    from_env = os.environ.get("BOUNDED_LOOPS_PROVIDERS", "").strip()
+    return Path(from_env) if from_env else None
+
+
+def cmd_graph_providers(args: argparse.Namespace) -> int:
+    """bl graph providers — what agent CLIs can this deployment actually run?
+
+    Answers the question that used to require reading ``CLI_PROFILES`` in the source: which
+    providers exist, which of them can report what they spent, and which environment variable
+    NAMES each asks to receive. A spend cap on an unmetered provider fails closed, so knowing
+    which column a provider is in before authoring a graph is the difference between a budget
+    that works and a run that pays and then refuses.
+    """
+    try:
+        profiles = resolve_cli_profiles(catalog_path=_catalog_path(args))
+    except GraphValidationError as exc:
+        _err(f"graph providers: catalog rejected — [{exc.code}] {exc.pointer} — {exc.message}")
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "providers": {
+                name: {
+                    "binary": profile.binary,
+                    "prompt_via": profile.prompt_via,
+                    "metered": bool(profile.envelope),
+                    "envelope": profile.envelope,
+                    "env_names_requested": list(profile.env_grant),
+                }
+                for name, profile in sorted(profiles.items())
+            },
+        }, indent=2, sort_keys=True))
+        return 0
+    for line in _describe_providers(profiles):
+        print(line)
+    return 0
 
 
 def cmd_graph_run(args: argparse.Namespace) -> int:
@@ -703,8 +765,32 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
             "spend. Explicit flags override this file per dimension."
         ),
     )
+    run_p.add_argument(
+        "--providers", default=None, metavar="<catalog.toml>",
+        help=(
+            "Path to a provider catalog (TOML) adding or overriding agent CLIs, so a new "
+            "provider needs no code change and no release. Entries hold NAMES of environment "
+            "variables to forward, never values; a catalog that tries to carry a credential is "
+            "refused. See `bl graph providers` for what is currently wired."
+        ),
+    )
     run_p.add_argument("--json", action="store_true", help="Emit JSON output.")
     run_p.set_defaults(func=cmd_graph_run)
+
+    providers_p = graph_subs.add_parser(
+        "providers",
+        help="List the agent CLIs this deployment can run.",
+        description=(
+            "Show every provider wired into this deployment: the shipped profiles plus any "
+            "added or overridden by --providers. Prints binary, prompt mode, whether spend on "
+            "it can be METERED, and which environment variable NAMES it asks to receive. "
+            "No values are ever read or printed."
+        ),
+    )
+    providers_p.add_argument("--providers", default=None, metavar="<catalog.toml>",
+                             help="Provider catalog to merge over the shipped profiles.")
+    providers_p.add_argument("--json", action="store_true", help="Emit JSON output.")
+    providers_p.set_defaults(func=cmd_graph_providers)
 
     # resume (handler lives in cli_graph_resume.py to keep this file within budget)
     from bounded_loops.graph.cli_graph_resume import add_resume_parser

@@ -78,6 +78,7 @@ from bounded_loops.adapters.io.budget import BudgetMeter
 from bounded_loops.adapters.io.kill_switch import EnvKillSwitch  # NOT FileKillSwitch — see  B
 from bounded_loops.adapters.io.approval import CliApproval, AutoApproval
 from bounded_loops.adapters.io.clock import UtcClock
+from bounded_loops.adapters._env import ENV_PASSTHROUGH_ALLOW_VAR, operator_env_grants
 
 # P2 gates (axe) — genuinely not yet
 # authored. Lazy/guarded import, mirroring the qualixar block below.
@@ -146,7 +147,7 @@ RUNNER_REGISTRY: dict[str, type] = {
 # wiring. Default-closed: an unset/empty operator allowlist means NO
 # env_passthrough entry is ever passed through, regardless of what any
 # loop.yaml requests.
-_ENV_PASSTHROUGH_OPERATOR_ALLOWLIST_VAR = "BOUNDED_LOOPS_ENV_PASSTHROUGH_ALLOW"
+_ENV_PASSTHROUGH_OPERATOR_ALLOWLIST_VAR = ENV_PASSTHROUGH_ALLOW_VAR
 _SCRATCH_MARKER = ".bounded-loops-scratch"
 
 # Universal gate registry: command/pytest/jsonschema unconditionally (v1
@@ -479,8 +480,11 @@ def _resolve_env_passthrough(manifest: LoopManifest) -> dict[str, str]:
     if not manifest.env_passthrough:
         return {}
     operator_allowed = {
-        v.strip() for v in os.environ.get(_ENV_PASSTHROUGH_OPERATOR_ALLOWLIST_VAR, "").split(",")
-        if v.strip()
+        # Shared with the graph engine's local-CLI path since P3 — one canonical variable, one
+        # set of intersection semantics. This subsystem does NOT honour the graph-specific legacy
+        # alias: widening the base engine by a name it never read would be a security regression
+        # dressed up as a cleanup.
+        *operator_env_grants(),
     }
     resolved: dict[str, str] = {}
     for name in manifest.env_passthrough:

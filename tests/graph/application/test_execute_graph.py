@@ -142,8 +142,15 @@ def test_prompt_delivered_as_argument(tmp_path):
         assert handle.read() == b"ARG:summarize the plan"
 
 
-def test_unknown_provider_fails_closed(tmp_path):
-    # provider_id "mystery" is not a known agent CLI → the node fails closed → run FAILED.
+def test_unknown_provider_is_refused_before_the_run_starts(tmp_path):
+    """provider_id "mystery" has no profile → refused by preflight, before any receipt exists.
+
+    This used to fail closed only when the controller reached the node. That was strictly worse
+    than it looked: ``NodeCliResolver`` raised a plain exception, which the controller read as a
+    transient ``WORKER_FAULT`` and retried to ``max_attempts`` — every attempt failing
+    identically — and by then every node upstream had really run and really paid. A
+    misconfiguration that is fully detectable from the plan must be caught from the plan.
+    """
     out = tmp_path / "run"
     rc = execute_graph_run(
         manifest_text=_MANIFEST, manifest_suffix=".yaml",
@@ -153,8 +160,37 @@ def test_unknown_provider_fails_closed(tmp_path):
         environ={"PATH": os.environ.get("PATH", "")},
     )
     assert rc == 2
-    arena, _ = _arena(out)
-    assert arena.run_state == "FAILED"
+    # Refused before the first attempt: no receipt stream, so nothing was ever started.
+    assert not (out / "controller-events.jsonl").is_file()
+
+
+def test_an_unknown_provider_reaching_the_worker_is_terminal_not_retried(tmp_path):
+    """Second line of defence: a deployment that hands profiles straight to the resolver.
+
+    Preflight cannot help a caller that constructs its own resolver, so the resolver itself must
+    raise a TERMINAL contract error. A deterministic failure classified as transient is how one
+    typo turns into ``max_attempts`` executions of nothing.
+    """
+    import pytest
+
+    from bounded_loops.graph.adapters.connectors.node_cli_resolver import NodeCliResolver
+    from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
+    from bounded_loops.graph.domain.errors import WorkerContractError
+    from bounded_loops.graph.graph_composition import _DEFAULT_POLICY_DIGEST, _parse_manifest
+
+    plan = compile_graph(
+        _parse_manifest(_MANIFEST, ".yaml"),
+        CompileSnapshot(
+            policy_digest=_DEFAULT_POLICY_DIGEST,
+            package_digests=frozenset(),
+            connections=tuple(_connections("mystery")),
+        ),
+    )
+    node = next(n for n in plan.nodes if n.binding_id is not None)
+    resolver = NodeCliResolver({node.node_id: "hi"}, profiles={"claude": CliProfile("claude")})
+
+    with pytest.raises(WorkerContractError, match="not a known agent CLI"):
+        resolver.resolve(plan=plan, node=node, envelope=None)
 
 
 def test_missing_prompt_fails_closed(tmp_path):

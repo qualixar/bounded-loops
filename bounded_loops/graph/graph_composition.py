@@ -93,6 +93,19 @@ from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidati
 from bounded_loops.graph.domain.events import GraphRunIdentity
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
+# Single-tenant identity for `bl graph run --execute` on an operator's own machine. These are
+# SENTINELS, deliberately prefixed ``local-``: a deployment serving more than one tenant must pass
+# its own values. They are safe here because the CLI gives every run its own artifact store
+# (``out_dir / "artifacts"``) and its own receipt stream, so two local runs cannot see each other's
+# artifacts even while sharing an org/project label.
+#
+# They live here, once, because they were duplicated in ``cli_graph.py`` and in this module's
+# function defaults — two copies that agreed by luck and would diverge the moment one was edited.
+# ``tests/graph/test_layering.py`` asserts these strings appear nowhere else.
+LOCAL_ORGANIZATION_ID = "local-org"
+LOCAL_PROJECT_ID = "local-project"
+LOCAL_RUN_ID = "graph-run"
+
 _LOCAL_CLI_TRANSPORTS = frozenset({"local_cli"})
 _HTTPS_TRANSPORTS = frozenset({"https"})
 _ALL_EXECUTOR_TRANSPORTS = _LOCAL_CLI_TRANSPORTS | _HTTPS_TRANSPORTS
@@ -252,11 +265,19 @@ def _build_policy(
 def _preflight(
     plan: ExecutionPlan,
     admitted_connections: Mapping[str, AdmittedConnectionRecord] | None = None,
+    cli_profiles: Mapping[str, CliProfile] = CLI_PROFILES,
 ) -> str | None:
     """Return a clear error message if the graph has a node this phase cannot run, else None.
 
     Extended rules vs. the local-CLI-only original:
-    * local_cli nodes: still allowed unchanged.
+    * local_cli nodes: allowed only when this deployment has a profile for the provider the
+      binding names. Before P3 this check did not exist, and the consequence was not merely a
+      late error message: ``NodeCliResolver`` raises ``GraphIntegrityError`` from inside the
+      worker, which the controller classifies as a transient ``WORKER_FAULT`` and retries to
+      ``max_attempts`` — so a typo in a provider name burned the whole retry budget on a
+      failure that could never succeed, *after* every upstream node had really run and paid.
+      A misconfiguration that is fully detectable before the first attempt must be refused
+      before the first attempt.
     * https nodes: allowed ONLY when a matching ``AdmittedConnectionRecord`` is present;
       fails closed if none supplied — never silently skips or fabricates a grant.
     * Approval checkpoints: ALLOWED (Slice 1) — the controller pauses the run at an
@@ -278,6 +299,23 @@ def _preflight(
                 "transport 'local_cli' (subscription CLI) or 'https' (BYOK/HTTP connector), "
                 "or are an 'approval' human checkpoint. Sandboxed tool execution is a later phase."
             )
+        # local_cli nodes require a profile for the provider their binding names.
+        # Defaulted to the shipped profile map rather than to ``None``-means-skip: a check a
+        # caller can silently omit is not a check. An empty mapping refuses every local-CLI
+        # node, which is the honest answer for a deployment with no providers installed.
+        if is_egress_node(plan, node, _LOCAL_CLI_TRANSPORTS):
+            binding = next(
+                (b for b in plan.connection_bindings if b.binding_id == node.binding_id), None
+            )
+            if binding is not None and binding.provider_id not in cli_profiles:
+                known = ", ".join(sorted(cli_profiles)) or "(none configured)"
+                return (
+                    f"node {node.node_id!r} binds local-CLI provider {binding.provider_id!r}, "
+                    f"which this deployment has no profile for (known: {known}). Add a provider "
+                    "catalog entry for it, or bind the node to a provider that is installed. "
+                    "Refused before the run starts: reaching this node would fail every attempt "
+                    "identically, having already paid for every node upstream of it."
+                )
         # https nodes require an admitted record — fail closed if absent.
         if is_egress_node(plan, node, _HTTPS_TRANSPORTS):
             binding = next(
@@ -428,9 +466,9 @@ def execute_graph_run(
     connections_raw: Sequence[object],
     node_prompts: Mapping[str, str],
     out_dir: Path,
-    organization_id: str = "local-org",
-    project_id: str = "local-project",
-    run_id: str = "graph-run",
+    organization_id: str = LOCAL_ORGANIZATION_ID,
+    project_id: str = LOCAL_PROJECT_ID,
+    run_id: str = LOCAL_RUN_ID,
     policy_digest: str = _DEFAULT_POLICY_DIGEST,
     json_out: bool = False,
     cli_profiles: Mapping[str, CliProfile] = CLI_PROFILES,
@@ -479,7 +517,7 @@ def execute_graph_run(
         return _fail(json_out, f"compile failed [{exc.code}] {exc.pointer} — {exc.message}")
 
     admitted = admitted_connections or {}
-    problem = _preflight(plan, admitted)
+    problem = _preflight(plan, admitted, cli_profiles)
     if problem is not None:
         return _fail(json_out, problem)
 

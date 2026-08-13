@@ -24,7 +24,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
-from typing import Mapping
+from types import MappingProxyType
+from typing import Callable, Mapping
 
 from bounded_loops.graph.domain.usage import MICROUNITS_PER_USD, WorkerUsage
 
@@ -226,3 +227,15 @@ def _agy_usage(document: Mapping[str, object], *, reported_by: str) -> WorkerUsa
         # No cost field: a cost cap here needs an operator price table, or it fails closed.
         reported_by=reported_by,
     )
+
+
+#: Envelope name → parser. Was an ``if profile.envelope == "claude": ... elif ...`` chain inside
+#: the worker, which meant the set of readable envelopes was knowable only by reading that
+#: function. Now it is data, so the provider catalog can validate an operator's ``envelope = "x"``
+#: against the parsers that actually exist instead of discovering the mismatch at run time — after
+#: the CLI has been called and billed.
+ENVELOPE_PARSERS: Mapping[str, Callable[..., "CliEnvelope | None"]] = MappingProxyType({
+    "claude": parse_claude_envelope,
+    "grok": parse_grok_envelope,
+    "agy": parse_agy_envelope,
+})

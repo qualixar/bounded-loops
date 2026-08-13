@@ -124,6 +124,31 @@ def test_the_composition_tier_modules_all_exist() -> None:
     assert missing == [], f"composition-tier modules named but absent: {missing}"
 
 
+def test_the_local_tenant_sentinels_are_declared_exactly_once() -> None:
+    """``local-org`` / ``local-project`` / ``graph-run`` are single-tenant defaults for the local
+    CLI. They were declared twice — in ``cli_graph`` and in ``graph_composition``'s function
+    defaults — agreeing by luck. Two copies of an identity default is a silent divergence waiting
+    for whichever one someone edits."""
+    literals = ('"local-org"', '"local-project"', '"graph-run"')
+    sites: dict[str, list[str]] = {literal: [] for literal in literals}
+    for name, path in _modules(_ROOT):
+        text = path.read_text(encoding="utf-8")
+        for literal in literals:
+            if literal in text:
+                sites[literal].append(name)
+
+    allowed = {"bounded_loops.graph.graph_composition"}
+    for literal, found in sites.items():
+        unexpected = [name for name in found if name not in allowed]
+        # The BYOK request builder carries its own documented per-record defaults; it is the one
+        # other place these strings legitimately appear.
+        unexpected = [
+            name for name in unexpected
+            if name != "bounded_loops.graph.adapters.connectors.admitted_connection_request"
+        ]
+        assert unexpected == [], f"{literal} is declared outside the sentinel module: {unexpected}"
+
+
 @pytest.mark.parametrize(
     "port_name",
     ["ArtifactStorePort", "ArtifactReaderPort", "ArtifactWriterPort", "EventLogPort"],

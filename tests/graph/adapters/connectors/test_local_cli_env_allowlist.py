@@ -58,27 +58,67 @@ def test_path_drops_relative_entries_so_the_workdir_cannot_shadow_a_binary() -> 
     assert "." not in env["PATH"].split(":")
 
 
-def test_a_profile_grant_forwards_exactly_that_name_and_nothing_else() -> None:
-    """A CLI whose own tooling reads a key can be granted it — narrowly.
+def test_forwarding_a_name_takes_both_the_provider_declaration_and_the_operator_grant() -> None:
+    """Two independent keys, intersected — P3.
 
-    Verified on a real host: `codex` fails without one granted key because the MCP servers
-    it launches read it, while `claude`/`grok`/`muse`/`agy` need no grant at all.
+    Verified on a real host: `codex` fails without one granted key because the MCP servers it
+    launches read it, while `claude`/`grok`/`muse`/`agy` need no grant at all. That key now
+    reaches the CLI only when the PROVIDER declares the name and the OPERATOR allows it.
+
+    Before P3 the operator variable alone sufficed on this path, while the base engine had always
+    also required the workload to ask. One product, one security concern, two different answers —
+    and the permissive one was the path that runs a network-connected agent CLI over data the
+    operator did not necessarily write.
     """
+    declared = CliProfile("codex", env_grant=("AZURE_HM_API_KEY",))
+    allow = {"BOUNDED_LOOPS_ENV_PASSTHROUGH_ALLOW": "AZURE_HM_API_KEY"}
+
+    both = _worker({**_BENIGN, **_SECRETS, **allow})._child_env(declared)
+
+    assert both["AZURE_HM_API_KEY"] == _SECRETS["AZURE_HM_API_KEY"]
+    assert "GITHUB_TOKEN" not in both, "a grant must not widen beyond the names granted"
+
+
+def test_a_provider_declaration_alone_forwards_nothing() -> None:
+    """A hostile or careless provider entry cannot open the channel by itself."""
     env = _worker({**_BENIGN, **_SECRETS})._child_env(
         CliProfile("codex", env_grant=("AZURE_HM_API_KEY",)),
     )
 
-    assert env["AZURE_HM_API_KEY"] == _SECRETS["AZURE_HM_API_KEY"]
-    assert "GITHUB_TOKEN" not in env, "a grant must not widen beyond the names granted"
+    assert "AZURE_HM_API_KEY" not in env
 
 
-def test_operator_can_grant_by_name_through_the_environment() -> None:
-    source = {**_BENIGN, **_SECRETS, "BOUNDED_LOOPS_CLI_ENV_GRANT": "GITHUB_TOKEN"}
+def test_an_operator_grant_alone_forwards_nothing() -> None:
+    """Nor can a forgotten export in a shell profile: the provider has to ask for it too."""
+    source = {**_BENIGN, **_SECRETS, "BOUNDED_LOOPS_ENV_PASSTHROUGH_ALLOW": "GITHUB_TOKEN"}
 
     env = _worker(source)._child_env(CliProfile("claude"))
 
-    assert env["GITHUB_TOKEN"] == _SECRETS["GITHUB_TOKEN"]
+    assert "GITHUB_TOKEN" not in env
     assert "AZURE_HM_API_KEY" not in env
+
+
+def test_the_legacy_cli_grant_variable_still_works_on_this_path() -> None:
+    """An operator who already set the old name keeps their grant across the upgrade.
+
+    Deprecated, not broken: silently dropping a security grant on upgrade makes a working
+    deployment fail for reasons that point nowhere near the rename.
+    """
+    source = {**_BENIGN, **_SECRETS, "BOUNDED_LOOPS_CLI_ENV_GRANT": "AZURE_HM_API_KEY"}
+
+    env = _worker(source)._child_env(CliProfile("codex", env_grant=("AZURE_HM_API_KEY",)))
+
+    assert env["AZURE_HM_API_KEY"] == _SECRETS["AZURE_HM_API_KEY"]
+
+
+def test_the_base_engine_does_not_honour_the_graph_specific_legacy_alias() -> None:
+    """Unification must not widen a subsystem that never read that name."""
+    from bounded_loops.adapters._env import operator_env_grants
+
+    source = {"BOUNDED_LOOPS_CLI_ENV_GRANT": "GITHUB_TOKEN"}
+
+    assert operator_env_grants(source) == frozenset()
+    assert operator_env_grants(source, include_legacy_cli_alias=True) == frozenset({"GITHUB_TOKEN"})
 
 
 def test_shipped_profiles_grant_nothing_by_default() -> None:
