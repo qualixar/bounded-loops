@@ -502,6 +502,18 @@ def bl_runs(loop_dir: str) -> dict:
     return {"status": "ok", "runs": list_runs(path)}
 
 
+# ── discovery tools ───────────────────────────────────────────────────────────
+# Registered here rather than declared above so that the capability contract lives in its own
+# module: `bl_capabilities`/`bl_catalog`/`bl_search_loops` are pure readers with no dependency on
+# this module's confirm-gate session state, and this file is already close to its size cap.
+#
+# Imported at the bottom, after `mcp` exists, for the same reason `cli.py` imports `_cmd_new` at
+# the bottom — the registrar needs the instance, and a top-of-file import would be circular.
+from bounded_loops.mcp_discovery import register as _register_discovery  # noqa: E402
+
+_register_discovery(mcp)
+
+
 def main() -> None:
     """Console-script entry point (bounded-loops-mcp). Blocks on mcp.run()."""
     mcp.run()

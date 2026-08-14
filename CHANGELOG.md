@@ -18,6 +18,36 @@ All notable changes to bounded-loops are documented here. This project follows
   then falls back to the repository root, then to the current directory. A symlinked workspace
   root is refused: it would silently relocate every receipt in the project.
 
+- **A capability contract, over MCP and on the command line.** `bl_capabilities` (MCP) and
+  `bl capabilities` (CLI) serve the same document from one function: node kinds with their
+  kind-specific fields, gate kinds and what each *mechanically* checks plus whether it is
+  available on this host, isolation tiers with the controls actually enforced here, which failure
+  policies are **honoured** versus merely **declared**, the repair contract and its bound,
+  the effect vocabulary, every budget field and where it is enforced, the terminal statuses and
+  which of them are not success, and all 37 refusals with the fix for each.
+
+  This is the document a host model reads instead of guessing. Two rules govern it: declared is
+  not honoured, and *here* is not *everywhere*.
+
+- **`bl_catalog` and `bl_search_loops` (MCP).** The loop catalog with role/gate/keyless filters,
+  and a ranked search against a described task. The ranking is **lexical** and the response says
+  so — it matches words, it does not understand meaning.
+
+- **A refusal reference.** Every one of the 37 validator refusals now has a plain-language
+  summary and an actionable fix, checked against `validate_graph.py`'s own source in both
+  directions so the table cannot document a refusal that cannot happen, or miss one that can.
+  Readable as `bl capabilities --refusals`.
+
+### Fixed
+
+- **The authoring schema advertised two failure policies the compiler refuses.** `on_failure`'s
+  enum offers `continue` and `await_human`, but the validator rejects both with
+  `on_failure_unimplemented` — correctly, since the runtime routes every failure to `fail_graph`
+  and accepting them would silently discard the declared policy. Anything generating an authoring
+  UI from the schema would have offered them as choices. The schema now carries
+  `x-unimplemented`, and a drift test pins it to the validator's own set. `isolation` likewise
+  carries `x-never-available` for `customer_managed_worker`, which no host can enforce.
+
 - **`bl graph run --execute` no longer requires `--out`.** It defaults to
   `.bounded-loops/runs/<stamp>-<rand>/`, creating the workspace if needed, and announces the
   resolved path on stderr. An explicit `--out` behaves exactly as it did in 0.4.0, and **no

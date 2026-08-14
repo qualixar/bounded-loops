@@ -1,0 +1,139 @@
+"""The capability report must describe the engine that exists, not the one the schema implies.
+
+A host model reads this document instead of guessing. Every test here is a guard against the
+report reading *better* than the code — an over-promise here becomes a graph the compiler refuses.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
+from bounded_loops.graph.adapters.enforcement.snapshot import platform_snapshot
+from bounded_loops.graph.application.capability_report import capability_report
+from bounded_loops.graph.application.refusals import REFUSALS
+from bounded_loops.graph.domain.authoring import IsolationLevel, NodeKind
+
+_BARE = PlatformCapabilities(
+    platform="linux", docker_available=False, process_groups=True, rlimits=True,
+)
+_FULL = PlatformCapabilities(
+    platform="linux", docker_available=True, process_groups=True, rlimits=True,
+)
+
+
+@pytest.fixture
+def report() -> dict:
+    return dict(capability_report(platform=platform_snapshot(capabilities=_BARE)))
+
+
+def test_the_whole_document_survives_a_json_round_trip(report: dict) -> None:
+    """It crosses an MCP boundary, so a non-serialisable value is a broken tool, not a warning."""
+    assert json.loads(json.dumps(report)) == report
+
+
+def test_every_node_kind_the_engine_defines_is_reported(report: dict) -> None:
+    reported = [entry["kind"] for entry in report["node_kinds"]]
+    assert reported == [kind.value for kind in NodeKind]
+
+
+def test_kind_specific_fields_are_ACTUALLY_extracted_from_the_nested_schema(
+    report: dict,
+) -> None:
+    """The schema nests each kind under oneOf[i].allOf[1], so a naive read finds nothing.
+
+    That naive read reported all ten kinds as having no kind-specific fields — a confidently
+    wrong answer that would tell a host model a loop node needs no loop_package. These four are
+    spot-checks with known answers; the emptiness of ALL of them is what the last assert catches.
+    """
+    by_kind = {entry["kind"]: entry for entry in report["node_kinds"]}
+
+    assert by_kind["loop"]["extra_required_fields"] == ["loop_package"]
+    assert by_kind["tool"]["extra_required_fields"] == ["tool_ref"]
+    assert by_kind["join"]["extra_required_fields"] == ["mode"]
+    assert by_kind["router"]["extra_required_fields"] == ["routes"]
+    assert "default_route" in by_kind["router"]["extra_optional_fields"]
+
+    with_extras = [k for k, v in by_kind.items() if v["extra_required_fields"]]
+    assert len(with_extras) >= 5, f"only {with_extras} report extras — the extraction regressed"
+
+
+def test_the_refusal_table_is_carried_whole(report: dict) -> None:
+    assert report["refusals"]["count"] == len(REFUSALS)
+    assert sorted(report["refusals"]["codes"]) == sorted(REFUSALS)
+    assert all(entry["fix"] for entry in report["refusals"]["table"])
+
+
+def test_declared_and_honoured_failure_policies_are_reported_SEPARATELY(report: dict) -> None:
+    policies = report["failure_policies"]
+    assert set(policies["honoured"]) < set(policies["declared"])
+    assert policies["refused"] == sorted(
+        set(policies["declared"]) - set(policies["honoured"])
+    )
+    # The schema annotation and the validator constant must be the same answer.
+    assert policies["schema_annotation"] == policies["refused"]
+
+
+def test_isolation_reports_what_THIS_host_can_do_not_what_the_enum_lists(report: dict) -> None:
+    tiers = {tier["level"]: tier for tier in report["isolation"]["tiers"]}
+    assert set(tiers) == {level.value for level in IsolationLevel}
+    # Injected: no container runtime, so this tier is undeliverable AND says why.
+    assert tiers["container_restricted"]["deliverable_here"] is False
+    assert tiers["container_restricted"]["reason_if_not"]
+    assert tiers["workspace_only"]["deliverable_here"] is True
+
+
+def test_a_tier_undeliverable_HERE_is_not_reported_as_undeliverable_EVERYWHERE() -> None:
+    """"Unavailable on your laptop" and "unavailable in principle" are different facts.
+
+    Conflating them would tell a host model that container isolation does not exist, when the
+    honest statement is that this host cannot deliver it.
+    """
+    bare = dict(capability_report(platform=platform_snapshot(capabilities=_BARE)))
+    full = dict(capability_report(platform=platform_snapshot(capabilities=_FULL)))
+
+    bare_tiers = {t["level"]: t for t in bare["isolation"]["tiers"]}
+    full_tiers = {t["level"]: t for t in full["isolation"]["tiers"]}
+
+    assert bare_tiers["container_restricted"]["deliverable_here"] is False
+    assert full_tiers["container_restricted"]["deliverable_here"] is True
+    # `never_available` is a property of the engine, so it does NOT move with the host.
+    assert bare["isolation"]["never_available"] == full["isolation"]["never_available"]
+    assert "customer_managed_worker" in bare["isolation"]["never_available"]
+
+
+def test_non_success_statuses_are_named_explicitly(report: dict) -> None:
+    statuses = report["terminal_statuses"]
+    assert statuses["success"] == ["DONE"]
+    assert set(statuses["not_success"]) == {"HALT", "PAUSE", "KILLED", "ERROR"}
+    assert set(statuses["all"]) == set(statuses["success"]) | set(statuses["not_success"])
+
+
+def test_the_repair_contract_states_that_attempt_alone_is_not_an_identity(report: dict) -> None:
+    """The 0.5.0 breaking change exists because of this; a host model must be told."""
+    repair = report["repair"]
+    assert repair["attempts_reset_at_a_boundary"] is True
+    assert "repair_round" in repair["identity_warning"]
+    assert repair["global_round_bound"] > 0
+
+
+def test_every_budget_field_names_where_it_is_enforced(report: dict) -> None:
+    """P0's rule: a budget the runtime ignores must not be advertised as a budget."""
+    fields = {entry["field"]: entry for entry in report["budgets"]}
+    assert set(fields) == {
+        "max_attempts", "max_wallclock_s", "max_tokens", "max_cost_microunits",
+    }
+    for field, entry in fields.items():
+        assert entry["enforced_by"], field
+        assert entry["unit"], field
+
+
+def test_the_gate_section_states_the_independence_rule(report: dict) -> None:
+    """This is the one lesson a host model gets wrong by default."""
+    gates = report["gates"]
+    assert "DIFFERENT object" in gates["independence_rule"]
+    assert "mechanical" in gates["independence_rule"]
+    assert len(gates["kinds"]) >= 10
+    assert all(entry["checks"] for entry in gates["kinds"])

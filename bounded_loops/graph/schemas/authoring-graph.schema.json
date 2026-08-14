@@ -35,10 +35,14 @@
           "type": "object"
         },
         "isolation": {
+          "description": "Isolation tier. Every value here is schema-valid, but a tier listed in x-never-available can never be enforced on any platform, so a graph using it fails closed at preflight. Authoring tools should not offer those tiers as choices.",
           "enum": [
             "workspace_only",
             "process_restricted",
             "container_restricted",
+            "customer_managed_worker"
+          ],
+          "x-never-available": [
             "customer_managed_worker"
           ]
         },
@@ -46,6 +50,11 @@
           "type": "string"
         },
         "on_failure": {
+          "description": "Failure policy for this node. Every value here is schema-valid, but a value listed in x-unimplemented is REFUSED by the compiler (error code on_failure_unimplemented) because the runtime routes every failure to fail_graph and accepting it would silently discard the declared policy. Authoring tools should not offer those values as choices.",
+          "x-unimplemented": [
+            "await_human",
+            "continue"
+          ],
           "oneOf": [
             {
               "enum": [

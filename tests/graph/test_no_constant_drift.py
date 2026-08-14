@@ -16,9 +16,27 @@ from bounded_loops.graph.adapters.persistence.event_log import _NODE_EVENTS
 from bounded_loops.graph.application.arena_projection import _ALLOWED, _LIFECYCLE_EVENTS
 from bounded_loops.graph.application.node_spend import EFFECTFUL_EFFECTS
 from bounded_loops.graph.application.node_spend import MAX_ATTEMPTS_CEILING as CONTROLLER_CEILING
-from bounded_loops.graph.application.validate_graph import _PROVIDERS
+from bounded_loops.graph.application.validate_graph import (
+    _ON_FAILURE_DECLARED,
+    _ON_FAILURE_UNIMPLEMENTED,
+    _PROVIDERS,
+)
 from bounded_loops.graph.application.validate_graph import _MAX_ATTEMPTS_CEILING as SCHEMA_CEILING
 from bounded_loops.graph.domain.authoring import NETWORK_EFFECTS, Effect
+
+
+def _schema() -> dict:
+    """The schema as shipped on disk — deliberately not via `authoring_graph_schema()`.
+
+    These tests guard the published file that integrators validate against, so they read the
+    file rather than any loader that could normalise or default something away.
+    """
+    return json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "bounded_loops" / "graph" / "schemas" / "authoring-graph.schema.json"
+        ).read_text(encoding="utf-8")
+    )
 
 
 def test_the_retry_ceiling_agrees_between_the_validator_and_the_controller() -> None:
@@ -28,14 +46,65 @@ def test_the_retry_ceiling_agrees_between_the_validator_and_the_controller() -> 
 
 def test_the_json_schema_retry_ceiling_agrees_with_the_code() -> None:
     """The published schema is what integrators validate against before ever running us."""
-    schema = json.loads(
-        (
-            Path(__file__).resolve().parents[2]
-            / "bounded_loops" / "graph" / "schemas" / "authoring-graph.schema.json"
-        ).read_text(encoding="utf-8")
-    )
-    budget = schema["$defs"]["budget"]["properties"]["max_attempts"]
+    budget = _schema()["$defs"]["budget"]["properties"]["max_attempts"]
     assert budget["maximum"] == SCHEMA_CEILING
+
+
+def test_the_schema_declares_which_failure_policies_the_compiler_REFUSES() -> None:
+    """A schema that advertises what the compiler rejects generates invalid work by design.
+
+    `on_failure`'s enum includes `continue` and `await_human` so that an existing manifest
+    using them still reaches the validator's good refusal message rather than an opaque
+    schema error. But anything generating an authoring UI from this schema — which is exactly
+    what the Jarvis config forms do — would offer them as choices, and every graph a
+    non-technical user built with them would be refused at compile.
+
+    `x-unimplemented` is the machine-readable answer, mirrored from the validator rather than
+    imported (the schema is data shipped to integrators, not code). This is the alarm for that
+    mirroring: implementing one of these means removing it from BOTH.
+    """
+    schema = _schema()
+    annotated = schema["$defs"]["baseNode"]["properties"]["on_failure"]["x-unimplemented"]
+    assert frozenset(annotated) == _ON_FAILURE_UNIMPLEMENTED
+    declared = schema["$defs"]["baseNode"]["properties"]["on_failure"]["oneOf"][0]["enum"]
+    assert frozenset(declared) == _ON_FAILURE_DECLARED, (
+        "the schema enum and the validator's declared set must still agree"
+    )
+    assert _ON_FAILURE_UNIMPLEMENTED < _ON_FAILURE_DECLARED, (
+        "refusing a value the validator does not even declare is unreachable code"
+    )
+
+
+def test_the_schema_declares_which_isolation_TIERS_can_never_be_enforced() -> None:
+    """`customer_managed_worker` is schema-valid and unconditionally unavailable.
+
+    `PlatformCapabilities.select_mechanism` returns `(None, "no admitted customer-managed
+    worker transport is available")` for it on every platform, with no probe involved — so a
+    graph naming that tier fails closed everywhere, always. An authoring UI must not offer it.
+    """
+    from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
+    from bounded_loops.graph.application.execution_policy import NetworkMode
+    from bounded_loops.graph.domain.authoring import IsolationLevel
+
+    schema = _schema()
+    isolation = schema["$defs"]["baseNode"]["properties"]["isolation"]
+    annotated = frozenset(isolation["x-never-available"])
+
+    assert frozenset(isolation["enum"]) == {level.value for level in IsolationLevel}
+
+    # Derived, not asserted from a literal: a tier is "never available" when the most capable
+    # platform we can describe still cannot deliver it.
+    fully_capable = PlatformCapabilities(
+        platform="linux", docker_available=True, process_groups=True, rlimits=True,
+    )
+    never = frozenset(
+        level.value
+        for level in IsolationLevel
+        if not fully_capable.can_enforce(level, NetworkMode.DENY)[0]
+    )
+    assert annotated == never, (
+        f"schema says {sorted(annotated)} can never be enforced; capabilities says {sorted(never)}"
+    )
 
 
 def test_the_projection_knows_exactly_the_lifecycle_events_the_log_defines() -> None:
