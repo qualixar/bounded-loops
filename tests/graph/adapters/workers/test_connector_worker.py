@@ -126,7 +126,7 @@ def _worker(forwarder, *, ips=(_PUBLIC,), call=None):
 def test_connector_node_returns_the_response_digest_bound_to_its_route():
     plan = _plan()
     forwarder = _Forwarder(ConnectorResult(True, "ok", response_digest=_RESP, provider_status=200))
-    result = _worker(forwarder).execute(plan=plan, node=_node(plan), envelope=_envelope(), attempt=1)
+    result = _worker(forwarder).execute(plan=plan, node=_node(plan), envelope=_envelope(), attempt=1, repair_round=0)
 
     assert result.output_artifact_digests == (_RESP,)
     # Bound to the node's admitted route/transport so the controller's route-match holds.
@@ -145,7 +145,7 @@ def test_a_denied_egress_fails_the_node_closed():
     worker = _worker(forwarder, ips=("10.0.0.5",))  # private → SSRF deny
 
     with pytest.raises(GraphIntegrityError, match="failed"):
-        worker.execute(plan=plan, node=_node(plan), envelope=_envelope(), attempt=1)
+        worker.execute(plan=plan, node=_node(plan), envelope=_envelope(), attempt=1, repair_round=0)
     assert forwarder.calls == []  # never forwarded
 
 
@@ -155,7 +155,7 @@ def test_an_unbound_node_is_refused():
     forwarder = _Forwarder(ConnectorResult(True, "ok", response_digest=_RESP))
 
     with pytest.raises(GraphIntegrityError, match="must be bound"):
-        _worker(forwarder).execute(plan=plan, node=unbound, envelope=_envelope(), attempt=1)
+        _worker(forwarder).execute(plan=plan, node=unbound, envelope=_envelope(), attempt=1, repair_round=0)
     assert forwarder.calls == []
 
 
@@ -165,5 +165,5 @@ def test_a_request_port_that_returns_a_non_call_is_refused():
     worker = _worker(forwarder, call="not a ConnectorCall")
 
     with pytest.raises(GraphIntegrityError, match="ConnectorCall"):
-        worker.execute(plan=plan, node=_node(plan), envelope=_envelope(), attempt=1)
+        worker.execute(plan=plan, node=_node(plan), envelope=_envelope(), attempt=1, repair_round=0)
     assert forwarder.calls == []

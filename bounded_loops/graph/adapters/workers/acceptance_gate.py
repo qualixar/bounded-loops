@@ -27,6 +27,7 @@ class StructuralAcceptanceGate:
 
     def evaluate(
         self, *, plan: ExecutionPlan, node: PlannedNode, result: WorkerResult,
+        attempt: int, repair_round: int,
     ) -> GateVerdict:
         digests = result.output_artifact_digests
         if not digests:

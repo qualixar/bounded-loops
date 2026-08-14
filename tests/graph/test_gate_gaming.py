@@ -76,7 +76,7 @@ def test_a_plausible_artifact_that_did_no_work_passes_the_structural_gate(tmp_pa
 
     fabricated = _put(store, b"done")
     verdict = _gate(store).evaluate(
-        plan=plan, node=_node(), result=WorkerResult((fabricated,), None, None),
+        plan=plan, node=_node(), result=WorkerResult((fabricated,), None, None), attempt=1, repair_round=0,
     )
 
     assert verdict.passed, "structural acceptance cannot tell work from the appearance of work"
@@ -101,7 +101,7 @@ def test_replaying_an_earlier_attempts_digest_passes_the_structural_gate(tmp_pat
     first = _put(store, b"a genuine answer from attempt 1")
 
     replayed = _gate(store).evaluate(
-        plan=plan, node=_node(), result=WorkerResult((first,), None, None),
+        plan=plan, node=_node(), result=WorkerResult((first,), None, None), attempt=1, repair_round=0,
     )
 
     assert replayed.passed, "the gate cannot see that these bytes were not produced by this attempt"
@@ -115,12 +115,14 @@ class _GateWrapper:
     def __init__(self, worker: object) -> None:
         self._worker = worker
 
-    def evaluate(self, *, plan: object, node: object, result: object) -> GateVerdict:
+    def evaluate(
+        self, *, plan: object, node: object, result: object, attempt: int, repair_round: int,
+    ) -> GateVerdict:
         return GateVerdict(True, "the worker assures me this is fine")
 
 
 class _SelfCongratulatingWorker:
-    def execute(self, *, plan: object, node: object, envelope: object, attempt: int) -> WorkerResult:
+    def execute(self, *, plan: object, node: object, envelope: object, attempt: int, repair_round: int) -> WorkerResult:
         return WorkerResult((), None, None)
 
 
@@ -143,7 +145,7 @@ def test_the_worker_is_gate_check_forbids_aliasing_not_independence() -> None:
     gate = _GateWrapper(worker)
 
     assert gate is not worker, "the identity check the controller performs"
-    verdict = gate.evaluate(plan=None, node=None, result=None)
+    verdict = gate.evaluate(plan=None, node=None, result=None, attempt=1, repair_round=0)
     assert verdict.passed, "a wrapper gate can rubber-stamp anything and still pass the check"
 
 
@@ -164,7 +166,7 @@ def test_an_artifact_cannot_be_changed_after_the_gate_approved_it(tmp_path: Path
     plan = ExecutionPlan.__new__(ExecutionPlan)
     approved = _put(store, b"the approved answer")
     assert _gate(store).evaluate(
-        plan=plan, node=_node(), result=WorkerResult((approved,), None, None),
+        plan=plan, node=_node(), result=WorkerResult((approved,), None, None), attempt=1, repair_round=0,
     ).passed
 
     tampered = _put(store, b"the answer after tampering")
@@ -187,17 +189,17 @@ def test_an_empty_or_unreadable_artifact_is_still_refused(tmp_path: Path) -> Non
     gate = _gate(store)
 
     assert not gate.evaluate(
-        plan=plan, node=_node(), result=WorkerResult((), None, None),
+        plan=plan, node=_node(), result=WorkerResult((), None, None), attempt=1, repair_round=0,
     ).passed, "no artifact at all must fail"
 
     blank = _put(store, b"   \n\t ")
     assert not gate.evaluate(
-        plan=plan, node=_node(), result=WorkerResult((blank,), None, None),
+        plan=plan, node=_node(), result=WorkerResult((blank,), None, None), attempt=1, repair_round=0,
     ).passed, "whitespace-only output must fail"
 
     not_utf8 = _put(store, b"\xff\xfe\x00\x01")
     assert not gate.evaluate(
-        plan=plan, node=_node(), result=WorkerResult((not_utf8,), None, None),
+        plan=plan, node=_node(), result=WorkerResult((not_utf8,), None, None), attempt=1, repair_round=0,
     ).passed, "undecodable output must fail"
 
 
@@ -230,7 +232,7 @@ def test_what_the_structural_gate_does_and_does_not_call_a_reply(tmp_path: Path,
     digest = _put(store, payload)
 
     verdict = _gate(store).evaluate(
-        plan=plan, node=_node(), result=WorkerResult((digest,), None, None),
+        plan=plan, node=_node(), result=WorkerResult((digest,), None, None), attempt=1, repair_round=0,
     )
 
     whitespace_only = not payload.decode("utf-8").replace("\ufeff", "").strip()
@@ -253,10 +255,10 @@ def test_only_the_first_declared_artifact_is_examined(tmp_path: Path) -> None:
     blank = _put(store, b"   ")
 
     assert _gate(store).evaluate(
-        plan=plan, node=_node(), result=WorkerResult((good, blank), None, None),
+        plan=plan, node=_node(), result=WorkerResult((good, blank), None, None), attempt=1, repair_round=0,
     ).passed, "a blank SECOND output is never looked at"
     assert not _gate(store).evaluate(
-        plan=plan, node=_node(), result=WorkerResult((blank, good), None, None),
+        plan=plan, node=_node(), result=WorkerResult((blank, good), None, None), attempt=1, repair_round=0,
     ).passed, "a blank FIRST output fails even though a real one follows"
 
 

@@ -36,13 +36,21 @@ CONTROLLER_SUBDIR = ".controller"
 
 #: Directory and file names EXCLUDED from a package digest.
 #:
-#: Every entry is something a RUN can create inside a package directory, never something the
-#: package ships. That is the whole selection rule, and it is the safe direction to err in. Covering
-#: too little is the dangerous failure: digest only ``loop.yaml`` and someone can edit ``seed/`` or
-#: the gate's own checker script, and a resumed ``plan_id`` then executes different code while the
-#: receipt still names the digest that was recorded. Covering too much is merely annoying — a single
-#: ``bl run`` that wrote into the package would move the digest and make existing runs unresumable —
-#: and ``.bounded-loops`` is exactly that case, which is why it heads the list.
+#: The selection rule is that every entry is something a RUN can create inside a package directory.
+#: Covering too little is the dangerous direction: digest only ``loop.yaml`` and someone can edit
+#: ``seed/`` or the gate's own checker script, and a resumed ``plan_id`` then executes different code
+#: while the receipt still names the digest that was recorded. Covering too much is merely annoying —
+#: a single ``bl run`` that wrote into the package would move the digest and make existing runs
+#: unresumable — and ``.bounded-loops`` is exactly that case, which is why it heads the list.
+#:
+#: **The limit this creates, stated because an earlier version of this comment asserted that these
+#: names are "never something the package ships" with nothing enforcing it.** Nothing in this module
+#: can distinguish a ``__pycache__`` that a run produced from one an author committed, so content
+#: under an excluded name is INVISIBLE to the digest: a package must not ship code there, and a
+#: package that does has a mutable region under a pinned digest. For the 68 packages this repository
+#: ships that rule is enforced — ``test_no_shipped_loop_package_hides_content_under_an_excluded_name``
+#: fails CI if any of them acquires one. For a third-party package it is a contract with the author,
+#: which is why it is written down here rather than implied.
 #:
 #: Note ``STATE.md`` is deliberately NOT excluded. It is the loop's memory seed, so it can change
 #: behaviour, and anything that changes behaviour belongs in the digest. Graph runs cannot dirty it:
@@ -59,44 +67,69 @@ _EXCLUDED_NAMES = frozenset({
 _EXCLUDED_SUFFIXES = (".pyc", ".pyo")
 
 
-def _digestible_files(package: Path) -> Iterable[Path]:
+def _digestible_entries(package: Path) -> Iterable[Path]:
+    """Every file AND directory the digest covers, in sorted relative-path order.
+
+    Directories are yielded because an EMPTY one is observable: ``shutil.copytree`` reproduces it
+    into the workspace, so a gate whose ``run:`` branches on ``test -d seed/hidden_branch`` changes
+    verdict while a files-only digest stays fixed. That is a mutable region under a pinned digest,
+    which is the exact failure this module exists to prevent (found by the P4.5 audit, Grok 7).
+    """
     for path in sorted(package.rglob("*")):
         if any(part in _EXCLUDED_NAMES for part in path.relative_to(package).parts):
             continue
         if path.is_symlink():
             # A symlink's TARGET is outside the digest's reach, so hashing the link would certify
             # bytes this function never read. Refuse rather than certify a package whose content
-            # depends on something the digest cannot cover.
+            # depends on something the digest cannot cover. Checked before `is_dir()`/`is_file()`,
+            # both of which FOLLOW the link and would classify it as ordinary content.
             raise GraphIntegrityError(
                 f"loop package {package} contains a symlink ({path.relative_to(package)}); "
                 "a package must be self-contained to be content-addressed"
             )
-        if path.is_file() and not path.name.endswith(_EXCLUDED_SUFFIXES):
+        if path.is_dir() or (path.is_file() and not path.name.endswith(_EXCLUDED_SUFFIXES)):
             yield path
+
+
+#: Entry-kind tags in the canonical form. Present so a directory named ``x`` and an empty file named
+#: ``x`` cannot produce the same bytes — without the tag, a file of length 0 and a directory would
+#: both reduce to their path alone.
+_DIR_TAG = "d"
+_FILE_TAG = "f"
 
 
 def loop_package_digest(package: Path) -> str:
     """Return the canonical content digest of a loop package directory.
 
-    Canonical form: for each included file in sorted relative-path order, the POSIX relative path,
-    an executable-bit flag, the byte length, and the bytes — each length-prefixed so no combination
-    of paths and contents can be re-partitioned into a different package with the same digest.
+    Canonical form: for each included entry in sorted relative-path order, a kind tag, the POSIX
+    relative path, and — for files — an executable-bit flag, the byte length, and the bytes. Each
+    variable-length field is length-prefixed, so no combination of paths and contents can be
+    re-partitioned into a different package with the same digest.
 
-    Mtimes, uids and directory entries are excluded on purpose. Including them would make the digest
-    depend on how the tree was checked out rather than on what it contains, so a fresh clone of the
-    same commit would compute a different digest and refuse to resume its own runs.
+    Mtimes and uids are excluded on purpose, and so is every mode bit except ``0o111``. Git preserves
+    exactly one permission bit, so hashing the rest would make the digest depend on the checking-out
+    user's umask rather than on what the package contains, and a fresh clone of the same commit would
+    compute a different digest and refuse to resume its own runs. The cost of that choice is real and
+    worth naming: a package whose behaviour depends on a file being unreadable, or on a setuid bit,
+    has a mutable region under a pinned digest. Loop packages are inputs to a gate, not a permission
+    system, so the trade goes to reproducibility.
     """
     package = package.resolve()
     if not package.is_dir():
         raise GraphIntegrityError(f"loop package {package} is not a directory")
     accumulator = hashlib.sha256()
-    for path in _digestible_files(package):
+    for path in _digestible_entries(package):
         relative = path.relative_to(package).as_posix()
+        if path.is_dir():
+            accumulator.update(f"{_DIR_TAG}:{len(relative)}:{relative}:".encode("utf-8"))
+            continue
         payload = path.read_bytes()
         # The executable bit is part of the execution surface: a gate's `run:` may invoke a shipped
         # script directly, and whether that script is executable changes whether the gate can run.
         executable = "1" if path.stat().st_mode & 0o111 else "0"
-        header = f"{len(relative)}:{relative}:{executable}:{len(payload)}:".encode("utf-8")
+        header = (
+            f"{_FILE_TAG}:{len(relative)}:{relative}:{executable}:{len(payload)}:"
+        ).encode("utf-8")
         accumulator.update(header)
         accumulator.update(payload)
     return accumulator.hexdigest()

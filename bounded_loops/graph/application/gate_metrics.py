@@ -82,7 +82,7 @@ INDEPENDENCE_CAVEAT = (
     "The MEASURED figure is coverage of the per-run latent rate under a simulated correlated-retry "
     "regime, which is a DIFFERENT ESTIMAND from the marginal false-accept rate reported above — so "
     "it must not be quoted as 'alpha coverage'. This replaces the Wilson interval, whose measured coverage "
-    "under correlated retries was 31–41% (not 95%). The per-attempt-index slices remain the most "
+    "under the same simulated regime was 77.5% (not 95%). The per-attempt-index slices remain the most "
     "interpretable figures — within attempt index k there is at most one observation per node."
 )
 

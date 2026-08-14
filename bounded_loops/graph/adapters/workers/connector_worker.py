@@ -67,7 +67,7 @@ class ConnectorNodeWorker:
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
-        attempt: int,
+        attempt: int, repair_round: int,
     ) -> WorkerResult:
         if node.binding_id is None:
             raise GraphIntegrityError(

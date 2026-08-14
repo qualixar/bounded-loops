@@ -423,6 +423,40 @@ external traffic.
 
 ---
 
+### 14. Irreversible effects — `kind: publish` and the publication ledger
+
+A `publish` node is the one place a graph is allowed to do something it cannot undo. It
+declares a `publication_policy` (a named string the deployment resolves; the node fails
+closed without one) and its effect is recorded in `published-effects.json` by
+`LocalPublicationLedger.check_and_record`, keyed on `(run_id, plan_id, node_id, repair_round)`
+and carrying a payload digest computed over the artifacts of every upstream node.
+
+The repeat behaviour is three-valued: an unseen key fires; the same key with the same payload
+digest returns `already_published`; the same key with a *different* payload digest raises and
+HALTs the run, because the effect was already burned with different content.
+
+**The ordering, stated exactly, because a diagram is easy to draw wrong.** The ledger write
+*is* the effect in this local sink — it is not a write-ahead record of an effect that happens
+afterwards. The hash-chained event log is the WAL for **run state**, not a pre-effect entry for
+the publication. So:
+
+- There is no `ledger → external call → ledger` sequence to point at. Do not draw one.
+- `_load()` then `_save()` is a read-modify-write with **no lock**. Two concurrent publish
+  attempts on the same key can both observe it absent and both fire. An atomic
+  compare-and-swap (`fcntl.flock`, or an atomic rename) is what the name "exactly-once" would
+  require, and it is not there yet.
+- A production sink that calls a real external service needs the WAL entry written **before**
+  the outbound call, and a reconciliation pass for the crash-in-between case. That is a
+  deployment-provided `PublicationLedgerPort`, not something this local implementation gives you.
+- A corrupt or unreadable ledger is refused, not treated as empty — an unparseable file HALTs
+  rather than re-firing every effect it used to contain.
+
+`bl graph approve` gating a publish node is what makes the ordering human-checkable: the
+approval's authorized effect set is derived from the nodes reachable from it, so an approval
+that gates nothing effect-bearing cannot silently authorize a publication.
+
+---
+
 ## Documented seams — partial or narrower-than-production wiring
 
 Each of these has a real, tested mechanism in the codebase already. What is listed here

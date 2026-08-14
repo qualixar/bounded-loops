@@ -17,10 +17,13 @@
 
 ```bash
 pip install bounded-loops
+git clone https://github.com/qualixar/bounded-loops && cd bounded-loops
 bl run loops/bug-fix-red-green --yes    # a real planted bug, a real pytest gate, no API key
 ```
 
-68 loop packages ship in [`loops/`](loops/). 64 run with no API key at all.
+68 loop packages ship in [`loops/`](loops/); 64 need no API key. The catalog is in
+the repository, not the wheel — `bl run` takes a path and writes its ledger beside
+the loop.
 
 ---
 
@@ -252,9 +255,9 @@ review.** The cross-model audit engine (`--audit-plan`) is the overlay for that.
 
 | Capability | Status |
 |---|---|
-| Gate-verified DAG (worker ≠ gate, controller-enforced identity check) | Shipped |
+| Gate-verified DAG (worker ≠ gate, controller-enforced identity check) | Shipped — object-identity check only: one object cannot hold both roles, but gate logic is not proven independent ([detail](#the-engine-loop)) |
 | Local-CLI + BYOK/HTTPS connectors via `bl graph run --execute` | Shipped |
-| `kind: loop` nodes executable via `bl graph run --execute` | Shipped — digest-pinned package, receipt-verifying gate. Runs at `workspace_only` isolation by default, which is NOT an OS sandbox |
+| `kind: loop` nodes executable via `bl graph run --execute` | Shipped — digest-pinned package, receipt-verifying gate. `isolation` is per-node and never defaulted; the six reference graphs pin `process_restricted`. `workspace_only` is NOT an OS sandbox |
 | No-secret egress broker (single-use leases; SSRF / DNS-rebind denied) | Shipped |
 | Hash-chained event log; on resume, full chain re-verified | Shipped — local runs marked `LOCAL/UNVERIFIED` |
 | Cross-model audit coverage gate (`--audit-plan` → Arena verdict) | Shipped — read-side; independence is receipt-asserted |
@@ -330,9 +333,8 @@ local-development commands: [`plugins/README.md`](plugins/README.md).
 
 ## Known limitations
 
-- `kind: loop` nodes in a graph manifest compile and lint without error, but
-  `bl graph run --execute` refuses them at preflight. This is by design in this
-  release; a sandboxed loop-node runner is in progress.
+- A `kind: loop` node whose `loop_package` digest resolves on this host runs; one that
+  does not is refused at preflight. `on_failure: repair` is refused on loop nodes.
 - `bl graph run --execute` pauses at `approval` nodes (exit code 3, `AWAITING_APPROVAL`)
   and resumes via `bl graph approve`. Sandboxed arbitrary-tool nodes are a later phase.
 - The `ALLOWLIST` egress cage is a network-only restriction on macOS Seatbelt. A

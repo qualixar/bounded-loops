@@ -131,9 +131,10 @@ def test_the_published_baseline_is_not_printed_beside_an_uncomputable_precision(
 
 
 def test_the_interval_label_claims_measured_coverage_and_not_anytime_validity() -> None:
-    """The interval is now a PrPl-EB anytime-valid confidence sequence (Waudby-Smith & Ramdas 2023).
-    The label must say so precisely.  The former 'nominal-95% iid (UNCALIBRATED)' label described a
-    Wilson interval whose measured coverage under correlated retries was 31-41%; that label is gone."""
+    """The interval is a fixed-time empirical-Bernstein interval with MEASURED coverage — not an
+    anytime-valid confidence sequence. The label must say so precisely. The former
+    'nominal-95% iid (UNCALIBRATED)' label described a Wilson interval whose measured coverage under
+    the shipped simulated regime was 77.5%; that label is gone."""
     from bounded_loops.graph.application.gate_metrics import Interval, Rate
     from bounded_loops.graph.cli_graph_metrics import _rate_text
 

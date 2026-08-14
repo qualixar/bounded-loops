@@ -67,7 +67,7 @@ def test_live_subscription_cli_replies(cli, tmp_path):
         resolver=StaticCliResolver(CliInvocation(CLI_PROFILES[cli], "Reply with exactly one word: pong")),
         workspace_root=tmp_path / "work", organization_id=_ORG, project_id=_PROJ, environ=child_env,
     )
-    result = worker.execute(plan=_plan(), node=node, envelope=envelope, attempt=1)
+    result = worker.execute(plan=_plan(), node=node, envelope=envelope, attempt=1, repair_round=0)
     with store.open(ArtifactRef(result.output_artifact_digests[0], _ORG, _PROJ), ArtifactAccess(_ORG, _PROJ)) as handle:
         reply = handle.read().decode("utf-8", "replace")
     assert result.observed_transport == "local_cli"

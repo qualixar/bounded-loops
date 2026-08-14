@@ -148,6 +148,7 @@ def _simulate_coverage(
     cs_alpha: float,
     seed: int,
     perturb_factor: float = 1.0,
+    perturb_shift: float = 0.0,
 ) -> tuple[float, float]:
     """Measure empirical coverage of PrPl-EB and Wilson under the correlated-retry model.
 
@@ -156,6 +157,12 @@ def _simulate_coverage(
     perturb_factor:
         Multiply the PrPl-EB interval half-width by this factor.
         1.0 = unperturbed.  0.8 = 20% narrower (used for perturbation check).
+    perturb_shift:
+        Translate the whole interval by this amount, preserving its width. A scale
+        perturbation and a location perturbation are different bug classes: shrinking
+        catches an under-wide radius, shifting catches a wrong centre (a mis-signed
+        term, a plug-in mean computed over the wrong prefix). The P4.5 audit noted the
+        single shrink test could not distinguish them, so both are measured.
 
     Returns
     -------
@@ -186,8 +193,8 @@ def _simulate_coverage(
 
             # PrPl-EB at time t
             lo_cs, hi_cs = prpl_eb_cs(prefix, alpha=cs_alpha)
-            if perturb_factor != 1.0:
-                mid = (lo_cs + hi_cs) / 2.0
+            if perturb_factor != 1.0 or perturb_shift != 0.0:
+                mid = (lo_cs + hi_cs) / 2.0 + perturb_shift
                 half_w = (hi_cs - lo_cs) / 2.0 * perturb_factor
                 lo_cs = max(0.0, mid - half_w)
                 hi_cs = min(1.0, mid + half_w)
@@ -251,11 +258,19 @@ class TestCoverageSimulation:
 
     def test_wilson_coverage_is_substantially_below_95_percent(self) -> None:
         """Wilson under optional stopping + correlated retries must be well below 95%.
-        The ledger reported 31-41%.  We assert < 0.90 as a conservative floor.
-        If Wilson also achieves 95% here, the simulation is not capturing the right failure.
+
+        Measured here: **0.7752** at seed=42. Stable in ρ — 0.7528 / 0.7752 / 0.7823 / 0.7883 /
+        0.7990 at ρ = 1.0 / 1.8 / 2.5 / 3.0 / 3.5 — so the threshold is set at 0.85, which leaves
+        headroom over the whole range while still failing loudly if Wilson ever approaches nominal
+        (which would mean the simulation had stopped modelling the correlated-retry failure).
+
+        This replaced a `< 0.90` floor justified by "the ledger reported 31-41%". That earlier figure
+        came from a separate P1 simulation whose parameters were never recorded and which this
+        harness cannot reproduce at any ρ. It has been retired everywhere in favour of the number
+        this seeded test actually produces (P4.5 audit round, chased down from Muse F10).
         """
         _, wilson_cov = _get_coverage()
-        assert wilson_cov < 0.90, (
+        assert wilson_cov < 0.85, (
             f"Wilson coverage {wilson_cov:.4f} is not substantially below 0.90. "
             "The simulation may not be modelling the correlated-retry failure correctly."
         )
@@ -269,16 +284,48 @@ class TestCoverageSimulation:
             f"Gap = {gap:.4f}."
         )
 
+    @pytest.mark.parametrize("shift", [0.03, 0.05, -0.05, 0.10])
+    def test_perturbation_check_a_shifted_centre_must_fail_coverage(self, shift: float) -> None:
+        """PERTURBATION TEST — location, not just scale.
+
+        The shrink test below catches an interval that is too NARROW. It cannot distinguish a
+        correct radius around a wrong centre — a mis-signed term, or a plug-in mean taken over
+        the wrong prefix — because shrinking and shifting are different bug classes. The P4.5
+        audit made exactly that objection: one scale perturbation does not license the claim
+        that the suite "catches a wrong implementation".
+
+        Measured at seed=42 (n_runs=4000, width preserved, centre translated):
+        ``+0.03 → 0.7778``, ``+0.05 → 0.6863``, ``-0.05 → 0.9030``, ``+0.10 → 0.5188``,
+        against ``0.9690`` unperturbed. So the simulation IS sensitive to location, and it is
+        markedly less sensitive downward — a shift toward zero is partly absorbed by the clip at
+        0 and by the skew of the logit-normal draw. Both directions are asserted so that
+        asymmetry stays visible rather than becoming a blind spot.
+
+        Still NOT covered by either perturbation: an asymmetric width bug (one tail correct,
+        the other wrong) which preserves both centre and total width.
+        """
+        perturbed_cov, _ = _simulate_coverage(
+            n_runs=_N_RUNS,
+            seq_len=_SEQ_LEN,
+            true_alpha=_TRUE_ALPHA,
+            rho=_RHO,
+            cs_alpha=_CS_ALPHA,
+            seed=_SEED,
+            perturb_shift=shift,
+        )
+        assert perturbed_cov < 0.94, (
+            f"A centre shift of {shift:+.2f} still yields coverage {perturbed_cov:.4f} >= 0.94. "
+            "The coverage test cannot tell a correct interval from a mis-centred one."
+        )
+
     def test_perturbation_check_20_percent_narrower_must_fail_coverage(self) -> None:
-        """PERTURBATION TEST — confirms the coverage test is strict enough to catch a wrong
-        implementation.
+        """PERTURBATION TEST — scale.
 
         Shrinking the interval half-width by 20% (perturb_factor=0.8) must cause PrPl-EB
         coverage to fall below 0.94.  If the test still passes, the assertion threshold
         is too lenient and would accept a broken estimator.
 
-        Verified during development: with perturb_factor=0.8 and seed=42 the measured
-        coverage drops well below 0.94.
+        Measured at seed=42: coverage drops to 0.4948 from 0.9690 unperturbed.
         """
         perturbed_cov, _ = _simulate_coverage(
             n_runs=_N_RUNS,

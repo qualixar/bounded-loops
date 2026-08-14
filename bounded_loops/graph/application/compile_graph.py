@@ -327,6 +327,32 @@ def _topological_levels(nodes: tuple[PlannedNode, ...], edges: tuple[PlannedEdge
     return tuple(levels)
 
 
+#: Keys carried on ``PlannedNode.approval_policy`` for the runtime but EXCLUDED from the plan's
+#: canonical form, and therefore from ``plan_id``.
+#:
+#: The only admissible reason to exempt a key is that its value is ALREADY covered by
+#: ``source_graph_digest`` — i.e. it is authored in the manifest, so it rides inside
+#: ``_canonical_node``'s ``details`` and any edit to it moves ``graph.digest`` and hence ``plan_id``
+#: anyway. Under that rule an exemption changes nothing about what the digest detects; it only stops
+#: a compiler-internal plumbing decision from rewriting digests that already exist.
+#:
+#: ``publication_policy`` is exactly that case, and it cost a real regression. v0.4.0 already
+#: REQUIRED the field on a publish node at authoring time and never placed it in the plan; P4.5
+#: started copying it into ``approval_policy`` so the publish worker could read it. Every 0.4.0 graph
+#: with a publish node therefore recompiled to a different ``plan_id`` and refused to resume — and
+#: the graphs affected were precisely the ones with an irreversible effect. Found by the P4.5 audit
+#: (Grok 8). ``test_publication_policy_still_changes_the_plan_id_through_the_manifest`` is what keeps
+#: the exemption honest: change the authored value and ``plan_id`` must still move.
+_PLAN_DIGEST_EXEMPT_APPROVAL_KEYS = frozenset({"publication_policy"})
+
+
+def _canonical_approval_policy(node: PlannedNode) -> dict[str, object]:
+    return {
+        key: value for key, value in node.approval_policy.items()
+        if key not in _PLAN_DIGEST_EXEMPT_APPROVAL_KEYS
+    }
+
+
 def _canonical_plan(graph: AuthoringGraphSpec, policy_digest: str, nodes: tuple[PlannedNode, ...], edges: tuple[PlannedEdge, ...], levels: tuple[tuple[str, ...], ...], bindings: Mapping[str, ResolvedBinding]) -> dict[str, object]:
     return {
         "api_version": "bounded-loops.dev/plan/v1",
@@ -338,7 +364,7 @@ def _canonical_plan(graph: AuthoringGraphSpec, policy_digest: str, nodes: tuple[
         "edges": [{"from_node": edge.from_node, "from_port": edge.from_port, "to_node": edge.to_node, "to_port": edge.to_port, "when": edge.when} for edge in edges],
         "levels": [list(level) for level in levels],
         "nodes": [
-            {"approval_policy": dict(node.approval_policy), "binding_id": node.binding_id, "budgets": dict(node.budgets), "hard_deadline_ms": node.hard_deadline_ms, "isolation": node.isolation.value, "kind": node.kind, "node_id": node.node_id, "package_digest": node.package_digest, "required_effects": sorted(effect.value for effect in node.required_effects)}
+            {"approval_policy": _canonical_approval_policy(node), "binding_id": node.binding_id, "budgets": dict(node.budgets), "hard_deadline_ms": node.hard_deadline_ms, "isolation": node.isolation.value, "kind": node.kind, "node_id": node.node_id, "package_digest": node.package_digest, "required_effects": sorted(effect.value for effect in node.required_effects)}
             for node in nodes
         ],
         "package_digests": sorted({node.package_digest for node in nodes if node.package_digest}),

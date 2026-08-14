@@ -244,7 +244,7 @@ class LocalCliConnectorWorker:
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
-        attempt: int,
+        attempt: int, repair_round: int,
     ) -> WorkerResult:
         route, transport = self._route_for(plan, node)
         if transport != _LOCAL_CLI_TRANSPORT:

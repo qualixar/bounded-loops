@@ -16,6 +16,9 @@ from bounded_loops.graph.adapters.workers.loop_packages import (
     LoopPackageRegistry,
     loop_package_digest,
 )
+from bounded_loops.graph.adapters.workers.loop_packages import (
+    _EXCLUDED_NAMES,  # the exclusion list is the subject of a test, so it is read, not restated
+)
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -103,6 +106,81 @@ def test_a_path_rename_moves_the_digest_even_with_identical_bytes(tmp_path):
     source.rename(clone / "PROMPT-renamed.md")
 
     assert loop_package_digest(clone) != before
+
+
+def test_an_empty_directory_moves_the_digest(tmp_path):
+    # A files-only digest ignored empty directories while `copytree` faithfully reproduced them, so
+    # a gate whose `run:` branches on `test -d seed/hidden_branch` could change verdict with the
+    # pinned digest unmoved. That is a mutable region under a content address (P4.5 audit, Grok 7).
+    clone = _package(tmp_path)
+    before = loop_package_digest(clone)
+    (clone / "seed" / "hidden_branch").mkdir()
+
+    assert loop_package_digest(clone) != before
+
+
+def test_a_deeply_nested_empty_directory_moves_the_digest(tmp_path):
+    # rglob descends, but only if the intermediate directories are themselves yielded.
+    clone = _package(tmp_path)
+    before = loop_package_digest(clone)
+    (clone / "seed" / "a" / "b" / "c").mkdir(parents=True)
+
+    assert loop_package_digest(clone) != before
+
+
+def test_a_directory_and_an_empty_file_of_the_same_name_digest_differently(tmp_path):
+    # Both reduce to their path alone unless the canonical form tags the entry kind: an empty file
+    # contributes no bytes and a directory contributes none either.
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    for root in (left, right):
+        root.mkdir()
+        (root / "loop.yaml").write_text("id: x\n", encoding="utf-8")
+    (left / "thing").mkdir()
+    (right / "thing").write_bytes(b"")
+
+    assert loop_package_digest(left) != loop_package_digest(right)
+
+
+def test_an_empty_directory_a_run_creates_under_an_excluded_name_still_does_not_move_it(tmp_path):
+    # The exclusion must win over the new directory coverage, or one standalone `bl run` would make
+    # every existing graph run unresumable.
+    clone = _package(tmp_path)
+    before = loop_package_digest(clone)
+    (clone / ".bounded-loops" / "runs").mkdir(parents=True)
+    (clone / "__pycache__").mkdir()
+
+    assert loop_package_digest(clone) == before
+
+
+def test_no_shipped_loop_package_hides_content_under_an_excluded_name():
+    """Enforces the claim the exclusion list makes, for the packages this repository controls.
+
+    Content under an excluded name is invisible to the digest, so a package that ships code there
+    has a mutable region under a pinned digest. Nothing in ``loop_packages`` can tell an authored
+    ``__pycache__`` from one a run produced — so the rule is enforced here instead of being asserted
+    in a comment (P4.5 audit, Grok 7).
+
+    Asserted over TRACKED files, not the filesystem, and the distinction is the whole point: this
+    working tree really does contain ``loops/bug-fix-red-green/.bounded-loops`` from a past run and
+    four ``__pycache__`` directories. None of them is committed, so none of them ships — a scan of
+    the disk would fail on exactly the debris the exclusion list exists to ignore.
+    """
+    if not (REPO_ROOT / ".git").exists():
+        pytest.skip("not a git checkout; shipped-vs-debris cannot be distinguished")
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "loops"],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60, check=True,
+    ).stdout.split("\0")
+    offenders = [
+        path for path in tracked
+        if path and (
+            set(Path(path).parts) & _EXCLUDED_NAMES or path.endswith((".pyc", ".pyo"))
+        )
+    ]
+
+    assert offenders == [], f"shipped packages hide digest-invisible content: {offenders}"
+    assert len(tracked) > 500, "git ls-files returned almost nothing; the check would be vacuous"
 
 
 def test_a_symlink_in_a_package_is_refused_rather_than_certified(tmp_path):

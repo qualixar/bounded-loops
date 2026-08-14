@@ -91,7 +91,7 @@ def _identity(plan) -> GraphRunIdentity:
 class _Worker:
     calls: list[str]
 
-    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:
         self.calls.append(node.node_id)
         # No route or transport: these nodes are UNBOUND (no connection slots), and the controller
         # validates an observed route against the binding before verifying artifacts.
@@ -103,7 +103,7 @@ class _GateRejecting:
     reject: str
     calls: list[str]
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         self.calls.append(node.node_id)
         return GateVerdict(node.node_id != self.reject, "selective fixture gate")
 
@@ -279,6 +279,63 @@ def test_a_run_with_no_repair_declared_opens_no_rounds(tmp_path):
     assert rounds_spent(log.replay()) == 0
 
 
+# ── the round and attempt reach BOTH ports (task #39) ──────────────────────────────────────
+
+
+@dataclass
+class _RecordingWorker:
+    """Records the (node, attempt, repair_round) each call actually received."""
+
+    seen: list[tuple[str, int, int]]
+
+    def execute(self, *, plan, node, envelope, attempt, repair_round) -> WorkerResult:
+        self.seen.append((node.node_id, attempt, repair_round))
+        return WorkerResult((_DIGEST,), None, None)
+
+
+@dataclass
+class _RecordingGate:
+    """Rejects ``reject`` so a round opens, and records what the gate was told."""
+
+    reject: str
+    seen: list[tuple[str, int, int]]
+
+    def evaluate(self, *, plan, node, result, attempt, repair_round) -> GateVerdict:
+        self.seen.append((node.node_id, attempt, repair_round))
+        return GateVerdict(node.node_id != self.reject, "recording fixture gate")
+
+
+def test_the_controller_forwards_the_LIVE_repair_round_to_the_worker_and_the_gate(tmp_path):
+    """Neither port may be told round 0 while the run is in round 1.
+
+    Asserted once, here, with fakes that take the arguments REQUIRED — no defaults. The other
+    fixtures in this suite default them, which is fine for what they test but would let a
+    controller that forgot to pass the round go unnoticed; this test is the one that would fail.
+
+    Before task #39 the round did not reach either port. The loop worker hard-coded 0, which was
+    sound only because a loop node declaring ``on_failure: repair`` was refused at validation, and
+    the gate could not check a receipt's attempt at all.
+    """
+    plan = _plan(budget=1)
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+    worker = _RecordingWorker([])
+    gate = _RecordingGate("verify", [])
+    _controller(plan, log, worker, gate=gate).run()
+
+    rounds_seen = {round_index for _node, _attempt, round_index in worker.seen}
+
+    assert rounds_spent(log.replay()) == 1, "the run must actually cross a repair boundary"
+    assert rounds_seen == {0, 1}, f"worker never saw round 1: {worker.seen}"
+    # `fetch` is the repair target, so it runs in BOTH rounds — and each run must name its own.
+    fetch_rounds = [r for node_id, _a, r in worker.seen if node_id == "fetch"]
+    assert fetch_rounds == [0, 1], f"the repaired node did not carry distinct rounds: {worker.seen}"
+    # Attempts RESET at the boundary, which is exactly why the round is needed to tell the two
+    # executions of `fetch` apart: attempt alone says 1 both times.
+    assert [a for node_id, a, _r in worker.seen if node_id == "fetch"] == [1, 1]
+    # The gate is told the same thing the worker was, for every single evaluation.
+    assert gate.seen == worker.seen
+
+
 
 # ── forged boundaries: the one place state may move backward is checked hardest ────────────
 
@@ -296,7 +353,7 @@ class _GateRejectingTimes:
     times: int
     seen: list[str]
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         self.seen.append(node.node_id)
         if node.node_id != self.reject:
             return GateVerdict(True, "selective fixture gate")

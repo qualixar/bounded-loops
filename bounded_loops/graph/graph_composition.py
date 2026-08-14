@@ -148,15 +148,20 @@ class _ByokDispatchWorker:
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
-        attempt: int,
+        attempt: int, repair_round: int,
     ) -> WorkerResult:
         transport = next(
             (b.transport for b in plan.connection_bindings if b.binding_id == node.binding_id),
             None,
         )
         if transport == "https":
-            return self._https.execute(plan=plan, node=node, envelope=envelope, attempt=attempt)
-        return self._local_cli.execute(plan=plan, node=node, envelope=envelope, attempt=attempt)
+            return self._https.execute(
+                plan=plan, node=node, envelope=envelope, attempt=attempt,
+                repair_round=repair_round,
+            )
+        return self._local_cli.execute(
+            plan=plan, node=node, envelope=envelope, attempt=attempt, repair_round=repair_round,
+        )
 
 
 class _LocalAuthorizer:

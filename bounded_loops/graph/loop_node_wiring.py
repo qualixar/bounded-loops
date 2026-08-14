@@ -192,7 +192,7 @@ class _UnsupportedNodeWorker:
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
-        attempt: int,
+        attempt: int, repair_round: int,
     ) -> WorkerResult:
         raise GraphIntegrityError(
             f"node {node.node_id!r} (kind {node.kind!r}) is not runnable via "
@@ -221,7 +221,7 @@ class _LoopNodeWorker:
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
-        attempt: int,
+        attempt: int, repair_round: int,
     ) -> WorkerResult:
         input_artifacts: tuple[WorkspaceInput, ...] = ()
         extra_declared_outputs: tuple[tuple[str, str], ...] = ()
@@ -243,17 +243,18 @@ class _LoopNodeWorker:
                     extra_declared_outputs = _build_extra_declared_outputs(manifest)
         resolver = LoopNodeResolver(
             registry=self.registry, run_id=self.run_id, attempt=attempt,
-            # Round 0 is SOUND here rather than an assumption, because a loop node that declares
-            # `on_failure: repair` is refused at validation: the round cannot reach a worker through
-            # `NodeWorkerPort.execute`, and stamping round-1 work as round 0 would put a false round
-            # in a signed receipt. Lifting that refusal means carrying the round on the port, exactly
-            # as `attempt` already is.
-            repair_round=0,
+            # The REAL round, from the port. This used to be a hard-coded 0, sound only because a
+            # loop node declaring `on_failure: repair` was refused at validation — the round could
+            # not reach a worker, so the choice was refuse repair or write a false round into a
+            # signed receipt. `NodeWorkerPort.execute` now carries it (task #39), which is what lets
+            # that refusal be lifted: the inner run id, the loop bridge's idempotency keys and the
+            # promoted receipt all name the round the work actually belongs to.
+            repair_round=repair_round,
             input_artifacts=input_artifacts,
             extra_declared_outputs=extra_declared_outputs,
         )
         return replace(self.sandboxed, resolver=resolver).execute(
-            plan=plan, node=node, envelope=envelope, attempt=attempt,
+            plan=plan, node=node, envelope=envelope, attempt=attempt, repair_round=repair_round,
         )
 
 
@@ -268,17 +269,29 @@ class _KindDispatchWorker:
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
-        attempt: int,
+        attempt: int, repair_round: int,
     ) -> WorkerResult:
+        # Spelled out at every branch rather than splatted from a dict: a `dict[str, object]`
+        # forwarding table type-checks as nothing, so mypy could not tell that each worker is
+        # receiving the arguments its own signature declares.
         if node.kind == NodeKind.LOOP.value:
-            return self.loop_worker.execute(plan=plan, node=node, envelope=envelope, attempt=attempt)
+            return self.loop_worker.execute(
+                plan=plan, node=node, envelope=envelope, attempt=attempt,
+                repair_round=repair_round,
+            )
         if node.kind == NodeKind.JOIN.value:
-            return self.join_worker.execute(plan=plan, node=node, envelope=envelope, attempt=attempt)
+            return self.join_worker.execute(
+                plan=plan, node=node, envelope=envelope, attempt=attempt,
+                repair_round=repair_round,
+            )
         if node.kind == NodeKind.PUBLISH.value:
             return self.publish_worker.execute(
                 plan=plan, node=node, envelope=envelope, attempt=attempt,
+                repair_round=repair_round,
             )
-        return self.fallback.execute(plan=plan, node=node, envelope=envelope, attempt=attempt)
+        return self.fallback.execute(
+            plan=plan, node=node, envelope=envelope, attempt=attempt, repair_round=repair_round,
+        )
 
 
 @dataclass(frozen=True)
@@ -300,14 +313,23 @@ class _KindDispatchGate:
 
     def evaluate(
         self, *, plan: ExecutionPlan, node: PlannedNode, result: WorkerResult,
+        attempt: int, repair_round: int,
     ) -> GateVerdict:
         if node.kind == NodeKind.LOOP.value:
-            return self.loop_gate.evaluate(plan=plan, node=node, result=result)
+            return self.loop_gate.evaluate(
+                plan=plan, node=node, result=result, attempt=attempt, repair_round=repair_round,
+            )
         if node.kind == NodeKind.JOIN.value:
-            return self.join_gate.evaluate(plan=plan, node=node, result=result)
+            return self.join_gate.evaluate(
+                plan=plan, node=node, result=result, attempt=attempt, repair_round=repair_round,
+            )
         if node.kind == NodeKind.PUBLISH.value:
-            return self.publish_gate.evaluate(plan=plan, node=node, result=result)
-        return self.fallback.evaluate(plan=plan, node=node, result=result)
+            return self.publish_gate.evaluate(
+                plan=plan, node=node, result=result, attempt=attempt, repair_round=repair_round,
+            )
+        return self.fallback.evaluate(
+            plan=plan, node=node, result=result, attempt=attempt, repair_round=repair_round,
+        )
 
 
 def build_kind_dispatchers(

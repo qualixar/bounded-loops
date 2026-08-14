@@ -68,7 +68,7 @@ class _MeteredWorker:
             cost_microunits=cost_microunits, reported_by="test-provider",
         )
 
-    def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
+    def execute(self, *, plan, node, envelope, attempt, repair_round=0) -> WorkerResult:  # noqa: ANN001, ARG002
         self.calls += 1
         return WorkerResult(output_artifact_digests=(_DIGEST,), usage=self._usage)
 
@@ -80,7 +80,7 @@ class _RoutedMeteredWorker(_MeteredWorker):
     stops a worker from silently calling a provider the immutable plan never authorised.
     """
 
-    def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
+    def execute(self, *, plan, node, envelope, attempt, repair_round=0) -> WorkerResult:  # noqa: ANN001, ARG002
         self.calls += 1
         binding = next(b for b in plan.connection_bindings if b.binding_id == node.binding_id)
         return WorkerResult(
@@ -100,7 +100,7 @@ class _SilentWorker:
     def __init__(self) -> None:
         self.calls = 0
 
-    def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
+    def execute(self, *, plan, node, envelope, attempt, repair_round=0) -> WorkerResult:  # noqa: ANN001, ARG002
         self.calls += 1
         return WorkerResult(output_artifact_digests=(_DIGEST,))
 
@@ -430,7 +430,7 @@ class _WallclockOnlyWorker:
     def __init__(self) -> None:
         self.calls = 0
 
-    def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
+    def execute(self, *, plan, node, envelope, attempt, repair_round=0) -> WorkerResult:  # noqa: ANN001, ARG002
         self.calls += 1
         return WorkerResult(
             output_artifact_digests=(_DIGEST,),
@@ -861,7 +861,7 @@ def test_an_incomplete_spend_total_is_labelled_as_a_floor(tmp_path: Path) -> Non
 class _SometimesRaisingMeteredWorker(_MeteredWorker):
     """Reports usage, then crashes — an attempt that spent money it could not report."""
 
-    def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
+    def execute(self, *, plan, node, envelope, attempt, repair_round=0) -> WorkerResult:  # noqa: ANN001, ARG002
         self.calls += 1
         if self.calls == 1:
             return WorkerResult(output_artifact_digests=(_DIGEST,), usage=self._usage)
@@ -1138,7 +1138,7 @@ class _BrokenContractWorker:
     def __init__(self) -> None:
         self.calls = 0
 
-    def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
+    def execute(self, *, plan, node, envelope, attempt, repair_round=0) -> WorkerResult:  # noqa: ANN001, ARG002
         from bounded_loops.graph.domain.errors import WorkerContractError
 
         self.calls += 1

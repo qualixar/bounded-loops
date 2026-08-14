@@ -69,10 +69,10 @@ def _identity(plan, run_id: str = "run-1") -> GraphRunIdentity:
 class _Unused:
     """Every collaborator an approval node must NOT touch: asserts if called."""
 
-    def execute(self, *, plan, node, envelope, attempt=1):
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0):
         raise AssertionError("worker must not run for an approval node")
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         raise AssertionError("independent gate must not run for an approval node")
 
     def verify(self, *, identity, digests) -> None:

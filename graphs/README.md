@@ -37,7 +37,11 @@ on why the domain belongs to the graph.
 
 ## Running a graph end to end
 
-All six reference graphs run end to end, keyless, with no spend:
+All six reference graphs run end to end, keyless, with no spend — **from a checkout**.
+Every loop node pins its package by content digest, and the `loops/` catalog ships in the
+repository, not in the wheel, so a `pip install` alone leaves nothing for those digests to
+resolve against. `git clone` first, or pass `--loop-roots` pointing at your own catalog.
+`tests/graphs/test_reference_graphs.py` runs all six on every CI push.
 
 ```bash
 bl graph run graphs/finance-payment-assurance/graph.yaml --execute --out /tmp/bl-run

@@ -52,7 +52,17 @@ Bernoulli trials.  In bounded-loop runs, retries of a node share its worker,
 its prompt, and its failure mode — a node that has been rejected twice may be
 producing output shaped to pass the gate.  That positive within-sequence
 correlation makes Wilson's interval systematically too narrow, and its measured
-coverage on real retry data was 31–41% rather than the nominal 95%.
+coverage was **77.5%** rather than the nominal 95% — simulated, at the parameters
+pinned in ``tests/graph/application/test_confidence_sequence.py`` (n_runs=4000,
+seq_len=30, logit-normal ρ=1.8, seed=42), checked at every sample size.
+
+An earlier figure of **31–41%** appeared throughout this repository, attributed to
+"real retry data". Both halves were wrong: it came from a separate simulation run by an
+external reviewer during P1, whose parameters were never recorded, and the shipped
+harness cannot reproduce it — Wilson measures 0.75–0.80 across ρ ∈ [1.0, 3.5], so
+correlation strength does not account for the gap. It has been retired rather than
+carried forward, because a comparison figure that the project's own test suite cannot
+reproduce is exactly the number that must not reach a paper.
 
 No runtime dependency beyond the standard library.
 """
@@ -76,14 +86,26 @@ def prpl_eb_cs(
     MEASURED: under the correlated-retry structure this project's data actually has (a per-sequence
     latent propensity, then attempts drawn conditionally on it), checked after every observation,
     simulated coverage was **96.9%** against a nominal 95% — while Wilson on the same data reached
-    **77.5%**.  ``tests/graph/application/test_confidence_sequence.py`` is that measurement, and it
-    fails if the radius is shrunk by 20%.
+    **77.5%**.  ``tests/graph/application/test_confidence_sequence.py`` is that measurement.
 
-    That perturbation catches a UNIFORMLY NARROW interval and nothing else. It would not catch a
-    wrong centre, a wrong variance, a swapped tail, or a missing [0, 1] clip — a constant
-    ``[0.48, 0.52]`` would pass at this parameter setting. An earlier version of this docstring said
-    the check was "strict enough to detect a wrong implementation", which overstates from "scaled"
-    to "wrong".
+    WHAT THE MEASUREMENT IS OF: coverage of the per-run LATENT rate ``p_run``, not of the marginal
+    rate ``E[p_run]`` that ``bl graph metrics`` reports as the false-accept rate. Two different
+    estimands. The 19-point gap over Wilson is a statement about ``p_run`` and must not be quoted as
+    an improvement in α coverage.
+
+    HOW STRICT THE MEASUREMENT IS, measured rather than asserted. The suite perturbs the interval in
+    two independent ways and requires coverage to fall below the 0.94 threshold for each: a 20%
+    radius shrink (→ 0.4948) and a centre translation at four magnitudes (+0.03 → 0.7778, +0.05 →
+    0.6863, −0.05 → 0.9030, +0.10 → 0.5188). So it is sensitive to both scale and location, and
+    visibly less sensitive to a downward shift, which the clip at 0 and the skew of the logit-normal
+    draw partly absorb.
+
+    An earlier version of this docstring claimed the check "would not catch a wrong centre … a
+    constant ``[0.48, 0.52]`` would pass at this parameter setting". That came from an external
+    review and was accepted without being run. It is FALSE: a constant ``[0.48, 0.52]`` covers
+    ``p_run`` in 1.9% of runs, because ``p_run`` is drawn around 0.12. The remaining honest gap is
+    narrower than that claim — an ASYMMETRIC width bug, one tail wrong and the other right, preserves
+    both centre and total width and neither perturbation would see it.
 
     NOT ESTABLISHED: that this is an anytime-valid confidence sequence.  The radius below is the
     fixed-time empirical-Bernstein form and carries **no stitching term** (no ``log log n``), so
@@ -93,7 +115,7 @@ def prpl_eb_cs(
     the CLI label says ``emp-Bernstein 95% (COVERAGE-MEASURED)`` for exactly that reason.
 
     The distinction matters because the whole point of replacing Wilson was optional stopping.  A
-    measured 96.9% is real evidence and is better than a nominal interval whose coverage was 31–41%,
+    measured 96.9% is real evidence and is better than a nominal interval whose coverage was 77.5%,
     but measured coverage at one parameter setting is not a theorem, and this docstring previously
     asserted the theorem.  Stating a guarantee the arithmetic does not deliver is the same class of
     error as printing "95% CI" beside a caveat.

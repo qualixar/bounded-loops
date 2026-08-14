@@ -21,15 +21,21 @@ What an outer gate can honestly add is verification of EVIDENCE it did not produ
 That is strictly stronger than re-running the gate, because a re-run proves only that a check passes
 now, while this proves the recorded work is the work that was admitted.
 
-**What this gate CANNOT check, stated because an earlier version of this docstring claimed it could.**
-``IndependentGatePort.evaluate`` receives only ``(plan, node, result)`` — no attempt, no graph run id.
-So a receipt naming ``attempt=99``, an ``inner_run_id`` from a different run, or a fabricated
-``inner_ledger_digest`` still passes, as the P4.5 audit demonstrated. The claim that "a stale artifact
-from another attempt cannot satisfy this one" was false. What actually stops that in practice is
-upstream of the gate: each attempt gets a fresh workspace and promotes its own artifact, so the digest
-handed to ``evaluate`` belongs to this attempt. That is a property of the worker, not of this gate,
-and closing the gap properly means carrying the round and attempt on the port the way the loop bridge
-already does (task #39).
+* the recorded attempt and repair round are the ones being gated.
+
+**How the attempt check came to exist, because the history is the argument for the port change.**
+``IndependentGatePort.evaluate`` used to receive only ``(plan, node, result)`` — no attempt, no round.
+A receipt naming ``attempt=99`` therefore passed, which the P4.5 audit demonstrated, and an earlier
+version of this docstring had claimed the opposite. The only thing preventing it in practice was a
+property of the WORKER: each attempt gets a fresh workspace and promotes its own artifact, so the
+digest handed to ``evaluate`` belonged to this attempt. Real, but unverifiable from here, and not
+something an embedder's own worker was obliged to preserve. Task #39 put ``attempt`` and
+``repair_round`` on the port, so the check is now the gate's own.
+
+**What this gate still CANNOT check.** ``inner_run_id`` and ``inner_ledger_digest`` are recorded and
+compared against nothing. The graph run id is not on the port either, so a receipt carrying a
+well-formed ``inner_run_id`` from a different graph run of the same plan, same node, same attempt and
+same round would satisfy every check here.
 
 ``inner_ledger_digest`` is recorded but NOT verified here, and the inner log it commits to lives under
 the node's ``TMPDIR`` and is discarded with the sandbox. It is a fingerprint of bytes nobody keeps —
@@ -68,15 +74,18 @@ class LoopReceiptGate:
 
     def __init__(
         self, store: ArtifactReaderPort, *, organization_id: str, project_id: str,
-        repair_round: int = 0,
     ) -> None:
+        # No `repair_round` here on purpose. It used to be a constructor argument, which meant one
+        # gate instance carried one round for the whole run while the run's actual round advances at
+        # every repair boundary — a value that is stale the moment it matters. It arrives per
+        # evaluation now, from the port (task #39).
         self._store = store
         self._organization_id = organization_id
         self._project_id = project_id
-        self._repair_round = repair_round
 
     def evaluate(
         self, *, plan: ExecutionPlan, node: PlannedNode, result: WorkerResult,
+        attempt: int, repair_round: int,
     ) -> GateVerdict:
         digests = result.output_artifact_digests
         if not digests:
@@ -95,7 +104,9 @@ class LoopReceiptGate:
         if not isinstance(outcome, dict):
             return GateVerdict(False, f"loop node {node.node_id!r} outcome is not a JSON object")
 
-        verdict = self._verify_provenance(node, outcome)
+        verdict = self._verify_provenance(
+            node, outcome, attempt=attempt, repair_round=repair_round,
+        )
         if verdict is not None:
             return verdict
 
@@ -124,12 +135,17 @@ class LoopReceiptGate:
         )
 
     def _verify_provenance(
-        self, node: PlannedNode, outcome: dict[str, object],
+        self, node: PlannedNode, outcome: dict[str, object], *, attempt: int, repair_round: int,
     ) -> GateVerdict | None:
         """Refuse a receipt that describes different work. ``None`` means provenance is sound.
 
         Checked BEFORE status, so a stale or foreign artifact can never be accepted merely because
         it happens to say ``DONE``.
+
+        ``attempt`` and ``repair_round`` together identify the unit of work, because attempts RESET
+        at a repair boundary — ``attempt=1`` happens once per round, so neither number alone is an
+        identity. Both are now compared against the receipt; before task #39 the gate received
+        neither, and the audit showed a receipt naming ``attempt=99`` passing unchallenged.
         """
         declared = outcome.get("package_digest")
         # Compared in the BARE hex form on both sides. The plan carries the ``sha256:`` prefixed
@@ -153,10 +169,17 @@ class LoopReceiptGate:
                 f"loop outcome names node {outcome.get('node_id')!r}, not {node.node_id!r}",
             )
         recorded_round = outcome.get("repair_round", 0)
-        if recorded_round != self._repair_round:
+        if recorded_round != repair_round:
             return GateVerdict(
                 False,
                 f"loop node {node.node_id!r} outcome is from repair round {recorded_round!r}, "
-                f"not round {self._repair_round}",
+                f"not round {repair_round}",
+            )
+        recorded_attempt = outcome.get("attempt")
+        if recorded_attempt != attempt:
+            return GateVerdict(
+                False,
+                f"loop node {node.node_id!r} outcome is from attempt {recorded_attempt!r}, "
+                f"not attempt {attempt}",
             )
         return None

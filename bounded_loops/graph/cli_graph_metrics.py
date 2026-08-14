@@ -48,7 +48,7 @@ def _rate_text(label: str, rate: Rate) -> str:
     # simultaneous-validity theorem -- the radius carries no stitching term, so that theorem
     # is unverified here. See confidence_sequence.py and the COVERAGE-MEASURED note.
     # Replaces the former "nominal-95% iid (UNCALIBRATED)" Wilson label whose measured
-    # coverage under correlated retries was 31-41%. The two sentences that used to close this
+    # coverage under the same simulated regime was 77.5%. The two sentences that used to close this
     # comment claimed the interval "is valid under optional stopping and makes no independence
     # assumption" -- the guarantee the three lines above deny. Vestigial Wilson-era text that the
     # relabelling prepended to rather than replaced, and a comment a reviewer would quote as intent.

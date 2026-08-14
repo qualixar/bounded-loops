@@ -23,6 +23,36 @@ from bounded_loops.graph.domain.events import GraphRunIdentity
 from bounded_loops.graph.domain.plan import ExecutionPlan
 
 
+def _mismatch_explanation(meta: dict[str, object], current_compiler: str) -> str:
+    """Name the likely cause of a plan_id mismatch. Returns ``""`` when there is nothing to add.
+
+    A tampered run directory and an engine upgrade produce the SAME symptom — a recompile that does
+    not match the stored id — and the bare two-digest message pointed at the first, so a user whose
+    only "change" was upgrading went looking for an edit that did not exist. That is what made the
+    0.4.0 publish-node break silent (P4.5 audit, Grok 8): the compiler started carrying
+    ``publication_policy`` in the plan, every publish graph's id moved, and the error blamed the
+    directory. The digest change itself is fixed in ``compile_graph``; this makes the NEXT one
+    diagnosable, because a compiler change that moves plan_id is always possible.
+    """
+    recorded = meta.get("compiler_version")
+    if not isinstance(recorded, str) or not recorded:
+        return (
+            "\nThis run directory records no compiler_version (written by 0.4.0 or earlier), so the "
+            "cause cannot be narrowed automatically: either this engine's compiler produces a "
+            "different plan for the same manifest, or the directory was modified."
+        )
+    if recorded != current_compiler:
+        return (
+            f"\nThe run was compiled by {recorded!r} and this engine compiles {current_compiler!r}. "
+            "A compiler change is the likely cause, NOT a modified run directory. Resume the run "
+            "with the engine version that created it, or start a fresh run from the same manifest."
+        )
+    return (
+        f"\nBoth this engine and the run record compiler {recorded!r}, so the manifest, connections "
+        "or policy digest in this directory no longer produce the plan it was created with."
+    )
+
+
 def load_plan_from_run_dir(
     run_dir: Path,
     *,
@@ -82,6 +112,7 @@ def load_plan_from_run_dir(
     if plan.plan_id != stored_plan_id:
         raise ValueError(
             f"Reconstructed plan_id {plan.plan_id!r} != stored {stored_plan_id!r}"
+            f"{_mismatch_explanation(meta, plan.compiler_version)}"
         )
     identity = GraphRunIdentity(
         organization_id=org_id,
@@ -99,7 +130,14 @@ def load_plan_from_run_dir(
     #
     # Found by the P4.25a dual audit (Muse finding 2): reading the mode from run-meta let a
     # filesystem edit flip a fail_closed run into one that continues past gate rejections, with the
-    # plan_id check still passing because fail_mode is deliberately not in the plan's canonical form.
+    # plan_id check still passing — because the check recompiles from manifest.yaml and never reads
+    # run-meta.json at all, so nothing in run-meta is covered by any digest.
+    #
+    # An earlier version of this comment said the check passed "because fail_mode is deliberately not
+    # in the plan's canonical form". That was wrong, and the P4.5 audit caught it: fail_mode IS in
+    # `_canonical_policies` → `_canonical_graph` → `graph.digest` → `source_graph_digest`, which sits
+    # in `_canonical_plan`. So an edit to the MANIFEST's fail_mode does move plan_id. The unsigned
+    # file was always the whole problem, and the comment named the wrong reason for the right fix.
     authored_fail_mode = graph.policies.fail_mode
     recorded = meta.get("fail_mode")
     if isinstance(recorded, str) and recorded and recorded != authored_fail_mode:

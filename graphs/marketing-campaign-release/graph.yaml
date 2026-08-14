@@ -15,7 +15,7 @@ connection_slots: []
 nodes:
   - id: check-seo
     kind: loop
-    loop_package: "sha256:9e8c7f1cf01082378bebcfd50966efbf46c4aa49dd099d13c26c97b2b78ed5a3"
+    loop_package: "sha256:181d84a6308d3f42f5898706f071ebf73a13aad99554c076784774f30dfcfde5"
     inputs: {}
     outputs:
       verdict: internal
@@ -26,7 +26,7 @@ nodes:
     isolation: process_restricted
   - id: check-reading-level
     kind: loop
-    loop_package: "sha256:4d57216996a8ec9065c89b11a75d03a39abcfefccf43c0f1fd251bc5d21f4120"
+    loop_package: "sha256:7b74557465af3224c92fa5a4500c7b8b316e99e6f0cecfd6cfaae32bd055f1df"
     inputs: {}
     outputs:
       verdict: internal
@@ -37,7 +37,7 @@ nodes:
     isolation: process_restricted
   - id: check-alt-text
     kind: loop
-    loop_package: "sha256:7e7bb4873d8d27ce8bef30599230c0c36d809b8862718bfd4e8f41c9d08a0df5"
+    loop_package: "sha256:e3ce4e1a88d8125dd3501005697805ce6b8c8320c4c586d1afb2d3e47780c1fc"
     inputs: {}
     outputs:
       verdict: internal
@@ -48,7 +48,7 @@ nodes:
     isolation: process_restricted
   - id: map-claim-sources
     kind: loop
-    loop_package: "sha256:368a4f77834a977fd5a5a2b538f05587c60570e8ec7be3434c782159e37cc1e0"
+    loop_package: "sha256:fcea0fdf9966e67ea8b9363091549a04a77cd4589e30af32a0082fd29f23bd5a"
     inputs:
       source: internal
     outputs:

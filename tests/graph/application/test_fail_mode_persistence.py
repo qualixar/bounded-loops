@@ -126,8 +126,12 @@ def test_flipping_fail_mode_in_run_meta_is_REJECTED_as_tampering(tmp_path):
     """Muse finding 2. run-meta.json is unsigned JSON; the manifest is covered by the graph digest.
 
     Reading the mode from run-meta let a filesystem edit turn a fail_closed run into one that
-    continues past gate rejections, with the plan_id check still passing because fail_mode is
-    deliberately not in the plan's canonical form.
+    continues past gate rejections, with the plan_id check still passing — because that check
+    recompiles from manifest.yaml and never reads run-meta.json, so nothing in run-meta is covered by
+    any digest. (An earlier version of this docstring said the check passed because fail_mode "is
+    deliberately not in the plan's canonical form". It is in fact covered, transitively, via
+    ``_canonical_policies`` → ``graph.digest`` → ``source_graph_digest``. The P4.5 audit caught the
+    wrong reason attached to the right fix.)
     """
     _run_dir(tmp_path, "fail_closed")
     meta_path = tmp_path / "run-meta.json"

@@ -57,6 +57,12 @@ def persist_run_dir(
         # did. Not on ExecutionPlan: the plan's canonical_json feeds plan_id, so a field there would
         # change every digest and make existing run directories unresumable.
         "fail_mode": fail_mode,
+        # Recorded so a plan_id mismatch on resume can be EXPLAINED rather than blamed on the run
+        # directory. A compiler change and a tampered directory produce the identical symptom — a
+        # recompile that does not match the stored id — and the old error reported only the two
+        # digests, which sent a user hunting for an edit that never happened. A run written by 0.4.0
+        # has no such key, and the loader says so instead of guessing (P4.5 audit, Grok 8).
+        "compiler_version": plan.compiler_version,
     }
     if provider_catalog is not None:
         # Recorded so every CONTINUE path resolves the same provider map this run used. Without it,

@@ -127,7 +127,7 @@ def _run_worker(
     node = _Node(node_id=node_id, approval_policy={"publication_policy": policy})
     plan = _Plan(plan_id=plan_id)
     worker = _make_worker(store, ledger, run_id=run_id)
-    return worker.execute(plan=plan, node=node, envelope=None, attempt=attempt)
+    return worker.execute(plan=plan, node=node, envelope=None, attempt=attempt, repair_round=0)
 
 
 def _read_receipt(store: _Store, digest: str) -> dict:
@@ -212,7 +212,7 @@ def test_worker_fails_closed_on_missing_policy(tmp_path: Path):
         node = _Node(node_id="publish-instruction", approval_policy={"publication_policy": ""})
         plan = _Plan()
         worker = _make_worker(store, ledger)
-        worker.execute(plan=plan, node=node, envelope=None, attempt=1)
+        worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
 
 
 def test_worker_receipt_encodes_effect_key(tmp_path: Path):
@@ -276,10 +276,10 @@ def test_gate_accepts_correct_receipt(tmp_path: Path):
     node = _Node()
     plan = _Plan()
     worker = _make_worker(store, ledger)
-    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1)
+    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
 
     gate = _make_gate(store)
-    verdict = gate.evaluate(plan=plan, node=node, result=result)
+    verdict = gate.evaluate(plan=plan, node=node, result=result, attempt=1, repair_round=0)
     assert verdict.passed, f"gate rejected a valid receipt: {verdict.reason}"
 
 
@@ -289,12 +289,12 @@ def test_gate_rejects_wrong_node_id(tmp_path: Path):
     node = _Node(node_id="publish-instruction")
     plan = _Plan()
     worker = _make_worker(store, ledger)
-    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1)
+    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
 
     # Gate evaluates a different node — must not accept the receipt.
     impersonator = _Node(node_id="publish-other")
     gate = _make_gate(store)
-    verdict = gate.evaluate(plan=plan, node=impersonator, result=result)
+    verdict = gate.evaluate(plan=plan, node=impersonator, result=result, attempt=1, repair_round=0)
     assert not verdict.passed
     assert "publish-other" in verdict.reason or "publish-instruction" in verdict.reason
 
@@ -307,11 +307,11 @@ def test_gate_rejects_wrong_effect_key(tmp_path: Path):
     node = _Node()
     plan = _Plan()
     worker = _make_worker(store, ledger, run_id=RUN_ID)
-    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1)
+    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
 
     # Gate holds a DIFFERENT run_id — its expected effect_key doesn't match.
     gate = _make_gate(store, run_id="run-DIFFERENT")
-    verdict = gate.evaluate(plan=plan, node=node, result=result)
+    verdict = gate.evaluate(plan=plan, node=node, result=result, attempt=1, repair_round=0)
     assert not verdict.passed
     assert "effect_key" in verdict.reason
 
@@ -323,20 +323,20 @@ def test_gate_rejects_tampered_payload_digest(tmp_path: Path):
     node = _Node()
     plan = _Plan()
     worker = _make_worker(store, ledger)
-    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1)
+    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
 
     # Gate evaluates the same node but with a DIFFERENT publication_policy in approval_policy.
     # The gate recomputes the digest from this different policy and it won't match the receipt.
     tampered_node = _Node(node_id=node.node_id, approval_policy={"publication_policy": "wrong-policy"})
     gate = _make_gate(store)
-    verdict = gate.evaluate(plan=plan, node=tampered_node, result=result)
+    verdict = gate.evaluate(plan=plan, node=tampered_node, result=result, attempt=1, repair_round=0)
     assert not verdict.passed
     assert "payload_digest" in verdict.reason
 
 
 def test_gate_rejects_empty_result(tmp_path: Path):
     gate = _make_gate(_Store())
-    verdict = gate.evaluate(plan=_Plan(), node=_Node(), result=WorkerResult(()))
+    verdict = gate.evaluate(plan=_Plan(), node=_Node(), result=WorkerResult(()), attempt=1, repair_round=0)
     assert not verdict.passed
     assert "no receipt" in verdict.reason
 

@@ -219,6 +219,7 @@ class MyDockerWorker:
         node,     # bounded_loops.graph.domain.plan.PlannedNode (internal)
         envelope, # bounded_loops.graph.application.execution_policy.ExecutionEnvelope (internal)
         attempt: int,
+        repair_round: int,
     ) -> bounded_loops.WorkerResult:
         # ... your implementation ...
         return bounded_loops.WorkerResult(
@@ -246,6 +247,8 @@ class MySchemaGate:
         plan,
         node,
         result: bounded_loops.WorkerResult,
+        attempt: int,
+        repair_round: int,
     ) -> bounded_loops.GateVerdict:
         digests = result.output_artifact_digests
         passed = len(digests) > 0  # real impl: load artifact and validate
@@ -258,15 +261,63 @@ class MySchemaGate:
 ### Protocol reference
 
 ```python
-bounded_loops.NodeWorkerPort   # Protocol — implement execute(*, plan, node, envelope, attempt)
+bounded_loops.NodeWorkerPort   # Protocol — execute(*, plan, node, envelope, attempt, repair_round)
 bounded_loops.WorkerResult     # dataclass(frozen=True) — what execute() returns
-bounded_loops.IndependentGatePort  # Protocol — implement evaluate(*, plan, node, result)
+bounded_loops.IndependentGatePort  # Protocol — evaluate(*, plan, node, result, attempt, repair_round)
 bounded_loops.GateVerdict      # dataclass(frozen=True) — what evaluate() returns
 ```
+
+### BREAKING in 0.5.0 — both port signatures gained two arguments
+
+`execute` gained `repair_round`; `evaluate` gained `attempt` and `repair_round`. Both are
+keyword-only and **required**, with no default, and an existing implementation will raise
+`TypeError` until it accepts them. The migration is one line per implementation — add the
+parameters — and you may ignore the values if your worker does not need them.
+
+They are required rather than defaulted because a default is a silent wrong answer. Attempts
+**reset** at a repair boundary, so `(node, attempt=1)` happens once per round and `attempt` alone
+does not identify a unit of work. A worker defaulting `repair_round=0` stamps round-3 work with a
+round-0 identity, and every receipt, idempotency key and artifact provenance derived from it
+inherits that. A gate defaulting it accepts evidence from a different round.
 
 The controller injects the concrete ports at startup.  Refer to
 `docs/graph-capabilities.md` and `docs/graph-quickstart.md` for the full graph runtime
 documentation including the deployment facade, connector catalog, and arena model.
+
+### Making one of your loops usable as a graph node
+
+This is the contract that turns a loop package into a `kind: loop` node with real dataflow,
+and it is declared in the loop's own `loop.yaml` — not in the graph manifest.  Both blocks
+are optional; a loop that declares neither runs in **fixture mode** (no overlay, and
+`loop-outcome.json` as its only artifact), which is how all 68 shipped loops behave.
+
+```yaml
+# loop.yaml — optional port declarations
+inputs:
+  invoice:                       # port name: [a-z0-9_-], referenced by the graph edge
+    path: seed/invoice.json      # workspace-relative; traversal and absolute paths refused
+    required: true               # default true — the loop exits non-zero if absent
+    media_type: application/json # default application/octet-stream
+outputs:
+  reconciliation:
+    path: seed/report.json       # the file the loop must produce
+    media_type: application/json
+```
+
+What the engine does with them:
+
+- **Inputs** — before the loop process starts, each upstream artifact is written to its
+  declared `path` inside the node's workspace.  A `required` input that no upstream edge
+  supplies fails the node rather than running the loop against a missing file.
+- **Outputs** — after the loop's own gate has run, the entry point copies each declared
+  `path` to `outputs/<port_name>`, and the sandboxed worker promotes those alongside
+  `loop-outcome.json`.  Promotion requires **exactly** the declared set: a missing or extra
+  file fails the node, so a loop cannot quietly publish an artifact it did not declare.
+- `loop-outcome.json` is always the **first** promoted artifact, because the receipt gate
+  reads `output_artifact_digests[0]`.  Declared outputs sort after it by construction.
+
+Port names are validated at manifest load time, so a typo is a load error rather than a
+silently unwired edge.
 
 ---
 

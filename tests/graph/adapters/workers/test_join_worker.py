@@ -105,7 +105,7 @@ def _run(
     plan = _Plan(edges=edges)
     store = _Store()
     worker = JoinNodeWorker(store=store, organization_id=ORG, project_id=PROJECT)
-    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1)
+    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
     return store, node, plan, result
 
 
@@ -151,7 +151,7 @@ def test_worker_with_no_predecessors_records_empty_list():
 def test_gate_accepts_correct_receipt():
     store, node, plan, result = _run()
     gate = JoinReceiptGate(store, organization_id=ORG, project_id=PROJECT)
-    verdict = gate.evaluate(plan=plan, node=node, result=result)
+    verdict = gate.evaluate(plan=plan, node=node, result=result, attempt=1, repair_round=0)
     assert verdict.passed, f"gate rejected a valid receipt: {verdict.reason}"
 
 
@@ -167,7 +167,7 @@ def test_a_receipt_with_no_observed_parents_passes_but_says_causality_is_unverif
     )
     gate = JoinReceiptGate(store, organization_id=ORG, project_id=PROJECT)
 
-    verdict = gate.evaluate(plan=plan, node=node, result=result)
+    verdict = gate.evaluate(plan=plan, node=node, result=result, attempt=1, repair_round=0)
 
     assert verdict.passed
     assert "NOT observed" in verdict.reason
@@ -181,7 +181,7 @@ def test_gate_rejects_wrong_join_mode():
     store, node, plan, result = _run(join_mode="all_successful")
     wrong_node = _Node(node_id=node.node_id, approval_policy={"join_mode": "any_successful"})
     gate = JoinReceiptGate(store, organization_id=ORG, project_id=PROJECT)
-    verdict = gate.evaluate(plan=plan, node=wrong_node, result=result)
+    verdict = gate.evaluate(plan=plan, node=wrong_node, result=result, attempt=1, repair_round=0)
     assert not verdict.passed
     assert "any_successful" in verdict.reason or "all_successful" in verdict.reason
 
@@ -195,7 +195,7 @@ def test_gate_rejects_extra_predecessor_in_plan():
         _Edge(from_node="check-extra", to_node=node.node_id),
     ))
     gate = JoinReceiptGate(store, organization_id=ORG, project_id=PROJECT)
-    verdict = gate.evaluate(plan=extended_plan, node=node, result=result)
+    verdict = gate.evaluate(plan=extended_plan, node=node, result=result, attempt=1, repair_round=0)
     assert not verdict.passed
 
 
@@ -207,7 +207,7 @@ def test_gate_rejects_missing_predecessor_in_plan():
         _Edge(from_node="check-b", to_node=node.node_id),
     ))
     gate = JoinReceiptGate(store, organization_id=ORG, project_id=PROJECT)
-    verdict = gate.evaluate(plan=shortened_plan, node=node, result=result)
+    verdict = gate.evaluate(plan=shortened_plan, node=node, result=result, attempt=1, repair_round=0)
     assert not verdict.passed
 
 
@@ -216,7 +216,7 @@ def test_gate_rejects_wrong_node_id_in_receipt():
     store, node, plan, result = _run(node_id="join-checks")
     impersonator = _Node(node_id="join-other", approval_policy={"join_mode": "all_successful"})
     gate = JoinReceiptGate(store, organization_id=ORG, project_id=PROJECT)
-    verdict = gate.evaluate(plan=plan, node=impersonator, result=result)
+    verdict = gate.evaluate(plan=plan, node=impersonator, result=result, attempt=1, repair_round=0)
     assert not verdict.passed
     # Error message must name one of the two IDs so the caller can diagnose the mismatch.
     assert "join-other" in verdict.reason or "join-checks" in verdict.reason
@@ -224,7 +224,7 @@ def test_gate_rejects_wrong_node_id_in_receipt():
 
 def test_gate_rejects_empty_result():
     gate = JoinReceiptGate(_Store(), organization_id=ORG, project_id=PROJECT)
-    verdict = gate.evaluate(plan=_Plan(), node=_Node(), result=WorkerResult(()))
+    verdict = gate.evaluate(plan=_Plan(), node=_Node(), result=WorkerResult(()), attempt=1, repair_round=0)
     assert not verdict.passed
     assert "no causality receipt" in verdict.reason
 
@@ -253,7 +253,7 @@ def _run_with_states(
         store=store, organization_id=ORG, project_id=PROJECT,
         node_states_fn=lambda _plan: dict(parents),
     )
-    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1)
+    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
     return store, node, plan, result
 
 
@@ -281,7 +281,7 @@ def test_a_join_whose_recorded_states_would_not_admit_it_is_refused():
     )
     gate = JoinReceiptGate(store, organization_id=ORG, project_id=PROJECT)
 
-    verdict = gate.evaluate(plan=plan, node=node, result=result)
+    verdict = gate.evaluate(plan=plan, node=node, result=result, attempt=1, repair_round=0)
 
     assert not verdict.passed
     assert "would have produced" in verdict.reason
@@ -301,7 +301,7 @@ def test_a_guard_excluded_parent_does_not_block_the_join():
     )
     gate = JoinReceiptGate(store, organization_id=ORG, project_id=PROJECT)
 
-    verdict = gate.evaluate(plan=plan, node=node, result=result)
+    verdict = gate.evaluate(plan=plan, node=node, result=result, attempt=1, repair_round=0)
 
     assert verdict.passed, verdict.reason
     # And the guard travelled into the receipt, so the exclusion is auditable rather than implied.

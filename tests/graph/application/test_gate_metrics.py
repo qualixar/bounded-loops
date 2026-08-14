@@ -271,7 +271,9 @@ class TestTheIntervalCaveat:
         assert "empirical-Bernstein" in INDEPENDENCE_CAVEAT
         assert "MEASURED" in INDEPENDENCE_CAVEAT
         assert "NOT yet an anytime-valid" in INDEPENDENCE_CAVEAT
-        assert "31" in INDEPENDENCE_CAVEAT   # the Wilson coverage figure this replaced
+        # The Wilson coverage figure this replaced. Was "31" (from a P1 reviewer's simulation whose
+        # parameters were never recorded); now the figure the shipped seeded test reproduces.
+        assert "77.5" in INDEPENDENCE_CAVEAT
 
     def test_the_cli_prints_the_caveat_whenever_it_prints_an_interval(self, tmp_path, capsys) -> None:
         """Wired so the caveat cannot be dropped while the numbers stay — the failure mode being that

@@ -44,7 +44,7 @@ class LegacyLoopWorker:
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
-        attempt: int,
+        attempt: int, repair_round: int,
     ) -> WorkerResult:
         validate_execution_envelope(plan, node, envelope)
         raise GraphIntegrityError(

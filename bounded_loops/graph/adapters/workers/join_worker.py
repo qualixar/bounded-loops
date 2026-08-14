@@ -69,7 +69,7 @@ class JoinNodeWorker:
         plan: ExecutionPlan,
         node: PlannedNode,
         envelope: ExecutionEnvelope,
-        attempt: int,
+        attempt: int, repair_round: int,
     ) -> WorkerResult:
         incoming = [edge for edge in plan.edges if edge.to_node == node.node_id]
         states = self.node_states_fn(plan) if self.node_states_fn is not None else {}
@@ -124,6 +124,8 @@ class JoinReceiptGate:
         plan: ExecutionPlan,
         node: PlannedNode,
         result: WorkerResult,
+        attempt: int,
+        repair_round: int,
     ) -> GateVerdict:
         digests = result.output_artifact_digests
         if not digests:

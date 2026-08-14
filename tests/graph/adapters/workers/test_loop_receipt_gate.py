@@ -60,16 +60,19 @@ def _outcome(**overrides: object) -> bytes:
     return json.dumps(payload).encode("utf-8")
 
 
-def _gate(store: _Store, *, repair_round: int = 0) -> LoopReceiptGate:
-    return LoopReceiptGate(
-        store, organization_id=ORG, project_id=PROJECT, repair_round=repair_round,
-    )
+def _gate(store: _Store) -> LoopReceiptGate:
+    """No round here: it arrives per evaluation now, from the port (task #39)."""
+    return LoopReceiptGate(store, organization_id=ORG, project_id=PROJECT)
 
 
-def _evaluate(gate: LoopReceiptGate, digest: str = "d1", node: _Node | None = None):
+def _evaluate(
+    gate: LoopReceiptGate, digest: str = "d1", node: _Node | None = None,
+    *, attempt: int = 1, repair_round: int = 0,
+):
     return gate.evaluate(
         plan=None, node=node or _Node(),
         result=WorkerResult(output_artifact_digests=(digest,)),
+        attempt=attempt, repair_round=repair_round,
     )
 
 
@@ -111,7 +114,7 @@ def test_an_unrecognised_status_fails_closed():
 
 def test_no_artifact_fails_closed():
     verdict = _gate(_Store({})).evaluate(
-        plan=None, node=_Node(), result=WorkerResult(output_artifact_digests=()),
+        plan=None, node=_Node(), result=WorkerResult(output_artifact_digests=()), attempt=1, repair_round=0,
     )
 
     assert not verdict.passed
@@ -164,7 +167,7 @@ def test_a_receipt_from_a_previous_repair_round_is_refused():
     # original pass without doing any work.
     store = _Store({"d1": _outcome(repair_round=0)})
 
-    verdict = _evaluate(_gate(store, repair_round=1))
+    verdict = _evaluate(_gate(store), repair_round=1)
 
     assert not verdict.passed
     assert "repair round" in verdict.reason
@@ -173,9 +176,44 @@ def test_a_receipt_from_a_previous_repair_round_is_refused():
 def test_a_receipt_from_the_matching_repair_round_passes():
     store = _Store({"d1": _outcome(repair_round=2)})
 
-    verdict = _evaluate(_gate(store, repair_round=2))
+    verdict = _evaluate(_gate(store), repair_round=2)
 
     assert verdict.passed
+
+
+def test_a_receipt_from_a_DIFFERENT_ATTEMPT_is_refused():
+    """The exact hole the P4.5 audit demonstrated, now closed.
+
+    ``evaluate`` used to receive no attempt, so a receipt claiming ``attempt=99`` passed
+    unchallenged — and the docstring had asserted the opposite. The only real defence was a property
+    of the worker (a fresh workspace per attempt), which this gate could not check and an embedder's
+    worker was not obliged to preserve. Task #39 put ``attempt`` on the port.
+    """
+    store = _Store({"d1": _outcome(attempt=99)})
+
+    verdict = _evaluate(_gate(store), attempt=2)
+
+    assert not verdict.passed
+    assert "attempt 99" in verdict.reason
+
+
+def test_a_receipt_from_the_matching_attempt_passes():
+    store = _Store({"d1": _outcome(attempt=3)})
+
+    assert _evaluate(_gate(store), attempt=3).passed
+
+
+def test_a_receipt_with_no_recorded_attempt_is_refused_rather_than_assumed():
+    # Unlike repair_round, attempt has no "omitted means 0" convention — the entry point always
+    # records it — so a missing attempt means a receipt this engine did not write.
+    payload = json.loads(_outcome())
+    del payload["attempt"]
+    store = _Store({"d1": json.dumps(payload).encode("utf-8")})
+
+    verdict = _evaluate(_gate(store), attempt=1)
+
+    assert not verdict.passed
+    assert "attempt None" in verdict.reason
 
 
 def test_a_receipt_with_no_recorded_round_is_treated_as_round_zero():
@@ -184,8 +222,8 @@ def test_a_receipt_with_no_recorded_round_is_treated_as_round_zero():
     del payload["repair_round"]
     store = _Store({"d1": json.dumps(payload).encode("utf-8")})
 
-    assert _evaluate(_gate(store, repair_round=0)).passed
-    assert not _evaluate(_gate(store, repair_round=1)).passed
+    assert _evaluate(_gate(store), repair_round=0).passed
+    assert not _evaluate(_gate(store), repair_round=1).passed
 
 
 def test_the_gate_is_a_different_object_from_any_worker():

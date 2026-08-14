@@ -72,7 +72,7 @@ def _identity(plan) -> GraphRunIdentity:
 class _Worker:
     calls: list[str]
 
-    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:
         self.calls.append(node.node_id)
         return WorkerResult(
             ("sha256:" + "d" * 64,),
@@ -86,7 +86,7 @@ class _Gate:
     passed: bool
     calls: list[tuple[str, tuple[str, ...]]]
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         self.calls.append((node.node_id, result.output_artifact_digests))
         return GateVerdict(self.passed, "independent fixture gate")
 
@@ -103,17 +103,17 @@ class _Artifacts:
 
 
 class _ExplodingWorker:
-    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:
         raise RuntimeError("provider output must not become a receipt reason")
 
 
 class _MismatchedRouteWorker:
-    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:
         return WorkerResult(("sha256:" + "d" * 64,), ResolvedRoute("other", "codex", "in", False, "sha256:" + "c" * 64))
 
 
 class _TransportProofWorker:
-    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:
         return WorkerResult(
             ("sha256:" + "d" * 64,),
             ResolvedRoute("openai", "codex", "in", False, "sha256:" + "c" * 64),
@@ -330,7 +330,7 @@ class _CrashWorker:
     def __init__(self, crash_on: str) -> None:
         self._crash_on = crash_on
 
-    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:
         if node.node_id == self._crash_on:
             raise _SimulatedCrash("simulated process crash")
         return WorkerResult(
@@ -655,7 +655,7 @@ def test_gate_rejection_records_the_verdict_on_node_failed(tmp_path):
 class _EvidenceGate:
     calls: list
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         self.calls.append(node.node_id)
         return GateVerdict(True, "audited", evidence_digest="sha256:" + "e" * 64)
 
@@ -680,7 +680,7 @@ def test_gate_evidence_digest_is_recorded_in_the_verdict(tmp_path):
 class _MalformedVerdictGate:
     calls: list
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         self.calls.append(node.node_id)
         return GateVerdict(True, "", evidence_digest="not-a-digest")
 
@@ -708,7 +708,7 @@ def test_a_malformed_gate_verdict_fails_the_node_closed_and_stays_projectable(tm
 
 
 class _NonBoolVerdictGate:
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         return GateVerdict(1, "ok")  # type: ignore[arg-type]  # non-bool decision is malformed
 
 
@@ -848,7 +848,7 @@ class _GateRejecting:
     reject: str
     calls: list[tuple[str, tuple[str, ...]]]
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         self.calls.append((node.node_id, result.output_artifact_digests))
         return GateVerdict(node.node_id != self.reject, "selective fixture gate")
 
@@ -859,7 +859,7 @@ class _GateExploding:
 
     calls: list[str]
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         self.calls.append(node.node_id)
         raise RuntimeError("gate is broken")
 

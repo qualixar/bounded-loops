@@ -199,7 +199,7 @@ class PublishNodeWorker:
         plan: ExecutionPlan,
         node: PlannedNode,
         envelope: ExecutionEnvelope,
-        attempt: int,
+        attempt: int, repair_round: int,
     ) -> WorkerResult:
         publication_policy = str(node.approval_policy.get("publication_policy") or "")
         if not publication_policy:
@@ -274,6 +274,8 @@ class PublishReceiptGate:
         plan: ExecutionPlan,
         node: PlannedNode,
         result: WorkerResult,
+        attempt: int,
+        repair_round: int,
     ) -> GateVerdict:
         digests = result.output_artifact_digests
         if not digests:

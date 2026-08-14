@@ -527,6 +527,11 @@ class GraphRunController:
         try:
             result = worker.execute(
                 plan=self.plan, node=node, envelope=envelope, attempt=attempt,
+                # The writer's round IS the receipt-derived round: it is set from
+                # `rounds_spent(replay())` at resync and from `round_index` when a boundary opens,
+                # never incremented in memory. Reading it here keeps the "derive the round from the
+                # log" rule while costing one attribute access instead of a replay per attempt.
+                repair_round=self._receipts.repair_round,
             )
         except WorkerContractError as broken:
             # It RAN and was billed, so the execution is still recorded — but this failure is
@@ -606,7 +611,10 @@ class GraphRunController:
         states[node_id] = NodeState.GATING
         self._append_node(node_id, "node.gating", NodeState.GATING, attempt=attempt)
         try:
-            verdict = self._gate.evaluate(plan=self.plan, node=node, result=result)
+            verdict = self._gate.evaluate(
+                plan=self.plan, node=node, result=result, attempt=attempt,
+                repair_round=self._receipts.repair_round,
+            )
         except Exception:
             return AttemptOutcome(terminal=self._fail_node(
                 states, node_id, "independent gate evaluation failed", attempt=attempt,

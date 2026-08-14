@@ -95,7 +95,7 @@ class _DemoWorker:
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
-        attempt: int,
+        attempt: int, repair_round: int,
     ) -> WorkerResult:
         content = f"DEMONSTRATION NODE: {node.node_id}".encode("utf-8")
         policy = ArtifactPolicy(
@@ -127,7 +127,8 @@ class _DemoGate:
     """Demonstration gate; always passes.  Distinct object from worker."""
 
     def evaluate(
-        self, *, plan: ExecutionPlan, node: PlannedNode, result: WorkerResult
+        self, *, plan: ExecutionPlan, node: PlannedNode, result: WorkerResult,
+        attempt: int, repair_round: int,
     ) -> GateVerdict:
         return GateVerdict(True, "demonstration gate: always passes")
 

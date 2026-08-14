@@ -103,7 +103,7 @@ class _Worker:
         self.calls = 0
         self.attempts: list[int] = []
 
-    def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
+    def execute(self, *, plan, node, envelope, attempt, repair_round=0) -> WorkerResult:  # noqa: ANN001, ARG002
         self.calls += 1
         self.attempts.append(attempt)
         return WorkerResult(output_artifact_digests=(_DIGEST,))
@@ -113,7 +113,7 @@ class _RaisingWorker:
     def __init__(self) -> None:
         self.calls = 0
 
-    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:  # noqa: ANN001, ARG002
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:  # noqa: ANN001, ARG002
         self.calls += 1
         raise RuntimeError("transient worker fault")
 
@@ -125,7 +125,7 @@ class _Gate:
         self._reject_first = reject_first
         self.calls = 0
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:  # noqa: ANN001, ARG002
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:  # noqa: ANN001, ARG002
         self.calls += 1
         if self.calls <= self._reject_first:
             return GateVerdict(False, f"rejected on call {self.calls}")
@@ -399,7 +399,7 @@ class _CrashingGate:
         self._crash_on = crash_on
         self.calls = 0
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:  # noqa: ANN001, ARG002
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:  # noqa: ANN001, ARG002
         self.calls += 1
         if self.calls == self._crash_on:
             raise KeyboardInterrupt("killed mid-attempt")
@@ -627,7 +627,7 @@ def test_failure_cause_separates_a_gate_rejection_from_a_worker_fault(tmp_path: 
         def __init__(self) -> None:
             self.calls = 0
 
-        def execute(self, *, plan, node, envelope, attempt) -> WorkerResult:  # noqa: ANN001, ARG002
+        def execute(self, *, plan, node, envelope, attempt, repair_round=0) -> WorkerResult:  # noqa: ANN001, ARG002
             self.calls += 1
             if self.calls == 1:
                 raise RuntimeError("transient worker fault")

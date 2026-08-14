@@ -64,19 +64,37 @@ class NodeWorkerPort(Protocol):
     no default: a worker that silently assumed 1 would stamp attempt-3 work as attempt 1,
     which is what made per-attempt credential audiences and artifact provenance impossible
     to scope once retry existed.
+
+    ``repair_round`` is the 0-based global repair round, and is REQUIRED for exactly the same
+    reason. Attempts RESET at a repair boundary, so ``attempt`` alone does not identify a unit of
+    work once repair exists: ``(node, attempt=1)`` occurs once per round. A worker that assumed
+    round 0 stamped round-1 work with a round-0 identity, and every receipt, idempotency key and
+    artifact provenance derived from it inherited the lie. That is why ``kind: loop`` nodes were
+    REFUSED ``on_failure: repair`` before this parameter existed — the round could not reach the
+    worker, so the honest options were to refuse repair or to write a false round into a receipt.
     """
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
-        attempt: int,
+        attempt: int, repair_round: int,
     ) -> WorkerResult: ...
 
 
 class IndependentGatePort(Protocol):
-    """Evaluates a worker result without executing the producer node."""
+    """Evaluates a worker result without executing the producer node.
+
+    ``attempt`` and ``repair_round`` identify WHICH unit of work is being gated. They are required
+    because a gate that does not know them cannot tell this attempt's evidence from another's: the
+    P4.5 audit demonstrated a receipt naming ``attempt=99`` passing a gate that had no attempt to
+    compare it against. Before this, the only thing preventing a stale artifact from satisfying a
+    later attempt was a property of the WORKER — each attempt gets a fresh workspace and promotes
+    its own artifact — which is a real defence but not one the gate could check, and therefore not
+    one an embedder's own worker was obliged to preserve.
+    """
 
     def evaluate(
         self, *, plan: ExecutionPlan, node: PlannedNode, result: WorkerResult,
+        attempt: int, repair_round: int,
     ) -> GateVerdict: ...
 
 

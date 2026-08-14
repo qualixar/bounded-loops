@@ -5,23 +5,71 @@ All notable changes to bounded-loops are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed — BREAKING for embedders
+
+- **`NodeWorkerPort` and `IndependentGatePort` gained required arguments.** `execute` now takes
+  `repair_round`; `evaluate` now takes `attempt` and `repair_round`. Both are keyword-only and have
+  no default, so a custom worker or gate raises `TypeError` until it accepts them. Add the
+  parameters — one line per implementation — and ignore the values if you do not need them. See
+  [docs/EMBEDDING.md](docs/EMBEDDING.md).
+
+  Required rather than defaulted, because a default here is a silent wrong answer: attempts RESET at
+  a repair boundary, so `(node, attempt=1)` happens once per round and `attempt` alone is not an
+  identity. Two things this unblocks:
+
+  - **A `kind: loop` node may now declare `on_failure: repair`.** It was refused at validation
+    before — the round could not reach a loop worker, so the receipt would have named round 0 for
+    every round, and a false round inside a hash-chained log is worse than a refusal.
+  - **The loop gate verifies the receipt's attempt.** A receipt claiming `attempt=99` used to pass,
+    because `evaluate` had no attempt to compare against.
+
 ### Changed
+
+- **The Wilson comparison figure is now the one the test suite reproduces.** Every mention of
+  Wilson's measured coverage said **31–41%**, attributed to "real retry data". Both halves were
+  wrong: it came from a reviewer's separate simulation whose parameters were never recorded, and the
+  shipped harness cannot reproduce it at any correlation strength (Wilson measures 0.75–0.80 across
+  ρ ∈ [1.0, 3.5]). It now reads **77.5%**, from the seeded simulation in
+  `tests/graph/application/test_confidence_sequence.py`.
+
+- **A `plan_id` mismatch on resume now says which explanation applies.** The message reported two
+  digests, which is also what a tampered run directory looks like, so an engine upgrade sent users
+  hunting for an edit that never happened. Run directories record `compiler_version`, and the error
+  distinguishes a compiler change from a modified directory.
 
 - **Gate false-accept rate intervals now report measured coverage instead of an assumed one.**
   The Wilson score interval required independent Bernoulli trials, which retried
-  attempts violate; its coverage under correlated retries measured 31–41%. It is
-  replaced by an empirical-Bernstein interval with a predictable plug-in, whose
-  coverage under the same simulated regime measured 96.9%. The `bl graph metrics`
-  label changes from `nominal-95% iid (UNCALIBRATED)` to
-  `emp-Bernstein 95% (COVERAGE-MEASURED)`.
+  attempts violate. It is replaced by an empirical-Bernstein interval with a
+  predictable plug-in. The `bl graph metrics` label changes from
+  `nominal-95% iid (UNCALIBRATED)` to `emp-Bernstein 95% (COVERAGE-MEASURED)`.
+
+  **Both measured numbers are coverage of the same thing, and it is not α.** Under
+  the simulated regime — per-run latent rate `p_run ~ logit-normal(mean α, ρ=1.8)`,
+  evaluated at every sample size under optional stopping — Wilson covered `p_run`
+  77.5% of the time and the empirical-Bernstein interval covered it 96.9%. The
+  quantity `bl graph metrics` reports as the false-accept rate is the *marginal*
+  rate `E[p_run]`; coverage of the marginal rate is a **separate estimand that
+  these figures do not measure**. So "96.9% vs 77.5%" is a statement about
+  `p_run`, and quoting it as "α coverage" or as a 19-point improvement on α is a
+  misreading the numbers cannot support.
 
   **This is NOT an anytime-valid confidence sequence.** The radius is the
   fixed-time empirical-Bernstein form and carries no stitching term, so
-  simultaneous validity over all sample sizes does not follow from it. The
-  measured figure is also coverage of the per-run latent rate, a different
-  estimand from the marginal false-accept rate — do not quote it as α coverage.
+  simultaneous validity over all sample sizes does not follow from it.
 
 ### Fixed
+
+- **A 0.4.0 graph with a `publish` node can resume again.** The compiler began carrying
+  `publication_policy` in the plan so the publish worker could read it, which changed `plan_id` for
+  every graph that had a publish node — and those are the graphs with an irreversible effect. The
+  value is authored in the manifest and therefore already covered by `source_graph_digest`, so it is
+  excluded from the plan's canonical form. Verified against v0.4.0's own compiler: the same graph
+  compiles to the same `plan_id` it did in 0.4.0.
+
+- **An empty directory inside a loop package now moves its content digest.** `shutil.copytree`
+  reproduces empty directories into the workspace, so a gate whose `run:` branched on
+  `test -d seed/hidden_branch` could change verdict while the pinned digest stayed fixed — a mutable
+  region under a content address.
 
 - **Conditional edges (`when`) now actually apply.** An edge's `when` was accepted,
   validated and stored — then ignored by the scheduler, so a graph with a condition on

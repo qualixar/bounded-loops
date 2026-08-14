@@ -103,7 +103,10 @@ class _NetworkDeniedGate:
     def __init__(self, store: LocalArtifactStore) -> None:
         self._store = store
 
-    def evaluate(self, *, plan: ExecutionPlan, node: PlannedNode, result: WorkerResult) -> GateVerdict:
+    def evaluate(
+        self, *, plan: ExecutionPlan, node: PlannedNode, result: WorkerResult,
+        attempt: int, repair_round: int,
+    ) -> GateVerdict:
         if not result.output_artifact_digests:
             return GateVerdict(False, "no artifact produced")
         digest = result.output_artifact_digests[0]

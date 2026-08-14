@@ -67,7 +67,7 @@ def _identity(plan) -> GraphRunIdentity:
 class _SpyWorker:
     calls: list
 
-    def execute(self, *, plan, node, envelope, attempt=1) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:
         self.calls.append(node.node_id)
         return WorkerResult((_DIGEST,), _ROUTE, "https")
 
@@ -76,7 +76,7 @@ class _SpyWorker:
 class _Gate:
     passed: bool
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         return GateVerdict(self.passed, "independent fixture gate")
 
 

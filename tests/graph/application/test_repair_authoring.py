@@ -102,6 +102,33 @@ def test_the_object_form_is_reserved_for_repair():
         validate_authoring_graph(_graph(on_failure={"mode": "continue", "target": "a"}))
 
 
+def test_a_LOOP_node_may_now_declare_repair():
+    """The fifth refusal is gone, and its cause is why (task #39).
+
+    A loop node declaring ``on_failure: repair`` used to be refused outright. The reason was never
+    repair itself — it was that ``NodeWorkerPort.execute`` carried only ``attempt``, so a loop worker
+    could not learn the round and would stamp round-1 work as round 0, writing a false round into a
+    hash-chained receipt. The port now carries ``repair_round``, so the receipt can name the round
+    the work belongs to, and the refusal has nothing left to protect.
+
+    The four rules above still apply to loop nodes: this graph passes because ``a`` is a strict
+    ancestor, the budget is above 0, and the fail mode keeps driving the graph.
+    """
+    graph = _graph(on_failure={"mode": "repair", "target": "a"})
+    graph["nodes"][2].update({
+        "kind": "loop",
+        "loop_package": "sha256:" + "e" * 64,
+        "isolation": "process_restricted",
+    })
+
+    validated = validate_authoring_graph(graph)
+
+    repairing = [node for node in validated.nodes if node.on_failure == "repair"]
+    assert [(node.id, node.kind.value, node.repair_target) for node in repairing] == [
+        ("c", "loop", "a")
+    ]
+
+
 @pytest.mark.parametrize("budget", [-1, 101, True, "2", 1.5])
 def test_a_malformed_repair_budget_is_refused(budget):
     graph = _graph()
