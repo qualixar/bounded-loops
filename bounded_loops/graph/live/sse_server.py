@@ -37,7 +37,7 @@ import json
 import time
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 from bounded_loops.graph.application.arena_projection import (
@@ -253,80 +253,72 @@ class WatchRequestHandler(LoopbackHandler):
         self._run_sse_loop()
 
     def _run_sse_loop(self) -> None:
-        """Open the SSE connection and stream projection snapshots until done.
+        """Open the SSE connection and stream projection snapshots until done."""
+        self._send_sse_headers()
+        stream_projection_snapshots(
+            event_log_path=self.server._event_log_path,
+            facade=self.server.facade,
+            request_ctx=self.server.request_ctx,
+            send_data=self._send_sse_data,
+            send_comment=self._send_sse_comment,
+        )
 
-        Sends one snapshot immediately (before any new events arrive) so the
-        page does not wait for the next poll tick to show its first live state.
-        """
-        # SSE response headers.  ``Cache-Control: no-store`` still applies (hardening);
-        # ``X-Accel-Buffering: no`` tells any intervening nginx/proxy to not buffer the stream.
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("X-Accel-Buffering", "no")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        # HTTP/1.0: no Content-Length — we stream until the connection drops.
-        self.end_headers()
 
-        event_log_path = self.server._event_log_path
-        last_size = 0
-        last_keepalive = time.monotonic()
-        events_sent = 0
-        facade = self.server.facade
-        request_ctx = self.server.request_ctx
+def stream_projection_snapshots(
+    *,
+    event_log_path: Path,
+    facade: LocalGraphRuntimeFacade,
+    request_ctx: ArenaReadRequest,
+    send_data: Callable[[str], bool],
+    send_comment: Callable[[str], bool],
+) -> None:
+    """Tail an append-only receipt log and push a full projection snapshot on every change.
 
-        # Send the initial snapshot immediately.
-        payload = _projection_json(facade, request_ctx)
-        if payload:
-            self._send_sse_data(payload)
-            events_sent += 1
+    Shared by `bl graph watch` and by Jarvis. Both need identical semantics — an immediate
+    first snapshot so the page is not blank until the next tick, keepalives so an idle proxy
+    does not drop the connection, and a self-closing stream once the run is terminal — and a
+    second implementation of those semantics would drift apart.
 
-        while events_sent < _MAX_EVENTS:
-            try:
-                current_size = event_log_path.stat().st_size if event_log_path.exists() else 0
-            except OSError:
-                break  # run directory removed
+    Snapshots rather than raw events: the projection IS the state a UI renders, so re-deriving
+    it here means a client never reduces an event log itself, and so can never reduce it
+    differently from the engine.
 
-            if current_size > last_size:
-                last_size = current_size
-                new_payload = _projection_json(facade, request_ctx)
-                if new_payload:
-                    if not self._send_sse_data(new_payload):
-                        break  # client disconnected
-                    events_sent += 1
-                    last_keepalive = time.monotonic()
-                    # Check if run is terminal — linger briefly then close.
-                    try:
-                        proj_state = facade.status(request_ctx).run_state
-                    except (GraphIntegrityError, GraphValidationError, OSError):
-                        break
-                    if proj_state in ("SUCCEEDED", "FAILED"):
-                        time.sleep(_TERMINAL_LINGER_S)
-                        break
-            else:
-                # No new events — send a keepalive comment if needed.
-                now = time.monotonic()
-                if now - last_keepalive >= _KEEPALIVE_INTERVAL_S:
-                    if not self._send_sse_comment("keepalive"):
-                        break
-                    last_keepalive = now
-                time.sleep(_POLL_INTERVAL_S)
-
-    def _send_sse_data(self, json_payload: str) -> bool:
-        """Write one SSE event.  Returns False if the connection is broken."""
+    Takes the writers rather than a handler, so it has no HTTP knowledge and can be tested
+    against two lists.
+    """
+    last_size = 0
+    last_keepalive = time.monotonic()
+    events_sent = 0
+    # Send the initial snapshot immediately.
+    payload = _projection_json(facade, request_ctx)
+    if payload:
+        send_data(payload)
+        events_sent += 1
+    while events_sent < _MAX_EVENTS:
         try:
-            self.wfile.write(f"data: {json_payload}\n\n".encode("utf-8"))
-            self.wfile.flush()
-            return True
+            current_size = event_log_path.stat().st_size if event_log_path.exists() else 0
         except OSError:
-            return False
-
-    def _send_sse_comment(self, text: str) -> bool:
-        """Write an SSE keepalive comment.  Returns False if the connection is broken."""
-        try:
-            self.wfile.write(f": {text}\n\n".encode("utf-8"))
-            self.wfile.flush()
-            return True
-        except OSError:
-            return False
+            break  # run directory removed
+        if current_size > last_size:
+            last_size = current_size
+            new_payload = _projection_json(facade, request_ctx)
+            if new_payload:
+                if not send_data(new_payload):
+                    break  # client disconnected
+                events_sent += 1
+                # Check if run is terminal — linger briefly then close.
+                try:
+                    proj_state = facade.status(request_ctx).run_state
+                except (GraphIntegrityError, GraphValidationError, OSError):
+                    break
+                if proj_state in ("SUCCEEDED", "FAILED"):
+                    time.sleep(_TERMINAL_LINGER_S)
+                    break
+        else:
+            # No new events — send a keepalive comment if needed.
+            now = time.monotonic()
+            if now - last_keepalive >= _KEEPALIVE_INTERVAL_S:
+                if not send_comment("keepalive"):
+                    break
+                last_keepalive = now
+            time.sleep(_POLL_INTERVAL_S)

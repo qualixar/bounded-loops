@@ -167,6 +167,43 @@ class LoopbackHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Pragma", "no-cache")
 
+    def _send_sse_data(self, json_payload: str) -> bool:
+        """Write one SSE event. Returns False when the connection is already broken.
+
+        Lives on the shared handler because every loopback surface that streams needs exactly
+        this, and a second copy would be a second place for the framing to go subtly wrong.
+        """
+        try:
+            self.wfile.write(f"data: {json_payload}\n\n".encode("utf-8"))
+            self.wfile.flush()
+            return True
+        except OSError:
+            return False
+
+    def _send_sse_comment(self, text: str) -> bool:
+        """Write an SSE keepalive comment. Returns False when the connection is broken."""
+        try:
+            self.wfile.write(f": {text}\n\n".encode("utf-8"))
+            self.wfile.flush()
+            return True
+        except OSError:
+            return False
+
+    def _send_sse_headers(self) -> None:
+        """The response headers for a stream, including the hardening set.
+
+        An audit noted the stream was the one token-bearing response that skipped the shared
+        hardening headers; emitting them here means no streaming surface can forget them.
+        """
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.end_headers()
+
     def _send_plain(self, status: HTTPStatus, message: str) -> None:
         encoded = message.encode("utf-8")
         self.send_response(status)

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <!-- no-referrer: never leak the token into server Referer headers -->
+  <meta name="referrer" content="no-referrer">
+  <title>Jarvis — bounded-loops</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="root"></div>
+  <!-- React 18.3.1 UMD — defines window.React and window.ReactDOM -->
+  <script src="vendor/react.production.min.js"></script>
+  <script src="vendor/react-dom.production.min.js"></script>
+  <!-- App: ES module so it can import htm.module.js via static import -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>

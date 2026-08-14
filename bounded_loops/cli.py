@@ -330,12 +330,14 @@ def _build_parser() -> argparse.ArgumentParser:
     from bounded_loops.cli_loops import register as _register_loops
     from bounded_loops.cli_workspace import register as _register_workspace
     from bounded_loops.cli_capabilities import register as _register_capabilities
+    from bounded_loops.graph.jarvis.cli_jarvis import register as _register_jarvis
 
     _register_graph(subparsers)
     _register_loop(subparsers)
     _register_loops(subparsers)
     _register_workspace(subparsers)
     _register_capabilities(subparsers)
+    _register_jarvis(subparsers)
 
     return parser
 
