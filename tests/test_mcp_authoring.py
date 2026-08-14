@@ -58,26 +58,33 @@ def test_every_authoring_tool_is_registered() -> None:
         "graph_runs",
         "graph_approve",
         "graph_resume",
+        "graph_interview",
+        "graph_configure",
     }
 
 
-def test_the_two_MUTATING_tools_are_gated_by_a_confirm_argument() -> None:
+#: Every tool that changes something. Kept as one list so adding a side-effecting tool without
+#: gating it fails the test below rather than shipping.
+_MUTATING = {"graph_approve", "graph_resume", "graph_configure"}
+
+
+def test_every_MUTATING_tool_is_gated_by_a_confirm_argument() -> None:
     """`confirm` defaults to False on every side-effecting tool.
 
-    A mutating tool whose default is to mutate would let a model record a human's approval by
-    calling it once, exploratively. The preview/confirm pair is the same pattern `bl_run` already
-    uses for loops.
+    A mutating tool whose default is to mutate would let a model record a human's approval — or
+    rewrite their graph — by calling it once, exploratively. The preview/confirm pair is the same
+    pattern `bl_run` already uses for loops.
     """
     import inspect
 
     recorder = _RecordingMcp()
     mcp_authoring.register(recorder)
 
-    for name in ("graph_approve", "graph_resume"):
+    for name in sorted(_MUTATING):
         signature = inspect.signature(recorder.functions[name])
         assert signature.parameters["confirm"].default is False, name
 
-    read_only = set(recorder.registered) - {"graph_approve", "graph_resume"}
+    read_only = set(recorder.registered) - _MUTATING
     for name in read_only:
         assert "confirm" not in inspect.signature(recorder.functions[name]).parameters, (
             f"{name} takes a confirm argument but has no side effect to gate"
@@ -436,3 +443,107 @@ def test_a_run_the_ENGINE_produced_can_actually_be_READ(tmp_path: Path, monkeypa
     markdown = mcp_authoring._with_run(listed["runs"][0], mcp_authoring._state_md_payload)
     assert markdown["ok"] is True
     assert "SUCCEEDED" in markdown["markdown"]
+
+
+# ── the configuration interview + apply ──────────────────────────────────────
+
+
+@pytest.fixture
+def saved_graph(tmp_path: Path, monkeypatch, reference_manifest: str) -> str:
+    monkeypatch.setenv("BOUNDED_LOOPS_WORKSPACE", str(tmp_path / "project"))
+    from bounded_loops.graph.jarvis import api
+
+    assert api.handle("graph.save", {"name": "release", "manifest": reference_manifest})["ok"]
+    return "release"
+
+
+def test_interview_reads_a_SAVED_graph_by_name(saved_graph: str) -> None:
+    result = mcp_authoring._interview(name=saved_graph, manifest_yaml=None)
+
+    assert result["ok"] is True
+    assert "questions" in result and "must_ask" in result
+
+
+def test_interview_needs_something_to_interview() -> None:
+    assert mcp_authoring._interview(name=None, manifest_yaml=None)["ok"] is False
+
+
+def test_configure_PREVIEWS_before_it_writes(saved_graph: str) -> None:
+    """A mutating tool whose default is to mutate lets a model change a graph exploratively."""
+    changes = [{"pointer": "/nodes/0/isolation", "value": "container_restricted"}]
+
+    preview = mcp_authoring._configure(name=saved_graph, changes=changes, confirm=False)
+
+    assert preview["ok"] is True
+    assert preview["written"] is False
+    assert preview["applied"][0]["from"] == "process_restricted"
+    assert preview["applied"][0]["to"] == "container_restricted"
+
+
+def test_configure_writes_only_on_confirm(saved_graph: str) -> None:
+    import yaml
+
+    changes = [{"pointer": "/nodes/0/isolation", "value": "container_restricted"}]
+
+    committed = mcp_authoring._configure(name=saved_graph, changes=changes, confirm=True)
+
+    assert committed["written"] is True
+    on_disk = yaml.safe_load(Path(committed["path"]).read_text(encoding="utf-8"))
+    assert on_disk["nodes"][0]["isolation"] == "container_restricted"
+
+
+def test_a_configuration_the_COMPILER_would_refuse_is_never_written(saved_graph: str) -> None:
+    """Saving something that fails later means the person who answered has stopped looking."""
+    import yaml
+
+    before = _saved_bytes(saved_graph)
+
+    result = mcp_authoring._configure(
+        name=saved_graph,
+        changes=[{"pointer": "/nodes/0/isolation", "value": "wizardry"}],
+        confirm=True,
+    )
+
+    assert result["ok"] is False
+    assert result["written"] is False
+    assert result["refusal"]["code"] == "enum"
+    assert _saved_bytes(saved_graph) == before, "the file changed despite the refusal"
+    assert yaml.safe_load(before)["nodes"][0]["isolation"] != "wizardry"
+
+
+def _saved_bytes(name: str) -> str:
+    from bounded_loops.workspace import discover
+
+    return (discover().graphs_dir / f"{name}.yaml").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "pointer",
+    ["/nodes/99/isolation", "nodes/0", "/nodes/0/invented/deep", "/../etc", "/"],
+)
+def test_a_pointer_that_does_not_RESOLVE_is_refused(saved_graph: str, pointer: str) -> None:
+    """It creates no structure: a bad pointer is a caller mistake, not a request to invent nodes."""
+    result = mcp_authoring._configure(
+        name=saved_graph, changes=[{"pointer": pointer, "value": "x"}], confirm=True,
+    )
+
+    assert result["ok"] is False
+
+
+@pytest.mark.parametrize("name", ["../escape", "a/b", "with.dot", "", "x" * 90])
+def test_a_hostile_graph_name_cannot_reach_outside_the_workspace(
+    tmp_path: Path, monkeypatch, name: str,
+) -> None:
+    monkeypatch.setenv("BOUNDED_LOOPS_WORKSPACE", str(tmp_path / "project"))
+
+    result = mcp_authoring._configure(name=name, changes=[], confirm=True)
+
+    assert result["ok"] is False
+    assert "letters, digits" in result["error"] or "no saved graph" in result["error"]
+
+
+def test_a_change_missing_a_pointer_or_value_is_refused(saved_graph: str) -> None:
+    malformed: list[Any] = [{"pointer": "/nodes/0/isolation"}, {"value": "x"}, "not a dict"]
+    for change in malformed:
+        result = mcp_authoring._configure(name=saved_graph, changes=[change], confirm=True)
+        assert result["ok"] is False

@@ -154,6 +154,41 @@ def register(mcp: object) -> None:
         return runs()
 
     @tool()
+    def graph_interview(name: str | None = None, manifest_yaml: str | None = None) -> dict:
+        """ASK THE HUMAN THESE BEFORE YOU RUN ANYTHING. The questions this graph needs answered.
+
+        Pass a saved graph `name` or a `manifest_yaml`. Returns plain-language questions ordered by
+        consequence, each with why it matters, where the answer goes, and what the engine does if
+        nobody answers.
+
+        This exists because a graph has around forty authorable fields, and the ones that matter
+        most are exactly the ones you must not quietly default: whether a person approves an
+        irreversible effect, what a node is allowed to spend, whether a retry would send something
+        twice. Ask the `must_ask` questions in your own words, take the answers, and apply them
+        with `graph_configure`.
+
+        Never answer a HIGH question on someone's behalf and then report the graph as ready. Say
+        which defaults you applied.
+
+        Read-only."""
+        return _interview(name=name, manifest_yaml=manifest_yaml)
+
+    @tool()
+    def graph_configure(name: str, changes: list[dict], confirm: bool = False) -> dict:
+        """Apply interview answers to a SAVED graph, through the validator.
+
+        Each change is `{"pointer": "/nodes/0/isolation", "value": "process_restricted"}` — the
+        pointer comes from `graph_interview`, so you are not guessing at the shape.
+
+        MUTATING and gated: `confirm=False` returns the diff and the lint result of the PROPOSED
+        graph without writing. `confirm=True` writes it, and only if it still compiles — a
+        configuration that the compiler would refuse is rejected here rather than saved to fail
+        later, when the person who answered has stopped looking.
+
+        Writes only to `.bounded-loops/graphs/<name>.yaml`."""
+        return _configure(name=name, changes=changes, confirm=confirm)
+
+    @tool()
     def graph_approve(
         run: str,
         node_id: str,
@@ -559,3 +594,147 @@ def runs() -> dict:
         reverse=True,
     )
     return {"ok": True, "workspace": str(workspace.root), "runs": names}
+
+# ── the configuration interview ──────────────────────────────────────────────
+
+
+def _saved_graph_path(name: str) -> Path:
+    """The saved-graph file for `name`, refusing anything that is not one safe segment."""
+    if not name or len(name) > 64 or not name.replace("-", "").replace("_", "").isalnum():
+        raise ManifestError(
+            "a graph name may hold only letters, digits, '-' and '_' — no paths or dots"
+        )
+    workspace = discover()
+    path = workspace.graphs_dir / f"{name}.yaml"
+    if path.is_symlink():
+        raise ManifestError(f"{name}.yaml is a symlink; refusing to follow it")
+    return path
+
+
+def _interview(*, name: str | None, manifest_yaml: str | None) -> dict:
+    """Questions for a saved graph or a supplied manifest."""
+    import yaml
+
+    from bounded_loops.graph.application.interview import interview_document
+
+    try:
+        if manifest_yaml is None:
+            if not name:
+                return {"ok": False, "error": "pass either a saved graph name or manifest_yaml"}
+            path = _saved_graph_path(name)
+            if not path.is_file():
+                return {"ok": False, "error": f"no saved graph named {name!r}"}
+            manifest_yaml = path.read_text(encoding="utf-8")
+        parsed = yaml.safe_load(manifest_yaml)
+    except (ManifestError, OSError) as exc:
+        return {"ok": False, "error": str(exc)}
+    except yaml.YAMLError as exc:
+        return {"ok": False, "error": f"the manifest is not parseable YAML: {exc}"}
+    if not isinstance(parsed, dict):
+        return {"ok": False, "error": "a manifest must be a mapping"}
+    return {"ok": True, "graph": name, **interview_document(parsed)}
+
+
+def _configure(*, name: str, changes: list[dict], confirm: bool) -> dict:
+    """Apply pointer/value changes to a saved graph, refusing anything that stops compiling."""
+    import yaml
+
+    try:
+        path = _saved_graph_path(name)
+    except ManifestError as exc:
+        return {"ok": False, "error": str(exc)}
+    if not path.is_file():
+        return {"ok": False, "error": f"no saved graph named {name!r}"}
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        return {"ok": False, "error": f"cannot read {name}.yaml: {exc}"}
+    if not isinstance(document, dict):
+        return {"ok": False, "error": "a manifest must be a mapping"}
+
+    applied: list[dict] = []
+    for change in changes:
+        if not isinstance(change, dict) or "pointer" not in change or "value" not in change:
+            return {
+                "ok": False,
+                "error": "each change needs a 'pointer' and a 'value'",
+            }
+        try:
+            before = _apply_pointer(document, str(change["pointer"]), change["value"])
+        except (KeyError, IndexError, ValueError) as exc:
+            return {"ok": False, "error": f"{change['pointer']}: {exc}"}
+        applied.append(
+            {"pointer": change["pointer"], "from": before, "to": change["value"]}
+        )
+
+    proposed = yaml.safe_dump(document, sort_keys=False)
+    linted = _lint(proposed)
+    if not linted.get("ok"):
+        return {
+            "ok": False,
+            "applied": applied,
+            "refusal": linted.get("refusal"),
+            "written": False,
+            "why": (
+                "These answers produce a graph the compiler refuses, so nothing was written. "
+                "Fixing it now is cheaper than discovering it at run time."
+            ),
+        }
+    if not confirm:
+        return {
+            "ok": True,
+            "applied": applied,
+            "manifest": proposed,
+            "written": False,
+            "next": "call again with confirm=true to write it",
+        }
+    try:
+        path.write_text(proposed, encoding="utf-8")
+    except OSError as exc:
+        return {"ok": False, "error": f"cannot write {name}.yaml: {exc}"}
+    return {"ok": True, "applied": applied, "written": True, "path": str(path)}
+
+
+def _apply_pointer(document: dict, pointer: str, value: object) -> object:
+    """Set one JSON-pointer location, returning what was there. Creates no new structure.
+
+    Deliberately refuses to invent containers: a pointer that does not resolve is a pointer the
+    caller got wrong, and silently creating `/nodes/7` in a five-node graph would produce a
+    manifest nobody asked for.
+    """
+    if not pointer.startswith("/"):
+        raise ValueError("a pointer must start with '/'")
+    parts = [part.replace("~1", "/").replace("~0", "~") for part in pointer[1:].split("/")]
+    target: Any = document
+    for part in parts[:-1]:
+        target = _descend(target, part)
+    last = parts[-1]
+    if isinstance(target, list):
+        index = _as_index(target, last)
+        before = target[index]
+        target[index] = value
+        return before
+    if isinstance(target, dict):
+        before = target.get(last)
+        target[last] = value
+        return before
+    raise ValueError(f"cannot set {last!r} on a {type(target).__name__}")
+
+
+def _descend(target: Any, part: str) -> Any:
+    if isinstance(target, list):
+        return target[_as_index(target, part)]
+    if isinstance(target, dict):
+        if part not in target:
+            raise ValueError(f"{part!r} does not exist; this tool does not create new structure")
+        return target[part]
+    raise ValueError(f"cannot descend into a {type(target).__name__}")
+
+
+def _as_index(target: list, part: str) -> int:
+    if not part.isdigit():
+        raise ValueError(f"{part!r} is not a list index")
+    index = int(part)
+    if index >= len(target):
+        raise ValueError(f"index {index} is past the end of a {len(target)}-item list")
+    return index
