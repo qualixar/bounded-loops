@@ -510,8 +510,10 @@ def bl_runs(loop_dir: str) -> dict:
 # Imported at the bottom, after `mcp` exists, for the same reason `cli.py` imports `_cmd_new` at
 # the bottom — the registrar needs the instance, and a top-of-file import would be circular.
 from bounded_loops.mcp_discovery import register as _register_discovery  # noqa: E402
+from bounded_loops.mcp_authoring import register as _register_authoring  # noqa: E402
 
 _register_discovery(mcp)
+_register_authoring(mcp)
 
 
 def main() -> None:

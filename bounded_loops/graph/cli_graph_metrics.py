@@ -12,7 +12,9 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Sequence
 
+from bounded_loops.domain.errors import ManifestError
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
 from bounded_loops.graph.application.gate_metrics import (
     ADVISORY_BLOCKED_PRECISION_BASELINE,
@@ -28,6 +30,7 @@ from bounded_loops.graph.application.gate_metrics import (
 )
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
+from bounded_loops.graph.domain.events import StoredGraphEvent
 
 
 def _err(message: str) -> None:
@@ -112,20 +115,67 @@ def _wrapped(text: str, width: int) -> list[str]:
     return textwrap.wrap(text, width=width)
 
 
+def load_receipts(run_dir: Path) -> Sequence[StoredGraphEvent]:
+    """Replay a run's receipt stream, or raise ManifestError saying why it cannot be read.
+
+    Extracted from ``cmd_graph_metrics`` so the MCP surface can report metrics without going
+    through a function that prints: this server speaks JSON-RPC over stdout, and a stray line of
+    human text corrupts the transport. One loader, two readers.
+    """
+    _plan, identity = load_plan_from_run_dir(run_dir)[:2]
+    log_path = run_dir / "controller-events.jsonl"
+    if not log_path.is_file():
+        # ``GraphEventLog.__init__`` touches the file, so simply constructing one CREATED an
+        # empty log (and its lock) inside the run directory. A read-only report must not mutate
+        # the run it reports on — and an absent log is a real answer, not an empty one.
+        raise ManifestError(f"no receipt stream at {log_path} — nothing to measure")
+    return GraphEventLog(log_path, identity).replay()
+
+
+def metrics_document(
+    run_dir: Path,
+    *,
+    receipts: Sequence[StoredGraphEvent] | None = None,
+) -> dict:
+    """The machine-readable metrics document — the same object ``--json`` prints.
+
+    Shared with the MCP `graph_metrics` tool so the two surfaces cannot disagree about which
+    method produced a number a reader is about to publish.
+    """
+    if receipts is None:
+        receipts = load_receipts(run_dir)
+    return {
+        "run": str(run_dir),
+        "overall": _confusion_dict(confusion(receipts)),
+        "by_attempt": {
+            str(key): _confusion_dict(value)
+            for key, value in confusion_by_attempt(receipts).items()
+        },
+        # The intervals the TEXT output prints — the empirical-Bernstein ones.
+        "empirical_bernstein": {
+            "false_accept_rate": _rate_dict(
+                false_accept_rate_cs(receipts), method="empirical_bernstein_fixed_time",
+            ),
+            "false_rejection_rate": _rate_dict(
+                false_reject_rate_cs(receipts), method="empirical_bernstein_fixed_time",
+            ),
+            "blocked_precision": _rate_dict(
+                blocked_precision_cs(receipts), method="empirical_bernstein_fixed_time",
+            ),
+        },
+        "advisory_blocked_precision_baseline": ADVISORY_BLOCKED_PRECISION_BASELINE,
+        "independence_caveat": INDEPENDENCE_CAVEAT,
+    }
+
+
 def cmd_graph_metrics(args: argparse.Namespace) -> int:
     """Report the gate's confusion matrix and the two curves, overall and per attempt index."""
     run_dir = Path(args.run)
     try:
-        plan, identity = load_plan_from_run_dir(run_dir)[:2]
-        log_path = run_dir / "controller-events.jsonl"
-        if not log_path.is_file():
-            # ``GraphEventLog.__init__`` touches the file, so simply constructing one CREATED an
-            # empty log (and its lock) inside the run directory. A read-only report must not mutate
-            # the run it reports on — and an absent log is a real answer, not an empty one.
-            _err(f"graph metrics: no receipt stream at {log_path} — nothing to measure")
-            return 2
-        log = GraphEventLog(log_path, identity)
-        receipts = log.replay()
+        receipts = load_receipts(run_dir)
+    except ManifestError as exc:
+        _err(f"graph metrics: {exc}")
+        return 2
     except (GraphIntegrityError, GraphValidationError, OSError, ValueError) as exc:
         # ValueError included because ``load_plan_from_run_dir``'s symlink guard raises one, so
         # ``bl graph metrics --run /tmp`` printed a traceback instead of saying what was wrong.
@@ -136,28 +186,16 @@ def cmd_graph_metrics(args: argparse.Namespace) -> int:
     per_attempt = confusion_by_attempt(receipts)
 
     # Fixed-time empirical-Bernstein rates. NOT anytime-valid: the radius carries no stitching
-    # term. Emitted in BOTH the text and the JSON output — see `empirical_bernstein` below.
+    # term. Emitted in BOTH the text and the JSON output.
     fa_cs = false_accept_rate_cs(receipts)
     fr_cs = false_reject_rate_cs(receipts)
     bp_cs = blocked_precision_cs(receipts)
     fa_cs_by_attempt = false_accept_rate_cs_by_attempt(receipts)
 
     if getattr(args, "json", False):
-        print(json.dumps({
-            "run": str(run_dir),
-            "overall": _confusion_dict(overall),
-            "by_attempt": {str(k): _confusion_dict(v) for k, v in per_attempt.items()},
-            # The intervals the TEXT output prints — the empirical-Bernstein ones. Emitted here so
-            # `--json` and the human-readable form can never disagree about which method produced
-            # the number a reader is about to publish.
-            "empirical_bernstein": {
-                "false_accept_rate": _rate_dict(fa_cs, method="empirical_bernstein_fixed_time"),
-                "false_rejection_rate": _rate_dict(fr_cs, method="empirical_bernstein_fixed_time"),
-                "blocked_precision": _rate_dict(bp_cs, method="empirical_bernstein_fixed_time"),
-            },
-            "advisory_blocked_precision_baseline": ADVISORY_BLOCKED_PRECISION_BASELINE,
-            "independence_caveat": INDEPENDENCE_CAVEAT,
-        }, indent=2, sort_keys=True))
+        print(json.dumps(
+            metrics_document(run_dir, receipts=receipts), indent=2, sort_keys=True,
+        ))
         return 0
 
     print("Gate performance — computed from the receipt stream, nothing else")

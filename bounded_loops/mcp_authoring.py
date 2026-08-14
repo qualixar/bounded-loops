@@ -1,0 +1,551 @@
+"""MCP authoring and run-inspection tools — the half of the contract that acts on graphs.
+
+`mcp_discovery` tells a host what the engine can do. This module lets it *do* it: assemble a
+manifest, get it validated, see the compiled plan, and read a run's receipts afterwards.
+
+Two design decisions worth stating up front, because both are the opposite of what the obvious
+implementation would do.
+
+**`graph_compose` does not turn prose into a graph.** Turning "check this repo's release
+readiness" into nodes and edges needs a language model, and this tool has no keys and should never
+have any — the host IS the model. So the split is: the host does intent -> structure, informed by
+`bl_capabilities` and `bl_search_loops`, and `graph_compose` does structure -> *valid* manifest,
+filling required fields with safe defaults, refusing what the compiler would refuse, and reporting
+the gaps it cannot fill as tickets. Everything it returns is checkable, which a prose-to-graph
+tool's output would not be.
+
+**A run is addressed by NAME, never by path.** Every tool below takes a run-directory name and
+resolves it through `Workspace.run_dir`, which validates it. Accepting a path from a model
+argument would make this surface a read primitive over the whole filesystem; `../../../etc` is a
+run id the validator rejects.
+
+The subject identity for an approval comes from the OS user running this server, never from a tool
+argument. A model can say which run and which decision; it can never claim to be someone.
+"""
+
+from __future__ import annotations
+
+import getpass
+import os
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+from bounded_loops.domain.errors import ManifestError
+from bounded_loops.graph.application.refusals import explain
+from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
+from bounded_loops.workspace import Workspace, discover
+
+_MAX_MANIFEST_BYTES = 512 * 1024
+
+
+def register(mcp: object) -> None:
+    """Wire the authoring and inspection tools onto a FastMCP instance."""
+    tool: Callable[..., Any] = mcp.tool  # type: ignore[attr-defined]
+
+    @tool()
+    def graph_lint(manifest_yaml: str) -> dict:
+        """Validate a graph manifest and explain every refusal in plain language.
+
+        Returns `{"ok": true}` for a valid manifest, or the refusal with its code, the JSON
+        pointer to the offending field, and — this is the useful part — what to change. Run this
+        before `graph_plan`; a manifest that does not lint cannot compile.
+
+        Read-only."""
+        return _lint(manifest_yaml)
+
+    @tool()
+    def graph_plan(manifest_yaml: str) -> dict:
+        """Compile a manifest to an execution plan and report what it WILL do.
+
+        Returns the plan id, the execution waves, each node's declared effects and isolation
+        tier, where the run will pause for a human, and the repair bound. Compiling is not
+        running: nothing is executed and no run directory is created.
+
+        Read-only."""
+        return _plan(manifest_yaml)
+
+    @tool()
+    def graph_compose(
+        graph_id: str,
+        nodes: list[dict],
+        edges: list[dict] | None = None,
+        version: str = "1.0.0",
+        policies: dict | None = None,
+        connection_slots: list[dict] | None = None,
+    ) -> dict:
+        """Assemble a VALID manifest from a node/edge sketch, and report what is missing.
+
+        You supply the structure — which nodes, of which kind, wired how. This fills in the
+        fields the compiler requires but you did not state (budgets, effects, isolation), then
+        lints the result, and returns:
+
+          manifest  — the YAML, ready for `graph_plan` or `bl graph run`
+          gaps      — what it could NOT fill for you, as tickets: a loop node with no package
+                      digest, a node whose verification has no shipped mechanical gate
+          refusal   — if the assembled manifest still cannot compile, why, and how to fix it
+
+        It never invents a `loop_package` digest: digests are content-addressed, so a made-up one
+        names a package that does not exist. Use `bl_search_loops` to find a real one.
+
+        Returns a draft. Nothing runs."""
+        return compose(
+            graph_id=graph_id,
+            nodes=nodes,
+            edges=edges,
+            version=version,
+            policies=policies,
+            connection_slots=connection_slots,
+        )
+
+    @tool()
+    def graph_run(manifest_yaml: str) -> dict:
+        """PREVIEW what running this manifest would do. This tool never executes.
+
+        Executing a graph is deliberately not available over MCP in this release, for a reason
+        worth knowing: this server speaks JSON-RPC over stdio, and the execution path writes
+        progress to stdout, which would corrupt the transport framing mid-run. Exposing it needs
+        a print-free execution core, not a wrapper.
+
+        So this returns the compiled plan plus the exact command to run it, which the human (or
+        the Jarvis UI, which has their connections configured) executes.
+
+        Read-only."""
+        planned = _plan(manifest_yaml)
+        if not planned.get("ok"):
+            return planned
+        return {
+            **planned,
+            "executed": False,
+            "how_to_execute": (
+                "Write the manifest to a file and run: "
+                "bl graph run --execute <manifest.yaml>  "
+                "(the run lands in .bounded-loops/runs/<stamp>-<rand>/ and the path is printed)"
+            ),
+        }
+
+    @tool()
+    def graph_status(run: str) -> dict:
+        """Read a run's current state from its receipt log, by run-directory NAME.
+
+        Returns each node's state, attempt counts, the current repair round, terminal status, and
+        spend. Only a run whose status is SUCCEEDED succeeded; every other terminal state is
+        unfinished work.
+
+        Read-only."""
+        return _with_run(run, _status_payload)
+
+    @tool()
+    def graph_state_md(run: str) -> dict:
+        """The same run state as a human-readable markdown document. Read-only."""
+        return _with_run(run, _state_md_payload)
+
+    @tool()
+    def graph_metrics(run: str) -> dict:
+        """What the independent gate actually achieved on this run, with its caveats attached.
+
+        The intervals reported here are labelled with their estimand and method. Read the caveat
+        string before quoting a number: the headline rate is a marginal rate, not a per-run one.
+
+        Read-only."""
+        return _with_run(run, _metrics_payload)
+
+    @tool()
+    def graph_runs() -> dict:
+        """List the runs in this project's workspace, newest first. Read-only."""
+        return runs()
+
+    @tool()
+    def graph_approve(
+        run: str,
+        node_id: str,
+        decision: str,
+        confirm: bool = False,
+    ) -> dict:
+        """Record a human decision for a paused approval node, then resume the run past it.
+
+        MUTATING, and gated: with `confirm=False` this returns a preview of exactly what it would
+        record and changes nothing. Call again with `confirm=True` to record it.
+
+        `decision` is 'approved' or 'rejected'. WHO approved is NOT yours to state — the subject
+        is taken from the account running this server, because the receipt has to name the actor
+        who really granted the authority. An approval authorizes only the effects the node
+        declares; one declaring no effects authorizes nothing."""
+        return _mutate(
+            run,
+            lambda facade, payload: _graph_approve_handler(
+                facade, payload, node_id=node_id, decision=decision, confirm=confirm,
+            ),
+        )
+
+    @tool()
+    def graph_resume(
+        run: str,
+        confirm: bool = False,
+        max_tokens: int | None = None,
+        max_cost_usd: str | None = None,
+    ) -> dict:
+        """Continue an interrupted run, or one that paused on its spend ceiling.
+
+        MUTATING, and gated the same way: `confirm=False` previews, `confirm=True` resumes.
+
+        A run that stopped BECAUSE it hit a spend ceiling needs a new one supplied here.
+        Resuming such a run without raising the ceiling asks it to stop again — which is why the
+        new ceiling is an explicit argument rather than an implicit "no limit"."""
+        return _mutate(
+            run,
+            lambda facade, payload: _graph_resume_handler(
+                facade, payload, confirm=confirm,
+                max_tokens=max_tokens, max_cost_usd=max_cost_usd,
+            ),
+        )
+
+
+# ── lint / plan / compose ─────────────────────────────────────────────────────
+
+
+def _parse(manifest_yaml: str) -> Any:
+    """Parse a manifest, refusing anything implausibly large before handing it to the validator."""
+    if len(manifest_yaml.encode("utf-8")) > _MAX_MANIFEST_BYTES:
+        raise GraphValidationError(
+            code="type",
+            pointer="/",
+            message=f"manifest exceeds {_MAX_MANIFEST_BYTES} bytes",
+        )
+    from bounded_loops.graph.application.validate_graph import parse_authoring_graph_yaml
+
+    return parse_authoring_graph_yaml(manifest_yaml)
+
+
+def _refusal(exc: GraphValidationError) -> dict:
+    """A refusal a host model can act on: the code, where, and what to change."""
+    guidance = explain(getattr(exc, "code", "") or "")
+    return {
+        "ok": False,
+        "refusal": {
+            "code": getattr(exc, "code", None),
+            "pointer": getattr(exc, "pointer", None),
+            "message": getattr(exc, "message", str(exc)),
+            "means": guidance.summary if guidance else None,
+            "fix": guidance.fix if guidance else None,
+        },
+    }
+
+
+def _lint(manifest_yaml: str) -> dict:
+    try:
+        graph = _parse(manifest_yaml)
+    except GraphValidationError as exc:
+        return _refusal(exc)
+    return {
+        "ok": True,
+        "graph_id": graph.graph_id,
+        "version": graph.version,
+        "nodes": [{"id": node.id, "kind": node.kind.value} for node in graph.nodes],
+        "edges": len(graph.edges),
+    }
+
+
+def _plan(manifest_yaml: str) -> dict:
+    from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
+    from bounded_loops.graph.domain.authoring import _NULL_POLICY_DIGEST
+    from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
+
+    try:
+        graph = _parse(manifest_yaml)
+        plan = compile_graph(
+            graph,
+            CompileSnapshot(
+                policy_digest=_NULL_POLICY_DIGEST,
+                package_digests=admitted_loop_package_digests(),
+                # No connection candidates: a plan compiled here is a preview, and resolving a
+                # slot to a real connection is the job of the run, which supplies its own
+                # candidates. A graph whose slots cannot be satisfied is refused at run time by
+                # the preflight, not silently pre-bound here to something this tool invented.
+                connections=(),
+            ),
+        )
+    except GraphValidationError as exc:
+        return _refusal(exc)
+    except GraphIntegrityError as exc:
+        return {"ok": False, "refusal": {"code": "integrity", "message": str(exc)}}
+
+    return {
+        "ok": True,
+        "plan_id": plan.plan_id,
+        "graph_digest": plan.source_graph_digest,
+        "nodes": [
+            {
+                "node_id": node.node_id,
+                "kind": node.kind,
+                "isolation": node.isolation.value,
+                "effects": sorted(effect.value for effect in node.required_effects),
+                "max_attempts": node.budgets.get("max_attempts"),
+                "hard_deadline_ms": node.hard_deadline_ms,
+                "pauses_for_a_human": node.kind == "approval",
+            }
+            for node in plan.nodes
+        ],
+        "pauses_at": [node.node_id for node in plan.nodes if node.kind == "approval"],
+        "compiled_only": "This is a plan. Nothing has run and no run directory exists.",
+    }
+
+
+def compose(
+    *,
+    graph_id: str,
+    nodes: list[dict],
+    edges: list[dict] | None = None,
+    version: str = "1.0.0",
+    policies: Mapping[str, Any] | None = None,
+    connection_slots: list[dict] | None = None,
+) -> dict:
+    """Fill a node/edge sketch into a compiler-valid manifest, and report the gaps."""
+    import yaml
+
+    from bounded_loops.graph.domain.authoring import NodeKind
+
+    known_kinds = {kind.value for kind in NodeKind}
+    gaps: list[dict[str, str]] = []
+    filled: list[dict[str, Any]] = []
+
+    for index, raw in enumerate(nodes):
+        if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
+            return {
+                "ok": False,
+                "refusal": {
+                    "code": "missing_field",
+                    "pointer": f"/nodes/{index}",
+                    "message": "every node needs at least an 'id' and a 'kind'",
+                    "fix": "Give each node a string id and one of the supported kinds.",
+                },
+            }
+        kind = raw.get("kind")
+        if kind not in known_kinds:
+            return {
+                "ok": False,
+                "refusal": {
+                    "code": "unknown_node_kind",
+                    "pointer": f"/nodes/{index}/kind",
+                    "message": f"{kind!r} is not a node kind this engine runs",
+                    "fix": f"Use one of: {', '.join(sorted(known_kinds))}. "
+                           "bl_capabilities lists what each one requires.",
+                },
+            }
+
+        node = _fill_node(raw)
+        if kind == "loop" and not raw.get("loop_package"):
+            gaps.append(
+                {
+                    "node_id": raw["id"],
+                    "gap": "no loop_package digest",
+                    "why": (
+                        "A loop node runs a content-addressed package; the digest cannot be "
+                        "invented because it names the exact bytes that will execute."
+                    ),
+                    "next_step": (
+                        "Find a shipped package with bl_search_loops, or author one and pin it "
+                        "with `bl graph digest <dir>`."
+                    ),
+                }
+            )
+        filled.append(node)
+
+    manifest: dict[str, Any] = {
+        "api_version": "bounded-loops.dev/graph/v1",
+        "graph_id": graph_id,
+        "version": version,
+        # Required at the top level, and empty is the correct default: a slot declares a
+        # capability the graph needs a connection for, and a graph of keyless loops needs none.
+        "connection_slots": [dict(slot) for slot in (connection_slots or [])],
+        "nodes": filled,
+        "edges": [dict(edge) for edge in (edges or [])],
+        "policies": dict(policies) if policies else dict(_DEFAULT_POLICIES),
+    }
+    manifest_yaml = yaml.safe_dump(manifest, sort_keys=False)
+
+    linted = _lint(manifest_yaml)
+    return {
+        "ok": bool(linted.get("ok")),
+        "manifest": manifest_yaml,
+        "gaps": gaps,
+        "defaults_applied": _DEFAULTS_EXPLANATION,
+        **({} if linted.get("ok") else {"refusal": linted["refusal"]}),
+    }
+
+
+_DEFAULT_POLICIES: Mapping[str, Any] = {
+    "data_class": "internal",
+    "fail_mode": "fail_closed",
+    "repair_budget": 0,
+}
+
+_DEFAULTS_EXPLANATION = (
+    "Unstated required fields were filled at the safe end of their range: one attempt, a 300s "
+    "deadline, NO declared effects, workspace_only isolation, fail_closed, and no repair budget. "
+    "Widen each one deliberately. In particular, effects default to empty because a declared "
+    "effect is a grant of authority — an approval node declaring no effects authorizes nothing, "
+    "and that is the correct starting point."
+)
+
+
+def _fill_node(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Add the fields the compiler requires, without overwriting anything the caller stated."""
+    node = dict(raw)
+    node.setdefault("inputs", {})
+    node.setdefault("outputs", {})
+    # Empty, matching every shipped reference graph: effects are grants, so the default grants
+    # nothing. `read_only` would look harmless and still be a declaration nobody asked for.
+    node.setdefault("effects", [])
+    node.setdefault("isolation", "workspace_only")
+    budget = dict(node.get("budget") or {})
+    budget.setdefault("max_attempts", 1)
+    budget.setdefault("max_wallclock_s", 300)
+    node["budget"] = budget
+    return node
+
+
+# ── run inspection ───────────────────────────────────────────────────────────
+
+
+def _subject() -> str:
+    """The authenticated subject for this server: the OS user running it.
+
+    NOT a tool parameter, and deliberately so. A model may say which run and which decision; it
+    may never claim to be a different actor, because the receipt of an approval has to name who
+    really granted it.
+    """
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 - a nameless environment still gets a stable label
+        return os.environ.get("USER") or "local-user"
+
+
+def _resolve_run(name: str) -> tuple[Workspace, Path]:
+    """The run directory for `name` inside this project's workspace.
+
+    `Workspace.run_dir` validates the name through the one run-id validator, so a traversal
+    attempt (`../../etc`) is refused here rather than reaching the filesystem.
+    """
+    workspace = discover()
+    run_dir = workspace.run_dir(name)
+    if not run_dir.is_dir():
+        raise ManifestError(f"no run named {name!r} in {workspace.runs_dir}")
+    if run_dir.is_symlink():
+        raise ManifestError(f"run {name!r} is a symlink; refusing to follow it")
+    return workspace, run_dir
+
+
+def _with_run(name: str, handler: Callable[[Path], dict]) -> dict:
+    try:
+        _workspace, run_dir = _resolve_run(name)
+    except ManifestError as exc:
+        return {"ok": False, "error": str(exc)}
+    try:
+        return {"ok": True, **handler(run_dir)}
+    except (GraphIntegrityError, GraphValidationError, ManifestError, OSError) as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _facade_and_payload(run_dir: Path) -> tuple[Any, dict]:
+    """A flat-addressed facade for one run directory, plus the payload the handlers expect.
+
+    Flat addressing (`for_run_dir`) rather than the hosted `runs_root/org/project/run` convention,
+    because that is how runs actually live on disk here — the workspace writes
+    `.bounded-loops/runs/<name>/` directly. Reconstructing the hosted path math was removed in
+    0.4.0 after both auditors called it public-contract debt; this does not bring it back.
+
+    The identity comes from the run's own `run-meta.json`, and the subject from the OS user. A
+    model supplies neither.
+    """
+    from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
+    from bounded_loops.graph.graph_runtime_facade import LocalGraphRuntimeFacade
+    from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
+
+    facade = LocalGraphRuntimeFacade.for_run_dir(run_dir)
+    _plan_obj, identity, _meta = load_plan_from_run_dir(
+        run_dir.resolve(), package_digests=admitted_loop_package_digests(),
+    )
+    payload = {
+        "subject_id": _subject(),
+        "organization_id": identity.organization_id,
+        "project_id": identity.project_id,
+        "run_id": identity.run_id,
+    }
+    return facade, payload
+
+
+def _mutate(name: str, handler: Callable[[Any, dict], dict]) -> dict:
+    """Run a MUTATING handler against one named run, refusing anything unresolvable first."""
+    try:
+        _workspace, run_dir = _resolve_run(name)
+        facade, payload = _facade_and_payload(run_dir)
+    except (ManifestError, GraphIntegrityError, GraphValidationError, OSError, ValueError) as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return handler(facade, payload)
+
+
+def _graph_approve_handler(
+    facade: Any, payload: dict, *, node_id: str, decision: str, confirm: bool,
+) -> dict:
+    """Delegate to the existing handler, which owns the confirm gate and never prints."""
+    from bounded_loops.graph.mcp_graph import graph_approve as _handler
+
+    return _handler(facade, payload, node_id=node_id, decision=decision, confirm=confirm)
+
+
+def _graph_resume_handler(
+    facade: Any, payload: dict, *, confirm: bool,
+    max_tokens: int | None, max_cost_usd: str | None,
+) -> dict:
+    from bounded_loops.graph.mcp_graph import graph_resume as _handler
+
+    return _handler(
+        facade, payload, confirm=confirm, max_tokens=max_tokens, max_cost_usd=max_cost_usd,
+    )
+
+
+def _projection(run_dir: Path) -> Any:
+    from bounded_loops.graph.application.arena_projection import ArenaReadRequest
+
+    facade, payload = _facade_and_payload(run_dir)
+    return facade.status(
+        ArenaReadRequest(
+            subject_id=payload["subject_id"],
+            organization_id=payload["organization_id"],
+            project_id=payload["project_id"],
+            run_id=payload["run_id"],
+        )
+    )
+
+
+def _status_payload(run_dir: Path) -> dict:
+    from bounded_loops.graph.mcp_graph import _projection_dict
+
+    return {"run": run_dir.name, "projection": _projection_dict(_projection(run_dir))}
+
+
+def _state_md_payload(run_dir: Path) -> dict:
+    from bounded_loops.graph.application.state_document import render_state_markdown
+
+    return {"run": run_dir.name, "markdown": render_state_markdown(_projection(run_dir))}
+
+
+def _metrics_payload(run_dir: Path) -> dict:
+    from bounded_loops.graph.cli_graph_metrics import metrics_document
+
+    return {"run": run_dir.name, "metrics": metrics_document(run_dir)}
+
+
+def runs() -> dict:
+    """Every run in this project's workspace, newest first by directory name."""
+    try:
+        workspace = discover()
+    except ManifestError as exc:
+        return {"ok": False, "error": str(exc)}
+    if not workspace.runs_dir.is_dir():
+        return {"ok": True, "workspace": str(workspace.root), "runs": []}
+    names = sorted(
+        (entry.name for entry in workspace.runs_dir.iterdir() if entry.is_dir()),
+        reverse=True,
+    )
+    return {"ok": True, "workspace": str(workspace.root), "runs": names}
