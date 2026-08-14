@@ -1,2 +1,26 @@
-{"Stop": [{"hooks": [{"type": "command",
-  "command": "python3 -m bounded_loops.hooks.verify_bounded_loop antigravity"}]}]}
+{
+  "Stop": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 -m bounded_loops.hooks.verify_bounded_loop antigravity"
+        },
+        {
+          "type": "command",
+          "command": "python3 -m bounded_loops.hooks.graph_run_stop antigravity"
+        }
+      ]
+    }
+  ],
+  "PreToolUse": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 -m bounded_loops.hooks.pretooluse_loop_package antigravity"
+        }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,33 @@
-{"hooks": {"Stop": [{"matcher": "", "hooks": [{"type": "command",
-  "command": "python3 -m bounded_loops.hooks.verify_bounded_loop codex",
-  "timeout": 130}]}]}}
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m bounded_loops.hooks.verify_bounded_loop codex",
+            "timeout": 130
+          },
+          {
+            "type": "command",
+            "command": "python3 -m bounded_loops.hooks.graph_run_stop codex",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m bounded_loops.hooks.pretooluse_loop_package codex",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
