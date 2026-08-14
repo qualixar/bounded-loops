@@ -151,3 +151,33 @@ def test_execute_reports_the_CEILINGS_including_the_ones_that_are_unset(workspac
         assert "max_tokens" in ceiling, "an unset token ceiling was omitted rather than sent"
         assert "max_cost_microunits" in ceiling
         assert "max_attempts" in ceiling and "deadline_s" in ceiling
+
+
+def test_the_preview_names_a_PUBLISH_as_something_that_cannot_be_undone(workspace: Path) -> None:
+    """Every shipped publish graph declares `external_write`, and the confirm screen used to
+    list only {irreversible, financial} — so it showed an empty "cannot be undone" list under a
+    sentence saying irreversible work cannot be undone. The operator was told a publish to the
+    outside world was recoverable by stopping the run."""
+    manifest = _REFERENCE_GRAPH.read_text(encoding="utf-8")
+
+    result = api.handle("execute", {"manifest": manifest, "confirm": False})
+
+    assert "external_write" in result["effects"], (
+        "the reference graph no longer publishes; pick one that does"
+    )
+    assert "external_write" in result["irreversible"], (
+        f"a publish is not listed as un-undoable: {result['irreversible']}"
+    )
+
+
+def test_the_undoable_list_is_taken_from_the_DOMAIN_not_hand_written() -> None:
+    """A second hand-maintained copy of this set is how the first one drifted."""
+    from bounded_loops.graph.domain.authoring import EFFECTS_THAT_CANNOT_BE_UNDONE
+
+    assert api._CANNOT_BE_UNDONE == frozenset(
+        effect.value for effect in EFFECTS_THAT_CANNOT_BE_UNDONE
+    )
+    assert "external_write" in api._CANNOT_BE_UNDONE
+    assert "workspace_write" not in api._CANNOT_BE_UNDONE, (
+        "a local workspace write IS undoable; warning about it trains people to ignore warnings"
+    )

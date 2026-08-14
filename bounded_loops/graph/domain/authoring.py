@@ -49,6 +49,21 @@ class Effect(str, Enum):
 # Decide here whether it is network-bearing — never re-hardcode this frozenset elsewhere.
 NETWORK_EFFECTS = frozenset({Effect.EXTERNAL_WRITE, Effect.FINANCIAL, Effect.IRREVERSIBLE})
 
+# What stopping the run does NOT take back. Every surface that asks a human "are you sure"
+# must draw its list from here.
+#
+# The same three effects as NETWORK_EFFECTS, and that is not a coincidence worth collapsing:
+# leaving this machine is precisely what makes an action unrecallable. They are named
+# separately because they answer different questions — one decides whether egress is allowed,
+# the other decides what to warn a person about — and a future effect could plausibly belong to
+# one and not the other.
+#
+# The bug this exists to prevent: the confirm screen listed only `irreversible` and `financial`,
+# so a graph whose publish node declares `external_write` — which is every shipped publish graph
+# — showed an EMPTY "cannot be undone" list under the sentence "nodes with an irreversible or
+# financial effect cannot be undone". The operator was told the publish was undoable.
+EFFECTS_THAT_CANNOT_BE_UNDONE = NETWORK_EFFECTS
+
 # Null/unknown policy digest sentinel — used by the compiler and execution layer when
 # no real policy digest is available (e.g., a demo run with no deployed policy).
 # Defined here rather than inline so every caller imports the same value and a

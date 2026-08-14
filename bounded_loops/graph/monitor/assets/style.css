@@ -429,6 +429,14 @@ html, body {
   border-radius: var(--r); padding: var(--sp-2); color: var(--ink-2); white-space: pre-wrap;
 }
 .approve-hint { font-size: var(--t-xs); color: var(--ink-3); }
+/* What confirming releases. Loud on purpose: this is the last thing shown before an effect
+   that stopping the run will not take back. */
+.approve-danger {
+  font-size: var(--t-xs); font-weight: 650; color: var(--danger);
+  background: var(--danger-bg); border: 1px solid var(--danger);
+  border-radius: var(--r); padding: var(--sp-2);
+}
+.approve-what { font-size: var(--t-xs); color: var(--ink-2); line-height: 1.6; }
 .approve-btns { display: flex; gap: var(--sp-2); }
 
 /* Handoff affordance */

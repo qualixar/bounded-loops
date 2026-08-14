@@ -501,6 +501,18 @@ export function ConfigPanel({
                 <div className="approve-panel">
                   ${approvePreview ? html`
                     <div className="approve-preview">${approvePreview.would}</div>
+                    ${/* What saying yes actually releases. The API returns this and the panel
+                          used to drop it, so the last thing a person saw before confirming was
+                          "approved approval node 'gate'" — an approval node declares no effects
+                          of its own, so that reads as harmless right up to the publish. */
+                      approvePreview.cannot_be_undone && approvePreview.cannot_be_undone.length
+                        ? html`<div className="approve-danger">
+                            Cannot be undone: ${approvePreview.cannot_be_undone.join(', ')}
+                          </div>`
+                        : null}
+                    ${approvePreview.what_approving_does ? html`
+                      <div className="approve-what">${approvePreview.what_approving_does}</div>`
+                      : null}
                     ${approvePreview.hint ? html`
                       <div className="approve-hint">${approvePreview.hint}</div>` : null}
                     <div className="approve-btns">

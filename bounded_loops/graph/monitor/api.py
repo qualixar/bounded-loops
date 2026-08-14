@@ -27,8 +27,12 @@ from typing import Any, Callable, Mapping
 from bounded_loops.domain.errors import ManifestError
 from bounded_loops.graph.adapters.enforcement.snapshot import platform_snapshot
 from bounded_loops.graph.application.capability_report import capability_report
+from bounded_loops.graph.domain.authoring import EFFECTS_THAT_CANNOT_BE_UNDONE
 from bounded_loops.graph.monitor import schema_form
 from bounded_loops.workspace import Workspace, discover, ensure
+
+#: Effect VALUES that stopping the run does not take back. From the domain, never re-listed here.
+_CANNOT_BE_UNDONE = frozenset(effect.value for effect in EFFECTS_THAT_CANNOT_BE_UNDONE)
 
 #: Longest manifest or graph name the API will accept. A UI field is not a reason to allow an
 #: unbounded write.
@@ -386,12 +390,17 @@ def _execute(payload: Mapping[str, Any]) -> dict:
             "effects": effects,
             "ceilings": ceilings,
             "pauses_at": planned["pauses_at"],
+            # Drawn from the domain's own definition, not a hand-written pair. This literally
+            # read {"irreversible", "financial"}, which excluded external_write — the effect
+            # every shipped publish graph actually declares — so the confirm screen showed an
+            # empty "cannot be undone" list for a graph that publishes.
             "irreversible": [
-                effect for effect in effects if effect in {"irreversible", "financial"}
+                effect for effect in effects if effect in _CANNOT_BE_UNDONE
             ],
             "what_confirming_does": (
-                "Starts this graph on this machine, in the sandbox each node declares. Nodes with "
-                "an irreversible or financial effect cannot be undone by stopping the run."
+                "Starts this graph on this machine, in the sandbox each node declares. Anything "
+                "that leaves this machine — publishing, paying, or an effect declared "
+                "irreversible — cannot be undone by stopping the run."
             ),
         }
 

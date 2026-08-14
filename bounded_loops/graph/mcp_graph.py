@@ -28,7 +28,11 @@ from typing import Callable, Protocol
 from bounded_loops.graph.application.node_spend import RunBudget
 from bounded_loops.graph.application.arena_projection import ArenaProjection, ArenaReadRequest
 from bounded_loops.graph.application.state_document import render_state_markdown
+from bounded_loops.graph.domain.authoring import EFFECTS_THAT_CANNOT_BE_UNDONE
 from bounded_loops.graph.domain.errors import GraphError, GraphValidationError
+
+#: Effect VALUES (strings, as they appear on the wire) that stopping the run does not take back.
+_CANNOT_BE_UNDONE = frozenset(effect.value for effect in EFFECTS_THAT_CANNOT_BE_UNDONE)
 
 _DECISIONS = frozenset({"approved", "rejected"})
 
@@ -48,6 +52,18 @@ class GraphRuntimeFacade(Protocol):
         self, request: ArenaReadRequest, *, node_id: str, decision: str,
         run_budget: RunBudget | None = None,
     ) -> ArenaProjection: ...
+
+    def effects_an_approval_would_authorize(
+        self, request: ArenaReadRequest, *, node_id: str,
+    ) -> tuple[str, ...]:
+        """Read-only: what approving `node_id` releases, downstream included.
+
+        Part of the contract because the approve PREVIEW is worthless without it. An approval
+        node declares no effects of its own, so a preview built from the node alone shows an
+        empty list for a gate that is about to let a publish through — while the grant recorded
+        on confirm is the downstream union all along.
+        """
+        ...
 
 
 def graph_status(facade: GraphRuntimeFacade, payload: dict) -> dict:
@@ -105,7 +121,10 @@ def graph_approve(
         _validate_node_id(node_id)
         _validate_decision(decision)
         if not confirm:
-            return _preview(f"{decision} approval node {node_id!r} in run {request.run_id!r}")
+            preview = _preview(f"{decision} approval node {node_id!r} in run {request.run_id!r}")
+            if decision == "approved":
+                preview.update(_what_approving_releases(facade, request, node_id))
+            return preview
         projection = facade.approve(
             request, node_id=node_id, decision=decision,
             run_budget=_ceiling(max_tokens, max_cost_usd),
@@ -181,6 +200,42 @@ def _validate_node_id(node_id: str) -> None:
 def _validate_decision(decision: str) -> None:
     if decision not in _DECISIONS:
         raise GraphValidationError("mcp_approve", "/decision", "decision must be 'approved' or 'rejected'")
+
+
+def _what_approving_releases(
+    facade: GraphRuntimeFacade, request: ArenaReadRequest, node_id: str,
+) -> dict:
+    """The preview fields that say what saying yes turns loose, downstream included.
+
+    An approval node declares no effects of its own — it is a gate, not a worker — so a preview
+    assembled from the node alone reads as "this does nothing" right up until the publish it
+    releases. The grant recorded on confirm was always the downstream union; only the preview
+    understated it.
+    """
+    reporter = getattr(facade, "effects_an_approval_would_authorize", None)
+    if reporter is None:
+        # A deployment-supplied facade predating this contract. Say so, rather than silently
+        # falling back to the understated preview — a confident, complete-looking preview that
+        # omits the publish is worse than one that admits it cannot tell.
+        return {
+            "authorizes_effects": None,
+            "what_approving_does": (
+                "Releases every node downstream of this gate. This deployment's runtime cannot "
+                "report which effects those are — read the graph before approving."
+            ),
+        }
+
+    authorized = reporter(request, node_id=node_id)
+    irreversible = [effect for effect in authorized if effect in _CANNOT_BE_UNDONE]
+    return {
+        "authorizes_effects": list(authorized),
+        "cannot_be_undone": irreversible,
+        "what_approving_does": "Releases every node downstream of this gate. " + (
+            "These effects cannot be undone by stopping the run: " + ", ".join(irreversible)
+            if irreversible
+            else "Nothing downstream reaches outside this machine."
+        ),
+    }
 
 
 def _preview(what: str) -> dict:

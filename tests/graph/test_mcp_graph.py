@@ -136,3 +136,71 @@ def test_register_injects_the_authenticated_subject_not_an_llm_arg():
     assert facade.calls[-1][1].subject_id == "authenticated-subject"
     # a mutating tool still honors the confirm gate through the wiring
     assert mcp.tools["graph_resume_tool"](organization_id="o", project_id="p", run_id="run-1")["preview"] is True
+
+
+# ── an approval preview must name what it turns loose ────────────────────────
+
+
+class _FacadeThatReportsEffects(_FakeFacade):
+    """A facade that can answer the only question that matters before approving."""
+
+    def __init__(self, effects: tuple[str, ...], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._effects = effects
+
+    def effects_an_approval_would_authorize(self, request, *, node_id):
+        self.calls.append(("effects", node_id))
+        return self._effects
+
+
+def test_approving_a_gate_PREVIEWS_the_downstream_effects_it_releases():
+    """An approval node declares no effects of its own, so a preview built from the node alone
+    reads as "this does nothing". The grant recorded on confirm has always been the union of
+    every effect reachable downstream — the preview simply did not say so, which is how a
+    person approves a publish believing they approved a checkpoint."""
+    facade = _FacadeThatReportsEffects(("external_write",), projection=_proj())
+
+    result = graph_approve(
+        facade, _ok_payload(), node_id="gate", decision="approved", confirm=False,
+    )
+
+    assert result["preview"] is True
+    assert result["authorizes_effects"] == ["external_write"]
+    assert result["cannot_be_undone"] == ["external_write"], (
+        "a publish released by this approval is not flagged as un-undoable"
+    )
+    assert "cannot be undone" in result["what_approving_does"]
+
+
+def test_a_gate_that_releases_nothing_outside_says_so_plainly():
+    facade = _FacadeThatReportsEffects(("workspace_write",), projection=_proj())
+
+    result = graph_approve(
+        facade, _ok_payload(), node_id="gate", decision="approved", confirm=False,
+    )
+
+    assert result["cannot_be_undone"] == []
+    assert "Nothing downstream reaches outside this machine" in result["what_approving_does"]
+
+
+def test_a_REJECTION_preview_does_not_claim_to_authorize_anything():
+    facade = _FacadeThatReportsEffects(("external_write",), projection=_proj())
+
+    result = graph_approve(
+        facade, _ok_payload(), node_id="gate", decision="rejected", confirm=False,
+    )
+
+    assert "authorizes_effects" not in result, "rejecting a gate authorizes nothing"
+
+
+def test_a_facade_that_cannot_report_effects_SAYS_so_rather_than_understating():
+    """Falling back to the old preview would be the silent-weakening failure: the operator
+    would see a confident, complete-looking preview that omits the publish."""
+    facade = _FakeFacade(projection=_proj())
+
+    result = graph_approve(
+        facade, _ok_payload(), node_id="gate", decision="approved", confirm=False,
+    )
+
+    assert result["authorizes_effects"] is None
+    assert "cannot report which effects" in result["what_approving_does"]

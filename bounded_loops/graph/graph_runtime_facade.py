@@ -107,9 +107,12 @@ from bounded_loops.graph.graph_composition import (
 from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
 from bounded_loops.graph.application.repair_rounds import gated_effects_for_approval
+from bounded_loops.graph.application.approval_preconditions import (
+    guard_decision_conflict,
+    require_approval_node,
+)
 from bounded_loops.graph.application.run_graph import is_egress_node
 from bounded_loops.graph.domain.approvals import ApprovalRequest
-from bounded_loops.graph.domain.authoring import NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
@@ -419,6 +422,24 @@ class LocalGraphRuntimeFacade:
             self.arena_authorizer, _NoopArenaReceiptVerifier(),
         )
 
+    def effects_an_approval_would_authorize(
+        self, request: ArenaReadRequest, *, node_id: str,
+    ) -> tuple[str, ...]:
+        """What saying yes to `node_id` actually turns loose, downstream included.
+
+        An approval node usually declares no effects of its own — it is a gate, not a worker —
+        so the interesting question is never "what does this node do" but "what does it let
+        through". `approve()` already answers that correctly when it records the grant, via
+        `gated_effects_for_approval`, which unions the effects of every node reachable from the
+        approval. The preview did not: it said "approved approval node 'gate'" and stopped, so
+        the person clicking Approve on a graph whose next node publishes to the outside world
+        was shown an empty effect list and a node that declares nothing.
+
+        Read-only, and safe to call before deciding — that is the entire point.
+        """
+        plan, _identity, _meta = self._load(request)
+        return tuple(sorted(effect.value for effect in gated_effects_for_approval(plan, node_id)))
+
     def approve(
         self,
         request: ArenaReadRequest,
@@ -456,8 +477,8 @@ class LocalGraphRuntimeFacade:
             )
         # Validate the target BEFORE any durable write, so a bogus/non-approval node_id never poisons
         # the ledger and wedges every future resume (dual-audit MAJOR).
-        node = self._require_approval_node(plan, node_id)
-        self._guard_decision_conflict(run_dir, node_id, decision)
+        node = require_approval_node(plan, node_id)
+        guard_decision_conflict(run_dir, node_id, decision)
 
         # Prove the controller CAN be assembled before writing the decision. P3 added a
         # provider check inside ``build_execution_controller``, and with the write first, an
@@ -747,27 +768,6 @@ class LocalGraphRuntimeFacade:
                 f"{exc.message}"
             ) from exc
         return capabilities
-
-    def _require_approval_node(self, plan: ExecutionPlan, node_id: str) -> PlannedNode:
-        """Return the APPROVAL node with ``node_id`` or fail closed — a bogus or non-approval node_id
-        must never reach a durable write and wedge every future resume (dual-audit MAJOR)."""
-        node = next((n for n in plan.nodes if n.node_id == node_id), None)
-        if node is None:
-            raise GraphIntegrityError(f"approval node {node_id!r} not found in plan")
-        if node.kind != NodeKind.APPROVAL.value:
-            raise GraphValidationError("approval_node", "/node_id", f"node {node_id!r} is not an approval node")
-        return node
-
-    def _guard_decision_conflict(self, run_dir: Path, node_id: str, decision: str) -> None:
-        """Refuse a decision that conflicts with one already durably recorded for the node, so the
-        ledger can never hold both an approval and a rejection for a node (dual-audit MAJOR)."""
-        record = _load_approvals(run_dir / "approvals.json")
-        has_approval = any(c.get("node_id") == node_id for c in record.get("commits", []))
-        has_rejection = any(r.get("node_id") == node_id for r in record.get("rejections", []))
-        if decision == "approved" and has_rejection:
-            raise GraphIntegrityError(f"cannot approve node {node_id!r}: a durable rejection already exists")
-        if decision == "rejected" and has_approval:
-            raise GraphIntegrityError(f"cannot reject node {node_id!r}: a durable approval already exists")
 
     def _authorize_decision(
         self, *, request: ArenaReadRequest, identity: GraphRunIdentity, node: PlannedNode,
