@@ -1,3 +1,31 @@
-{"hooks": {"Stop": [{"hooks": [{"type": "command",
-  "command": "python3 -m bounded_loops.hooks.verify_bounded_loop claude-code",
-  "timeout": 130}]}]}}
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m bounded_loops.hooks.verify_bounded_loop claude-code",
+            "timeout": 130
+          },
+          {
+            "type": "command",
+            "command": "python3 -m bounded_loops.hooks.graph_run_stop claude-code",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m bounded_loops.hooks.pretooluse_loop_package claude-code",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
