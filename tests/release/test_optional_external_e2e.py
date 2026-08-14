@@ -76,11 +76,37 @@ def test_great_expectations_gate_e2e_reports_failure_without_project(tmp_path):
 @pytest.mark.skipif(shutil.which("docker") is None, reason="docker not installed")
 @pytest.mark.network
 def test_docker_runner_e2e_if_docker_daemon_available(tmp_path):
+    """End-to-end DockerRunner, with the image pinned BY DIGEST as the runner requires.
+
+    This test passed ``image="alpine:latest"`` — a tag — and had been failing on every CI run since
+    ``DockerRunner`` began refusing non-digest-pinned images for ``container_restricted`` execution
+    (``"image must be digest-pinned"``). A test asserting behaviour the runner deliberately forbids is
+    not an environment problem; it is a test that was never updated when the rule landed, and its
+    failure had become part of the background noise of a red build.
+
+    The digest is resolved at run time from the tag rather than hardcoded: a pinned literal goes stale
+    the next time Alpine is rebuilt, and the point here is the runner's plumbing, not which Alpine.
+    """
     probe = subprocess.run(["docker", "info"], capture_output=True, text=True, timeout=10)
     if probe.returncode != 0:
         pytest.skip("docker daemon not available")
+    if subprocess.run(
+        ["docker", "pull", "--quiet", "alpine:latest"], capture_output=True, text=True, timeout=300,
+    ).returncode != 0:
+        pytest.skip("cannot pull alpine:latest; no image to pin")
+    inspected = subprocess.run(
+        ["docker", "inspect", "--format", "{{index .RepoDigests 0}}", "alpine:latest"],
+        capture_output=True, text=True, timeout=30,
+    )
+    pinned = inspected.stdout.strip()
+    if inspected.returncode != 0 or "@sha256:" not in pinned:
+        pytest.skip(f"alpine:latest has no repo digest to pin: {inspected.stderr.strip()!r}")
+
     _git_init(tmp_path)
-    result = DockerRunner(image="alpine:latest", agent_cmd="sh -c 'echo ok > agent_output.txt'").run_once(_spec(), _ctx(tmp_path))
+    result = DockerRunner(
+        image=pinned, agent_cmd="sh -c 'echo ok > agent_output.txt'",
+    ).run_once(_spec(), _ctx(tmp_path))
+
     assert result.changed is True
 
 
