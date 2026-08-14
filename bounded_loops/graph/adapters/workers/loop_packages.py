@@ -52,11 +52,21 @@ CONTROLLER_SUBDIR = ".controller"
 #: fails CI if any of them acquires one. For a third-party package it is a contract with the author,
 #: which is why it is written down here rather than implied.
 #:
+#: ``.ledger.jsonl`` was MISSED until CI caught it, and the way it was caught is the lesson. The
+#: README's own quickstart is ``bl run loops/bug-fix-red-green``, which writes
+#: ``loops/bug-fix-red-green/.ledger.jsonl``. Every machine that has followed the quickstart therefore
+#: digests that package differently from a fresh clone — so the committed reference-graph digests,
+#: generated on such a machine, did not match a clean checkout and `tests/graphs` failed on CI while
+#: passing locally. A run artifact inside the package is exactly what this list is for, and the local
+#: suite could not see the gap because the dirty state was the same in both places.
+#:
 #: Note ``STATE.md`` is deliberately NOT excluded. It is the loop's memory seed, so it can change
 #: behaviour, and anything that changes behaviour belongs in the digest. Graph runs cannot dirty it:
 #: ``wire_loop_for_graph`` refuses a controller root inside the package.
 _EXCLUDED_NAMES = frozenset({
     ".bounded-loops",   # loop-engine run storage, written by `bl run` without a controller root
+    ".ledger.jsonl",    # the loop's own event log, written by `bl run` INTO the package directory
+    ".trust.json",      # per-loop gate-command trust record, same writer, same place
     "__pycache__",
     ".pytest_cache",
     ".ruff_cache",

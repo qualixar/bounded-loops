@@ -17,7 +17,8 @@ from bounded_loops.graph.adapters.workers.loop_packages import (
     loop_package_digest,
 )
 from bounded_loops.graph.adapters.workers.loop_packages import (
-    _EXCLUDED_NAMES,  # the exclusion list is the subject of a test, so it is read, not restated
+    _EXCLUDED_NAMES,
+    _digestible_entries,  # the exclusion list is the subject of a test, so it is read, not restated
 )
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 
@@ -181,6 +182,64 @@ def test_no_shipped_loop_package_hides_content_under_an_excluded_name():
 
     assert offenders == [], f"shipped packages hide digest-invisible content: {offenders}"
     assert len(tracked) > 500, "git ls-files returned almost nothing; the check would be vacuous"
+
+
+def test_a_shipped_package_digests_the_SAME_as_a_fresh_CLONE_would():
+    """The digest of a shipped package must depend only on COMMITTED content.
+
+    This is the test that was missing, and CI found the gap instead. The README quickstart is
+    ``bl run loops/bug-fix-red-green``, which writes ``.ledger.jsonl`` INTO the package — so every
+    machine that has followed the quickstart digested that package differently from a fresh clone.
+    The committed reference-graph digests were generated on such a machine and failed `tests/graphs`
+    on CI while passing locally, because the dirty state was identical in both places locally.
+
+    Asserted by comparing what the digest walks against what `git ls-files` says ships. A digestible
+    entry that is not tracked (and not an implied parent directory of something tracked) means the
+    digest depends on local state, which is the "a fresh clone refuses to resume its own runs" failure
+    `loop_package_digest`'s docstring promises not to have.
+    """
+    if not (REPO_ROOT / ".git").exists():
+        pytest.skip("not a git checkout; tracked-vs-local cannot be distinguished")
+    tracked_by_pkg: dict[str, set[str]] = {}
+    for line in subprocess.run(
+        ["git", "ls-files", "-z", "loops"],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60, check=True,
+    ).stdout.split("\0"):
+        if not line:
+            continue
+        package, _, relative = line.partition("/")
+        entry = tracked_by_pkg.setdefault(package, set())
+        entry.add(relative)
+        parts = relative.split("/")
+        for index in range(1, len(parts)):
+            entry.add("/".join(parts[:index]))   # directories a clone would materialise
+
+    offenders: list[str] = []
+    for package in sorted(tracked_by_pkg):
+        root = SHIPPED_LOOPS / package
+        if not (root / "loop.yaml").is_file():
+            continue
+        walked = {
+            str(path.relative_to(root.resolve()))
+            for path in _digestible_entries(root.resolve())
+        }
+        offenders += [f"{package}/{extra}" for extra in sorted(walked - tracked_by_pkg[package])]
+
+    assert offenders == [], (
+        "these entries are digested but not committed, so this checkout's digests differ from a "
+        f"fresh clone's: {offenders}"
+    )
+
+
+def test_a_run_ledger_written_into_the_package_does_not_move_the_digest(tmp_path):
+    """`bl run <pkg>` writes `.ledger.jsonl` beside the loop. One quickstart must not invalidate
+    every graph that pins the package."""
+    clone = _package(tmp_path)
+    before = loop_package_digest(clone)
+    (clone / ".ledger.jsonl").write_text('{"event":"lap"}\n', encoding="utf-8")
+    (clone / ".trust.json").write_text("{}", encoding="utf-8")
+
+    assert loop_package_digest(clone) == before
 
 
 def test_a_fifo_in_a_package_is_refused_rather_than_silently_skipped(tmp_path):

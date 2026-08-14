@@ -48,7 +48,7 @@ nodes:
     isolation: process_restricted
   - id: fix-red-green
     kind: loop
-    loop_package: "sha256:8a388b29142ce91e5903e25c2e94644233e866b5fcda2eec0a6159b82aaff89c"
+    loop_package: "sha256:8ddb05cdf013493addd2e8bd44076a60cb262967a6a0ce89f8662e82d58dd095"
     inputs:
       source: internal
     outputs:

@@ -28,7 +28,7 @@ import os
 import re
 import shlex
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from types import MappingProxyType
 from typing import Optional
@@ -214,9 +214,21 @@ class LoopManifest:
     memory_path: Path
     env_passthrough: tuple[str, ...] = ()   # fields with defaults follow
     # Port declarations: absent = fixture-mode (no overlay, no extra outputs).
-    # MappingProxyType is immutable so it is safe as a shared class-level default.
-    inputs: MappingProxyType = MappingProxyType({})   # port_name → LoopInputPort
-    outputs: MappingProxyType = MappingProxyType({})  # port_name → LoopOutputPort
+    #
+    # ``default_factory``, not a shared class-level default, and the reason is a hard 3.11 break.
+    # A bare ``MappingProxyType({})`` default reads as safe — it IS immutable — but dataclasses on
+    # Python 3.11 reject any default whose class is unhashable, and ``mappingproxy`` only became
+    # hashable in 3.12. So the class body raised at IMPORT time on 3.11:
+    # ``ValueError: mutable default <class 'mappingproxy'> for field inputs is not allowed``.
+    # The package declares ``requires-python = ">=3.11"``, so that is every 3.11 user losing
+    # ``import bounded_loops`` entirely. It passed locally because this machine runs 3.12+; CI's
+    # 3.11 clean-room job is what caught it, on the release commit.
+    inputs: Mapping[str, LoopInputPort] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
+    outputs: Mapping[str, LoopOutputPort] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
 
 
 # ---------------------------------------------------------------------------

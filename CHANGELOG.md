@@ -3,6 +3,26 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] — 2026-08-14
+
+### Fixed
+
+- **`import bounded_loops` failed on Python 3.11.** A dataclass field defaulted to
+  `MappingProxyType({})`, which reads as safe because it is immutable — but 3.11's dataclasses
+  reject any default whose class is unhashable, and `mappingproxy` only became hashable in 3.12.
+  The class body therefore raised at import time on the oldest Python this package supports.
+  0.5.0 is unusable on 3.11 and should be skipped.
+
+- **Reference-graph digests did not match a fresh clone.** `bl run <package>` writes
+  `.ledger.jsonl` into the package directory, and that file was not excluded from the package
+  content digest — so any machine that had followed the README quickstart digested
+  `bug-fix-red-green` differently from a clean checkout, and the committed graph pins were generated
+  on such a machine. `.ledger.jsonl` and `.trust.json` are now excluded, and a test asserts that no
+  digested entry in a shipped package is untracked.
+
+- **A live isolation-provider test failed instead of skipping on hosts without the capability**,
+  which made a red CI build the normal state from 0.4.0 onward.
+
 ## [0.5.0] — 2026-08-14
 
 ### Changed — BREAKING for embedders
