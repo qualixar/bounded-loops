@@ -260,3 +260,43 @@ def test_the_stop_hook_is_wired_for_every_host(host: str) -> None:
     assert any("graph_run_stop" in command for command in commands), (
         f"{host} does not wire bounded_loops.hooks.graph_run_stop on Stop"
     )
+
+
+def test_every_command_the_SKILL_names_actually_exists() -> None:
+    """A skill that tells a host to run a command we do not ship sends it in a circle.
+
+    An audit found two: `python3 -m bounded_loops.graph.cli_graph_capabilities` (no such module)
+    and `bl graph digest` (no such action) — the second offered as the way to get the one field a
+    host model must never invent, which is the worst place to be wrong.
+    """
+    import importlib.util
+    import re
+
+    skill = (SHARED_DIR / "skills" / "bounded-loops" / "SKILL.md").read_text(encoding="utf-8")
+
+    for module in set(re.findall(r"python3? -m (bounded_loops[\w.]*)", skill)):
+        assert importlib.util.find_spec(module) is not None, f"SKILL.md names missing module {module}"
+
+    from bounded_loops.cli import _build_parser
+
+    parser = _build_parser()
+    top_level: set[str] = set()
+    graph_actions: set[str] = set()
+    for action in parser._actions:
+        choices = getattr(action, "choices", None)
+        if not isinstance(choices, dict):
+            continue
+        top_level |= set(choices)
+        graph = choices.get("graph")
+        if graph is None:
+            continue
+        for sub in graph._actions:
+            sub_choices = getattr(sub, "choices", None)
+            if isinstance(sub_choices, dict):
+                graph_actions |= set(sub_choices)
+
+    for named in set(re.findall(r"`bl ([a-z-]+)(?: ([a-z-]+))?", skill)):
+        command, sub = named
+        assert command in top_level, f"SKILL.md names `bl {command}`, which does not exist"
+        if command == "graph" and sub:
+            assert sub in graph_actions, f"SKILL.md names `bl graph {sub}`, which does not exist"

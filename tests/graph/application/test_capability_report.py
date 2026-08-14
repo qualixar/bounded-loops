@@ -104,11 +104,28 @@ def test_a_tier_undeliverable_HERE_is_not_reported_as_undeliverable_EVERYWHERE()
     assert "customer_managed_worker" in bare["isolation"]["never_available"]
 
 
-def test_non_success_statuses_are_named_explicitly(report: dict) -> None:
-    statuses = report["terminal_statuses"]
-    assert statuses["success"] == ["DONE"]
-    assert set(statuses["not_success"]) == {"HALT", "PAUSE", "KILLED", "ERROR"}
-    assert set(statuses["all"]) == set(statuses["success"]) | set(statuses["not_success"])
+def test_the_LOOP_and_GRAPH_status_vocabularies_are_reported_SEPARATELY(report: dict) -> None:
+    """Merging them told a host that a graph run reaching SUCCEEDED was not success.
+
+    A loop ends DONE/HALT/PAUSE/KILLED/ERROR. A graph run ends SUCCEEDED/FAILED/HALTED/
+    CANCELLED/EXPIRED. Only DONE and only SUCCEEDED are success, and they are different words for
+    different objects — a document that reports one set as "the" terminal statuses is wrong for
+    whichever surface the reader is actually using.
+    """
+    loops = report["loop_statuses"]
+    assert loops["success"] == ["DONE"]
+    assert set(loops["not_success"]) == {"HALT", "PAUSE", "KILLED", "ERROR"}
+    assert set(loops["all"]) == set(loops["success"]) | set(loops["not_success"])
+
+    graphs = report["graph_run_states"]
+    assert graphs["success"] == ["SUCCEEDED"]
+    assert set(graphs["not_success"]) == {"FAILED", "HALTED", "CANCELLED", "EXPIRED"}
+    # In-flight states are a THIRD answer: neither finished nor failed.
+    assert set(graphs["non_terminal"]) == {"PENDING", "RUNNING"}
+    assert "DONE" not in graphs["all"], "the loop vocabulary leaked into the graph one"
+    assert "SUCCEEDED" not in loops["all"], "the graph vocabulary leaked into the loop one"
+
+    assert "verbatim" in report["reporting_rule"]
 
 
 def test_the_repair_contract_states_that_attempt_alone_is_not_an_identity(report: dict) -> None:

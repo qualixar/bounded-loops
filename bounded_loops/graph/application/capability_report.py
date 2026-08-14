@@ -49,6 +49,17 @@ _NON_SUCCESS_STATUSES = frozenset(
     status.value for status in Status if status is not Status.DONE
 )
 
+#: A GRAPH run's terminal states, and the one that means success. Mirrored from
+#: `adapters.persistence.event_log._TERMINAL` rather than imported, because the application layer
+#: may not name a concrete adapter — `tests/graph/test_no_constant_drift.py` is the alarm for the
+#: drift that mirroring allows, and it fails if the two ever disagree.
+GRAPH_TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "HALTED", "CANCELLED", "EXPIRED"})
+_GRAPH_SUCCESS = "SUCCEEDED"
+
+#: Every run-level state, terminal or not. `PENDING` and `RUNNING` are in flight: a run in either
+#: is neither finished nor failed, which is a third answer a caller has to handle.
+GRAPH_RUN_STATES = GRAPH_TERMINAL_STATES | frozenset({"PENDING", "RUNNING"})
+
 
 @dataclass(frozen=True)
 class IsolationFact:
@@ -121,15 +132,35 @@ def capability_report(*, platform: PlatformSnapshot) -> Mapping[str, Any]:
         },
         "effects": _effects(),
         "budgets": _budgets(),
-        "terminal_statuses": {
+        # TWO vocabularies, reported separately. They were merged into one block that listed only
+        # the LOOP statuses, so the document told a host that a graph run reaching SUCCEEDED — its
+        # actual success state — was not success. A capability document that misnames the success
+        # condition is worse than one that omits it.
+        "loop_statuses": {
             "all": [status.value for status in Status],
             "success": [Status.DONE.value],
             "not_success": sorted(_NON_SUCCESS_STATUSES),
             "contract": (
-                "Only DONE means the gate passed and any required approval was granted. Every "
-                "other status is unfinished work and must never be reported as success."
+                "A LOOP run (`bl run`, `bl_run`) ends in one of these. Only DONE means the gate "
+                "passed and any required approval was granted."
             ),
         },
+        "graph_run_states": {
+            "all": sorted(GRAPH_RUN_STATES),
+            "success": [_GRAPH_SUCCESS],
+            "not_success": sorted(GRAPH_TERMINAL_STATES - {_GRAPH_SUCCESS}),
+            "non_terminal": sorted(GRAPH_RUN_STATES - GRAPH_TERMINAL_STATES),
+            "contract": (
+                "A GRAPH run (`bl graph run`, `graph_status`) ends in one of the terminal states. "
+                "Only SUCCEEDED is success. A state that is not terminal at all means the run is "
+                "still in flight — neither finished nor failed."
+            ),
+        },
+        "reporting_rule": (
+            "Report the status the engine returned, verbatim. Every non-success status is "
+            "unfinished work and must never be described as partial success — an ERROR run has no "
+            "verdict at all, because the gate never returned one."
+        ),
         "data_classes": [item.value for item in DataClass],
         "refusals": {
             "count": len(REFUSALS),

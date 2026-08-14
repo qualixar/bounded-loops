@@ -10,6 +10,7 @@ Reference: capability-inventory.md section 9 — run-level terminal states:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -56,7 +57,10 @@ def _write_events(run_dir: Path, *event_types: str) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     lines = []
     for i, etype in enumerate(event_types, start=1):
-        evt = {**_BASE_EVENT, "sequence": i, "type": etype, "payload": {"state": "RUNNING"}}
+        # `event_type`, not `type`. The engine writes `event_type`; this helper wrote `type`,
+        # so every test in this file passed against a log shape that does not exist and the
+        # hook was inert in production. See test_the_hook_blocks_a_run_the_REAL_ENGINE_produced.
+        evt = {**_BASE_EVENT, "sequence": i, "event_type": etype, "payload": {"state": "RUNNING"}}
         if etype in ("run.succeeded",):
             evt["payload"] = {"state": "SUCCEEDED"}
         elif etype in ("run.failed",):
@@ -153,7 +157,7 @@ def test_read_run_state_invalid_line_is_skipped(tmp_path: Path) -> None:
     run_dir = tmp_path / "run-001"
     run_dir.mkdir()
     (run_dir / "controller-events.jsonl").write_text(
-        "not json\n" + json.dumps({**_BASE_EVENT, "sequence": 2, "type": "run.started", "payload": {"state": "RUNNING"}}),
+        "not json\n" + json.dumps({**_BASE_EVENT, "sequence": 2, "event_type": "run.started", "payload": {"state": "RUNNING"}}),
         encoding="utf-8",
     )
     # The valid run.started line should still be read.
@@ -508,3 +512,80 @@ def test_the_switch_must_be_EXPLICITLY_false_not_merely_present(
     for body in ("[hooks]\nstop_on_active_run = true\n", "[hooks]\n", ""):
         config.write_text(body, encoding="utf-8")
         assert main(["graph_run_stop.py", "claude-code"]) == 2, f"config {body!r} disabled the block"
+
+
+# ── the test that would have caught the inert control ────────────────────────
+
+
+def test_the_hook_blocks_a_run_the_REAL_ENGINE_produced(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run the engine, then point the hook at what it wrote. No fixture in between.
+
+    Every other test in this file builds `controller-events.jsonl` by hand, and for a while the
+    helper used the key `type` while the engine writes `event_type`. The hook read `type`, found
+    nothing, treated every run as unknown, and allowed every stop — inert in production with 35
+    green tests. A hand-written fixture cannot catch that class of defect by construction, because
+    the fixture and the code under test can agree with each other and both be wrong.
+
+    So this test asserts against the real artifact. It is slower than the others and that is the
+    price of the only check that measures the thing.
+    """
+    import subprocess
+
+    project = tmp_path / "project"
+    project.mkdir()
+    completed = subprocess.run(
+        ["uv", "run", "bl", "graph", "run", "--execute"],
+        cwd=Path(__file__).resolve().parents[1],
+        env={
+            **os.environ,
+            "BOUNDED_LOOPS_WORKSPACE": str(project),
+            "TMPDIR": "/tmp",
+        },
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    runs_dir = project / ".bounded-loops" / "runs"
+    if completed.returncode != 0 or not runs_dir.is_dir():
+        pytest.skip(f"the engine could not run here: {completed.stderr[-300:]}")
+
+    run_dir = next(entry for entry in runs_dir.iterdir() if entry.is_dir())
+    log = run_dir / "controller-events.jsonl"
+    assert log.is_file(), "the engine wrote no receipt log"
+
+    # The demo run SUCCEEDS, so the hook must ALLOW — and it must reach that answer by reading a
+    # real terminal state, not by failing to parse anything.
+    assert _read_run_state(run_dir) == "SUCCEEDED", (
+        "the hook cannot read the state out of a log the engine actually wrote"
+    )
+    passed, _reason = _check_workspace(project)
+    assert passed is True
+
+    # Now truncate the log to before the terminal event: the same real log, mid-run.
+    lines = log.read_text(encoding="utf-8").splitlines()
+    terminal = next(
+        index for index, line in enumerate(lines) if '"run.succeeded"' in line
+    )
+    log.write_text("\n".join(lines[:terminal]) + "\n", encoding="utf-8")
+
+    assert _read_run_state(run_dir) == "RUNNING"
+    passed, reason = _check_workspace(project)
+    assert passed is False, "an unfinished REAL run did not block the stop"
+    assert run_dir.name in reason
+
+
+def test_a_SYMLINKED_receipt_log_is_not_followed(tmp_path: Path) -> None:
+    """A hook that runs on every Stop event must not become a reader of arbitrary files."""
+    ws_root = _make_workspace(tmp_path)
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(
+        json.dumps({**_BASE_EVENT, "event_type": "run.started", "payload": {"state": "RUNNING"}}),
+        encoding="utf-8",
+    )
+    run_dir = ws_root / ".bounded-loops" / "runs" / "sneaky"
+    run_dir.mkdir(parents=True)
+    (run_dir / "controller-events.jsonl").symlink_to(outside)
+
+    assert _read_run_state(run_dir) is None

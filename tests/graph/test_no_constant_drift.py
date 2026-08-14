@@ -157,3 +157,21 @@ def test_adding_an_effect_forces_a_retry_safety_decision() -> None:
     assert NETWORK_EFFECTS == frozenset(
         {Effect.EXTERNAL_WRITE, Effect.FINANCIAL, Effect.IRREVERSIBLE}
     )
+
+
+def test_the_capability_reports_graph_terminal_states_match_the_EVENT_LOGS() -> None:
+    """The document a host reads before authoring must not misname the success condition.
+
+    An audit found these merged with the LOOP statuses, so `bl_capabilities` reported that a graph
+    run reaching SUCCEEDED — its actual success state — was not success. Mirrored rather than
+    imported because the application layer may not name a concrete adapter; this is the alarm.
+    """
+    from bounded_loops.graph.adapters.persistence.event_log import _TERMINAL
+    from bounded_loops.graph.application.capability_report import (
+        GRAPH_RUN_STATES,
+        GRAPH_TERMINAL_STATES,
+    )
+
+    assert GRAPH_TERMINAL_STATES == _TERMINAL
+    assert GRAPH_TERMINAL_STATES < GRAPH_RUN_STATES, "no in-flight state is reported at all"
+    assert "SUCCEEDED" in GRAPH_TERMINAL_STATES

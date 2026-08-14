@@ -157,13 +157,13 @@ close the loop yourself — that is the one thing this engine exists to prevent.
 
 All claims in this section are verified against source.
 For the machine-readable version, call `bl_capabilities` (MCP) or
-`python3 -m bounded_loops.graph.cli_graph_capabilities` (CLI).
+`bl capabilities` (CLI, add `--refusals` for the refusal table alone).
 
 ### Node kinds (10 total)
 
 | Kind | Kind-specific required fields | Notes |
 |---|---|---|
-| `loop` | `loop_package` (sha256 digest, `sha256:<64 hex chars>`) | Source: `authoring.py:66`, schema:179. Digest is CONTENT-ADDRESSED — never invent one; compute with `bl graph digest <dir>`. |
+| `loop` | `loop_package` (sha256 digest, `sha256:<64 hex chars>`) | Source: `authoring.py:66`, schema:179. Digest is CONTENT-ADDRESSED — never invent one; get a real one from `bl_search_loops` / `bl_catalog`, which report the digest of every shipped package. |
 | `tool` | `tool_ref` (string) | Source: schema:199 |
 | `router` | `routes` (dict, ≥1 entry); optional `default_route` | Source: schema:228-229. Must cover every branch or declare a default. |
 | `join` | `mode` (`all_selected` / `all_successful` / `any_successful`) | Source: schema:248-251 |
@@ -332,7 +332,7 @@ version: 1.0.0
 nodes:
   - id: fix
     kind: loop
-    loop_package: "sha256:<run `bl graph digest loops/bug-fix-red-green` to get this>"
+    loop_package: "sha256:<from bl_catalog — never invented>"
     inputs: {}
     outputs:
       result: text/plain
@@ -343,7 +343,7 @@ nodes:
     isolation: workspace_only
   - id: verify
     kind: loop
-    loop_package: "sha256:<run `bl graph digest loops/pytest-basic` to get this>"
+    loop_package: "sha256:<from bl_catalog — never invented>"
     inputs:
       code: text/plain
     outputs:
@@ -367,8 +367,8 @@ policies:
 **Step 2: Get digests.**
 
 ```bash
-bl graph digest loops/bug-fix-red-green
-bl graph digest loops/pytest-basic
+bl loops list --keyless        # every shipped package, with its content digest
+# or, from a host: bl_search_loops("red green refactor")
 ```
 
 Replace the placeholder strings in the manifest. Never invent digests — they are

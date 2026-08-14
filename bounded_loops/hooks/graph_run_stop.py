@@ -78,6 +78,12 @@ def _read_run_state(run_dir: Path) -> str | None:
     police, and blocking on it would be a false denial.
     """
     events_path = run_dir / EVENTS_FILENAME
+    # Refuse a symlinked receipt log rather than following it, matching `run_store` and
+    # `for_run_dir`. Both auditors flagged this: a symlink under `runs/` turns a hook that runs on
+    # every Stop event into a reader of an arbitrary file. Returning None here means "unknown
+    # state", which allows the stop — the safe direction for a file we refuse to trust.
+    if events_path.is_symlink() or run_dir.is_symlink():
+        return None
     if not events_path.is_file():
         return None
     try:
@@ -96,7 +102,13 @@ def _read_run_state(run_dir: Path) -> str | None:
             continue  # skip malformed lines, fail-open
         if not isinstance(event, dict):
             continue
-        event_type = event.get("type")
+        # The field is `event_type`. It was read as `type` until an audit checked the hook against
+        # a log the engine had actually written: `type` is absent from every real receipt, so this
+        # returned None for every run, `_check_workspace` skipped every run, and the hook ALWAYS
+        # allowed. The control was inert in production while 35 tests passed against a
+        # hand-written fixture that used the wrong key. Hence `test_the_hook_blocks_a_run_the
+        # _REAL_ENGINE_produced`, which runs the engine rather than describing it.
+        event_type = event.get("event_type")
         if event_type in _STATE_SETTING_EVENTS:
             last_state = _STATE_SETTING_EVENTS[event_type]
     return last_state
