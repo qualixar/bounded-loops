@@ -14,43 +14,142 @@ A loop is complete only when an independent gate passes. A graph run is complete
 only when every node reaches a terminal state. `agent_claimed_done` is audit
 metadata, never a completion signal.
 
-<!-- JUDGEMENT: loop-vs-graph -->
-<!--
-  PLACEHOLDER for the author.
-  Topic: loop vs graph — when to pick which.
-  Include: the structural difference, the cost of the graph surface (compile,
-  plan, workspace), and the rule of thumb for when the overhead is worth it.
--->
+## Loop or graph?
 
-<!-- JUDGEMENT: gate-discipline -->
-<!--
-  PLACEHOLDER for the author.
-  Topic: how to write a gate that is NOT "an LLM says it's fine".
-  Include: the independence requirement (different object from the producer),
-  the mechanicality requirement (deterministic verdict from observable state),
-  and examples of gates that fail the test (e.g., a prompt asking the model
-  to review its own output).
--->
+**A loop is one task driven to a verified finish.** A worker attempts it, an independent gate
+decides, and it retries to a hard attempt bound. **A graph is a DAG of loops** with dataflow
+between them, plus the node kinds a loop cannot express: a human approval, a join over branches,
+a publish with a policy.
 
-<!-- JUDGEMENT: attempt-identity -->
-<!--
-  PLACEHOLDER for the author.
-  Topic: why `attempt` alone is not an identity once repair exists.
-  Include: the suffix-locality rule for repair, the termination bound formula
-  (1 + repair_budget) * Σ max_attempts_v, and why a receipt keyed on
-  (node_id, attempt) becomes ambiguous after a repair round resets the
-  attempt counter.
--->
+Pick a **loop** when there is **one checkable outcome**. "Make the test suite pass", "get this
+file to validate against the schema", "remove every secret this scanner finds" — one condition,
+one mechanical check, done.
 
-<!-- JUDGEMENT: receipt-reading -->
-<!--
-  PLACEHOLDER for the author.
-  Topic: how to read a receipt and why a non-DONE status is never success.
-  Include: what the five run-level terminal states mean (SUCCEEDED, FAILED,
-  HALTED, CANCELLED, EXPIRED), that HALTED/FAILED/CANCELLED/EXPIRED are not
-  partial success, and the rule that the host must report the exact returned
-  status verbatim.
--->
+Pick a **graph** when either of these is true:
+
+- **Several outcomes have to hold together**, and a partial result is not a result. Three loops
+  that each pass individually still tell you nothing about whether the combination is safe to
+  ship; a join node is the thing that asks that question.
+- **Something irreversible happens at the end** — a publish, a payment, an external write. Then
+  you want an approval node in front of it, declared effects on it, and a receipt proving what
+  was authorized.
+
+What the graph costs you, honestly: a manifest to author, a compile step that can refuse it, a
+plan, a workspace per node, and a run directory. For a single checkable task that overhead buys
+nothing. Reach for a graph when you need **causality between verified steps**, not when you want
+several things done.
+
+Rule of thumb: if you cannot name the join or the irreversible effect, you wanted a loop.
+
+## Writing a gate that is not "an LLM says it's fine"
+
+This is the part that gets written wrong by default, and it is the part everything else rests on.
+A gate has two requirements, and a gate failing either one is decoration.
+
+**1. Independence — the gate must be a different object from the producer.** Not a different
+prompt. Not the same model with a review instruction. A *different object*, whose verdict the
+worker cannot author. If the worker's output text can become the gate's verdict by any path, the
+worker decides its own completion and the engine's one invariant is gone.
+
+**2. Mechanicality — the verdict must come from observable state, deterministically.** A process
+exit code. A parsed report. A schema validation result. A diff that is empty or is not. Something
+you could check yourself, twice, and get the same answer.
+
+Gates that FAIL the test, all of which look reasonable when you write them:
+
+| Looks like a gate | Why it isn't |
+|---|---|
+| "Ask the model to review its own output and confirm it's correct" | Same object. The worker satisfies it by rewording. |
+| "Ask a second model whether the first model did a good job" | Different object, but not mechanical — no observable state, and its verdict is prose. |
+| "Check the output contains the word DONE" | Mechanical, but the worker controls the output. It will write DONE. |
+| "Run the tests the agent just wrote" | The producer authored the check. Pin the test suite, or gate on tests it cannot edit. |
+| "Confirm the file was modified" | Measures activity, not correctness. Touching the file passes. |
+
+Gates that pass the test: `pytest` and its exit code. `jsonschema` against a schema the worker
+cannot write. `gitleaks` finding zero secrets. A build that compiles. A checksum matching. A
+reconciliation that balances.
+
+The question to ask of any gate you propose: **could the worker satisfy this by changing what it
+says, rather than by changing what is true?** If yes, it is not a gate.
+
+Use `bl_capabilities` for the gate kinds this deployment actually has, and note the
+`available_here` flag — a gate whose binary is not installed cannot verify anything, and the
+engine will refuse the graph rather than pretend.
+
+## `attempt` alone is not an identity
+
+Once repair exists, this bites, and it bites silently.
+
+A node retries up to `max_attempts`. Separately, `on_failure: {mode: repair, target: <ancestor>}`
+sends the run **backwards** to an ancestor node — that boundary is a **repair round**. And
+**attempts reset at a repair boundary.** So `(node_id, attempt=2)` names two different pieces of
+work: the second attempt of round 0, and the second attempt of round 1.
+
+Anything keyed per-try must carry **`(attempt, repair_round)`**. That includes idempotency keys,
+per-attempt artifact paths, approval coordinates, and any cache you add. A receipt keyed on
+`(node_id, attempt)` alone is ambiguous the moment a repair round happens, and the failure is not
+an error — it is a *collision*, where round 1's work silently reuses round 0's key. This is why
+`NodeWorkerPort.execute` and `IndependentGatePort.evaluate` both take `repair_round` as a
+required keyword argument: it cannot be forgotten.
+
+Termination is bounded, and you can compute the bound: at most
+**`(1 + repair_budget) × Σ max_attempts` over all nodes**. `repair_budget` is a *global* bound on
+rounds, not per node — which is why a graph declaring `on_failure: repair` without a
+`repair_budget` above 0 is refused outright. There is no configuration in which repair runs
+forever.
+
+One consequence worth stating: a human approval granted in round 0 does **not** authorize round 1.
+The work is different work.
+
+## Reading a receipt, and why a non-DONE status is never success
+
+**Report the status the engine returned, verbatim.** Not a summary of it, not your reading of
+what "mostly" happened. The whole reason this tool exists is that an agent's own account of its
+work is not evidence — and that applies to you reporting on a run exactly as much as it applies
+to the worker inside one.
+
+Loop-level terminal statuses:
+
+| Status | What it means | Is it success? |
+|---|---|---|
+| `DONE` | The gate passed **and** any required approval was granted | **Yes — this one only** |
+| `HALT` | A safety bound tripped: budget, attempt cap, or no progress | No |
+| `PAUSE` | The gate passed but an approval is required and not yet granted | No — it is waiting for a human |
+| `KILLED` | An external kill switch tripped between laps | No |
+| `ERROR` | The runner or gate failed before a verdict could complete | No — there is no verdict at all |
+
+Run-level states are `SUCCEEDED`, `FAILED`, `CANCELLED`, plus `HALTED` and `EXPIRED`. Only
+`SUCCEEDED` is success.
+
+None of the non-success statuses is partial success:
+
+- `HALT` / `HALTED` means the work stopped because a bound said stop. Some nodes may have
+  succeeded. **The run did not.** "3 of 4 nodes passed" is a fact about nodes, not a result.
+- `ERROR` is the one most often misreported, because something clearly happened and there is
+  output to summarise. But an `ERROR` run has **no verdict** — the gate never returned one. There
+  is nothing to be optimistic about, because nothing was checked.
+- `PAUSE` is not a failure and not a finish. It is a question addressed to a human. The correct
+  response is to surface the approval, not to work around it.
+
+What to read, in order:
+
+1. **The status.** Then say it.
+2. **The gate's verdict and reason** — which gate ran, what it observed, and why it decided as it
+   did. This is the evidence; the rest is context.
+3. **Which package digest actually ran**, for a loop node. A digest that is not the one you
+   expected means the thing you reviewed is not the thing that executed.
+4. **The controls the sandbox actually enforced** — not the tier that was requested. The engine
+   publishes an honest list, and it is shorter than the tier name suggests on some hosts.
+5. **Spend**, against the ceiling. A run that stopped on its budget is a `HALT`, and resuming it
+   without raising the ceiling asks it to stop again.
+
+Two things that are audit metadata and never completion signals: `agent_claimed_done`, and any
+text in the worker's output that reads like a conclusion. If the gate did not pass, the worker
+saying it finished is a record of a claim, not a result.
+
+If a run is not `DONE` and the user asked you to complete the task, the task is not complete.
+Say which status came back, say what the gate objected to, and either fix that or ask. Do not
+close the loop yourself — that is the one thing this engine exists to prevent.
 
 ---
 
