@@ -685,3 +685,27 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         help="Override the egress config file path (mirrors BOUNDED_LOOPS_EGRESS_CONFIG).",
     )
     init_p.set_defaults(func=cmd_graph_init)
+
+    # watch (handler lives in the live package — SSE-based live Arena)
+    from bounded_loops.graph.live.cli_watch import cmd_graph_watch
+
+    watch_p = graph_subs.add_parser(
+        "watch",
+        help="Serve a live, self-refreshing Graph Arena for one run via SSE.",
+        description=(
+            "Loopback-only live Arena: tails controller-events.jsonl and pushes "
+            "ArenaProjection snapshots to the browser via Server-Sent Events. The "
+            "page updates automatically — no browser reload needed. Identical visual "
+            "to `bl graph arena` but connected to an SSE stream that shows spend and "
+            "node-state changes in near-real time. LOCAL posture only."
+        ),
+    )
+    watch_p.add_argument(
+        "--run", required=True, metavar="<dir>",
+        help="Run directory reported by `bl graph run --execute` (the 'out' path).",
+    )
+    watch_p.add_argument(
+        "--port", type=int, default=0, metavar="<port>",
+        help="TCP port to bind on 127.0.0.1 (default: 0, an OS-assigned ephemeral port).",
+    )
+    watch_p.set_defaults(func=cmd_graph_watch)

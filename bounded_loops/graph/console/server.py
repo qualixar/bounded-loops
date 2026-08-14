@@ -32,13 +32,10 @@ single-operator, single-run, local development console — nothing more.
 
 from __future__ import annotations
 
-import hmac
-import secrets
 import threading
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote
 
 from bounded_loops.graph.application.arena_projection import ArenaProjection, ArenaReadRequest
 from bounded_loops.graph.graph_run_report import _awaiting_approval_nodes
@@ -47,18 +44,13 @@ from bounded_loops.graph.application.plan_persistence import load_plan_from_run_
 from bounded_loops.graph.console.rendering import render_console_page
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
-
-_LOOPBACK_HOST = "127.0.0.1"
-_TOKEN_BYTES = 32  # secrets.token_urlsafe(32) -> a 43-char URL-safe token, ~256 bits.
-_MAX_BODY_BYTES = 8 * 1024  # generous for a token + node_id; refuses anything larger.
-_FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
-# Maximum concurrent in-flight connections (L-1 / security hardening).  A local-DoS
-# attack from another unprivileged process that opens connections faster than this
-# console can close them is bounded here: once the semaphore is exhausted, additional
-# connections receive a minimal HTTP 503 and are refused before any thread is spawned.
-# Sized to match `request_queue_size` so OS-level accept backlog and in-flight thread
-# cap are both intentional, reviewable numbers.
-_MAX_CONCURRENT_CONNECTIONS = 8
+from bounded_loops.graph.live.posture import (
+    LoopbackHandler,
+    LoopbackServer,
+    _LOOPBACK_HOST,
+    _MAX_BODY_BYTES,
+    _FORM_CONTENT_TYPE,
+)
 
 
 class ConsoleOpenError(Exception):
@@ -94,24 +86,16 @@ def open_console_run(run_dir: Path) -> tuple[GraphRunIdentity, LocalGraphRuntime
     return identity, facade
 
 
-class ConsoleServer(ThreadingHTTPServer):
+class ConsoleServer(LoopbackServer):
     """A short-lived, loopback-only HTTP server scoped to exactly one run directory.
 
-    There is deliberately NO ``host`` parameter: the bind address is the literal
-    string ``127.0.0.1`` below, not a variable, so no caller — test, CLI flag, or
-    future edit — can point this at a routable interface without editing this file.
+    Inherits the loopback bind, per-invocation token, and connection semaphore
+    from ``LoopbackServer`` (``live/posture.py``).  This class adds only the
+    console-specific domain state: ``identity``, ``facade``, ``decisions_made``.
 
-    Connection limit (L-1 fix): ``_connection_semaphore`` caps in-flight threads at
-    ``_MAX_CONCURRENT_CONNECTIONS``.  A connection that cannot acquire the semaphore
-    is refused immediately with a minimal HTTP 503 before any thread is spawned, so
-    an unprivileged local process cannot exhaust threads or file descriptors by opening
-    connections faster than the console can close them.  ``request_queue_size`` is set
-    explicitly (rather than left at the stdlib default) so the OS-level accept backlog
-    and the in-flight thread cap are both intentional, reviewable numbers.
+    There is deliberately NO ``host`` parameter — inherited from
+    ``LoopbackServer``, which binds ``_LOOPBACK_HOST`` literally.
     """
-
-    daemon_threads = True
-    request_queue_size = _MAX_CONCURRENT_CONNECTIONS
 
     def __init__(
         self,
@@ -120,10 +104,9 @@ class ConsoleServer(ThreadingHTTPServer):
         facade: LocalGraphRuntimeFacade,
         port: int = 0,
     ) -> None:
-        super().__init__((_LOOPBACK_HOST, port), ConsoleRequestHandler)
+        super().__init__(ConsoleRequestHandler, port=port)
         self.identity = identity
         self.facade = facade
-        self.token = secrets.token_urlsafe(_TOKEN_BYTES)
         self.request_ctx = ArenaReadRequest(
             subject_id=identity.organization_id,
             organization_id=identity.organization_id,
@@ -145,34 +128,6 @@ class ConsoleServer(ThreadingHTTPServer):
         # `resolved_and_idle is False` and each spawn their own shutdown thread. See
         # `maybe_auto_stop` for why this lock is NEVER held across `self.shutdown()`.
         self._decision_lock = threading.Lock()
-        # Per-server connection semaphore — see class docstring and _MAX_CONCURRENT_CONNECTIONS.
-        self._connection_semaphore = threading.BoundedSemaphore(_MAX_CONCURRENT_CONNECTIONS)
-
-    def process_request(self, request: object, client_address: object) -> None:
-        """Refuse immediately with 503 when the connection semaphore is exhausted."""
-        if not self._connection_semaphore.acquire(blocking=False):
-            # Semaphore full — send a minimal HTTP 503 and drop the connection before
-            # spawning any thread.  This is the DoS-mitigation (L-1 fix).
-            try:
-                request.sendall(  # type: ignore[attr-defined]
-                    b"HTTP/1.0 503 Service Unavailable\r\n"
-                    b"Content-Length: 0\r\n"
-                    b"Connection: close\r\n\r\n"
-                )
-            except OSError:
-                pass
-            self.shutdown_request(request)  # type: ignore[arg-type]
-            return
-        # Semaphore acquired — delegate to ThreadingHTTPServer which spawns a new thread
-        # running `process_request_thread`.  The semaphore is released in that thread.
-        super().process_request(request, client_address)  # type: ignore[arg-type]
-
-    def process_request_thread(self, request: object, client_address: object) -> None:
-        """Like the base-class implementation but releases the connection semaphore."""
-        try:
-            super().process_request_thread(request, client_address)  # type: ignore[arg-type]
-        finally:
-            self._connection_semaphore.release()
 
     @property
     def console_url(self) -> str:
@@ -220,8 +175,13 @@ class ConsoleServer(ThreadingHTTPServer):
         threading.Thread(target=self.shutdown, daemon=True).start()
 
 
-class ConsoleRequestHandler(BaseHTTPRequestHandler):
+class ConsoleRequestHandler(LoopbackHandler):
     """Fixed-route handler: `GET /`, `POST /approve`, `POST /reject` — nothing else.
+
+    Inherits the loopback security posture (token check, origin check, hardening
+    headers, strict method allowlist, logging suppression) from ``LoopbackHandler``
+    (``live/posture.py``).  This class adds only the console-specific routes and
+    the form-body reader.
 
     HTTP/1.0 semantics deliberately: every response closes the connection, so
     there is no persistent-connection body-framing state to get out of sync with
@@ -256,37 +216,6 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
     """
 
     server: ConsoleServer  # type: ignore[assignment]
-    protocol_version = "HTTP/1.0"
-    timeout = 30
-
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - stdlib signature
-        # Keep stdout clean for the operator — the printed console URL is the only
-        # line `bl graph console` promises. Nothing here is ever a secret to hide;
-        # it is simply not part of this CLI's output contract.
-        pass
-
-    # ── strict method allowlist: everything but GET/POST is refused up front ──
-
-    def do_HEAD(self) -> None:
-        self._method_not_allowed()
-
-    def do_PUT(self) -> None:
-        self._method_not_allowed()
-
-    def do_DELETE(self) -> None:
-        self._method_not_allowed()
-
-    def do_PATCH(self) -> None:
-        self._method_not_allowed()
-
-    def do_OPTIONS(self) -> None:
-        self._method_not_allowed()
-
-    def do_TRACE(self) -> None:
-        self._method_not_allowed()
-
-    def do_CONNECT(self) -> None:
-        self._method_not_allowed()
 
     def _method_not_allowed(self) -> None:
         self._send_plain(HTTPStatus.METHOD_NOT_ALLOWED, "method not allowed — this console serves GET and POST only")
@@ -454,28 +383,8 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
         self._send_hardening_headers()
         self.end_headers()
 
-    # ── shared request parsing / validation ─────────────────────────────────────
-
-    def _split_path(self) -> tuple[str, dict[str, list[str]]]:
-        parts = urlsplit(self.path)
-        return parts.path, parse_qs(parts.query, keep_blank_values=True)
-
-    def _token_ok(self, provided: str) -> bool:
-        # Constant-time comparison against bytes (never str-vs-str) so a mismatched
-        # length can never raise, and so the comparison time never varies with WHICH
-        # byte differs.
-        return hmac.compare_digest(provided.encode("utf-8"), self.server.token.encode("utf-8"))
-
-    def _origin_ok(self) -> bool:
-        """CSRF defense in depth: require a same-origin Origin, or failing that Referer."""
-        expected = f"http://{_LOOPBACK_HOST}:{self.server.server_address[1]}"
-        origin = self.headers.get("Origin")
-        if origin is not None:
-            return origin == expected
-        referer = self.headers.get("Referer")
-        if referer is not None:
-            return referer == expected or referer.startswith(expected + "/")
-        return False  # neither header present -> fail closed, never assume same-origin
+    # ── request parsing / validation ─────────────────────────────────────────────
+    # _split_path, _token_ok, _origin_ok are inherited from LoopbackHandler.
 
     def _read_form(self) -> dict[str, list[str]] | None:
         """Read and parse a bounded `application/x-www-form-urlencoded` POST body.
@@ -512,50 +421,7 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
             return None
         return parse_qs(text, keep_blank_values=True, strict_parsing=False)
 
-    # ── response helpers ────────────────────────────────────────────────────────
-
-    def _send_hardening_headers(self) -> None:
-        """Headers sent on EVERY response, success or error alike.
-
-        CRIT finding (fixed, not just noted): the token lives in the URL query
-        string (by this LLD's own explicit design — printed for the operator to
-        open in a browser). The page today has zero external resources, so there
-        is no CURRENT third-party leak — but that is a fragile, implicit
-        guarantee: one future edit that adds so much as a favicon fetch would
-        start leaking the token to that third party via `Referer`, with nothing
-        here to stop it. `Referrer-Policy: no-referrer` closes that off
-        explicitly rather than relying on "the page happens not to link out
-        today." `X-Content-Type-Options: nosniff` is a free, standard hardening
-        header with no functional cost for a console this small.
-
-        `Cache-Control: no-store` + `Pragma: no-cache` (cross-audit FIX 3):
-        the token-bearing URL/page must never be written to disk cache or kept
-        in the browser's back/forward cache past this process's lifetime — a
-        cached copy would keep the capability usable (or at least visible)
-        after the console has already exited.
-        """
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Pragma", "no-cache")
-
-    def _send_plain(self, status: HTTPStatus, message: str) -> None:
-        encoded = message.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self._send_hardening_headers()
-        self.end_headers()
-        self.wfile.write(encoded)
-
-    def _send_html(self, status: HTTPStatus, document: str) -> None:
-        encoded = document.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self._send_hardening_headers()
-        self.end_headers()
-        self.wfile.write(encoded)
+    # _send_hardening_headers, _send_plain, _send_html are inherited from LoopbackHandler.
 
 
 def _first(fields: dict[str, list[str]], key: str) -> str:

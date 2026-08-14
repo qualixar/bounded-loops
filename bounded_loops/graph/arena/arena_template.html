@@ -156,6 +156,22 @@
   /* loop node evidence */
   .loop-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:650;padding:2px 8px;
     border-radius:999px;background:var(--checking-bg);color:var(--checking);margin-top:6px}
+  /* spend / budget panel */
+  .spend-panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:18px 24px;display:flex;align-items:center;gap:24px;flex-wrap:wrap;margin-top:22px}
+  .spend-panel.budget-paused{border-color:var(--blocked);background:var(--blocked-bg)}
+  .spend-stat{display:flex;flex-direction:column;gap:2px}
+  .spend-stat .sv{font-size:22px;font-weight:750;letter-spacing:-.02em}
+  .spend-stat .sk{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3)}
+  .spend-stat .si{font-size:12px;color:var(--ink-3)}
+  .spend-div{width:1px;background:var(--line);align-self:stretch;flex:none}
+  .budget-pause-msg{flex:1;font-size:13px;color:var(--blocked);font-weight:650;padding:6px 10px;
+    border-radius:9px;background:var(--blocked-bg);border:1px solid var(--blocked)}
+  /* live indicator */
+  .live-dot{width:9px;height:9px;border-radius:50%;background:var(--passed);
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--passed) 20%,transparent);
+    animation:pulse 1.8s ease-in-out infinite;flex:none}
+  .live-label{font-size:12px;font-weight:650;color:var(--passed)}
 </style>
 </head>
 <body>
@@ -192,6 +208,27 @@
       </div>
     </div>
   </section>
+
+  <!-- Spend / budget panel — hidden when both spend_tokens and spend_cost_microunits are 0 -->
+  <div class="spend-panel" id="spend-panel" style="display:none" aria-label="Token spend summary">
+    <div id="live-indicator" style="display:none;align-items:center;gap:7px">
+      <span class="live-dot"></span><span class="live-label">LIVE</span>
+    </div>
+    <div class="spend-div" id="live-div" style="display:none"></div>
+    <div class="spend-stat">
+      <span class="sv" id="spend-tokens">—</span>
+      <span class="sk">Tokens</span>
+      <span class="si" id="spend-tokens-note"></span>
+    </div>
+    <div class="spend-div"></div>
+    <div class="spend-stat">
+      <span class="sv" id="spend-cost">—</span>
+      <span class="sk">Cost (USD)</span>
+      <span class="si" id="spend-cost-note"></span>
+    </div>
+    <div class="spend-div" id="budget-pause-div" style="display:none"></div>
+    <div class="budget-pause-msg" id="budget-pause-msg" style="display:none"></div>
+  </div>
 
   <div class="sec"><h2>Execution pipeline</h2><p>Each stage runs only after the one before it passes an independent check. Click a stage for details.</p></div>
   <div class="board"><svg class="edges" id="edges" aria-hidden="true"></svg><div class="waves" id="waves"></div></div>
@@ -480,6 +517,64 @@
 
   requestAnimationFrame(drawEdges); window.addEventListener("resize",drawEdges);
   document.getElementById("board")&&0;
+
+  // ---- spend / budget panel ----
+  function fmtCost(microunits){
+    // microunits = USD × 1 000 000
+    var usd = microunits / 1e6;
+    if(usd < 0.0001) return "$0";
+    if(usd < 0.01) return "$"+usd.toFixed(4);
+    return "$"+usd.toFixed(4);
+  }
+  function fmtTokens(n){ return n >= 1000 ? (n/1000).toFixed(1)+"k" : String(n); }
+  function renderSpend(d){
+    var tokens = d.spend_tokens||0, cost = d.spend_cost_microunits||0;
+    var panel = document.getElementById("spend-panel");
+    if(!panel) return;
+    if(!tokens && !cost){ panel.style.display="none"; return; }
+    panel.style.display="flex";
+    panel.className = "spend-panel" + (d.budget_pause ? " budget-paused" : "");
+    var tEl=document.getElementById("spend-tokens"); if(tEl) tEl.textContent=fmtTokens(tokens);
+    var tN=document.getElementById("spend-tokens-note"); if(tN) tN.textContent=d.spend_complete?"exact":"≥ (some attempts missing)";
+    var cEl=document.getElementById("spend-cost"); if(cEl) cEl.textContent=fmtCost(cost);
+    var cN=document.getElementById("spend-cost-note"); if(cN) cN.textContent=d.spend_complete?"exact":"≥ (lower bound)";
+    var bp = d.budget_pause;
+    var bpDiv=document.getElementById("budget-pause-div"); var bpMsg=document.getElementById("budget-pause-msg");
+    if(bp && bpMsg){ bpDiv&&(bpDiv.style.display=""); bpMsg.style.display=""; bpMsg.textContent="Budget pause: "+(bp.reason||JSON.stringify(bp)); }
+    else { bpDiv&&(bpDiv.style.display="none"); bpMsg&&(bpMsg.style.display="none"); }
+  }
+  renderSpend(D);
+
+  // ---- refresh() — called by the SSE connector injected by bl graph watch ----
+  // This function is the ONLY public surface. The SSE stream connector is NOT in
+  // this file; it is injected by WatchServer at serve time. When opened from disk
+  // (static mode), this function is defined but never called.
+  window.refresh = function(newData){
+    D = newData;
+    nodesById={}; (D.nodes||[]).forEach(function(n){nodesById[n.node_id]=n;});
+    // hero
+    var runS2=st(D.run_state);
+    var hero2=document.getElementById("hero");
+    if(hero2) hero2.style.setProperty("--state-accent",runS2.c);
+    var sw2=document.getElementById("statusword"); if(sw2) sw2.textContent=runS2.w;
+    var sd2=document.getElementById("statusdot");
+    if(sd2){ sd2.style.setProperty("--state-accent",runS2.c); if(D.run_state==="RUNNING")sd2.classList.add("pulse"); else sd2.classList.remove("pulse"); }
+    var titleMap2={SUCCEEDED:"Run complete",RUNNING:"Run in progress",FAILED:"Run blocked",PENDING:"Run queued",EMPTY:"No run yet"};
+    var st2el=document.getElementById("statustitle"); if(st2el) st2el.textContent=titleMap2[D.run_state]||("Run "+runS2.w);
+    var total2=(D.nodes||[]).length;
+    var passed2=(D.nodes||[]).filter(function(n){return n.state==="SUCCEEDED";}).length;
+    var pct2=total2?Math.round(passed2/total2*100):0;
+    var ring2=document.getElementById("ring"); if(ring2) ring2.style.setProperty("--p",pct2);
+    var rp2=document.getElementById("ringpct"); if(rp2) rp2.innerHTML=pct2+'<small>passed</small>';
+    var pt2=document.getElementById("progresstxt"); if(pt2) pt2.textContent=passed2+" of "+total2+" stages passed";
+    var rc2=document.getElementById("receipts"); if(rc2) rc2.textContent=(D.receipt_sequence!=null?D.receipt_sequence:"—");
+    var hd2=document.getElementById("head"); if(hd2) hd2.textContent=shortHash(D.receipt_head_hash);
+    // pipeline
+    var levels2=(D.levels&&D.levels.length)?D.levels:[(D.nodes||[]).map(function(n){return n.node_id;})];
+    var wavesEl2=document.getElementById("waves"); if(wavesEl2){ wavesEl2.innerHTML=""; levels2.forEach(function(level2,li2){ var w2=document.createElement("div"); w2.className="wave"; var h2=document.createElement("div"); h2.className="wave-h"; h2.textContent="Stage "+(li2+1); w2.appendChild(h2); level2.forEach(function(id2){ var n2=nodesById[id2]; if(n2) w2.appendChild(nodeCard(n2)); }); wavesEl2.appendChild(w2); }); }
+    renderSpend(D);
+    requestAnimationFrame(drawEdges);
+  };
 })();
 </script>
 </body>
