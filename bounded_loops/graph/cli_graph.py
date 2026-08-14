@@ -25,6 +25,7 @@ import json
 import sys
 from pathlib import Path
 
+from bounded_loops.domain.errors import ManifestError
 from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.graph.application.compile_graph import (
     CompileSnapshot,
@@ -226,6 +227,29 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
     )
 
 
+def _default_out_dir(args: argparse.Namespace) -> str:
+    """Where `--execute` writes when the caller did not say.
+
+    Before 0.6 this was a refusal ("--execute requires --out"), so giving it a default takes
+    nothing away: an explicit `--out` still means exactly what it always did, and every
+    existing run directory stays where it is. What it adds is a project home — the run lands in
+    `.bounded-loops/runs/<stamp>-<rand>/` beside the code it is about it, which is what makes
+    `bl graph status`, the Arena, and the UI able to find runs without being told.
+
+    The resolved path is announced on stderr, because a run directory the user cannot see is
+    a run directory the user cannot inspect.
+    """
+    from bounded_loops.workspace import discover, ensure, mint_run_directory_name
+
+    workspace = discover(explicit=getattr(args, "workspace", None))
+    created = ensure(workspace)
+    out_dir = workspace.run_dir(mint_run_directory_name())
+    if created:
+        print(f"graph run: created workspace {workspace.root}", file=sys.stderr)
+    print(f"graph run: writing to {out_dir}", file=sys.stderr)
+    return str(out_dir)
+
+
 def cmd_graph_run(args: argparse.Namespace) -> int:
     """bl graph run — compile a manifest (honest preview), or `--execute --out
     <dir>` to REALLY run a graph inside a native OS sandbox (no Docker). With no
@@ -234,8 +258,11 @@ def cmd_graph_run(args: argparse.Namespace) -> int:
     if getattr(args, "execute", False):
         out = getattr(args, "out", None)
         if not out:
-            _err("graph run --execute requires --out <dir>")
-            return 2
+            try:
+                out = _default_out_dir(args)
+            except ManifestError as exc:
+                _err(f"graph run: {exc}")
+                return 2
         manifest = getattr(args, "manifest", None)
         if not manifest:
             # No manifest → the built-in native-sandbox demonstration (unchanged).
@@ -432,7 +459,16 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     run_p.add_argument("--execute", action="store_true",
                        help="Actually execute: the built-in demo (no manifest), or an admitted connector manifest.")
     run_p.add_argument("--out", default=None, metavar="<dir>",
-                       help="Output run directory for --execute.")
+                       help=(
+                           "Output run directory for --execute. Defaults to "
+                           ".bounded-loops/runs/<stamp>-<rand>/ in this project's workspace, "
+                           "creating it if needed."
+                       ))
+    run_p.add_argument("--workspace", default=None, metavar="<dir>", type=Path,
+                       help=(
+                           "Use this directory's .bounded-loops/ workspace when --out is "
+                           "omitted (also honoured via $BOUNDED_LOOPS_WORKSPACE)."
+                       ))
     run_p.add_argument(
         "--admitted", default=None, metavar="<json>",
         help=(

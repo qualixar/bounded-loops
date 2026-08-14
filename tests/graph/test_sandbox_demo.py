@@ -67,10 +67,22 @@ def test_no_mechanism_fails_closed(tmp_path, capsys, monkeypatch):
     assert "cannot sandbox" in capsys.readouterr().err
 
 
-def test_run_execute_requires_out(capsys):
-    rc = cmd_graph_run(argparse.Namespace(execute=True, out=None, manifest=None, json=False))
-    assert rc == 2
-    assert "--out" in capsys.readouterr().err
+def test_run_execute_without_out_defaults_into_the_project_workspace(tmp_path, capsys):
+    """0.6 replaced the `--execute requires --out` refusal with a project-workspace default.
+
+    Was: rc 2 and "--out" on stderr. Now: the run lands in `.bounded-loops/runs/<stamp>-<rand>/`
+    and the resolved path is announced, so a caller can still copy it into `bl graph status`.
+    An explicit `--out` is unchanged — see tests/graph/test_default_out_dir.py.
+    """
+    rc = cmd_graph_run(
+        argparse.Namespace(
+            execute=True, out=None, manifest=None, json=False, workspace=tmp_path,
+        )
+    )
+    runs_root = tmp_path / ".bounded-loops" / "runs"
+    assert rc == 0
+    assert "writing to" in capsys.readouterr().err
+    assert [entry.name for entry in runs_root.iterdir()], "the run directory was not created"
 
 
 def test_run_execute_refuses_non_local_cli_manifest(tmp_path, capsys):

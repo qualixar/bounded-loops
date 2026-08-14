@@ -3,6 +3,27 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`.bounded-loops/` is now a project home.** `bl init` creates it; `bl where` prints the
+  resolved workspace and, more usefully, *why* that one was chosen. It holds `config.toml`,
+  `graphs/`, `loops/`, `runs/`, `tickets/`, and an `index.json` cache. One resolver answers
+  "where does this project keep its runs" for the CLI, MCP, and the UI — the same question
+  answered twice is the defect class the 0.5 audits kept finding.
+
+  Discovery walks up from the current directory for an existing `.bounded-loops/`, **bounded by
+  the git repository root** so a checkout can never silently borrow a workspace sitting above it,
+  then falls back to the repository root, then to the current directory. A symlinked workspace
+  root is refused: it would silently relocate every receipt in the project.
+
+- **`bl graph run --execute` no longer requires `--out`.** It defaults to
+  `.bounded-loops/runs/<stamp>-<rand>/`, creating the workspace if needed, and announces the
+  resolved path on stderr. An explicit `--out` behaves exactly as it did in 0.4.0, and **no
+  existing run directory moves** — `bl run --run-id` still writes package-local, so every
+  0.4.0/0.5.x run stays resumable under `--resume` and `bl runs`.
+
 ## [0.5.1] — 2026-08-14
 
 ### Fixed
