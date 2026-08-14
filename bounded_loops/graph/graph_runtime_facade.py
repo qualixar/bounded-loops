@@ -74,6 +74,7 @@ from bounded_loops.graph.application.approval_ledger import (
     _rehydrated_request,
     build_durable_approval_resolver,
     decision_round,
+    local_approval_decision,
 )
 from bounded_loops.graph.application.approvals import (
     ApprovalAuthorizationPort,
@@ -107,7 +108,7 @@ from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
 from bounded_loops.graph.application.repair_rounds import gated_effects_for_approval
 from bounded_loops.graph.application.run_graph import is_egress_node
-from bounded_loops.graph.domain.approvals import ApprovalDecision, ApprovalRequest
+from bounded_loops.graph.domain.approvals import ApprovalRequest
 from bounded_loops.graph.domain.authoring import NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
@@ -659,14 +660,12 @@ class LocalGraphRuntimeFacade:
         )
 
         req_digest = _request_digest(approval_request)
-        approval_decision = ApprovalDecision(
+        approval_decision = local_approval_decision(
             request_digest=req_digest,
-            actor_id=request.subject_id,
-            actor_role=required_role,
-            decision="approve",
+            subject_id=request.subject_id,
+            required_role=required_role,
             auth_context_digest=auth_context_digest,
             decided_at=decided_at,
-            signature="local-attestation",
         )
 
         context = AuthenticatedApprovalContext(

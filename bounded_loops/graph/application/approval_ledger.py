@@ -62,7 +62,7 @@ from bounded_loops.graph.application.approval_gate import RecordedApprovalResolv
 from bounded_loops.graph.application.repair_rounds import rounds_spent
 from bounded_loops.graph.domain.events import StoredGraphEvent
 from bounded_loops.graph.application.approvals import ApprovalCommit
-from bounded_loops.graph.domain.approvals import ApprovalRequest
+from bounded_loops.graph.domain.approvals import ApprovalDecision, ApprovalRequest
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import GraphRunIdentity
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
@@ -244,3 +244,43 @@ def build_durable_approval_resolver(
             f"conflicting durable approve+reject decisions for nodes {sorted(conflict_nodes)!r}"
         )
     return resolver
+
+
+def local_approval_decision(
+    *,
+    request_digest: str,
+    subject_id: str,
+    required_role: str,
+    auth_context_digest: str,
+    decided_at: str,
+) -> ApprovalDecision:
+    """The decision record for a LOCAL approval, including who actually decided.
+
+    Extracted from the facade because the facade sits at its 800-line cap and because this is
+    approval-ledger logic, not runtime-facade logic.
+
+    Two identities, deliberately not one. `actor_id` is the authorization SUBJECT, which
+    `SameTenantArenaAuthorizer` forces to equal the organization — so on a local run it can only
+    ever say `local-org`, and a receipt that answers "who approved this irreversible effect" with
+    the tenant name answers nothing. `decided_by` carries a person. Keeping them separate is what
+    stops the authorization check and the attribution from corrupting each other.
+
+    The identity is resolved HERE, from the environment, never accepted as an argument — a caller
+    (or a model driving one) must not be able to assert who approved something. It is NOT
+    authenticated locally; `decided_by_source` records where it came from so a reader can weigh
+    it. See `bounded_loops.local_identity`.
+    """
+    from bounded_loops import local_identity
+
+    decided_by = local_identity.resolve_for_workspace()
+    return ApprovalDecision(
+        request_digest=request_digest,
+        actor_id=subject_id,
+        actor_role=required_role,
+        decision="approve",
+        auth_context_digest=auth_context_digest,
+        decided_at=decided_at,
+        signature="local-attestation",
+        decided_by=decided_by.name,
+        decided_by_source=decided_by.source,
+    )

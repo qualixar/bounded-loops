@@ -163,6 +163,14 @@ class _FileApprovalCommandPort:
                     "idempotency_key": commit.idempotency_key,
                     "node_id": command.request.node_id,
                     "actor_id": command.context.subject_id,
+                    # WHO decided, alongside the subject the authorizer checked. `actor_id` is
+                    # the tenant on a local run and cannot be anything else, so on its own this
+                    # receipt could not answer "who approved this irreversible effect".
+                    # `decided_by_source` travels with the name because the name is NOT
+                    # authenticated locally, and a name presented without that caveat claims
+                    # more than we know.
+                    "decided_by": command.decision.decided_by,
+                    "decided_by_source": command.decision.decided_by_source,
                     "decided_at": command.decision.decided_at,
                     # Record the random nonce and the digest the decision was made over.
                     # Without these the request can never be reconstructed, so a signature
