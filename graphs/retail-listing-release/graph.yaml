@@ -23,7 +23,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: validate-feed
     kind: loop
     loop_package: "sha256:3257e7909f69cc03e4a4320b729167746c2de6d2851de0d02a4de41d1edc5e96"
@@ -34,7 +34,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: check-margin
     kind: loop
     loop_package: "sha256:dc4e57a84712937099f1f9a9450fe220c184ad91e3ab6afe9a7a91379adb93f0"
@@ -45,7 +45,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: review-stock
     kind: loop
     loop_package: "sha256:a9b1bb1e11363e0b2becb1d7641c49cdcaf6aa870d8f7837866f01d828de4a79"
@@ -57,7 +57,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: join-checks
     kind: join
     mode: all_successful

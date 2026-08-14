@@ -13,10 +13,20 @@ Contract with the worker side:
 
 * cwd is the node's promoted-output directory, so ``--outcome`` is written where
   ``declared_outputs`` will find it.
-* The loop package is READ-ONLY here. Seatbelt's profile is ``(allow default)`` plus
-  ``(deny file-write* (subpath "/"))`` with an allowlist, so the package is readable and
-  unwritable — and ``wire_loop_for_graph`` independently refuses a controller root inside the
-  package, so neither layer can be the only thing standing between a run and its own inputs.
+* **Whether any OS sandbox applies AT ALL depends on the node's declared isolation, and this module
+  cannot assume one.** ``workspace_only`` maps to ``SandboxMechanism.NONE``, which returns UNWRAPPED
+  argv — no Seatbelt, no bubblewrap, network and host filesystem writes unrestricted. Only
+  ``process_restricted`` and above select a real mechanism. An earlier version of this docstring
+  described the Seatbelt profile as though it were always the environment; the shipped reference
+  graphs were pinned at ``workspace_only`` at the time, so every loop node in them ran with
+  ``fs_write`` and ``net`` reported as ``not_enforced`` in its own receipt. Read the receipt, not
+  this comment, for what was enforced on a given run.
+* WHEN Seatbelt is selected, its profile is ``(allow default)`` plus
+  ``(deny file-write* (subpath "/"))`` with an allowlist, so the package is readable and unwritable.
+  Note reads are NOT confined even then — ``sandbox.py`` says so — so an unwrapped or read-open gate
+  command can read anything the user can.
+* Independently of any sandbox, ``wire_loop_for_graph`` refuses a controller root inside the package,
+  so that one protection does not depend on the isolation tier at all.
 * Exit status is NOT the verdict. This process exits 0 whenever it managed to run the loop and
   write an outcome, including when the loop's own gate REJECTED the work. The graph's independent
   gate reads the outcome artifact and decides. A non-zero exit here means this process could not

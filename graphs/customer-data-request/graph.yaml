@@ -23,7 +23,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: check-privacy-notice
     kind: loop
     loop_package: "sha256:1ecbe300efa268a2087aca08abc00c8c1c5b94e197f847fa8435184b96640861"
@@ -34,7 +34,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: check-nda-coverage
     kind: loop
     loop_package: "sha256:2c934305f3c3958face216017f293632f71ee3146cb7ee00743b48d522011136"
@@ -45,7 +45,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: extract-clauses
     kind: loop
     loop_package: "sha256:9059bff06169730e7b3e1de2b8e3bccfe0741dad6f0b8ff639fb2b5237bf7443"
@@ -57,7 +57,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: join-checks
     kind: join
     mode: all_successful

@@ -23,7 +23,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: check-cors
     kind: loop
     loop_package: "sha256:e016042fef2a75a5cbdea25f83a029f9c28eaf16d74e6549979042881b689d6e"
@@ -34,7 +34,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: check-container-user
     kind: loop
     loop_package: "sha256:234e46eb74af20c1b5fa38a473e8097aa9f66847def677dd30bfebe41107befd"
@@ -45,7 +45,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: scan-secrets
     kind: loop
     loop_package: "sha256:57122b3bc5191b72d937d7637bf5e7a2bdf90ad4341148f17d1368388e530c2a"
@@ -57,7 +57,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: join-checks
     kind: join
     mode: all_successful

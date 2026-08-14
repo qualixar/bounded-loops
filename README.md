@@ -214,10 +214,9 @@ anything.
 `loop`, `tool`, `router`, `join`, `approval`, `audit`, `research_source`,
 `research_claim`, `subgraph`, `publish`.
 
-**What `bl graph run --execute` runs today:** only nodes with an admitted `local_cli`
-or `https` connector binding. Every other kind — **including `kind: loop`** — is
-refused by a fail-closed preflight. Do not write graphs that depend on loop nodes
-running yet.
+**What `bl graph run --execute` runs today:** nodes with an admitted `local_cli` or `https`
+connector binding, plus `kind: loop`, `join`, `approval` and `publish`. Every other kind is still
+refused by a fail-closed preflight.
 
 ### Graph commands
 
@@ -255,7 +254,7 @@ review.** The cross-model audit engine (`--audit-plan`) is the overlay for that.
 |---|---|
 | Gate-verified DAG (worker ≠ gate, controller-enforced identity check) | Shipped |
 | Local-CLI + BYOK/HTTPS connectors via `bl graph run --execute` | Shipped |
-| `kind: loop` nodes executable via `bl graph run --execute` | Not in this release — preflight refuses them |
+| `kind: loop` nodes executable via `bl graph run --execute` | Shipped — digest-pinned package, receipt-verifying gate. Runs at `workspace_only` isolation by default, which is NOT an OS sandbox |
 | No-secret egress broker (single-use leases; SSRF / DNS-rebind denied) | Shipped |
 | Hash-chained event log; on resume, full chain re-verified | Shipped — local runs marked `LOCAL/UNVERIFIED` |
 | Cross-model audit coverage gate (`--audit-plan` → Arena verdict) | Shipped — read-side; independence is receipt-asserted |

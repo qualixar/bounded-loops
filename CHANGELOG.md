@@ -7,13 +7,19 @@ All notable changes to bounded-loops are documented here. This project follows
 
 ### Changed
 
-- **Gate false-accept rate intervals are now anytime-valid confidence sequences.**
-  The Wilson score interval, which required independent Bernoulli trials, has been
-  replaced by the PrPl-EB empirical-Bernstein confidence sequence (Waudby-Smith &
-  Ramdas, JRSS-B 2023). The new interval is valid under optional stopping and
-  does not break when retries share a worker, prompt, or failure mode. The
-  `bl graph metrics` output label changes from `nominal-95% iid (UNCALIBRATED)`
-  to `anytime-valid 95% CS (PrPl-EB)`.
+- **Gate false-accept rate intervals now report measured coverage instead of an assumed one.**
+  The Wilson score interval required independent Bernoulli trials, which retried
+  attempts violate; its coverage under correlated retries measured 31–41%. It is
+  replaced by an empirical-Bernstein interval with a predictable plug-in, whose
+  coverage under the same simulated regime measured 96.9%. The `bl graph metrics`
+  label changes from `nominal-95% iid (UNCALIBRATED)` to
+  `emp-Bernstein 95% (COVERAGE-MEASURED)`.
+
+  **This is NOT an anytime-valid confidence sequence.** The radius is the
+  fixed-time empirical-Bernstein form and carries no stitching term, so
+  simultaneous validity over all sample sizes does not follow from it. The
+  measured figure is also coverage of the per-run latent rate, a different
+  estimand from the marginal false-accept rate — do not quote it as α coverage.
 
 ### Fixed
 

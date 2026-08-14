@@ -23,7 +23,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: balance-journal
     kind: loop
     loop_package: "sha256:a956879087e7bd77b00bfa7320fcbcbe09f24a573b71d5417f9b094ba3c71bb7"
@@ -34,7 +34,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: check-fx-rate
     kind: loop
     loop_package: "sha256:e2c88b1bcf45746beb1ed31574ed592c593b48b65006411b3037a5c555f88b0b"
@@ -45,7 +45,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: reconcile-ledger
     kind: loop
     loop_package: "sha256:888ded3fe20a52632340e3fc40635d3f353856f958a2cf641488e6fc392c72e3"
@@ -57,7 +57,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: join-checks
     kind: join
     mode: all_successful

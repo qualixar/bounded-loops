@@ -23,7 +23,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: check-reading-level
     kind: loop
     loop_package: "sha256:4d57216996a8ec9065c89b11a75d03a39abcfefccf43c0f1fd251bc5d21f4120"
@@ -34,7 +34,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: check-alt-text
     kind: loop
     loop_package: "sha256:7e7bb4873d8d27ce8bef30599230c0c36d809b8862718bfd4e8f41c9d08a0df5"
@@ -45,7 +45,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: map-claim-sources
     kind: loop
     loop_package: "sha256:368a4f77834a977fd5a5a2b538f05587c60570e8ec7be3434c782159e37cc1e0"
@@ -57,7 +57,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: join-checks
     kind: join
     mode: all_successful

@@ -508,7 +508,7 @@ is part of the engine's runtime path (not just a development or CI tool), pytest
 must be present in the same environment as the engine itself.
 
 Note: `kind: loop` as a **graph node kind** is distinct from a standalone loop using
-a pytest gate. `kind: loop` graph nodes are not executable via `bl graph run --execute`
+a pytest gate. `kind: loop` graph nodes ARE executable via `bl graph run --execute` as of 0.5.0
 in this release — preflight refuses them. See the capability matrix above.
 
 A test (`test_default_install_includes_pytest_for_shipped_pytest_gates`) asserts this

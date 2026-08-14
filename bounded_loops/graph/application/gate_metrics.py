@@ -73,9 +73,15 @@ INDEPENDENCE_CAVEAT = (
     "correlated retries with optional stopping was MEASURED at 96.9% by simulation, against 77.5% "
     "for Wilson on the same data. It is NOT yet an anytime-valid confidence sequence: the radius "
     "carries no stitching term, so simultaneous validity over all n is unproven here. "
-    "the 95% guarantee holds simultaneously for all sample sizes and under optional stopping, without "
-    "assuming independent Bernoulli trials. Retries sharing a worker, a prompt, or a failure mode do "
-    "not break the coverage guarantee. This replaces the Wilson interval, whose measured coverage "
+    # The four sentences deleted here asserted that "the 95% guarantee holds simultaneously for all
+    # sample sizes and under optional stopping" — the exact claim the sentence above denies. They
+    # were vestigial Wilson-era text left behind when the relabelling prepended the honest wording
+    # instead of replacing the paragraph. This string prints beside EVERY number and ships as JSON
+    # `independence_caveat`, so a quoter could splice the retracted half on its own and cite a
+    # guarantee the code disavows two sentences earlier.
+    "The MEASURED figure is coverage of the per-run latent rate under a simulated correlated-retry "
+    "regime, which is a DIFFERENT ESTIMAND from the marginal false-accept rate reported above — so "
+    "it must not be quoted as 'alpha coverage'. This replaces the Wilson interval, whose measured coverage "
     "under correlated retries was 31–41% (not 95%). The per-attempt-index slices remain the most "
     "interpretable figures — within attempt index k there is at most one observation per node."
 )

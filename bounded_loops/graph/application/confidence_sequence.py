@@ -1,7 +1,11 @@
-"""Anytime-valid confidence sequence for a bounded [0, 1] random variable.
+"""Fixed-time empirical-Bernstein interval for a bounded [0, 1] random variable.
 
-Implements the predictably-plugged-in empirical-Bernstein (PrPl-EB) confidence
-sequence from:
+NOT anytime-valid — see the ``prpl_eb_cs`` docstring. The title said "Anytime-valid confidence
+sequence" and the first paragraph said "Implements ... PrPl-EB", both of which overstate what the
+arithmetic below delivers: this is the CLOSED-FORM FIXED-TIME bound, without the stitching term a
+confidence sequence needs.
+
+The radius is taken from the empirical-Bernstein bound in:
 
     Waudby-Smith, I., & Ramdas, A. (2023). Estimating means of bounded random
     variables by betting. Journal of the Royal Statistical Society: Series B
@@ -17,7 +21,14 @@ sum of squared deviations V̂_n = Σ_{t=1}^{n}(X_t − μ̂_{t−1})², initiali
 where the 1/(3n) term comes from the Bennett inequality for [0, 1]-bounded
 variables (range b − a = 1 enters as (b−a)/(3n) = 1/(3n)).
 
-The e-process construction that makes this anytime-valid is Theorem 1 of
+BACKGROUND ONLY -- WHAT WOULD MAKE THIS ANYTIME-VALID, WHICH THIS MODULE DOES NOT IMPLEMENT.
+Read the ``prpl_eb_cs`` docstring for what is actually established. The theory below describes the
+e-process a STITCHED boundary would invert; the closed-form radius above is the fixed-time bound and
+does not carry the stitching term, so none of the simultaneous-over-all-n guarantee follows from it.
+This paragraph sits first in the file and would be what a paper citation reads, which is why it says
+so here rather than only in the function.
+
+The e-process construction that WOULD make this anytime-valid is Theorem 1 of
 Waudby-Smith & Ramdas (2023): the running product
 K_n(μ) = Π_{t=1}^{n}(1 + λ_t(X_t − μ)) is a nonnegative e-process for any
 fixed μ when the bets λ_t are predictable.  By Markov's inequality for
@@ -27,12 +38,14 @@ Bernstein exponential inequality — see also Corollary 3 of Howard, Ramdas,
 McAuliffe & Sekhon (2021), "Time-uniform, nonparametric, nonasymptotic
 confidence sequences," Annals of Statistics 49(2), 1055–1080.
 
-**Anytime-validity in plain English.** The guarantee
+**Anytime-validity in plain English — the property a stitched boundary WOULD give, and that
+this module does NOT deliver.** The guarantee would be that
 P(∀ n ≥ 1 : μ ∈ C_n) ≥ 1 − α holds simultaneously for ALL sample sizes.
-A reader who peeks after every observation is not fooled, and the probability
-of ever excluding the true mean is bounded by α.  This is NOT a fixed-sample
-CI: the boundary-crossing probability under optional stopping is correctly
-controlled.
+A reader who peeks after every observation WOULD not be fooled, and the
+probability of ever excluding the true mean WOULD be bounded by α. None of that
+is delivered here: without the stitching term this IS a fixed-sample bound, and
+the boundary-crossing probability under optional stopping is NOT controlled by
+the arithmetic in this module. What IS known is measured, not proven.
 
 **Why this replaces Wilson in bounded-loops.** Wilson assumes independent
 Bernoulli trials.  In bounded-loop runs, retries of a node share its worker,
@@ -64,7 +77,13 @@ def prpl_eb_cs(
     latent propensity, then attempts drawn conditionally on it), checked after every observation,
     simulated coverage was **96.9%** against a nominal 95% — while Wilson on the same data reached
     **77.5%**.  ``tests/graph/application/test_confidence_sequence.py`` is that measurement, and it
-    fails if the radius is shrunk by 20%, so it is strict enough to detect a wrong implementation.
+    fails if the radius is shrunk by 20%.
+
+    That perturbation catches a UNIFORMLY NARROW interval and nothing else. It would not catch a
+    wrong centre, a wrong variance, a swapped tail, or a missing [0, 1] clip — a constant
+    ``[0.48, 0.52]`` would pass at this parameter setting. An earlier version of this docstring said
+    the check was "strict enough to detect a wrong implementation", which overstates from "scaled"
+    to "wrong".
 
     NOT ESTABLISHED: that this is an anytime-valid confidence sequence.  The radius below is the
     fixed-time empirical-Bernstein form and carries **no stitching term** (no ``log log n``), so

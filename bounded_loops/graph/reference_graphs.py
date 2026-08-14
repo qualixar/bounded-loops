@@ -197,7 +197,13 @@ def _node_block(node_id: str, digest: str, *, outputs: str, inputs: str = "") ->
         f"      max_attempts: 1\n"
         f"      max_wallclock_s: 300\n"
         f"    effects: []\n"
-        f"    isolation: workspace_only\n"
+        # process_restricted, NOT workspace_only. workspace_only maps to SandboxMechanism.NONE,
+        # which returns UNWRAPPED argv — so every loop node in these graphs ran with egress, fs_read,
+        # fs_write and net all "not_enforced" while loop_node_entry's docstring described a Seatbelt
+        # profile and the README said every node runs inside one. A loop's gate command is arbitrary
+        # shell from loop.yaml and is community-PR surface, so an unwrapped gate has host filesystem
+        # write and unrestricted network: an isolated HOME does not stop open("~/.ssh/...").
+        f"    isolation: process_restricted\n"
     )
 
 

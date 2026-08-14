@@ -23,7 +23,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: check-roadmap-fields
     kind: loop
     loop_package: "sha256:c90b62306b6aee94de8cf5d27e8ed958adf03f955c75aec702c9e706aca767c1"
@@ -34,7 +34,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: check-commits
     kind: loop
     loop_package: "sha256:6046de40dd75a48583675806a82d7ea678c1937e71913b94e16f2111c950e311"
@@ -45,7 +45,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: fix-red-green
     kind: loop
     loop_package: "sha256:e4366a8a4370600f8a42632f8d25dae52f2356b889d28b649d82660fc3d1b4c3"
@@ -57,7 +57,7 @@ nodes:
       max_attempts: 1
       max_wallclock_s: 300
     effects: []
-    isolation: workspace_only
+    isolation: process_restricted
   - id: join-checks
     kind: join
     mode: all_successful
