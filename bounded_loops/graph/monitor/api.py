@@ -359,6 +359,10 @@ def _execute(payload: Mapping[str, Any]) -> dict:
             "node_id": node["node_id"],
             "max_attempts": node["max_attempts"],
             "deadline_s": (node["hard_deadline_ms"] or 0) // 1000,
+            # Carried through as None when unset. The UI renders that as "none", not as a blank
+            # cell — an absent ceiling is the most important thing on this screen.
+            "max_tokens": node.get("max_tokens"),
+            "max_cost_microunits": node.get("max_cost_microunits"),
         }
         for node in planned["nodes"]
     ]

@@ -236,12 +236,23 @@ function App() {
 
   // ── ⌘K command list — operations only, no chat ───────────────────────────────
   const hasManifest = !!manifest;
+
+  // Whether the run currently being WATCHED is live. Used for live-view affordances only.
+  //
+  // It deliberately does NOT gate Run any more. It used to, and that was wrong: the run in the
+  // viewer and the manifest in the editor are different objects. Selecting any live run —
+  // which is the normal thing to do in a monitor — disabled Run for a graph that had nothing
+  // to do with it, so the button was permanently dead for exactly the users watching their
+  // agent work. Starting a second run of a graph is legitimate anyway; the engine gives each
+  // run its own id and directory. Accidental starts are prevented by the preview step, which
+  // creates nothing until confirmed, not by grey-ing out the control.
   const isLiveRun   = projection?.run_state === 'RUNNING' || projection?.run_state === 'PENDING';
+  const canExecute  = hasManifest && !executing;
 
   const paletteCommands = [
     { id: 'lint',    label: 'Lint graph',                shortcut: '⌘I', icon: ICO.lint,    disabled: !hasManifest,                         action: onLint },
     { id: 'plan',    label: 'Plan graph',                shortcut: '⌘P', icon: ICO.plan,    disabled: !hasManifest,                         action: onPlan },
-    { id: 'run',     label: 'Execute graph',             shortcut: '⌘R', icon: ICO.run,     disabled: !hasManifest || executing || isLiveRun, action: onExecutePreview },
+    { id: 'run',     label: 'Execute graph',             shortcut: '⌘R', icon: ICO.run,     disabled: !canExecute,                          action: onExecutePreview },
     { id: 'save',    label: 'Save graph',                shortcut: '⌘S', icon: ICO.save,    disabled: !hasManifest || !graphName.trim(),      action: onSave },
     { id: 'approve', label: 'Approve selected node',     shortcut: 'A',  icon: ICO.approve, disabled: !selectedNodeId,                        action: () => onApprove('approved', false) },
     { id: 'handoff', label: 'Get agent handoff command', shortcut: '⌘H', icon: ICO.handoff, disabled: !graphName.trim(),                      action: onHandoff },
@@ -288,7 +299,7 @@ function App() {
             Save
           </button>
           <button className="btn btn-sm" onClick=${onExecutePreview}
-            disabled=${!hasManifest || executing || isLiveRun} title="Execute (⌘R)">
+            disabled=${!canExecute} title="Execute (⌘R)">
             ${executing ? html`<span className="spinner"/>` : html`
               <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
                 <path d="M2 1.5l6 3.5-6 3.5V1.5z" fill="currentColor"/>

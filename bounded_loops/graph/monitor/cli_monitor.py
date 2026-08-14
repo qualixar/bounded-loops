@@ -85,6 +85,12 @@ def cmd_monitor(args: argparse.Namespace) -> int:
     print("  into a chat, an issue, or a shared terminal: anything holding it can drive this")
     print("  console until you stop it. Ctrl-C to stop.")
     print()
+    # Flush before blocking in serve_forever(). Python block-buffers stdout when it is not a
+    # tty, so `bl monitor > monitor.log &` — an ordinary way to run this — left the URL sitting
+    # in an unflushed buffer while the server happily served requests nobody could authenticate
+    # against. The token is the session's only credential; a credential you cannot read is the
+    # same as no server. Found by redirecting the output, not by reading this function.
+    sys.stdout.flush()
 
     if not getattr(args, "no_browser", False):
         # Best-effort. A headless or locked-down environment simply gets the printed URL, which

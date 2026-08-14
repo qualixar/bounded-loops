@@ -7,7 +7,9 @@ reaching into someone's project.
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -293,3 +295,55 @@ def test_the_plan_route_returns_EDGES_so_a_dag_can_be_drawn(served: MonitorServe
     assert len(body["edges"]) >= 5
     assert {"from_node", "from_port", "to_node", "to_port", "when"} <= set(body["edges"][0])
     assert any(edge["when"] for edge in body["edges"]), "no edge guard survived the projection"
+
+
+def test_the_url_is_FLUSHED_before_the_server_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`bl monitor > log &` must still show the URL.
+
+    Python block-buffers stdout when it is not a tty. Without an explicit flush the printed
+    URL — which carries the session's only credential — stayed in the buffer while
+    `serve_forever()` blocked, so the server ran and nobody could open it. Regression test for
+    a bug found by redirecting the command's output, not by reading the function.
+    """
+    import bounded_loops.graph.monitor.server as server_module
+    from bounded_loops.graph.monitor import cli_monitor
+    from bounded_loops.workspace import discover
+
+    monkeypatch.setenv("BOUNDED_LOOPS_WORKSPACE", str(tmp_path))
+    served: list[str] = []
+
+    class _StubServer:
+        """Stands in for the real server so nothing binds a port or blocks."""
+
+        server_address = ("127.0.0.1", 9999)
+        token = "stub-token"  # noqa: S105 - a stub, not a credential
+        app_url = "http://127.0.0.1:9999/?token=stub-token"
+
+        def __init__(self, *, port: int) -> None:
+            self.workspace = discover()
+
+        def serve_forever(self) -> None:
+            served.append("blocked")
+            raise KeyboardInterrupt
+
+        def server_close(self) -> None:
+            return None
+
+    monkeypatch.setattr(server_module, "MonitorServer", _StubServer)
+
+    real_flush = sys.stdout.flush
+    flush_points: list[int] = []
+
+    def _counting_flush() -> None:
+        flush_points.append(len(served))
+        real_flush()
+
+    monkeypatch.setattr(sys.stdout, "flush", _counting_flush)
+
+    exit_code = cli_monitor.cmd_monitor(argparse.Namespace(port=0, no_browser=True))
+
+    assert exit_code == 0
+    assert flush_points, "stdout was never flushed, so a redirected URL stays buffered"
+    assert flush_points[0] == 0, "the flush must happen BEFORE serve_forever() blocks"

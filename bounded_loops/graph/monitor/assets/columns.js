@@ -11,6 +11,36 @@ const { useState, useMemo, useCallback } = React;
 
 const TERMINAL = new Set(['SUCCEEDED', 'FAILED', 'HALTED', 'CANCELLED', 'EXPIRED']);
 
+// ── Ceiling formatters ────────────────────────────────────────────────────────
+// Each returns the WORD "none" for an absent ceiling rather than an empty cell. A blank reads
+// as "nothing to worry about here"; the truth is the opposite, and this table is the last
+// screen before real work starts on someone's machine.
+const NONE = () => html`<span className="ceil-none">none</span>`;
+
+function fmtDuration(seconds) {
+  if (!seconds) return NONE();
+  if (seconds < 60)    return `${seconds}s`;
+  if (seconds < 3600)  return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${+(seconds / 3600).toFixed(1)}h`;
+  return `${+(seconds / 86400).toFixed(1)}d`;
+}
+
+function fmtCount(n) {
+  if (n === null || n === undefined) return NONE();
+  if (n >= 1_000_000) return `${+(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000)     return `${+(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function fmtCost(microunits) {
+  if (microunits === null || microunits === undefined) return NONE();
+  // A microunit is a millionth of the account's currency unit. Rendered without a currency
+  // symbol on purpose: the engine never learns which currency the connection bills in, and
+  // printing "$" over an unknown one would be an invented fact.
+  const units = microunits / 1_000_000;
+  return units < 0.01 ? `${microunits}µ` : units.toFixed(2);
+}
+
 // ── Inline icons (16px grid, currentColor, SVG only) ─────────────────────────
 const IcoRefresh = () => html`<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
   <path d="M10 6A4 4 0 1 1 6 2.1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
@@ -217,11 +247,33 @@ export function MonitorCol({
                   <div className="modal-item" key=${i}>${ef}</div>`)}
               </div>` : null}
 
-            ${executePreview.ceilings && Object.keys(executePreview.ceilings).length > 0 ? html`
+            ${executePreview.ceilings?.length > 0 ? html`
               <div className="modal-section">
-                <div className="modal-section-label">Ceilings</div>
-                ${Object.entries(executePreview.ceilings).map(([k, v]) => html`
-                  <div className="modal-item" key=${k}>${k}: ${JSON.stringify(v)}</div>`)}
+                <div className="modal-section-label">
+                  Ceilings (${executePreview.ceilings.length} nodes)
+                </div>
+                <table className="ceil-table">
+                  <thead>
+                    <tr>
+                      <th>Node</th><th>Attempts</th><th>Deadline</th>
+                      <th>Tokens</th><th>Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${executePreview.ceilings.map(c => html`
+                      <tr key=${c.node_id}>
+                        <td className="ceil-node">${c.node_id}</td>
+                        <td>${c.max_attempts ?? html`<span className="ceil-none">none</span>`}</td>
+                        <td>${fmtDuration(c.deadline_s)}</td>
+                        <td>${fmtCount(c.max_tokens)}</td>
+                        <td>${fmtCost(c.max_cost_microunits)}</td>
+                      </tr>`)}
+                  </tbody>
+                </table>
+                <div className="modal-hint">
+                  “none” is no ceiling at all, not a high one. Reaching a ceiling pauses the
+                  run so you can raise it deliberately and resume — it is not a failure.
+                </div>
               </div>` : null}
 
             ${executePreview.pauses_at?.length > 0 ? html`

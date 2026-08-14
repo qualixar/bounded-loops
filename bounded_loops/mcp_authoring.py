@@ -317,6 +317,12 @@ def _plan(manifest_yaml: str) -> dict:
                 "effects": sorted(effect.value for effect in node.required_effects),
                 "max_attempts": node.budgets.get("max_attempts"),
                 "hard_deadline_ms": node.hard_deadline_ms,
+                # Spend ceilings, because a caller showing someone "the ceilings" before they
+                # press Run and omitting the two about MONEY is showing them the reassuring
+                # half. `None` here means no ceiling — which is not a large ceiling, and the
+                # surfaces that render this say so in those words.
+                "max_tokens": node.budgets.get("max_tokens"),
+                "max_cost_microunits": node.budgets.get("max_cost_microunits"),
                 "pauses_for_a_human": node.kind == "approval",
             }
             for node in plan.nodes
