@@ -15,6 +15,7 @@ All claims are verifiable:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from bounded_loops.graph.application.refusals import REFUSAL_CODES
@@ -199,4 +200,63 @@ def test_pretooluse_hook_wired_in_hooks_json(host: str) -> None:
     text = hooks_path.read_text(encoding="utf-8")
     assert "pretooluse_loop_package" in text, (
         f"plugins/{host}/hooks/hooks.json does not wire pretooluse_loop_package"
+    )
+
+
+# ── added during orchestrator review ─────────────────────────────────────────
+
+
+def _pretooluse_groups(host: str) -> list[dict]:
+    """The PreToolUse groups for a host, tolerating the two wiring schemas in use.
+
+    claude-code and codex nest everything under a top-level "hooks" key; antigravity puts the
+    event names at the top level. That difference is exactly where a per-host wiring change goes
+    unnoticed, so this helper reads both rather than assuming one.
+    """
+    data = json.loads(
+        (REPO_ROOT / "plugins" / host / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    )
+    root = data.get("hooks", data)
+    groups = root.get("PreToolUse", [])
+    assert isinstance(groups, list) and groups, f"{host} has no PreToolUse wiring"
+    return groups
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex", "antigravity"])
+def test_the_pretooluse_hook_is_scoped_to_file_writing_tools(host: str) -> None:
+    """Without a matcher the host spawns a Python interpreter on EVERY tool call.
+
+    The hook filters internally against `_FILE_WRITE_TOOLS` and exits 0, so the behaviour is
+    correct either way — but paying an interpreter start per tool use, all session long, to
+    discover there is nothing to do is a cost the matcher removes for free. The matcher must also
+    stay in step with the hook's own filter, or the two disagree about which tools are checked.
+    """
+    from bounded_loops.hooks.pretooluse_loop_package import _FILE_WRITE_TOOLS
+
+    for group in _pretooluse_groups(host):
+        commands = [entry.get("command", "") for entry in group.get("hooks", [])]
+        if not any("pretooluse_loop_package" in command for command in commands):
+            continue
+        matcher = group.get("matcher", "")
+        assert matcher, f"{host} wires the PreToolUse hook with no tool matcher"
+        assert set(matcher.split("|")) == set(_FILE_WRITE_TOOLS), (
+            f"{host} matcher {matcher!r} disagrees with the hook's own "
+            f"_FILE_WRITE_TOOLS {sorted(_FILE_WRITE_TOOLS)}"
+        )
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex", "antigravity"])
+def test_the_stop_hook_is_wired_for_every_host(host: str) -> None:
+    """The Stop hook is the product's thesis pointed at the orchestrator; unwired it is nothing."""
+    data = json.loads(
+        (REPO_ROOT / "plugins" / host / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    )
+    root = data.get("hooks", data)
+    commands = [
+        entry.get("command", "")
+        for group in root.get("Stop", [])
+        for entry in group.get("hooks", [])
+    ]
+    assert any("graph_run_stop" in command for command in commands), (
+        f"{host} does not wire bounded_loops.hooks.graph_run_stop on Stop"
     )

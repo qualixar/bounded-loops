@@ -15,12 +15,23 @@ from pathlib import Path
 
 import pytest
 
+from bounded_loops.hooks import graph_run_stop
 from bounded_loops.hooks.graph_run_stop import (
     main,
     _check_workspace,
     _extract_cwd,
     _read_run_state,
 )
+
+
+@pytest.fixture(autouse=True)
+def _hook_resolves_from_the_payload_not_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`tests/conftest.py` sets $BOUNDED_LOOPS_WORKSPACE for every test, and `discover()` gives
+    an explicit workspace precedence over walking up — correctly, but it would mean these tests
+    measured the fixture's directory rather than the one in the hook payload."""
+    monkeypatch.delenv("BOUNDED_LOOPS_WORKSPACE", raising=False)
 
 # ---------------------------------------------------------------------------
 # Helpers to write minimal controller-events.jsonl fixtures
@@ -105,22 +116,36 @@ def test_read_run_state_failed(tmp_path: Path) -> None:
     assert _read_run_state(run_dir) == "FAILED"
 
 
-def test_read_run_state_halted(tmp_path: Path) -> None:
-    run_dir = tmp_path / "run-001"
-    _write_events(run_dir, "run.created", "run.started", "run.halted")
-    assert _read_run_state(run_dir) == "HALTED"
-
-
 def test_read_run_state_cancelled(tmp_path: Path) -> None:
     run_dir = tmp_path / "run-001"
     _write_events(run_dir, "run.created", "run.started", "run.cancelled")
     assert _read_run_state(run_dir) == "CANCELLED"
 
 
-def test_read_run_state_expired(tmp_path: Path) -> None:
+def test_run_halted_and_run_expired_are_NOT_events_this_engine_emits(tmp_path: Path) -> None:
+    """HALTED and EXPIRED are terminal states with no event type that produces them.
+
+    This test replaces two that asserted the opposite. They were written from the terminal-state
+    list in a capability inventory: given HALTED in the set, `run.halted` looks like the obvious
+    event name, and both the mapping and its tests were written to agree with each other. Neither
+    name appears anywhere in the engine — nothing emits them and `_apply` has no branch for them.
+
+    Kept as a live test rather than a deletion so that if `run.halted` is ever implemented for
+    real, this fails and forces the hook's map to be updated deliberately.
+    """
+    import inspect
+
+    from bounded_loops.graph.adapters.persistence import event_log
+
+    source = inspect.getsource(event_log)
+    assert '"run.halted"' not in source
+    assert '"run.expired"' not in source
+
     run_dir = tmp_path / "run-001"
-    _write_events(run_dir, "run.created", "run.started", "run.expired")
-    assert _read_run_state(run_dir) == "EXPIRED"
+    _write_events(run_dir, "run.created", "run.started", "run.halted")
+    # Unrecognised event -> the last state the hook DID recognise. Reading it as terminal would
+    # let the host claim "done" on the strength of an event the engine never writes.
+    assert _read_run_state(run_dir) == "RUNNING"
 
 
 def test_read_run_state_invalid_line_is_skipped(tmp_path: Path) -> None:
@@ -348,3 +373,138 @@ def test_main_antigravity_all_terminal_prints_allow_json(
     out = json.loads(capsys.readouterr().out)
     assert out["decision"] == "allow"
     assert code == 0
+
+
+# ── drift tripwires added during orchestrator review ─────────────────────────
+
+
+def test_the_hook_uses_the_LOGS_terminal_set_not_a_copy() -> None:
+    """A terminal state the hook does not recognise reads as "still active".
+
+    That is the worst available failure for this hook: it would block every session in the
+    workspace forever, and the user's only recourse would be to remove the plugin. So the set is
+    imported from the event log rather than restated here.
+    """
+    from bounded_loops.graph.adapters.persistence.event_log import _TERMINAL
+
+    assert graph_run_stop._TERMINAL_RUN_STATES is _TERMINAL
+
+
+def test_every_event_the_hook_maps_is_one_the_LOG_actually_applies() -> None:
+    """An invented event name is an entry that can never fire — dead code posing as coverage.
+
+    An earlier draft carried `run.halted` and `run.expired`, inferred from the terminal-state set.
+    Neither exists: nothing in the engine emits them and `_apply` has no branch for them.
+    """
+    import inspect
+
+    from bounded_loops.graph.adapters.persistence import event_log
+
+    applied = inspect.getsource(event_log)
+    for event_type in graph_run_stop._STATE_SETTING_EVENTS:
+        assert f'"{event_type}"' in applied, (
+            f"{event_type!r} is mapped by the hook but the event log never applies it"
+        )
+
+
+def test_the_hook_resolves_the_workspace_through_the_ONE_resolver() -> None:
+    """A hand-rolled walk-up looks equivalent to `discover()` and is not.
+
+    `discover()` stops at the git repository root, so a checkout cannot block on runs belonging
+    to a workspace above it, and it honours $BOUNDED_LOOPS_WORKSPACE. A second implementation
+    would silently check the wrong directory — which, for a hook whose whole job is preventing a
+    false "done", means checking nothing.
+    """
+    import inspect
+
+    source = inspect.getsource(graph_run_stop._discover_project_root)
+    assert "from bounded_loops.workspace import discover" in source
+    assert "resolved.parents" not in source, "the hand-rolled walk-up is back"
+
+
+def test_a_workspace_ABOVE_the_git_root_is_not_checked_by_the_hook(
+    tmp_path, monkeypatch,
+) -> None:
+    """The ceiling, end to end through the hook rather than through the resolver.
+
+    An outer directory holds a workspace with an ACTIVE run; the session's cwd is a git checkout
+    inside it. The hook must allow the stop: those runs are not this project's.
+    """
+    monkeypatch.delenv("BOUNDED_LOOPS_WORKSPACE", raising=False)
+    outer_runs = tmp_path / ".bounded-loops" / "runs" / "r1"
+    outer_runs.mkdir(parents=True)
+    (outer_runs / "controller-events.jsonl").write_text(
+        json.dumps({"type": "run.started", "payload": {"state": "RUNNING"}}) + "\n",
+        encoding="utf-8",
+    )
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
+    assert graph_run_stop._discover_project_root(str(repo)) is None
+
+
+def test_the_project_can_downgrade_the_BLOCK_to_a_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Installing this must never take away someone's ability to end a session.
+
+    Same active run as `test_main_active_run_blocks_exit_2_with_stderr`, which exits 2. The only
+    difference is four lines the user put in THEIR project's config, and the exit code changes to
+    0 while still reporting what is active.
+    """
+    ws_root = _make_workspace(tmp_path)
+    _write_events(
+        ws_root / ".bounded-loops" / "runs" / "run-active",
+        "run.created", "run.started",
+    )
+    (ws_root / ".bounded-loops" / "config.toml").write_text(
+        "[hooks]\nstop_on_active_run = false\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        sys, "stdin",
+        type("F", (), {"read": lambda self: json.dumps({"cwd": str(tmp_path)})})(),
+    )
+
+    code = main(["graph_run_stop.py", "claude-code"])
+
+    assert code == 0, "the switch did not disable the block"
+    assert "run-active" in capsys.readouterr().err, "it went quiet instead of warning"
+
+
+def test_a_MALFORMED_config_does_not_silently_disable_the_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail-open on a broken config would let a typo turn the guard off without telling anyone."""
+    ws_root = _make_workspace(tmp_path)
+    _write_events(
+        ws_root / ".bounded-loops" / "runs" / "run-active",
+        "run.created", "run.started",
+    )
+    (ws_root / ".bounded-loops" / "config.toml").write_text("[hooks\nbroken =", encoding="utf-8")
+    monkeypatch.setattr(
+        sys, "stdin",
+        type("F", (), {"read": lambda self: json.dumps({"cwd": str(tmp_path)})})(),
+    )
+
+    assert main(["graph_run_stop.py", "claude-code"]) == 2
+
+
+def test_the_switch_must_be_EXPLICITLY_false_not_merely_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`stop_on_active_run = true` and an empty [hooks] table both keep the default."""
+    ws_root = _make_workspace(tmp_path)
+    _write_events(
+        ws_root / ".bounded-loops" / "runs" / "run-active",
+        "run.created", "run.started",
+    )
+    config = ws_root / ".bounded-loops" / "config.toml"
+    monkeypatch.setattr(
+        sys, "stdin",
+        type("F", (), {"read": lambda self: json.dumps({"cwd": str(tmp_path)})})(),
+    )
+
+    for body in ("[hooks]\nstop_on_active_run = true\n", "[hooks]\n", ""):
+        config.write_text(body, encoding="utf-8")
+        assert main(["graph_run_stop.py", "claude-code"]) == 2, f"config {body!r} disabled the block"

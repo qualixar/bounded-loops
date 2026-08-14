@@ -78,6 +78,13 @@ version = {CONFIG_VERSION}
 # this section, when present, narrows it for this project only.
 # [egress]
 # posture = "deny"
+
+# The Stop hook refuses to let a host agent say "done" while a run here is not in a terminal
+# state. That is the point of the tool, and it is also a behaviour change in your editor — so it
+# has an off switch, and the switch lives in YOUR project, not in our plugin files. Set false to
+# get a warning instead of a refusal.
+# [hooks]
+# stop_on_active_run = true
 """
 
 

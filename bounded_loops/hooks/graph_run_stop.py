@@ -27,20 +27,29 @@ import json
 import sys
 from pathlib import Path
 
-# Run-level states that are terminal — a run in any of these is done.
-# Source: bounded_loops/graph/adapters/persistence/event_log.py:32
-# _TERMINAL = frozenset({"SUCCEEDED", "FAILED", "HALTED", "CANCELLED", "EXPIRED"})
-_TERMINAL_RUN_STATES = frozenset({"SUCCEEDED", "FAILED", "HALTED", "CANCELLED", "EXPIRED"})
+# Imported, not copied. A hardcoded copy of this set is the failure mode that matters most here:
+# a terminal state the hook does not recognise reads as "still active", so the hook would block
+# every session in that workspace forever, and the user's only recourse would be to remove the
+# plugin. `tests/test_graph_run_stop_hook.py` additionally pins the event map below against the
+# log's own transitions.
+from bounded_loops.graph.adapters.persistence.event_log import (  # noqa: E402
+    _TERMINAL as _TERMINAL_RUN_STATES,
+)
 
-# Event types that directly set run state.
-# Source: event_log.py _apply() function.
+# Event types that set run state, with the state each one declares.
+#
+# `event_payloads._state(payload, expected)` REQUIRES the payload's state to equal the literal
+# the log expects for that event type — it raises otherwise — so this mapping is exact rather
+# than a guess about what a payload might contain.
+#
+# Note what is absent: there is no `run.halted` or `run.expired` event. HALTED and EXPIRED are in
+# the terminal set but no event type produces them, so inventing those two names (an earlier draft
+# did, by inference from the terminal set) added two entries that could never fire.
 _STATE_SETTING_EVENTS = {
     "run.started": "RUNNING",
     "run.succeeded": "SUCCEEDED",
     "run.failed": "FAILED",
     "run.cancelled": "CANCELLED",
-    "run.halted": "HALTED",
-    "run.expired": "EXPIRED",
 }
 
 EVENTS_FILENAME = "controller-events.jsonl"
@@ -121,37 +130,83 @@ def _check_workspace(project_root: Path) -> tuple[bool, str]:
     if active:
         names = ", ".join(active)
         return False, (
-            f"bounded graph run(s) still active: {names}. "
-            "Wait for them to finish, cancel them with `bl graph cancel`, "
-            "or resume them. A non-terminal run is never 'done'."
+            f"bounded graph run(s) still active: {names}. A non-terminal run is never 'done'.\n"
+            "  To make this a warning instead of a block, set in .bounded-loops/config.toml:\n"
+            "    [hooks]\n"
+            "    stop_on_active_run = false\n"
+            "  - paused on an approval? `bl graph approve --run <dir> --node <id> --decision ...`\n"
+            "  - paused on a spend ceiling, or interrupted? `bl graph resume --run <dir>`\n"
+            "  - abandoned for good? delete that run directory; the receipt log is the run, so\n"
+            "    removing it is the only way to retire one, and it is deliberately explicit.\n"
+            f"  Inspect first with: bl graph status --run {runs_dir}/<run-id>"
         )
     return True, "no active bounded graph runs"
 
 
 def _discover_project_root(cwd: str) -> Path | None:
-    """Walk upward from cwd to find the nearest .bounded-loops/ directory.
+    """The workspace root for `cwd`, via the one resolver every surface uses.
 
-    Mirrors workspace.discover() semantics but avoids importing the full
-    workspace module so this hook has minimal dependencies and stays fast.
+    This deliberately imports `bounded_loops.workspace.discover` rather than re-walking the
+    tree here. A hand-rolled walk-up looks equivalent and is not: `discover()` stops at the git
+    repository root, so a checkout can never block on runs belonging to a workspace sitting
+    ABOVE it, and it honours `$BOUNDED_LOOPS_WORKSPACE`. A second implementation of "where does
+    this project keep its runs" would silently guard the wrong directory — which for a hook that
+    exists to prevent false "done" claims means guarding nothing at all.
 
-    Returns the project root (parent of .bounded-loops/), or None if no
-    workspace is found.
+    Returns the project root (the parent of `.bounded-loops/`), or None if there is no workspace
+    to check.
     """
     try:
         start = Path(cwd)
-        if not start.is_absolute() or start.is_symlink():
+        if not start.is_absolute():
             return None
         resolved = start.resolve()
         if not resolved.is_dir():
             return None
-    except (TypeError, ValueError, OSError):
-        return None
+        from bounded_loops.workspace import discover
 
-    for candidate in (resolved, *resolved.parents):
-        ws = candidate / WORKSPACE_DIRNAME
-        if ws.is_dir() and not ws.is_symlink():
-            return candidate
-    return None
+        workspace = discover(start=resolved)
+    except Exception:  # noqa: BLE001 - fail-open: a hook must never strand the session
+        return None
+    return workspace.project_root if workspace.exists() else None
+
+
+def _blocking_enabled(project_root: Path) -> bool:
+    """Whether this workspace wants an active run to BLOCK the stop, or merely warn.
+
+    Installing bounded-loops must never silently take away someone's ability to end a session.
+    Blocking is the default because it is the product's own thesis pointed at the orchestrator —
+    but it is a behaviour change in the user's editor, so it has an off switch that lives in
+    their project rather than in our plugin files:
+
+        [hooks]
+        stop_on_active_run = false
+
+    Turned off, the hook still reports what is active; it just does not deny. Any failure to read
+    the config keeps the default, because a malformed config must not quietly disable a guard.
+    """
+    try:
+        from bounded_loops.workspace import Workspace, read_config
+
+        config = read_config(Workspace(project_root=project_root, origin="existing"))
+    except Exception:  # noqa: BLE001 - an unreadable config keeps the default
+        return True
+    hooks = config.get("hooks")
+    if isinstance(hooks, dict) and hooks.get("stop_on_active_run") is False:
+        return False
+    return True
+
+
+def _allow_loudly(why: str) -> int:
+    """Fail open, but SAY SO.
+
+    Every allow-path below is a case where the hook could not perform its check. Returning 0
+    silently is what makes a guard rot: the user keeps believing they are protected while nothing
+    is being verified. Failing open is still the right call — a hook bug must never strand
+    someone mid-session — so the cost is paid in one line of stderr instead of in false trust.
+    """
+    print(f"bounded-loops: run check skipped — {why}", file=sys.stderr)
+    return 0
 
 
 def main(argv: list[str]) -> int:
@@ -159,19 +214,25 @@ def main(argv: list[str]) -> int:
     try:
         payload = json.loads(sys.stdin.read() or "{}")
     except (json.JSONDecodeError, ValueError):
-        return 0  # malformed payload — fail open
+        return _allow_loudly("the host sent a payload this hook could not parse")
     if not isinstance(payload, dict):
-        return 0
+        return _allow_loudly("the host's payload was not a JSON object")
 
     cwd_str = _extract_cwd(payload, tool)
     if cwd_str is None:
-        return 0  # can't determine directory — allow
+        return _allow_loudly(f"the {tool} payload carried no working directory")
 
     project_root = _discover_project_root(cwd_str)
     if project_root is None:
-        return 0  # no workspace found — allow
+        # Not an error and not worth a line of noise: most directories are not bounded-loops
+        # workspaces, and there is genuinely nothing to check.
+        return 0
 
     passed, reason = _check_workspace(project_root)
+
+    if not passed and not _blocking_enabled(project_root):
+        print(f"bounded-loops: {reason}", file=sys.stderr)
+        return 0
 
     if tool == "antigravity":
         decision = "allow" if passed else "deny"

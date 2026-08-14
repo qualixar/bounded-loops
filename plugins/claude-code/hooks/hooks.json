@@ -24,7 +24,8 @@
             "command": "python3 -m bounded_loops.hooks.pretooluse_loop_package claude-code",
             "timeout": 10
           }
-        ]
+        ],
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit"
       }
     ]
   }

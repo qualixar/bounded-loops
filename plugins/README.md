@@ -12,6 +12,35 @@ python scripts/smoke_mcp_server.py
 The smoke command starts the real stdio server, initializes an MCP client, and
 lists the required tools. A successful run prints `MCP smoke passed` and exits.
 
+## Installing is additive — your existing configuration is yours
+
+You almost certainly already have hooks, agents, and MCP servers configured. Nothing here
+replaces any of them.
+
+* **Nothing in this repository writes a user-level host config.** Not
+  `~/.claude/settings.json`, not `~/.codex/config.toml`, nothing. Installation happens through
+  each host's own plugin mechanism, and the host merges our plugin-local files with your
+  settings. `tests/release/test_install_is_additive.py` pins this against the source tree, so a
+  future convenience installer cannot quietly acquire the ability to overwrite your setup.
+* **Our hooks sit alongside yours.** Each `plugins/<host>/hooks/hooks.json` declares only
+  `bounded_loops.hooks.*` commands. Every supported host runs all hooks registered for an event,
+  so an existing Stop or PreToolUse hook of yours keeps running exactly as before.
+* **`AGENTS.md.snippet` is APPEND-only.** Add its contents to the end of your existing
+  `AGENTS.md`. **Do not replace** your `AGENTS.md` with it — the file is a fragment, not a
+  document, and copying it over the top would delete your own instructions.
+* **The Stop hook has an off switch, and it lives in your project.** That hook refuses to let a
+  host agent declare a session "done" while a bounded run is not in a terminal state. That is the
+  point of the tool, and it is also a behaviour change in your editor, so you can downgrade it to
+  a warning in `.bounded-loops/config.toml`:
+
+  ```toml
+  [hooks]
+  stop_on_active_run = false
+  ```
+
+* **Uninstalling leaves nothing behind** except the `.bounded-loops/` directory in your projects,
+  which holds your run receipts. That is yours to keep or delete.
+
 ## Codex
 
 From a clone of this repository, add its local marketplace and install the
