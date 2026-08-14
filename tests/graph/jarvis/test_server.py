@@ -19,6 +19,8 @@ import pytest
 from bounded_loops.graph.jarvis import api
 from bounded_loops.graph.jarvis.server import _ASSETS, JarvisServer
 
+REPO_ROOT_GRAPHS = Path(__file__).resolve().parents[3] / "graphs"
+
 
 @pytest.fixture
 def served(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[JarvisServer]:
@@ -233,3 +235,61 @@ def test_the_stream_refuses_a_missing_token_before_looking_at_the_run(
     served: JarvisServer,
 ) -> None:
     assert _get(served, "/events?run=whatever", token="", origin=_base(served)) == 403
+
+
+# ── exactly how far the unauthenticated surface goes ─────────────────────────
+
+
+@pytest.mark.parametrize("path", sorted(_ASSETS))
+def test_a_static_asset_is_served_WITHOUT_a_token(served: JarvisServer, path: str) -> None:
+    """Deliberate, and the boundary of the narrowing.
+
+    A browser fetches these from relative URLs in the document, which carry no query string.
+    Gating them 403'd the stylesheet and React itself, and the page rendered as bare HTML — found
+    by loading it in a browser, which no unit test had done.
+
+    What is exposed: the vendored React build, this app's script, its stylesheet. Inert, public,
+    zero project data.
+    """
+    assert _get(served, path, token="") == 200
+
+
+def test_the_page_itself_STILL_requires_a_token(served: JarvisServer) -> None:
+    """The shell is not an asset. Serving it unauthenticated would invite an unaware click."""
+    assert _get(served, "/", token="") == 403
+
+
+def test_no_route_carrying_PROJECT_DATA_was_opened_up(served: JarvisServer) -> None:
+    """The narrowing must not have leaked past the asset allowlist.
+
+    Every route that can return the contents of someone's workspace — the API and the event
+    stream — must still refuse a request with no token.
+    """
+    for route in api.routes():
+        status, _body = _post(served, route, token="")
+        assert status == 403, f"/api/{route} answered without a token"
+    assert _get(served, "/events?run=whatever", token="", origin=_base(served)) == 403
+
+
+def test_an_asset_response_still_carries_the_hardening_headers(served: JarvisServer) -> None:
+    """Unauthenticated does not mean unhardened."""
+    request = urllib.request.Request(f"{_base(served)}/style.css")
+    with urllib.request.urlopen(request, timeout=5) as response:
+        headers = {key.lower(): value for key, value in response.getheaders()}
+    assert headers["content-type"].startswith("text/css")
+    assert headers["x-content-type-options"] == "nosniff"
+    assert headers["referrer-policy"] == "no-referrer"
+
+
+def test_the_plan_route_returns_EDGES_so_a_dag_can_be_drawn(served: JarvisServer) -> None:
+    """A node list with no edges is a bag of boxes. The UI found this by trying to draw one."""
+    manifest = (
+        REPO_ROOT_GRAPHS / "customer-data-request" / "graph.yaml"
+    ).read_text(encoding="utf-8")
+
+    status, body = _post(served, "plan", {"manifest": manifest})
+
+    assert status == 200 and body["ok"] is True
+    assert len(body["edges"]) >= 5
+    assert {"from_node", "from_port", "to_node", "to_port", "when"} <= set(body["edges"][0])
+    assert any(edge["when"] for edge in body["edges"]), "no edge guard survived the projection"

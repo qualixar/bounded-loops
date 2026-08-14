@@ -76,14 +76,27 @@ class JarvisHandler(LoopbackHandler):
 
     def do_GET(self) -> None:
         path, query = self._split_path()
+
+        # Static assets are served WITHOUT a token, deliberately. A browser requests them from
+        # relative URLs in the document (`href="style.css"`), which carry no query string, so
+        # gating them 403'd the stylesheet and React itself and the page rendered as bare HTML —
+        # found by loading it, not by reading it.
+        #
+        # This is a considered narrowing, not a weakening. The allowlisted files are the vendored
+        # React build, this app's own script, and its stylesheet: inert, public, and containing
+        # zero project data. The security boundary is the API and the event stream, which return
+        # the contents of someone's workspace, and both still require the token AND a same-origin
+        # header. Serving a copy of React to whoever guessed the port discloses nothing.
+        if path in _ASSETS:
+            self._send_asset(path)
+            return
+
         if not self._token_ok(self._first(query, "token")):
             self._send_plain(HTTPStatus.FORBIDDEN, "forbidden — missing or invalid token")
             return
 
         if path == "/":
             self._send_page()
-        elif path in _ASSETS:
-            self._send_asset(path)
         elif path == "/events":
             self._send_stream(self._first(query, "run"))
         else:

@@ -286,6 +286,18 @@ def _plan(manifest_yaml: str) -> dict:
             }
             for node in plan.nodes
         ],
+        # Edges, because a caller drawing the DAG needs them and a node list alone is a bag of
+        # boxes. The UI stream found this by trying to render a saved graph and getting no arrows.
+        "edges": [
+            {
+                "from_node": edge.from_node,
+                "from_port": edge.from_port,
+                "to_node": edge.to_node,
+                "to_port": edge.to_port,
+                "when": edge.when,
+            }
+            for edge in plan.edges
+        ],
         "pauses_at": [node.node_id for node in plan.nodes if node.kind == "approval"],
         "compiled_only": "This is a plan. Nothing has run and no run directory exists.",
     }
