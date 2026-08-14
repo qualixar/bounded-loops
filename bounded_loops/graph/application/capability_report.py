@@ -13,7 +13,7 @@ Two rules govern every entry:
    The report carries a `platform` block describing THIS host, so a host model does not propose
    `container_restricted` on a box with no container runtime.
 
-Pure application logic: no MCP, no CLI, no HTTP. The MCP tool, the `bl` command, the Jarvis UI,
+Pure application logic: no MCP, no CLI, no HTTP. The MCP tool, the `bl` command, the monitor UI,
 and the docs generator are all thin readers of this one function — the alternative is four
 capability lists free to disagree.
 """

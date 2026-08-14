@@ -49,7 +49,7 @@ def register(graph_subs: argparse._SubParsersAction) -> None:  # type: ignore[ty
 
 def cmd_monitor(args: argparse.Namespace) -> int:
     """Start the monitor and block. Returns 0 on a clean interrupt."""
-    from bounded_loops.graph.jarvis.server import JarvisServer
+    from bounded_loops.graph.monitor.server import MonitorServer
 
     port = getattr(args, "port", 0) or 0
     if not 0 <= port <= 65535:
@@ -57,7 +57,7 @@ def cmd_monitor(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        server = JarvisServer(port=port)
+        server = MonitorServer(port=port)
     except OSError as exc:
         print(f"error: cannot bind 127.0.0.1:{port} — {exc}", file=sys.stderr)
         return 2

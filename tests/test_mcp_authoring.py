@@ -25,12 +25,25 @@ def reference_manifest() -> str:
     return _REFERENCE.read_text(encoding="utf-8")
 
 
+def _shipped_tool_names() -> set[str]:
+    """Every tool the real server exposes, read through the SDK's PUBLIC listing.
+
+    See the twin in `test_mcp_discovery.py` for why this no longer goes through
+    `_tool_manager` or an `importorskip` on a module MCP 2.0 removed.
+    """
+    import asyncio
+
+    from bounded_loops import mcp_server
+
+    return {tool.name for tool in asyncio.run(mcp_server.mcp.list_tools())}
+
+
 class _RecordingMcp:
     def __init__(self) -> None:
         self.registered: list[str] = []
         self.functions: dict[str, Any] = {}
 
-    def tool(self):  # noqa: ANN201 - mirrors FastMCP's untyped decorator factory
+    def tool(self):  # noqa: ANN201 - mirrors the SDK's untyped decorator factory
         def _decorate(fn):  # noqa: ANN001, ANN202
             self.registered.append(fn.__name__)
             self.functions[fn.__name__] = fn
@@ -104,10 +117,7 @@ def test_a_mutating_tool_on_a_bad_run_name_refuses_BEFORE_touching_a_facade() ->
 
 
 def test_the_shipped_server_registers_them() -> None:
-    pytest.importorskip("mcp.server.fastmcp")
-    from bounded_loops import mcp_server
-
-    names = {tool.name for tool in mcp_server.mcp._tool_manager.list_tools()}
+    names = _shipped_tool_names()
     assert {
         "graph_lint", "graph_plan", "graph_compose", "graph_status",
         "graph_approve", "graph_resume",
@@ -451,7 +461,7 @@ def test_a_run_the_ENGINE_produced_can_actually_be_READ(tmp_path: Path, monkeypa
 @pytest.fixture
 def saved_graph(tmp_path: Path, monkeypatch, reference_manifest: str) -> str:
     monkeypatch.setenv("BOUNDED_LOOPS_WORKSPACE", str(tmp_path / "project"))
-    from bounded_loops.graph.jarvis import api
+    from bounded_loops.graph.monitor import api
 
     assert api.handle("graph.save", {"name": "release", "manifest": reference_manifest})["ok"]
     return "release"

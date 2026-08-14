@@ -59,7 +59,7 @@ _FIELD_WEIGHTS: Mapping[str, int] = {
 
 
 def register(mcp: object) -> None:
-    """Wire the discovery tools onto a FastMCP instance. Thin glue; the logic is pure below."""
+    """Wire the discovery tools onto an MCPServer instance. Thin glue; the logic is pure below."""
     tool: Callable[..., Any] = mcp.tool  # type: ignore[attr-defined]
 
     @tool()

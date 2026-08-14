@@ -114,9 +114,10 @@ for supplying per-call prompts without mutating the shared facade.
 
 ## MCP surface
 
-`mcp_graph.register(mcp, facade, *, subject_provider)` wires four tools onto a
-FastMCP instance.  The module requires `pip install bounded-loops[mcp]` and
-must not be imported at module load time in code that does not need it.
+`mcp_graph.register(mcp, facade, *, subject_provider)` wires four tools onto an
+`MCPServer` instance.  The module requires `pip install bounded-loops[mcp]`
+(which resolves `mcp>=2,<3`) and must not be imported at module load time in
+code that does not need it.
 
 The four tools:
 
@@ -141,12 +142,20 @@ A minimal wiring pattern:
 
 ```python
 # deployment entrypoint — NOT at import time
-import fastmcp
+from mcp.server.mcpserver import MCPServer
 from bounded_loops.graph.mcp_graph import register
 
-mcp = fastmcp.FastMCP("bounded-loops-graph")
+mcp = MCPServer("bounded-loops-graph")
 register(mcp, facade, subject_provider=lambda: session.authenticated_org_id)
 ```
+
+Two things this snippet used to get wrong, in case you copied the old one:
+
+- It said `import fastmcp`, which is a **different, third-party package** of a
+  similar name.  The official SDK is `mcp`, and since 2.0.0 the server class is
+  `MCPServer` in `mcp.server.mcpserver` — `mcp.server.fastmcp` was removed.
+- The MCP 1.x line is maintenance-only as of 2026-07-28.  Pinning it means no
+  fixes other than security ones, and no `2026-07-28` protocol revision.
 
 ---
 

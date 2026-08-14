@@ -56,7 +56,7 @@ def test_the_schema_declares_which_failure_policies_the_compiler_REFUSES() -> No
     `on_failure`'s enum includes `continue` and `await_human` so that an existing manifest
     using them still reaches the validator's good refusal message rather than an opaque
     schema error. But anything generating an authoring UI from this schema — which is exactly
-    what the Jarvis config forms do — would offer them as choices, and every graph a
+    what the monitor's config forms do — would offer them as choices, and every graph a
     non-technical user built with them would be refused at compile.
 
     `x-unimplemented` is the machine-readable answer, mirrored from the validator rather than

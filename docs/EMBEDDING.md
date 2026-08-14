@@ -52,7 +52,13 @@ pip install "bounded-loops[mcp]"
 bounded-loops-mcp
 ```
 
-The server listens on stdio (standard FastMCP transport).  Point any MCP client at it.
+The server listens on stdio.  Point any MCP client at it.
+
+It is built on the official `mcp` SDK 2.x and serves **both** protocol eras from the
+same process: a client on the modern `2026-07-28` revision negotiates that, and a
+2025-era client still negotiates its own newest handshake revision (`2025-11-25`).
+Upgrading your host is not a prerequisite for using this server, and neither is
+staying put.
 
 ### MCP tools (verified against the running server)
 
@@ -347,7 +353,7 @@ all seven `@mcp.tool()` registrations (`bl_list`, `bl_lint`, `bl_show`, `bl_gate
 `bl_audit_loops`, `bl_run`, `bl_runs`) match the code that runs.
 
 **Graph MCP**: `bounded_loops/graph/mcp_graph.py` exposes `graph_status`, `graph_state_md`,
-`graph_resume`, and `graph_approve` as *functions* (not FastMCP-registered tools).  These
+`graph_resume`, and `graph_approve` as *functions* (not SDK-registered tools).  These
 are wired by a deployment that injects a `GraphRuntimeFacade` via `register()`.  They are
 not reachable directly through the `bounded-loops-mcp` server — a deployment-specific
 integration step is required to expose them.  This is by design (the graph runtime facade

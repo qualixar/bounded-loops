@@ -1,6 +1,6 @@
 # Vendored front-end libraries
 
-Jarvis is a React app with **no bundler and no build step**. These three files are the
+The monitor is a React app with **no bundler and no build step**. These three files are the
 entire front-end dependency set, committed here and served from the wheel, so a
 `pip install` user runs the UI with no node, no npm, and no network.
 
@@ -20,5 +20,5 @@ npm pack react@18.3.1 react-dom@18.3.1 htm@3.1.1
 # then extract the three paths in the table above
 ```
 
-`tests/graph/jarvis/test_vendor_pins.py` recomputes every digest above and fails if a file
+`tests/graph/monitor/test_vendor_pins.py` recomputes every digest above and fails if a file
 changes, so a silent swap of the React we ship is not possible.

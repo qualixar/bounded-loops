@@ -1,7 +1,7 @@
 """The project workspace — the one answer to "where does this project keep its runs".
 
 A workspace is a `.bounded-loops/` directory living beside the code it serves, the same way
-`.git/` and `.claude/` do. Every surface — the `bl` CLI, the MCP server, the Jarvis UI — resolves
+`.git/` and `.claude/` do. Every surface — the `bl` CLI, the MCP server, the monitor UI — resolves
 it through *this* module. Two implementations of "where do receipts go" is the
 second-source-of-truth defect class that two audit rounds were full of, so there is one.
 

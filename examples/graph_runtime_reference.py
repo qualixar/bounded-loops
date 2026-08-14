@@ -10,10 +10,10 @@ B) ``LocalGraphRuntimeFacade`` — the concrete, file-backed runtime facade.
    Shows how to construct it with ``SameTenantArenaAuthorizer`` and call
    ``status``, ``resume``, and ``approve`` over a persisted run directory.
 
-C) ``mcp_graph.register`` — a commented snippet that wires the facade onto a
-   FastMCP instance.  The ``mcp`` package is optional
-   (``pip install bounded-loops[mcp]``); it is NOT imported at module load time
-   so the module stays importable without it.
+C) ``mcp_graph.register`` — a commented snippet that wires the facade onto an
+   ``MCPServer`` instance.  The ``mcp`` package is optional
+   (``pip install bounded-loops[mcp]``, which resolves ``mcp>=2,<3``); it is NOT
+   imported at module load time so the module stays importable without it.
 
 All runnable code lives under ``if __name__ == "__main__":``; the module is
 import-clean and side-effect-free above that guard.
@@ -312,22 +312,30 @@ def facade_approve(
 # SECTION C — MCP surface (commented; requires bounded-loops[mcp])
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Wire the facade onto a FastMCP instance in your deployment entrypoint.
+# Wire the facade onto an MCPServer instance in your deployment entrypoint.
 # Do NOT do this at module import time.
 #
-#     import fastmcp
+#     from mcp.server.mcpserver import MCPServer
 #     from bounded_loops.graph.mcp_graph import register
 #
-#     def make_mcp_server(runs_root: Path) -> fastmcp.FastMCP:
-#         mcp = fastmcp.FastMCP("bounded-loops-graph")
+#     def make_mcp_server(runs_root: Path) -> MCPServer:
+#         mcp = MCPServer("bounded-loops-graph")
 #         facade = build_local_facade(runs_root)
 #
 #         # SECURITY: subject_provider is called once per tool invocation and
 #         # reads the authenticated subject from the MCP session.  It is never
 #         # an LLM tool argument — the model controls only intent (which
 #         # org/project/run/node); it cannot spoof the authenticated subject.
+#         #
+#         # There is NO SDK call that returns this for you. MCP 2.0 removed
+#         # `Context.client_id`, and an MCP session is not an authenticated
+#         # identity in the first place — a stdio server's peer is whoever
+#         # spawned the process. Wire this to your own authentication (the OS
+#         # user for a local server; the verified token subject for a hosted
+#         # one), and read `mcp.server.auth` / `token_verifier` if the server
+#         # is reachable over HTTP.
 #         def get_subject() -> str:
-#             return mcp.get_current_client_id()  # replace with real impl
+#             raise NotImplementedError("bind to your authenticated identity")
 #
 #         register(mcp, facade, subject_provider=get_subject)
 #         return mcp

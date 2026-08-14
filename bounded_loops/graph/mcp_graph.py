@@ -6,7 +6,7 @@ graph use cases behind an injected ``GraphRuntimeFacade``, then shapes the resul
 GraphError) into a tool dict. The MCP module never wires real workers / isolation / connectors /
 approval authority — the DEPLOYMENT provides the facade, so this stays engine-agnostic and
 unit-testable with a fake facade (and imports no `mcp` dependency in its logic; `register` only
-uses a FastMCP instance handed in).
+uses an MCPServer instance handed in).
 
 TRUST MODEL: an MCP caller supplies INTENT (which run / node); the deployment injects the
 AUTHENTICATED subject (via ``register``'s ``subject_provider``, read from the MCP session — never an
@@ -116,8 +116,8 @@ def graph_approve(
 
 
 def register(mcp: object, facade: GraphRuntimeFacade, *, subject_provider: Callable[[], str]) -> None:
-    """Wire the graph tools onto a FastMCP instance handed in by the deployment. Thin glue — the
-    only FastMCP-touching code; the tool logic stays in the pure handlers above.
+    """Wire the graph tools onto an MCPServer instance handed in by the deployment. Thin glue — the
+    only SDK-touching code; the tool logic stays in the pure handlers above.
 
     SECURITY: ``subject_id`` is NOT an LLM tool parameter — it is derived per call from
     ``subject_provider`` (the deployment reads the AUTHENTICATED subject from the MCP session,

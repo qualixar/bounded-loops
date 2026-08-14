@@ -1,6 +1,6 @@
 """The vendored front-end must be exactly what we said it is.
 
-Jarvis has no build step: three published artifacts are committed and served from the wheel. That
+The monitor has no build step: three published artifacts are committed and served from the wheel. That
 is what makes the UI work with no node, no npm and no network — and it means a silent swap of the
 React we ship would go unnoticed. So the same discipline the engine applies to a loop package is
 applied to its own UI: pin by content digest and check it.
@@ -16,7 +16,7 @@ import pytest
 
 VENDOR = (
     Path(__file__).resolve().parents[3]
-    / "bounded_loops" / "graph" / "jarvis" / "assets" / "vendor"
+    / "bounded_loops" / "graph" / "monitor" / "assets" / "vendor"
 )
 
 #: Digests recorded in VENDOR.md when the files were fetched from the npm registry.
@@ -65,8 +65,8 @@ def test_the_vendored_react_is_the_PRODUCTION_build() -> None:
 def test_the_assets_are_declared_as_WHEEL_artifacts() -> None:
     """A UI that is not packaged is a UI a `pip install` user does not have.
 
-    The three HTML templates already ride in the wheel this way; forgetting Jarvis would mean
-    `bl jarvis` worked from a source checkout and 500'd for everyone who installed it.
+    The three HTML templates already ride in the wheel this way; forgetting the monitor would mean
+    `bl monitor` worked from a source checkout and 500'd for everyone who installed it.
     """
     import tomllib
 
@@ -74,9 +74,9 @@ def test_the_assets_are_declared_as_WHEEL_artifacts() -> None:
     config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     artifacts = config["tool"]["hatch"]["build"]["targets"]["wheel"]["artifacts"]
 
-    assert any("jarvis/assets/*" in entry for entry in artifacts), (
-        "the Jarvis assets are not declared as wheel artifacts"
+    assert any("monitor/assets/*" in entry for entry in artifacts), (
+        "the monitor assets are not declared as wheel artifacts"
     )
-    assert any("jarvis/assets/vendor/*" in entry for entry in artifacts), (
+    assert any("monitor/assets/vendor/*" in entry for entry in artifacts), (
         "the vendored React is not declared as a wheel artifact"
     )

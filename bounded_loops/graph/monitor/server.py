@@ -1,4 +1,4 @@
-"""The Jarvis loopback server: static assets, a JSON API, and one SSE stream.
+"""The monitor's loopback server: static assets, a JSON API, and one SSE stream.
 
 A transport with no behaviour of its own. Every POST goes to `api.handle`, every stream goes to
 `live.sse_server.stream_projection_snapshots`, and the security posture comes from
@@ -24,7 +24,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from bounded_loops.domain.errors import ManifestError
-from bounded_loops.graph.jarvis import api
+from bounded_loops.graph.monitor import api
 from bounded_loops.graph.live.posture import _LOOPBACK_HOST, LoopbackHandler, LoopbackServer
 from bounded_loops.graph.live.sse_server import stream_projection_snapshots
 from bounded_loops.workspace import discover
@@ -49,12 +49,12 @@ _MAX_API_BODY_BYTES = 512 * 1024 + 8 * 1024  # a manifest, plus room for the res
 
 def _asset_bytes(relative: str) -> bytes:
     """Read one packaged asset. `relative` comes from `_ASSETS`, never from a request."""
-    resource = files("bounded_loops.graph.jarvis").joinpath("assets", *relative.split("/"))
+    resource = files("bounded_loops.graph.monitor").joinpath("assets", *relative.split("/"))
     return resource.read_bytes()
 
 
-class JarvisServer(LoopbackServer):
-    """Loopback server for one Jarvis session.
+class MonitorServer(LoopbackServer):
+    """Loopback server for one monitor session.
 
     Inherits the loopback bind, the per-invocation token, and the connection semaphore. Adds
     nothing but the workspace it is scoped to — which is resolved once, here, so no request can
@@ -62,7 +62,7 @@ class JarvisServer(LoopbackServer):
     """
 
     def __init__(self, *, port: int = 0) -> None:
-        super().__init__(JarvisHandler, port=port)
+        super().__init__(MonitorHandler, port=port)
         self.workspace = discover()
 
     @property
@@ -71,10 +71,10 @@ class JarvisServer(LoopbackServer):
         return f"http://{_LOOPBACK_HOST}:{self.server_address[1]}/?token={quote(self.token, safe='')}"
 
 
-class JarvisHandler(LoopbackHandler):
+class MonitorHandler(LoopbackHandler):
     """GET for the page and its assets, POST for the API, GET /events for the live stream."""
 
-    server: JarvisServer  # type: ignore[assignment]
+    server: MonitorServer  # type: ignore[assignment]
 
     # ── GET ──────────────────────────────────────────────────────────────────
 
@@ -118,7 +118,7 @@ class JarvisHandler(LoopbackHandler):
         except (OSError, FileNotFoundError):
             self._send_plain(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
-                "the Jarvis assets are missing from this installation",
+                "the monitor assets are missing from this installation",
             )
             return
         injected = document.replace(
@@ -262,4 +262,4 @@ def HTTPStatus_NOT_FOUND_OR_BAD(exc: Exception) -> HTTPStatus:  # noqa: N802
 
 def assets_dir() -> Path:
     """The packaged assets directory, for the tests that assert what ships."""
-    return Path(str(files("bounded_loops.graph.jarvis").joinpath("assets")))
+    return Path(str(files("bounded_loops.graph.monitor").joinpath("assets")))

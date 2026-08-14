@@ -13,7 +13,7 @@ to run any loop that would require interactive approval (rung L2/L3
 without an explicit `bounds.require_approval: false`) BEFORE ever calling
 `wire()`, since `wire()` would otherwise unconditionally select
 `CliApproval`, whose `granted()` calls print()/input() directly against
-this server's own stdio transport — the same channel FastMCP uses for
+this server's own stdio transport — the same channel the MCP SDK uses for
 JSON-RPC framing.
 """
 from __future__ import annotations
@@ -23,11 +23,16 @@ import weakref
 from pathlib import Path
 
 try:
-    from mcp.server.fastmcp import FastMCP, Context
+    from mcp.server.mcpserver import MCPServer, Context
 except ImportError as _exc:  # pragma: no cover - only hit when the extra is absent
     raise SystemExit(
-        "bounded-loops-mcp requires the optional 'mcp' dependency.\n"
-        'Install it with:  pip install "bounded-loops[mcp]"'
+        "bounded-loops-mcp requires the optional 'mcp' dependency, version 2 or newer.\n"
+        'Install it with:  pip install "bounded-loops[mcp]"\n'
+        "\n"
+        "If that produced this message anyway, an mcp 1.x is pinned somewhere in this "
+        "environment. MCP 1.x exposed this class as `FastMCP` under `mcp.server.fastmcp`, "
+        "which the 2.0.0 release removed; the 1.x line is maintenance-only as of "
+        "2026-07-28. Upgrade with:  pip install -U 'mcp>=2,<3'"
     ) from _exc
 
 from bounded_loops.application.manifest import load as manifest_load
@@ -39,7 +44,7 @@ from bounded_loops.composition import _approval_required, wire
 from bounded_loops.domain.errors import BoundedLoopsError, ManifestError
 from bounded_loops.trust_store import _content_hash, record_trust
 
-mcp = FastMCP("bounded-loops")
+mcp = MCPServer("bounded-loops")
 _log = logging.getLogger(__name__)
 
 # Module-level, per-server-process session state: maps an
@@ -53,7 +58,7 @@ _log = logging.getLogger(__name__)
 #                context (direct calls, tests, CLI wrappers). Used when
 #                ctx=None.
 #   _previewed_by_session — per-MCP-session preview state.  The key is the
-#                FastMCP session object (stable across all calls in one
+#                MCP session object (stable across all calls in one
 #                client connection). WeakKeyDictionary ensures the entry is
 #                GC'd automatically when a session ends, with no manual
 #                cleanup required.
@@ -72,10 +77,21 @@ _previewed_by_session: weakref.WeakKeyDictionary[object, dict[str, str]] = (
 def _session_state(ctx: "Context | None") -> dict[str, str]:
     """Return the preview dict scoped to this session (or the shared fallback).
 
-    When ctx is supplied by FastMCP (a real MCP client call), returns a
+    When ctx is supplied by the SDK (a real MCP client call), returns a
     per-session dict keyed by the session object — invisible to other
     concurrent sessions.  When ctx is None (direct test calls, CLI wrappers)
     returns the shared _previewed dict, preserving existing behaviour.
+
+    MCP 2.0 CAVEAT — this is why `main()` names its transport explicitly. The 2026-07-28
+    revision made the protocol stateless by default, so on a stateless HTTP transport the
+    object behind `ctx.session` is not guaranteed to outlive one request. If it does not, a
+    `confirm=False` preview lands in one dict and the `confirm=True` call looks in another,
+    finds no matching preview, and REFUSES to run. That is the correct direction to fail — a
+    lost handshake must never become an unpreviewed execution — but it would be an unusable
+    server, which is why this one ships over stdio, where the connection is long-lived and the
+    session object is stable for its whole life. Moving this server to stateless HTTP means
+    first giving the handshake durable state (`Context.request_state`, or the receipt log);
+    it is not a transport flag.
     """
     if ctx is None:
         return _previewed
@@ -87,12 +103,12 @@ def _session_state(ctx: "Context | None") -> dict[str, str]:
         # Fall back to the shared dict rather than crashing — fail-open is the
         # right call here (do not abort a live session over preview-state lookup).
         # The warning makes the regression observable in production logs so an
-        # integration problem with the FastMCP context is not silently invisible.
+        # integration problem with the MCP request context is not silently invisible.
         _log.warning(
             "bounded-loops-mcp: _session_state could not resolve ctx.session "
             "(ctx type=%s); falling back to process-global preview dict — "
             "MCP session isolation is inactive for this call. If this appears "
-            "in production logs, check that the FastMCP request context is "
+            "in production logs, check that the MCP request context is "
             "properly wired.",
             type(ctx).__name__,
         )
@@ -357,7 +373,7 @@ def bl_run(
     false) are refused before wire() is ever called. composition.wire()
     would otherwise unconditionally select CliApproval for such a loop,
     which calls print()/input() directly against this server's stdio
-    transport — the same channel FastMCP uses for JSON-RPC framing —
+    transport — the same channel the MCP SDK uses for JSON-RPC framing —
     corrupting the protocol stream and hanging the blocking mcp.run()
     event loop waiting on a stdin that isn't a human terminal. There is
     no interactive terminal over MCP; such loops must set
@@ -517,8 +533,15 @@ _register_authoring(mcp)
 
 
 def main() -> None:
-    """Console-script entry point (bounded-loops-mcp). Blocks on mcp.run()."""
-    mcp.run()
+    """Console-script entry point (bounded-loops-mcp). Blocks on mcp.run().
+
+    The transport is named explicitly even though `stdio` is the SDK default. MCP 2.0 made the
+    protocol stateless-by-default and moved transport selection from the constructor onto
+    `run()`; a default that moves with the spec is not something a security-relevant handshake
+    should inherit silently. See `_session_state` for why this server specifically cares which
+    transport it is on.
+    """
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":

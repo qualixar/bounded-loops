@@ -38,7 +38,7 @@ _MAX_MANIFEST_BYTES = 512 * 1024
 
 
 def register(mcp: object) -> None:
-    """Wire the authoring and inspection tools onto a FastMCP instance."""
+    """Wire the authoring and inspection tools onto an MCPServer instance."""
     tool: Callable[..., Any] = mcp.tool  # type: ignore[attr-defined]
 
     @tool()
@@ -106,7 +106,7 @@ def register(mcp: object) -> None:
         a print-free execution core, not a wrapper.
 
         So this returns the compiled plan plus the exact command to run it, which the human (or
-        the Jarvis UI, which has their connections configured) executes.
+        the monitor UI, which has their connections configured) executes.
 
         Read-only."""
         planned = _plan(manifest_yaml)

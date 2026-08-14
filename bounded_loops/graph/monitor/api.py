@@ -1,4 +1,4 @@
-"""The Jarvis JSON API — a thin shim over the SAME functions the MCP tools call.
+"""The monitor's JSON API — a thin shim over the SAME functions the MCP tools call.
 
 Not a parallel implementation. Every route below dispatches to `mcp_authoring`,
 `mcp_discovery`, `capability_report`, or `schema_form`, so the UI and a host agent driving the
@@ -10,12 +10,13 @@ Pure dispatch: `handle()` takes a route and a payload and returns a dict. No HTT
 globals. The server is then a transport with no behaviour of its own, and every route is testable
 without opening a port.
 
-One honest note about the chat column, because the alternative is a lie by omission: **Jarvis is
-not a language model.** It has no keys and makes no model calls. When you type a task it searches
-the shipped catalog for loops whose gates match what you described, proposes a graph assembled
-from them, and hands you schema-driven forms to correct it. The model work happens inside the
-graph's NODES, driven by your own CLI or key — which is the architecture, not a limitation to
-apologise for.
+**There is no route that takes an instruction, and that is the architecture.** The monitor holds
+no keys and makes no model calls. Work is described to your ORCHESTRATOR — Claude Code, Codex,
+Cursor, a CLI — which composes graphs over MCP using the shipped skill. This surface watches what
+that produced, configures any authorable field on it through schema-driven forms, approves human
+gates, and starts runs. A text box here would have needed a model behind it to be useful and would
+have been a search box pretending otherwise; `handoff` exists instead, and returns the exact
+command to continue in the agent that can actually compose.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from typing import Any, Callable, Mapping
 from bounded_loops.domain.errors import ManifestError
 from bounded_loops.graph.adapters.enforcement.snapshot import platform_snapshot
 from bounded_loops.graph.application.capability_report import capability_report
-from bounded_loops.graph.jarvis import schema_form
+from bounded_loops.graph.monitor import schema_form
 from bounded_loops.workspace import Workspace, discover, ensure
 
 #: Longest manifest or graph name the API will accept. A UI field is not a reason to allow an

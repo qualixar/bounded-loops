@@ -274,7 +274,7 @@ def stream_projection_snapshots(
 ) -> None:
     """Tail an append-only receipt log and push a full projection snapshot on every change.
 
-    Shared by `bl graph watch` and by Jarvis. Both need identical semantics — an immediate
+    Shared by `bl graph watch` and by `bl monitor`. Both need identical semantics — an immediate
     first snapshot so the page is not blank until the next tick, keepalives so an idle proxy
     does not drop the connection, and a self-closing stream once the run is terminal — and a
     second implementation of those semantics would drift apart.

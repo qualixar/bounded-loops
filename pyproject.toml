@@ -48,7 +48,7 @@ dev = [
     "types-PyYAML",
 ]
 mcp = [
-    "mcp>=1.27,<2",
+    "mcp>=2,<3",
 ]
 
 [dependency-groups]
@@ -59,7 +59,7 @@ dev = [
     "opentelemetry-sdk>=1.27",
     "ruff>=0.5,<0.16",
     "types-PyYAML",
-    "mcp>=1.27,<2",
+    "mcp>=2,<3",
 ]
 
 [project.scripts]
@@ -78,7 +78,7 @@ exclude = [".backup/", "audit/", "*.db"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["bounded_loops"]
-artifacts = ["bounded_loops/graph/schemas/*.json", "bounded_loops/graph/arena/*.html", "bounded_loops/graph/studio/*.html", "bounded_loops/graph/console/*.html", "bounded_loops/graph/jarvis/assets/*", "bounded_loops/graph/jarvis/assets/vendor/*"]
+artifacts = ["bounded_loops/graph/schemas/*.json", "bounded_loops/graph/arena/*.html", "bounded_loops/graph/studio/*.html", "bounded_loops/graph/console/*.html", "bounded_loops/graph/monitor/assets/*", "bounded_loops/graph/monitor/assets/vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

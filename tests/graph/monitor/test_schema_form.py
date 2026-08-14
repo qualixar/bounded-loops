@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from bounded_loops.graph.jarvis import schema_form as SF
+from bounded_loops.graph.monitor import schema_form as SF
 
 
 def test_every_node_kind_the_schema_defines_has_a_form() -> None:

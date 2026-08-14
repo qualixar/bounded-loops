@@ -417,7 +417,7 @@ def _make_ctx(session_obj=None):
 
     Note: the session must be an object that supports weak references (any
     regular Python class instance does; plain object() does not). MagicMock()
-    works fine here and matches the type the real FastMCP session object would
+    works fine here and matches the type the real SDK session object would
     be at runtime.
     """
     ctx = MagicMock()
@@ -487,7 +487,7 @@ def test_session_state_logs_warning_on_bad_ctx(tmp_path, caplog):
     import logging
 
     ctx = MagicMock()
-    # Simulate ctx.session raising ValueError (real FastMCP raises this when
+    # Simulate ctx.session raising ValueError (the real SDK raises this when
     # request_context is None, e.g. in a misconfigured integration).
     type(ctx).session = PropertyMock(side_effect=ValueError("no request context"))
 
@@ -505,7 +505,7 @@ def test_server_survives_multiple_sequential_tool_calls(tmp_path):
     Not a hypothetical: a stdio-transport bug causing crashes on the SECOND
     request in the same session has been reported against the THIRD-PARTY
     jlowin/fastmcp project (a different package, easy to confuse by name).
-    Not confirmed to affect the pinned official mcp v1.x line, but cheap
+    Not confirmed to affect the pinned official mcp 2.x line, but cheap
     and worth verifying directly rather than assuming either way: call
     multiple tools in sequence in-process and confirm none of them corrupt
     shared state or raise on the second+ call.

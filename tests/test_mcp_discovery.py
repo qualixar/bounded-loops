@@ -16,16 +16,32 @@ import pytest
 from bounded_loops import mcp_discovery
 
 
+def _shipped_tool_names() -> set[str]:
+    """Every tool the real server exposes, read through the SDK's PUBLIC listing.
+
+    Deliberately not `mcp._tool_manager.list_tools()`. That private attribute survived the MCP
+    2.0 rewrite by luck, and the previous version of this check was guarded by
+    `importorskip("mcp.server.fastmcp")` — a module 2.0 deleted — so it SKIPPED silently the
+    moment the SDK moved. A registration check that skips is a registration check that does
+    nothing, which is the failure it was written to catch.
+    """
+    import asyncio
+
+    from bounded_loops import mcp_server
+
+    return {tool.name for tool in asyncio.run(mcp_server.mcp.list_tools())}
+
+
 # ── registration ─────────────────────────────────────────────────────────────
 
 
 class _RecordingMcp:
-    """The narrowest possible stand-in for FastMCP: it records what got decorated."""
+    """The narrowest possible stand-in for MCPServer: it records what got decorated."""
 
     def __init__(self) -> None:
         self.registered: list[str] = []
 
-    def tool(self):  # noqa: ANN201 - mirrors FastMCP's untyped decorator factory
+    def tool(self):  # noqa: ANN201 - mirrors the SDK's untyped decorator factory
         def _decorate(fn):  # noqa: ANN001, ANN202
             self.registered.append(fn.__name__)
             return fn
@@ -44,10 +60,7 @@ def test_all_three_discovery_tools_are_REGISTERED() -> None:
 
 def test_the_shipped_server_registers_them_on_its_own_instance() -> None:
     """Guards the wiring, not just the registrar: mcp_server must actually call register()."""
-    pytest.importorskip("mcp.server.fastmcp")
-    from bounded_loops import mcp_server
-
-    names = {tool.name for tool in mcp_server.mcp._tool_manager.list_tools()}
+    names = _shipped_tool_names()
     assert {"bl_capabilities", "bl_catalog", "bl_search_loops"} <= names
 
 
