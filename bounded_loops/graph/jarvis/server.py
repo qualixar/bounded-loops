@@ -34,6 +34,10 @@ from bounded_loops.workspace import discover
 #: defend against rather than a traversal check to get right.
 _ASSETS: dict[str, str] = {
     "/app.js": "text/javascript; charset=utf-8",
+    "/dag.js": "text/javascript; charset=utf-8",
+    "/forms.js": "text/javascript; charset=utf-8",
+    "/palette.js": "text/javascript; charset=utf-8",
+    "/columns.js": "text/javascript; charset=utf-8",
     "/style.css": "text/css; charset=utf-8",
     "/vendor/react.production.min.js": "text/javascript; charset=utf-8",
     "/vendor/react-dom.production.min.js": "text/javascript; charset=utf-8",

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "bl-monitor",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "bounded_loops.cli", "monitor", "--port", "8790", "--no-browser"],
+      "port": 8790
+    }
+  ]
+}
