@@ -18,9 +18,14 @@ import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import stat
 from types import MappingProxyType
-from typing import BinaryIO, Mapping, Protocol, Sequence
+from typing import Mapping, Sequence
 from uuid import uuid4
 
+from bounded_loops.graph.application.graph_ports import (
+    ArtifactReaderPort,
+    ArtifactWriterPort,
+    ByteSourcePort,
+)
 from bounded_loops.graph.domain.artifacts import ArtifactAccess, ArtifactPolicy, ArtifactRecord, ArtifactRef
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 
@@ -31,16 +36,21 @@ _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _CHUNK = 1024 * 1024
 
 
-class _ByteSource(Protocol):
-    def read(self, size: int = ...) -> bytes: ...
+# These three used to be DECLARED here, in the middle of a use case. A port that lives
+# inside one of its own consumers cannot be found by the next consumer, which is how
+# twelve application modules ended up importing concrete adapters instead. They now live
+# in the seam (``graph_ports``) and are re-exported here so existing callers keep working.
+_ByteSource = ByteSourcePort
 
-
-class ArtifactWriterPort(Protocol):
-    def put_many(self, items: Sequence[tuple[_ByteSource, ArtifactPolicy]]) -> tuple[ArtifactRecord, ...]: ...
-
-
-class ArtifactReaderPort(Protocol):
-    def open(self, ref: ArtifactRef, access: ArtifactAccess) -> BinaryIO: ...
+__all__ = [
+    "ArtifactReaderPort",
+    "ArtifactWriterPort",
+    "ByteSourcePort",
+    "WorkspaceInput",
+    "WorkspacePromotionPolicy",
+    "materialize_workspace_inputs",
+    "promote_workspace_outputs",
+]
 
 
 @dataclass(frozen=True)

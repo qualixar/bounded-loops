@@ -153,6 +153,9 @@
   .audit-note{margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--working-bg);color:var(--working);font-size:12px}
   @media (max-width:720px){.hero{grid-template-columns:1fr}.hero h1{font-size:25px}}
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  /* loop node evidence */
+  .loop-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:650;padding:2px 8px;
+    border-radius:999px;background:var(--checking-bg);color:var(--checking);margin-top:6px}
 </style>
 </head>
 <body>
@@ -333,7 +336,9 @@
         '<span class="tag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M8 7V5a4 4 0 0 1 8 0v2" /></svg>'+esc(ISO[n.isolation]||n.isolation)+'</span>'+
         '<span class="tag">'+esc(effs)+'</span>'+
         (arts?'<span class="tag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7l8-4 8 4-8 4-8-4Z"/><path d="M4 7v10l8 4 8-4V7" stroke-linejoin="round"/></svg>'+arts+' artifact'+(arts>1?"s":"")+'</span>':"")+
-      '</div>'+ verified;
+      '</div>'+
+      (n.loop_meta?'<div class="loop-badge">↻ '+esc(n.loop_meta.package_name||((n.loop_meta.package_digest||"").slice(0,16)+"…"))+'</div>':"")+
+      verified;
     el.addEventListener("click",function(){openDrawer(n);});
     el.addEventListener("keydown",function(ev){if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();openDrawer(n);}});
     return el;
@@ -419,7 +424,8 @@
       field("Isolation",esc(ISO[n.isolation]||n.isolation),"How strongly the stage is contained while it runs.")+
       (route?field("Model route",esc(route)+(n.transport?' · '+esc(n.transport):""),"The provider/model this stage is bound to."):"")+
       field("Deadline",(n.hard_deadline_ms?Math.round(n.hard_deadline_ms/1000)+" s":"—"),"Hard time limit before the stage is stopped.")+
-      artifactsBlock(n);
+      artifactsBlock(n)+
+      loopEvidenceBlock(n);
     document.getElementById("dbody").innerHTML=body;
     wireCopy();
     scrim.classList.add("open"); drawer.classList.add("open"); drawer.focus();
@@ -428,6 +434,40 @@
     var a=n.artifact_digests||[]; if(!a.length) return field("Artifacts","<span style='color:var(--ink-3)'>none yet</span>","Verified outputs this stage produced.");
     var h=a.map(function(d){return '<div class="digest"><span>'+esc(shortHash(d))+'</span><button data-c="'+esc(d)+'">Copy</button></div>';}).join("");
     return '<div class="field"><div class="l">Artifacts ('+a.length+')</div>'+h+'<div class="explain">Content-addressed outputs — the hash is the identity, so tampering is detectable.</div></div>';
+  }
+  function loopEvidenceBlock(n){
+    var lm=n.loop_meta; if(!lm)return "";
+    var SC={"DONE":"var(--passed)","HALT":"var(--blocked)","PAUSE":"var(--working)","KILLED":"var(--blocked)","ERROR":"var(--blocked)"};
+    var pname=lm.package_name?esc(lm.package_name):('<code style="font-family:var(--mono)">'+esc((lm.package_digest||"").slice(0,18))+"…</code>");
+    // "pinned" not "ran": this line names the bytes the node was COMPILED against. Whether they
+    // executed is the terminal-status field below, and conflating the two is how a badge on a
+    // failed node reads as false confidence.
+    var r='<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">';
+    r+='<div class="l" style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:8px">Loop evidence</div>';
+    r+=field("Package",pname,"Content-addressed: the sha256 digest in this node’s plan pins the exact bytes this node was compiled against. Whether they RAN is the terminal status below.");
+    if(lm.loop_outcome){
+      var lo=lm.loop_outcome;
+      var sc=SC[lo.status||""]||"var(--ink-2)";
+      r+=field("Terminal status",'<span style="color:'+sc+';font-weight:650">'+esc(lo.status||"—")+'</span>',
+        "The loop’s own gate verdict. DONE → gate passed. Gate passing is a mechanical check — it does NOT confirm the output is semantically correct.");
+      if(lo.reason)r+=field("Reason",esc(lo.reason),"The loop’s own explanation for its terminal status.");
+      var led=lo.inner_ledger_digest;
+      r+=field("Inner ledger digest",led?('<div class="digest"><span>sha256:'+esc(led.slice(0,10))+"…"+esc(led.slice(-4))+'</span><button data-c="sha256:'+esc(led)+'">Copy</button></div>'):"<span style='color:var(--ink-3)'>—</span>",
+        "Nested inner hash chain. Travels in this node’s receipt — the inner log cannot be rewritten without breaking this node’s tamper-evident chain.");
+      if(lo.attempt!=null)r+=field("Attempt",esc(String(lo.attempt)),"Which attempt of this node ran the loop.");
+    } else if(lm.no_receipt_reason){
+      // The ABSENCE of a receipt is evidence too, and the most misreadable state in this UI: a
+      // badge with no outcome looks like "the loop ran and something went wrong" when the truth is
+      // usually that the loop never started. Say which.
+      r+=field("Terminal status",'<span style="color:var(--blocked);font-weight:650">no loop receipt</span>',
+        "The loop produced no outcome artifact for this node.");
+      r+=field("What this means",esc(lm.no_receipt_reason),
+        "Distinguishes a loop that ran and was rejected from one that never launched.");
+    }
+    r+='<div style="margin-top:10px;padding:7px 9px;border-radius:8px;background:var(--working-bg);color:var(--working);font-size:12px">';
+    r+="LOCAL/UNVERIFIED — gate passing means the loop’s own mechanical check passed on this machine. It does not confirm semantic correctness. This is recorded evidence, not a trust attestation.";
+    r+="</div></div>";
+    return r;
   }
   function wireCopy(){ Array.prototype.forEach.call(document.querySelectorAll(".digest button"),function(b){ b.onclick=function(){ try{navigator.clipboard.writeText(b.getAttribute("data-c"));b.textContent="Copied";setTimeout(function(){b.textContent="Copy";},1200);}catch(e){} }; }); }
   function closeDrawer(){ scrim.classList.remove("open"); drawer.classList.remove("open"); if(lastFocus)lastFocus.focus(); }

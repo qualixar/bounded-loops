@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone
-import importlib.resources
 import json
 import re
 import sys
@@ -35,14 +34,14 @@ from bounded_loops.application.run_store import (
     read_run_receipt,
     write_run_metadata,
 )
-from bounded_loops.graph.application.runner_preflight import (
+from bounded_loops.graph.adapters.preflight.runner_preflight import (
     default_runner_profiles,
     preflight_runners,
 )
 from bounded_loops import __version__
 from bounded_loops.composition import wire
 from bounded_loops.domain.errors import BoundedLoopsError, ManifestError
-from bounded_loops.domain.models import Outcome, Status
+from bounded_loops.domain.models import Status
 from bounded_loops.trust_store import record_trust, revoke_trust
 
 # fix: a single, non-traversing path-segment shape. Rejects
@@ -327,8 +326,12 @@ def _build_parser() -> argparse.ArgumentParser:
     audit_parser.set_defaults(func=_cmd_audit_loops)
 
     from bounded_loops.graph.cli_graph import register as _register_graph
+    from bounded_loops.cli_loop import register as _register_loop
+    from bounded_loops.cli_loops import register as _register_loops
 
     _register_graph(subparsers)
+    _register_loop(subparsers)
+    _register_loops(subparsers)
 
     return parser
 
@@ -747,117 +750,6 @@ def _print_run_receipt(receipt: dict) -> None:
             print(f"  {detail}")
 
 
-# ── bl new ─────────────────────────────────────────────────────────────────────
-
-def _templates_root() -> importlib.resources.abc.Traversable:
-    """Resolves against the INSTALLED PACKAGE, not the user's cwd. Works identically whether bounded_loops is installed from
-    a wheel or run from a source checkout — importlib.resources abstracts
-    the difference. NEVER use _find_repo_root(Path.cwd()) here: that keys
-    off the CALLER's own project root, which is dead on arrival for an end
-    user who pip installs bounded-loops and runs `bl new` from their own,
-    unrelated project."""
-    return importlib.resources.files("bounded_loops") / "_templates"
-
-
-def _cmd_new(args: argparse.Namespace) -> int:
-    """
-    bl new <template> <destination> [--name NAME]
-
-    Algorithm:
-    1. If args.list: list template dirs under the PACKAGED _templates/ root;
-       tolerate the root not existing (empty list, not an error).
-    2. Validate BOTH positionals are present (nargs="?" allows omission for
-       --list alone, but the run path must reject a missing/None value with
-       a clean message, not an uncaught TypeError).
-    3. Validate <template> is a single, non-traversing name (regex above) —
-       reject BEFORE joining it onto any path.
-    4. Resolve the packaged template dir; if missing, error, exit 1.
-    5. If <destination> already exists, error, exit 2 (never overwrite).
-    6. Copy the template tree to <destination>, stripping the .tmpl suffix
-       from the FINAL path component only, substituting {{LOOP_NAME}} in
-       every file's content, skipping any symlink encountered in the walk.
-    7. chmod +x whatever *.sh files actually exist in the destination
-       (never assume run.sh/wreck.sh are both present).
-    8. Print the destination path and next-steps hint; return 0.
-    """
-    if args.list:
-        root = _templates_root()
-        if not root.is_dir():
-            return 0   # no templates bundled — empty list is not an error
-        for entry in sorted(p.name for p in root.iterdir() if p.is_dir()):
-            print(entry)
-        return 0
-
-    # fix: nargs="?" means argparse won't enforce these — the
-    # handler must, with a clean message, not a TypeError from Path(None).
-    if args.template is None or args.destination is None:
-        _err("bl new: <template> and <destination> are required (or use --list).")
-        return 1
-
-    # fix: reject path traversal BEFORE building any path.
-    # fullmatch (not match) — match()+bare "$" lets a trailing newline slip
-    # through; low-stakes here since it'd just fail to resolve to a real
-    # directory, but the validation should actually mean what it claims.
-    if not _TEMPLATE_NAME_RE.fullmatch(args.template):
-        _err(
-            f"bl new: {args.template!r} is not a valid template name "
-            "(letters, digits, '-', '_' only — no path separators)."
-        )
-        return 1
-
-    root = _templates_root()
-    template_dir = root / args.template
-    if not template_dir.is_dir():
-        _err(f"bl new: template '{args.template}' not found. "
-             f"Run 'bl new --list' to see available templates.")
-        return 1
-
-    dest = Path(args.destination).resolve()
-    if dest.exists():
-        _err(f"bl new: destination '{dest}' already exists — refusing to overwrite.")
-        return 2
-
-    loop_name = args.name or dest.name
-    with importlib.resources.as_file(template_dir) as real_template_dir:
-        _copy_template(real_template_dir, dest, loop_name)
-
-    # fix: discover *.sh files actually present rather than
-    # hard-coding run.sh/wreck.sh — a template that legitimately omits one
-    # no longer crashes here after already creating a half-scaffolded dest.
-    for sh in dest.rglob("*.sh"):
-        sh.chmod(0o755)
-
-    print(f"Created loop at {dest}")
-    print(f"Next: cd {dest} && ./run.sh")
-    return 0
-
-
-def _copy_template(template_dir: Path, dest: Path, loop_name: str) -> None:
-    dest.mkdir(parents=True)
-    for src_file in template_dir.rglob("*"):
-        # fix: skip symlinks entirely — a contributed template
-        # (this project explicitly invites community loop/template PRs) could
-        # otherwise ship a symlink pointing outside the template tree, and
-        # rglob + read_text would follow it, copying an arbitrary file (e.g.
-        # ~/.ssh/id_rsa) into the generated loop. Mirrors the same precaution
-        # composition._make_scratch_workspace already applies to loop seed/
-        # dirs.
-        if src_file.is_symlink():
-            continue
-        if src_file.is_dir():
-            continue
-        rel = src_file.relative_to(template_dir)
-        # fix: strip ".tmpl" only as a suffix of the FINAL path
-        # component, never a whole-string substring replace (the original
-        # `.replace(".tmpl", "")` would mangle e.g. "a.tmpld/file.py.tmpl"
-        # into "ad/file.py" — verified concretely).
-        dest_rel = rel.with_name(rel.name.removesuffix(".tmpl"))
-        dest_file = dest / dest_rel
-        dest_file.parent.mkdir(parents=True, exist_ok=True)
-        content = src_file.read_text(encoding="utf-8")
-        dest_file.write_text(content.replace("{{LOOP_NAME}}", loop_name), encoding="utf-8")
-
-
 def _cmd_audit_loops(args: argparse.Namespace) -> int:
     results = [result for directory in args.dirs for result in audit_loops(directory)]
     if args.json:
@@ -874,93 +766,13 @@ def _cmd_audit_loops(args: argparse.Namespace) -> int:
     return 1 if any(not result.passed for result in results) else 0
 
 
-# ── Output formatters ─────────────────────────────────────────────────────────
-
-def _print_outcome(outcome: Outcome, *, as_json: bool) -> None:
-    """Print a run Outcome to stdout."""
-    if as_json:
-        data = {
-            "subcommand":   "run",
-            "status":       outcome.status.value,
-            "reason":       outcome.reason,
-            "laps":         outcome.laps,
-            "ledger_path":  str(outcome.ledger_path),
-        }
-        print(json.dumps(data))
-    else:
-        symbol = "✓" if outcome.status.value == "DONE" else "✗"
-        print(
-            f"{symbol} [{outcome.status.value}] {outcome.reason} "
-            f"(laps: {outcome.laps})  ledger: {outcome.ledger_path}"
-        )
-        if outcome.status.value == "DONE":
-            lap_word = "lap" if outcome.laps == 1 else "laps"
-            print(
-                "Gate verified: the independent acceptance gate passed "
-                f"after {outcome.laps} {lap_word}."
-            )
-            print(
-                "Next: inspect the ledger above; use --keep-workspace "
-                "when you need to debug the resulting files."
-            )
-
-
-def _print_lint_results(results: list[dict]) -> None:
-    """Print lint results to stdout."""
-    for r in results:
-        symbol = "PASS" if r["passed"] else "FAIL"
-        print(f"[{symbol}] {r['path']}")
-        for err in r["errors"]:
-            print(f"       {err}", file=sys.stderr)
-
-
-def _print_list(loops: list[dict]) -> None:
-    """Print discovered loops to stdout."""
-    if not loops:
-        print("No loops found.")
-        print(
-            "Create one with `bl new --list` and `bl new <template> <dir>`, "
-            "or run `git clone https://github.com/qualixar/bounded-loops` "
-            "to browse the full loop catalog."
-        )
-        return
-    # Column-aligned table: name | role | rung | gate_kind
-    header = f"{'NAME':<30} {'ROLE':<20} {'RUNG':<6} {'GATE':<20}"
-    print(header)
-    print("-" * len(header))
-    for lp in loops:
-        role_str = ",".join(lp["role"]) if lp["role"] else "?"
-        err_suffix = f"  [ERROR: {lp['error']}]" if lp["error"] else ""
-        print(
-            f"{lp['name']:<30} {role_str:<20} {lp['rung']:<6} "
-            f"{lp['gate_kind']:<20}{err_suffix}"
-        )
-
-
-def _print_show(data: dict) -> None:
-    print(f"name: {data['name']}")
-    print(f"path: {data['path']}")
-    print(f"pattern: {data['pattern']}")
-    print(f"role: {', '.join(data['role']) if data['role'] else '?'}")
-    print(f"rung: {data['rung']}")
-    print(f"runner: {data['runner']['kind']}")
-    print(f"gate: {_format_gate(data['gate'])}")
-    print(f"approval_required: {data['approval_required']}")
-    if data["production_bounds"]:
-        print(f"production_bounds: {data['production_bounds']}")
-    print(f"risk: {', '.join(data['risk']) if data['risk'] else 'none'}")
-    print(f"content_hash: {data['content_hash']}")
-
-
-def _format_gate(gate: dict) -> str:
-    if gate["kind"] == "composite":
-        children = ", ".join(_format_gate(child) for child in gate.get("children", []))
-        return f"composite({gate.get('mode', 'all')}: {children})"
-    if gate.get("run"):
-        return f"{gate['kind']} [{gate['run']}]"
-    if gate.get("schema"):
-        return f"{gate['kind']} [schema={gate['schema']}]"
-    return gate["kind"]
+from bounded_loops.cli_new import _cmd_new  # noqa: E402  (registered by _build_parser above)
+from bounded_loops.cli_output import (  # noqa: E402
+    _print_lint_results,
+    _print_list,
+    _print_outcome,
+    _print_show,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

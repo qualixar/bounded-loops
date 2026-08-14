@@ -22,8 +22,8 @@ import pytest
 
 from bounded_loops.graph.adapters.connectors.local_cli_worker import CliProfile
 from bounded_loops.graph.application.arena_projection import ArenaReadRequest
-from bounded_loops.graph.application.execute_graph import execute_graph_run
-from bounded_loops.graph.application.graph_runtime_facade import (
+from bounded_loops.graph.graph_composition import execute_graph_run
+from bounded_loops.graph.graph_runtime_facade import (
     LocalGraphRuntimeFacade,
     SameTenantArenaAuthorizer,
 )
@@ -337,9 +337,9 @@ def _build_approval_run(tmp_path: Path, manifest: str = _APPROVAL_MANIFEST) -> P
 
     # Run the controller — it will pause at the approval node
     class _NoopWorker:
-        def execute(self, *, plan, node, envelope): raise AssertionError("no worker for approval")
+        def execute(self, *, plan, node, envelope, attempt=1, repair_round=0): raise AssertionError("no worker for approval")
     class _NoopGate:
-        def evaluate(self, *, plan, node, result): raise AssertionError("no gate for approval")
+        def evaluate(self, *, plan, node, result, attempt=1, repair_round=0): raise AssertionError("no gate for approval")
     class _NoopVerifier:
         def verify(self, *, identity, digests): pass
     class _NoopEnforcer:
@@ -629,7 +629,7 @@ def test_commit_port_refuses_approval_when_rejection_exists(tmp_path):
     """PORT-level mirror guard (re-audit N1): `_FileApprovalCommandPort.commit` refuses to approve a
     node that already carries a durable rejection, even under concurrency (the facade pre-check is
     serial-only). This holds the 'never both' invariant at the durable-write boundary itself."""
-    from bounded_loops.graph.application.graph_runtime_facade import _FileApprovalCommandPort
+    from bounded_loops.graph.graph_runtime_facade import _FileApprovalCommandPort
     from bounded_loops.graph.application.approvals import ApprovalCommand, AuthenticatedApprovalContext
     from bounded_loops.graph.domain.approvals import ApprovalRequest, ApprovalDecision
 
@@ -678,3 +678,192 @@ def test_resume_detects_conflict_across_attempts(tmp_path):
     })
     with pytest.raises(GraphIntegrityError, match="conflicting"):
         _bare_facade(runs_root).resume(_request())
+
+
+# ── spend ceilings must reach the controller from every continue path ─────────
+# Grok audit round 1, MAJOR: resume() and approve() built the controller with no run_budget
+# and no price_table. The controller refuses to continue a budget-paused run with no ceiling
+# declared, so a paused run could not be continued from ANY shipped entry point — the pause
+# was a dead end instead of a decision point.
+
+def test_resume_carries_a_new_spend_ceiling_to_the_controller(tmp_path, monkeypatch):
+    """Raising the ceiling is one call. Without this the pause could not be continued at all."""
+    from bounded_loops.graph import graph_runtime_facade as module
+    from bounded_loops.graph.application.node_spend import RunBudget
+    from bounded_loops.graph.domain.pricing import ModelPrice, PriceTable
+
+    _build_run(tmp_path)
+    seen: dict[str, object] = {}
+    real = module.build_execution_controller
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(module, "build_execution_controller", _capture)
+    facade = _facade(tmp_path, node_prompts={"agent": "test prompt"})
+    table = PriceTable(
+        prices={("anthropic", "claude-opus-5"): ModelPrice(3_000_000, 15_000_000)},
+        source="price-table:test",
+    )
+
+    facade.resume(_request(), run_budget=RunBudget(max_tokens=500_000), price_table=table)
+
+    assert seen["run_budget"] == RunBudget(max_tokens=500_000)
+    assert seen["price_table"] is table
+
+
+def test_approve_carries_a_spend_ceiling_too(tmp_path, monkeypatch):
+    """Approving a checkpoint continues the run, and continuing spends money."""
+    from bounded_loops.graph import graph_runtime_facade as module
+    from bounded_loops.graph.application.node_spend import RunBudget
+
+    runs_root = _build_approval_run(tmp_path)
+    seen: dict[str, object] = {}
+    real = module.build_execution_controller
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(module, "build_execution_controller", _capture)
+    facade = LocalGraphRuntimeFacade(
+        runs_root=runs_root,
+        arena_authorizer=SameTenantArenaAuthorizer(),
+        cli_profiles={},
+        environ={},
+        node_prompts={},
+    )
+    request = ArenaReadRequest(
+        subject_id=_ORG, organization_id=_ORG, project_id=_PROJECT, run_id=_RUN_ID,
+    )
+
+    final = facade.approve(
+        request, node_id="checkpoint", decision="approved",
+        run_budget=RunBudget(max_tokens=42),
+    )
+
+    assert final.run_state == "SUCCEEDED"
+    assert seen["run_budget"] == RunBudget(max_tokens=42)
+
+
+def test_the_facades_own_ceiling_applies_when_a_call_supplies_none(tmp_path, monkeypatch):
+    """A deployment can set a standing ceiling once instead of on every call."""
+    from bounded_loops.graph import graph_runtime_facade as module
+    from bounded_loops.graph.application.node_spend import RunBudget
+
+    _build_run(tmp_path)
+    seen: dict[str, object] = {}
+    real = module.build_execution_controller
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(module, "build_execution_controller", _capture)
+    facade = LocalGraphRuntimeFacade(
+        runs_root=tmp_path / "runs",
+        arena_authorizer=SameTenantArenaAuthorizer(),
+        cli_profiles={"claude": CliProfile(_standin(tmp_path))},
+        environ={"PATH": os.environ.get("PATH", "")},
+        node_prompts={"agent": "test prompt"},
+        run_budget=RunBudget(max_cost_microunits=250_000),
+    )
+
+    facade.resume(_request())
+
+    assert seen["run_budget"] == RunBudget(max_cost_microunits=250_000)
+
+
+def test_a_run_records_the_provider_catalog_it_used_and_a_continuation_resolves_it(tmp_path) -> None:
+    """The wrong-binary bug. A catalog that OVERRODE a shipped name was dropped on every continue
+    path, so the continuation resolved the shipped binary and billed a real call to the wrong CLI.
+    Nothing failed; the wrong thing ran.
+    """
+    import json
+
+    from bounded_loops.graph.graph_runtime_facade import _recorded_catalog
+
+    catalog = tmp_path / "providers.toml"
+    catalog.write_text(
+        '[providers.claude]\nbinary = "/opt/wrappers/claude"\nprompt_via = "stdin"\n',
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run-meta.json").write_text(
+        json.dumps({"provider_catalog": str(catalog)}), encoding="utf-8"
+    )
+
+    assert _recorded_catalog(run_dir) == catalog
+
+
+def test_a_run_that_recorded_no_catalog_is_unaffected(tmp_path, monkeypatch) -> None:
+    """Every run created before this field existed must keep resuming exactly as it did."""
+    import json
+
+    from bounded_loops.graph.graph_runtime_facade import _recorded_catalog
+
+    monkeypatch.delenv("BOUNDED_LOOPS_PROVIDERS", raising=False)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run-meta.json").write_text(json.dumps({"run_id": "r"}), encoding="utf-8")
+
+    assert _recorded_catalog(run_dir) is None
+
+
+def test_a_recorded_catalog_that_moved_says_so_by_name(tmp_path, caplog) -> None:
+    """The downstream wiring check can only say "this provider is unknown" — true, but it does not
+    tell the operator that the file the run was created with has moved."""
+    import json
+    import logging
+
+    from bounded_loops.graph.graph_runtime_facade import _recorded_catalog
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run-meta.json").write_text(
+        json.dumps({
+            "provider_catalog": str(tmp_path / "gone.toml"),
+            "provider_catalog_sha256": "a" * 64,
+        }),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        _recorded_catalog(run_dir)
+
+    assert "gone.toml" in caplog.text
+    assert "--providers" in caplog.text
+
+
+def test_the_hosted_constructor_does_not_open_a_catalog_path_from_a_tenants_run_dir(tmp_path) -> None:
+    """The two addressing modes resolve providers differently, deliberately.
+
+    ``for_run_dir`` is the operator opening a directory on their own machine, so the catalog the run
+    recorded is their own file. The hosted ``runs_root`` constructor serves many tenants out of one
+    root, and the recorded path lives INSIDE a tenant's directory — honouring it would let a tenant
+    steer the server's file reads. The audit reported the asymmetry as a gap; it is the security
+    boundary, and this test is here so it does not get "fixed" into one.
+    """
+    import json
+
+    from bounded_loops.graph.adapters.persistence.local_arena_access import (
+        LocalSameTenantAuthorizer,
+    )
+
+    catalog = tmp_path / "tenant-supplied.toml"
+    catalog.write_text('[providers.smuggled]\nbinary = "/bin/echo"\n', encoding="utf-8")
+    run_dir = tmp_path / "roots" / "org" / "project" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run-meta.json").write_text(
+        json.dumps({"provider_catalog": str(catalog)}), encoding="utf-8"
+    )
+
+    hosted = LocalGraphRuntimeFacade(
+        runs_root=tmp_path / "roots",
+        arena_authorizer=LocalSameTenantAuthorizer(),
+        cli_profiles={"claude": CliProfile("claude")},
+    )
+
+    assert "smuggled" not in hosted.cli_profiles

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# cassettes/stub-agent.sh — used only by the standalone run.sh/wreck.sh
+# scripts (NOT by `bl run`, which uses cassettes/default.json directly via
+# the stub runner adapter). Writes corrected output.json to the CURRENT
+# directory (cwd = workspace root).
+set -euo pipefail
+
+cat > output.json <<'JSON'
+{
+  "status": "ok",
+  "version": 2
+}
+JSON
+
+echo "stub-agent: wrote output.json"

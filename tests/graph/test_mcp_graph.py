@@ -43,13 +43,13 @@ class _FakeFacade:
             raise self._error
         return self._projection
 
-    def resume(self, request):
+    def resume(self, request, *, run_budget=None):
         self.calls.append(("resume", request))
         if self._error is not None:
             raise self._error
         return self._projection
 
-    def approve(self, request, *, node_id, decision):
+    def approve(self, request, *, node_id, decision, run_budget=None):
         self.calls.append(("approve", request, node_id, decision))
         if self._error is not None:
             raise self._error

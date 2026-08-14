@@ -29,7 +29,8 @@ import re
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+from types import MappingProxyType
 from typing import Optional
 
 import yaml
@@ -43,6 +44,9 @@ from bounded_loops.domain.models import Bounds, Rung, Spec
 # _load_env_passthrough's docstring for exactly what this regex does and
 # does NOT guarantee.
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+# Port names: lowercase, alphanumeric + hyphen/underscore, max 63 chars.
+_PORT_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,62}$")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -109,7 +113,7 @@ _EXTRA_AGENT_CMDS_ENV = "BOUNDED_LOOPS_EXTRA_AGENT_CMDS"
 
 _LOOP_KEYS = frozenset({
     "name", "description", "pattern", "role", "rung", "runner", "gate",
-    "spec", "bounds", "memory", "forbid",
+    "spec", "bounds", "memory", "forbid", "inputs", "outputs",
 })
 _BOUNDS_KEYS = frozenset({
     "max_iterations", "no_progress_window", "max_tokens", "max_wallclock_s",
@@ -154,6 +158,39 @@ _UniqueKeySafeLoader.add_constructor(BaseResolver.DEFAULT_MAPPING_TAG, _construc
 
 
 # ---------------------------------------------------------------------------
+# Port declarations — carried on LoopManifest, validated at load time
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class LoopInputPort:
+    """One declared input port on a loop package.
+
+    ``path`` is the workspace-relative destination the overlay mechanism will
+    write the upstream artifact to — validated at manifest load time with the
+    same traversal-free rules as declared graph outputs.  ``required=True``
+    (default) means the loop subprocess exits non-zero if the artifact is absent.
+    """
+    name: str
+    path: str
+    required: bool = True
+    media_type: str = "application/octet-stream"
+
+
+@dataclass(frozen=True)
+class LoopOutputPort:
+    """One declared output port on a loop package.
+
+    ``path`` is the workspace-relative source file the loop must produce.
+    After the loop engine runs, the entry point copies it to
+    ``cwd/outputs/<name>`` so the sandboxed worker can promote it as a
+    graph artifact alongside ``loop-outcome.json``.
+    """
+    name: str
+    path: str
+    media_type: str = "application/octet-stream"
+
+
+# ---------------------------------------------------------------------------
 # LoopManifest — the ONE shape
 # ---------------------------------------------------------------------------
 
@@ -175,7 +212,11 @@ class LoopManifest:
     raw:         dict
     loop_dir:    Path
     memory_path: Path
-    env_passthrough: tuple[str, ...] = ()   # LAST field, WITH a default
+    env_passthrough: tuple[str, ...] = ()   # fields with defaults follow
+    # Port declarations: absent = fixture-mode (no overlay, no extra outputs).
+    # MappingProxyType is immutable so it is safe as a shared class-level default.
+    inputs: MappingProxyType = MappingProxyType({})   # port_name → LoopInputPort
+    outputs: MappingProxyType = MappingProxyType({})  # port_name → LoopOutputPort
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +255,12 @@ def load(loop_dir: Path) -> LoopManifest:
     if not isinstance(raw["rung"], str) or raw["rung"] not in VALID_RUNGS:
         raise ManifestError(f"rung must be L1|L2|L3, got {raw['rung']!r}")
     if not isinstance(raw["pattern"], str) or raw["pattern"] not in VALID_PATTERNS:
-        raise ManifestError(f"pattern {raw['pattern']!r} not in Anthropic's 7")
+        raise ManifestError(
+            f"loop.yaml: pattern {raw['pattern']!r} is not one of Anthropic's seven "
+            f"agentic patterns. Valid values: {sorted(VALID_PATTERNS)}. "
+            f"See https://www.anthropic.com/engineering/building-effective-agents "
+            f"for definitions."
+        )
     _validate_string_list(raw["role"], "role")
     if "forbid" in raw:
         _validate_string_list(raw["forbid"], "forbid", allow_empty=True)
@@ -270,11 +316,24 @@ def load(loop_dir: Path) -> LoopManifest:
     # ── Step 5: Validate gate ──
     gate_block = raw["gate"]
     if not isinstance(gate_block, dict) or "kind" not in gate_block:
-        raise ManifestError("gate.kind is required")
+        raise ManifestError(
+            "loop.yaml: gate.kind is required. "
+            "Add a gate block, for example:\n"
+            "  gate:\n"
+            "    kind: command\n"
+            "    run: \"python3 seed/check.py\""
+        )
     _validate_gate_config(gate_block, "gate")
     gate_kind = gate_block["kind"]
     if not isinstance(gate_kind, str) or gate_kind not in VALID_GATE_KINDS:
-        raise ManifestError(f"gate.kind {gate_kind!r} is not a recognized kind")
+        user_visible_kinds = sorted(VALID_GATE_KINDS - QUALIXAR_GATE_KINDS)
+        raise ManifestError(
+            f"loop.yaml: gate.kind {gate_kind!r} is not a recognized kind. "
+            f"Valid kinds: {user_visible_kinds}. "
+            f"Check for a typo. For Qualixar product gates (agentassert, agentassay, "
+            f"skillfortify, attestar), use --gate-override on the CLI instead of "
+            f"setting them in loop.yaml."
+        )
     if gate_kind in QUALIXAR_GATE_KINDS:
         raise ManifestError(
             f"gate.kind {gate_kind!r} is a Qualixar product gate and is FORBIDDEN "
@@ -282,7 +341,11 @@ def load(loop_dir: Path) -> LoopManifest:
         )
     gate_run = gate_block.get("run")  # str | None (required for kind=command)
     if gate_kind == "command" and gate_run is None:
-        raise ManifestError("gate.run is required when gate.kind=command")
+        raise ManifestError(
+            "loop.yaml: gate.run is required when gate.kind=command. "
+            "Add gate.run: \"<your-check-command>\" — for example: "
+            "gate.run: \"python3 seed/check.py\" or gate.run: \"pytest -q\"."
+        )
     if gate_kind == "composite":
         _validate_composite_gate(gate_block)
     # gate_config merges "run" + every other gate.* key into ONE dict —
@@ -315,6 +378,10 @@ def load(loop_dir: Path) -> LoopManifest:
     # ── Step 9: parse + validate env_passthrough ──
     env_passthrough = _load_env_passthrough(runner_block)
 
+    # ── Step 10: parse + validate port declarations (backward-compatible) ──
+    inputs = _parse_input_ports(raw.get("inputs"))
+    outputs = _parse_output_ports(raw.get("outputs"))
+
     return LoopManifest(
         name=raw["name"],
         spec=spec,
@@ -328,6 +395,8 @@ def load(loop_dir: Path) -> LoopManifest:
         loop_dir=loop_dir,
         memory_path=memory_path,
         env_passthrough=env_passthrough,
+        inputs=inputs,
+        outputs=outputs,
     )
 
 
@@ -369,7 +438,13 @@ def _load_yaml_mapping(path: Path, label: str) -> dict:
 def _reject_unknown_keys(values: Mapping[object, object], allowed: frozenset[str], section: str) -> None:
     unknown = sorted((key for key in values if key not in allowed), key=repr)
     if unknown:
-        raise ManifestError(f"{section}: unknown key {unknown[0]!r}")
+        # Name the file so the author knows exactly where to look.
+        file_hint = "bounds.yaml" if section == "bounds" else "loop.yaml"
+        raise ManifestError(
+            f"{file_hint} [{section}]: unknown key {unknown[0]!r}. "
+            f"Valid keys for this section: {sorted(allowed)}. "
+            f"Remove or rename this key, or check for a typo."
+        )
 
 
 def _require_nonempty_string(values: Mapping[object, object], field_name: str, section: str) -> str:
@@ -600,3 +675,114 @@ def _load_env_passthrough(runner_block: dict) -> tuple[str, ...]:
             )
         validated.append(entry)
     return tuple(validated)
+
+
+# ---------------------------------------------------------------------------
+# Port declaration helpers
+# ---------------------------------------------------------------------------
+
+_PORT_KEYS_INPUT = frozenset({"path", "required", "media_type"})
+_PORT_KEYS_OUTPUT = frozenset({"path", "media_type"})
+
+
+def _validate_port_name(name: object, section: str) -> str:
+    """Reject any port name that is not [a-z][a-z0-9_-]{0,62}."""
+    if not isinstance(name, str) or not _PORT_NAME_RE.fullmatch(name):
+        raise ManifestError(
+            f"loop.yaml: {section} port name {name!r} must match "
+            r"[a-z][a-z0-9_-]{0,62}"
+        )
+    return name
+
+
+def _validate_port_path(path: object, field_name: str) -> str:
+    """Reject paths that escape the workspace.
+
+    Mirrors the rules in ``workspace_promotion._validate_relative_output``
+    without importing from the graph layer (which would create a cross-tier
+    dependency at manifest load time).
+    """
+    if not isinstance(path, str) or not path:
+        raise ManifestError(
+            f"loop.yaml: {field_name}.path must be a non-empty string"
+        )
+    if "\\" in path or ":" in path:
+        raise ManifestError(
+            f"loop.yaml: {field_name}.path must be POSIX-relative and portable"
+        )
+    if any(segment in {"", ".", ".."} for segment in path.split("/")):
+        raise ManifestError(
+            f"loop.yaml: {field_name}.path must be relative, canonical, "
+            "and traversal-free (no '..' or empty segments)"
+        )
+    wp = PureWindowsPath(path)
+    if wp.is_absolute() or wp.drive or wp.anchor:
+        raise ManifestError(
+            f"loop.yaml: {field_name}.path must not be Windows-rooted"
+        )
+    return path
+
+
+def _parse_input_ports(raw_inputs: object) -> MappingProxyType:
+    """Parse the optional ``inputs:`` block from loop.yaml."""
+    if raw_inputs is None:
+        return MappingProxyType({})
+    if not isinstance(raw_inputs, dict):
+        raise ManifestError("loop.yaml: inputs must be a mapping")
+    result: dict[str, LoopInputPort] = {}
+    for name, spec in raw_inputs.items():
+        _validate_port_name(name, "inputs")
+        if not isinstance(spec, dict):
+            raise ManifestError(f"loop.yaml: inputs.{name} must be a mapping")
+        unknown = sorted(k for k in spec if k not in _PORT_KEYS_INPUT)
+        if unknown:
+            raise ManifestError(
+                f"loop.yaml: inputs.{name}: unknown key {unknown[0]!r}. "
+                f"Valid keys: {sorted(_PORT_KEYS_INPUT)}"
+            )
+        if "path" not in spec:
+            raise ManifestError(f"loop.yaml: inputs.{name}.path is required")
+        path = _validate_port_path(spec["path"], f"inputs.{name}")
+        required = spec.get("required", True)
+        if not isinstance(required, bool):
+            raise ManifestError(
+                f"loop.yaml: inputs.{name}.required must be a boolean"
+            )
+        media_type = spec.get("media_type", "application/octet-stream")
+        if not isinstance(media_type, str) or not media_type:
+            raise ManifestError(
+                f"loop.yaml: inputs.{name}.media_type must be a non-empty string"
+            )
+        result[name] = LoopInputPort(
+            name=name, path=path, required=required, media_type=media_type,
+        )
+    return MappingProxyType(result)
+
+
+def _parse_output_ports(raw_outputs: object) -> MappingProxyType:
+    """Parse the optional ``outputs:`` block from loop.yaml."""
+    if raw_outputs is None:
+        return MappingProxyType({})
+    if not isinstance(raw_outputs, dict):
+        raise ManifestError("loop.yaml: outputs must be a mapping")
+    result: dict[str, LoopOutputPort] = {}
+    for name, spec in raw_outputs.items():
+        _validate_port_name(name, "outputs")
+        if not isinstance(spec, dict):
+            raise ManifestError(f"loop.yaml: outputs.{name} must be a mapping")
+        unknown = sorted(k for k in spec if k not in _PORT_KEYS_OUTPUT)
+        if unknown:
+            raise ManifestError(
+                f"loop.yaml: outputs.{name}: unknown key {unknown[0]!r}. "
+                f"Valid keys: {sorted(_PORT_KEYS_OUTPUT)}"
+            )
+        if "path" not in spec:
+            raise ManifestError(f"loop.yaml: outputs.{name}.path is required")
+        path = _validate_port_path(spec["path"], f"outputs.{name}")
+        media_type = spec.get("media_type", "application/octet-stream")
+        if not isinstance(media_type, str) or not media_type:
+            raise ManifestError(
+                f"loop.yaml: outputs.{name}.media_type must be a non-empty string"
+            )
+        result[name] = LoopOutputPort(name=name, path=path, media_type=media_type)
+    return MappingProxyType(result)

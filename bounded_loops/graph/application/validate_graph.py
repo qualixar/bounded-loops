@@ -18,11 +18,13 @@ from bounded_loops.graph.domain.authoring import (
     GraphBudget,
     GraphPolicyIntent,
     IsolationLevel,
+    NETWORK_EFFECTS,
     NodeKind,
     PortableBindingSlot,
     canonical_json,
     digest,
 )
+from bounded_loops.graph.application.edge_guards import POST_FAILURE_GUARDS, canonical_guard
 from bounded_loops.graph.domain.errors import GraphValidationError
 
 
@@ -33,7 +35,36 @@ _VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ABSOLUTE = re.compile(r"^(?:/|\\\\|[A-Za-z]:[\\/]|~[\\/])")
 _SECRET_WORDS = frozenset({"api_key", "credential", "password", "secret", "token"})
-_PROVIDERS = frozenset({"anthropic", "claude", "codex", "grok", "kimi", "muse", "openai", "openrouter", "qwen"})
+# The only budget field names that collide with a secret word. Exempted from the
+# secret-shape check when they hold an integer — see _is_declared_quantity.
+_BUDGET_QUANTITY_KEYS = frozenset({"max_tokens", "max_cost_microunits"})
+# Provider names that must NOT appear in a connection slot's ``requires``. A slot declares
+# CAPABILITIES so the graph stays portable across deployments; naming a provider there pins
+# the graph to one vendor. This is a DENYLIST for portability, not an allowlist of usable
+# providers — a provider is bound at deployment time, not in the authored graph.
+# Must cover every provider the project ships, or a slot naming the uncovered one silently
+# defeats the rule; a tripwire test asserts it stays a superset of the shipped CLI profiles.
+_PROVIDERS = frozenset({
+    "agy", "anthropic", "claude", "codex", "grok", "kimi", "muse", "openai", "openrouter",
+    "qwen",
+})
+_ON_FAILURE_DECLARED = frozenset({"fail_graph", "continue", "repair", "await_human"})
+# Declared in the authoring schema but NOT routed by GraphRunController: every failure
+# currently becomes fail_graph.  Accepting these would silently discard the author's
+# declared policy, so validation refuses them until the runtime honours them.
+_ON_FAILURE_UNIMPLEMENTED = frozenset({"continue", "await_human"})
+#: ``repair`` left this set in P4.25b. It is the one failure policy the runtime now routes, and it
+#: requires the object form so its target is explicit and statically checkable.
+_REPAIR = "repair"
+# Mirrors ``run_graph._MAX_ATTEMPTS_CEILING`` so an over-large budget is refused when the
+# graph is authored rather than when it runs.  Narrowed from 1000: the retry budget
+# multiplies the gate's per-attempt false-accept probability, so a very large budget
+# quietly erodes the guarantee the independent gate exists to provide.
+_MAX_ATTEMPTS_CEILING = 100
+#: Ceiling on the GLOBAL repair-round budget. Mirrors the retry ceiling's reasoning: the total
+#: work bound carries a factor of ``(1 + repair_budget)``, so a large budget erodes the very
+#: guarantee the bound exists to provide.
+_MAX_REPAIR_ROUNDS = 100
 _BASE_NODE_FIELDS = frozenset({
     "id", "kind", "inputs", "outputs", "budget", "effects", "isolation", "connection_slot", "on_failure",
 })
@@ -94,6 +125,8 @@ def validate_authoring_graph(raw: object) -> AuthoringGraphSpec:
     policies = _policies(graph["policies"])
     presentation = _mapping(graph.get("presentation", {}), "/presentation")
     _validate_references(nodes, edges, slots)
+    _refuse_unreachable_failure_routing(edges, policies)
+    _refuse_unrunnable_repair(nodes, edges, policies)
     canonical = _canonical_graph(graph_id, version, nodes, edges, slots, policies, presentation)
     return AuthoringGraphSpec(
         api_version=_API_VERSION,
@@ -107,6 +140,138 @@ def validate_authoring_graph(raw: object) -> AuthoringGraphSpec:
         canonical_json=canonical_json(canonical),
         digest=digest(canonical),
     )
+
+
+def _refuse_unreachable_failure_routing(
+    edges: tuple[AuthoringEdge, ...], policies: GraphPolicyIntent,
+) -> None:
+    """Refuse a failure-routed edge in a graph whose fail mode stops the run at the first failure.
+
+    Under ``fail_closed`` the controller returns a terminal projection the moment a node fails, so
+    the scheduler never gets another turn and a ``failed`` / ``skipped`` / ``terminal`` edge can
+    never be admitted. Accepting one would ship the exact defect this validation exists to close: a
+    condition the author wrote, the engine stored, and nothing ever applied.
+
+    ``fail_mode: continue_declared`` is the mode these guards need, and the message names it. That
+    mode was itself declared-and-unimplemented until P4.25a-2 — present in this allow-list and
+    nowhere else in the engine — which is why this check was written before the mode worked.
+    """
+    if policies.fail_mode != "fail_closed":
+        return
+    for index, edge in enumerate(edges):
+        if edge.when in POST_FAILURE_GUARDS:
+            raise _error(
+                "edge_condition", f"/edges/{index}/when",
+                f"a {edge.when!r} condition can never be reached under "
+                "'fail_mode: fail_closed', because the run stops at the first node failure. "
+                "Set 'fail_mode: continue_declared' to keep driving the graph past a node "
+                "failure. Refused rather than accepted-and-ignored.",
+            )
+
+
+def _on_failure(raw: object, pointer: str) -> tuple[str | None, str | None]:
+    """Accept both spellings of ``on_failure``: the bare policy name, or the repair object.
+
+    The bare string stays valid for every other policy so no existing graph breaks. ``repair`` needs
+    the object form because the termination bound's suffix-locality condition is only checkable
+    against a NAMED target — a repair relation that cannot be read off the manifest cannot be
+    validated before the run, let alone bounded.
+    """
+    if raw is None or isinstance(raw, str):
+        return (raw if isinstance(raw, str) else None), None
+    if not isinstance(raw, Mapping):
+        raise _error("on_failure", pointer, "must be a policy name or a repair object")
+    _closed(raw, {"mode", "target"}, pointer)
+    _required(raw, {"mode", "target"}, pointer)
+    mode = raw["mode"]
+    if mode != _REPAIR:
+        raise _error(
+            "on_failure", pointer,
+            f"only {_REPAIR!r} uses the object form; write the others as a bare string",
+        )
+    return _REPAIR, _identifier(raw["target"], f"{pointer}/target", _ID)
+
+
+def _refuse_unrunnable_repair(
+    nodes: tuple[AuthoringNode, ...], edges: tuple[AuthoringEdge, ...],
+    policies: GraphPolicyIntent,
+) -> None:
+    """Refuse a repair the runtime could not bound or reach.
+
+    Four rules, each closing a way a repair could be declared and then not honoured:
+
+    1. A repair target must EXIST.
+    2. It must be a strict ANCESTOR of the failing node. Repairing a descendant, a sibling, or
+       yourself is not "go back and redo the input" — it is an arbitrary jump, and the suffix the
+       termination bound counts (`D(target)`) is only well defined for an ancestor.
+    3. ``policies.repair_budget`` must be above 0, because it is the GLOBAL bound on repair rounds.
+       Zero means repair is off, so a node declaring it would never repair.
+    4. The fail mode must keep driving the graph. Under ``fail_closed`` the run stops at the first
+       node failure, so a repair could never begin — the same reachability rule edge conditions
+       already follow.
+    """
+    repairing = [node for node in nodes if node.on_failure == _REPAIR]
+    if not repairing:
+        return
+    ancestors = _ancestors(edges)
+    ids = {node.id for node in nodes}
+    for index, node in enumerate(nodes):
+        if node.on_failure != _REPAIR:
+            continue
+        pointer = f"/nodes/{index}/on_failure/target"
+        target = node.repair_target
+        if target not in ids:
+            raise _error("repair_target", pointer, f"names no node in this graph: {target!r}")
+        if target not in ancestors.get(node.id, frozenset()):
+            raise _error(
+                "repair_target", pointer,
+                f"{target!r} is not an ancestor of {node.id!r}; a repair re-executes an upstream "
+                "node and everything reachable from it, so an unrelated target has no bounded suffix",
+            )
+    if policies.repair_budget <= 0:
+        raise _error(
+            "repair_budget", "/policies/repair_budget",
+            "a graph declaring on_failure: repair needs a repair_budget above 0 — it is the GLOBAL "
+            "bound on repair rounds and the only thing that makes termination provable",
+        )
+    if policies.fail_mode == "fail_closed":
+        raise _error(
+            "on_failure", "/policies/fail_mode",
+            "on_failure: repair can never be reached under 'fail_mode: fail_closed', because the "
+            "run stops at the first node failure. Set 'fail_mode: continue_declared'.",
+        )
+    # There WAS a fifth rule here: a loop node could not declare ``on_failure: repair``, because
+    # ``NodeWorkerPort.execute`` carried only ``attempt``, so a loop worker could not learn the round
+    # and would stamp round-1 work as round 0 — a false round inside a hash-chained receipt, which is
+    # worse than a refusal, since the log would look consistent while describing work from a
+    # different round. Task #39 put ``repair_round`` on the worker port and on the gate port, so the
+    # round now reaches the resolver, the inner run id, the loop bridge's idempotency keys and the
+    # promoted receipt. The refusal is gone because its cause is gone; the four rules above still
+    # apply to loop nodes exactly as they do to every other kind.
+
+
+def _ancestors(edges: tuple[AuthoringEdge, ...]) -> dict[str, frozenset[str]]:
+    """Every node's transitive predecessors. The graph is already known acyclic here."""
+    direct: dict[str, set[str]] = {}
+    for edge in edges:
+        direct.setdefault(edge.to_node, set()).add(edge.from_node)
+    resolved: dict[str, frozenset[str]] = {}
+
+    def walk(node_id: str, seen: frozenset[str]) -> frozenset[str]:
+        if node_id in resolved:
+            return resolved[node_id]
+        out: set[str] = set()
+        for parent in direct.get(node_id, ()):  # acyclic, so ``seen`` only guards a malformed call
+            if parent in seen:
+                continue
+            out.add(parent)
+            out |= walk(parent, seen | {parent})
+        resolved[node_id] = frozenset(out)
+        return resolved[node_id]
+
+    for node_id in set(direct) | {edge.from_node for edge in edges}:
+        walk(node_id, frozenset({node_id}))
+    return resolved
 
 
 def _json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -161,11 +326,38 @@ def _node(raw: object, index: int) -> AuthoringNode:
     outputs = _ports(node["outputs"], f"{pointer}/outputs")
     budget = _budget(node["budget"], f"{pointer}/budget")
     effects = _effects(node["effects"], f"{pointer}/effects")
+    if budget.max_attempts > 1 and (effects & NETWORK_EFFECTS):
+        # The controller refuses this combination when it is constructed (D7: an external or
+        # irreversible effect cannot be re-driven without a per-effect idempotency key).
+        # Catching it here means `bl graph lint` and the studio reject it at authoring time
+        # instead of producing a plan that cannot start.
+        raise _error(
+            "retry_of_effectful_node", f"{pointer}/budget/max_attempts",
+            "a node carrying an external / irreversible effect cannot retry without a "
+            "per-effect idempotency key (D7); declare max_attempts: 1",
+        )
     isolation = _enum(IsolationLevel, node["isolation"], f"{pointer}/isolation", "isolation")
     connection_slot = _optional_identifier(node.get("connection_slot"), f"{pointer}/connection_slot")
-    on_failure = node.get("on_failure")
-    if on_failure is not None and on_failure not in {"fail_graph", "continue", "repair", "await_human"}:
+    on_failure, repair_target = _on_failure(node.get("on_failure"), f"{pointer}/on_failure")
+    if on_failure is not None and on_failure not in _ON_FAILURE_DECLARED:
         raise _error("on_failure", f"{pointer}/on_failure", "must be a declared failure policy")
+    if on_failure in _ON_FAILURE_UNIMPLEMENTED:
+        # Refuse rather than accept-and-ignore.  The runtime routes every failure to
+        # fail_graph, so accepting these three would hand back a plan whose declared
+        # failure policy is silently discarded — exactly the silent no-op this project
+        # forbids of its connectors.  See LLD 01 §3.5 for why each is still deferred.
+        raise _error(
+            "on_failure_unimplemented", f"{pointer}/on_failure",
+            f"on_failure={on_failure!r} is declared but not yet routed by the runtime; "
+            "only 'fail_graph' (the default) is honoured today",
+        )
+    if on_failure == _REPAIR and repair_target is None:
+        raise _error(
+            "on_failure", f"{pointer}/on_failure",
+            "repair must name the ancestor to re-execute: "
+            "use {mode: repair, target: <node_id>}. The bare string cannot express which node to "
+            "repair, and a repair relation that is not written down cannot be bounded or checked.",
+        )
     details = {field: node[field] for field in _KIND_FIELDS[kind]}
     _validate_kind_details(kind, details, pointer)
     return AuthoringNode(
@@ -176,6 +368,7 @@ def _node(raw: object, index: int) -> AuthoringNode:
         budget=budget,
         effects=effects,
         isolation=isolation,
+        repair_target=repair_target,
         connection_slot=connection_slot,
         on_failure=on_failure if isinstance(on_failure, str) else None,
         details=details,
@@ -226,9 +419,10 @@ def _edges(raw: object, nodes: tuple[AuthoringNode, ...]) -> tuple[AuthoringEdge
             raise _error("missing_input_port", f"{pointer}/to_port", "target input does not exist")
         if known[from_node].outputs[from_port] != known[to_node].inputs[to_port]:
             raise _error("port_type_mismatch", pointer, "edge port types must match")
-        when = edge.get("when")
-        if when is not None and not isinstance(when, str):
-            raise _error("edge_condition", f"{pointer}/when", "must be a string or null")
+        # Resolve through the guard grammar, which REFUSES any condition it cannot enforce. Before
+        # this, every string was accepted here and then silently ignored by the scheduler, so an
+        # authored condition never applied. Refusing at authoring time is the fail-closed inversion.
+        when = canonical_guard(edge.get("when"), pointer=f"{pointer}/when")
         edges.append(AuthoringEdge(from_node, from_port, to_node, to_port, when))
     return tuple(edges)
 
@@ -259,7 +453,11 @@ def _slots(raw: object) -> tuple[PortableBindingSlot, ...]:
 
 def _policies(raw: object) -> GraphPolicyIntent:
     policies = _mapping(raw, "/policies")
-    _closed(policies, {"data_class", "fail_mode", "required_audit_profile"}, "/policies")
+    _closed(
+        policies,
+        {"data_class", "fail_mode", "required_audit_profile", "repair_budget"},
+        "/policies",
+    )
     _required(policies, {"data_class", "fail_mode"}, "/policies")
     fail_mode = policies["fail_mode"]
     if fail_mode not in {"fail_closed", "continue_declared"}:
@@ -271,7 +469,27 @@ def _policies(raw: object) -> GraphPolicyIntent:
         data_class=_enum(DataClass, policies["data_class"], "/policies/data_class", "data class"),
         fail_mode=fail_mode,
         required_audit_profile=profile,
+        repair_budget=_repair_budget(policies.get("repair_budget")),
     )
+
+
+def _repair_budget(raw: object) -> int:
+    """The GLOBAL bound on repair rounds. Absent means 0 — repair off, and every pre-0.5 graph.
+
+    Capped for the same reason a retry budget is: total work is bounded by
+    ``(1 + repair_budget) * Σ_v (max_attempts_v + 1)``, so an unbounded budget quietly turns a
+    provable bound into an unusable one.
+    """
+    if raw is None:
+        return 0
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise _error("repair_budget", "/policies/repair_budget", "must be an integer")
+    if not 0 <= raw <= _MAX_REPAIR_ROUNDS:
+        raise _error(
+            "repair_budget", "/policies/repair_budget",
+            f"must be between 0 and {_MAX_REPAIR_ROUNDS}",
+        )
+    return raw
 
 
 def _validate_references(nodes: tuple[AuthoringNode, ...], edges: tuple[AuthoringEdge, ...], slots: tuple[PortableBindingSlot, ...]) -> None:
@@ -307,7 +525,9 @@ def _canonical_graph(graph_id: str, version: str, nodes: tuple[AuthoringNode, ..
         "edges": [{"from_node": edge.from_node, "from_port": edge.from_port, "to_node": edge.to_node, "to_port": edge.to_port, "when": edge.when} for edge in edges],
         "graph_id": graph_id,
         "nodes": [_canonical_node(node) for node in nodes],
-        "policies": {"data_class": policies.data_class.value, "fail_mode": policies.fail_mode, "required_audit_profile": policies.required_audit_profile},
+        # ``repair_budget`` is omitted when 0 so every graph authored before it existed keeps its
+        # exact digest — and therefore its plan_id, and therefore a resumable run directory.
+        "policies": _canonical_policies(policies),
         "presentation": dict(presentation),
         "version": version,
     }
@@ -323,9 +543,28 @@ def _canonical_node(node: AuthoringNode) -> dict[str, object]:
         "inputs": dict(node.inputs),
         "isolation": node.isolation.value,
         "kind": node.kind.value,
-        "on_failure": node.on_failure,
+        # The repair target rides INSIDE on_failure so its canonical shape matches what the author
+        # wrote, and so a node without one serialises exactly as it did before repair existed.
+        "on_failure": _canonical_on_failure(node),
         "outputs": dict(node.outputs),
     }
+
+
+def _canonical_policies(policies: GraphPolicyIntent) -> dict[str, object]:
+    canonical: dict[str, object] = {
+        "data_class": policies.data_class.value,
+        "fail_mode": policies.fail_mode,
+        "required_audit_profile": policies.required_audit_profile,
+    }
+    if policies.repair_budget:
+        canonical["repair_budget"] = policies.repair_budget
+    return canonical
+
+
+def _canonical_on_failure(node: AuthoringNode) -> object:
+    if node.repair_target is None:
+        return node.on_failure
+    return {"mode": node.on_failure, "target": node.repair_target}
 
 
 def _budget(raw: object, pointer: str) -> GraphBudget:
@@ -333,7 +572,9 @@ def _budget(raw: object, pointer: str) -> GraphBudget:
     _closed(budget, {"max_attempts", "max_wallclock_s", "max_tokens", "max_cost_microunits"}, pointer)
     _required(budget, {"max_attempts", "max_wallclock_s"}, pointer)
     return GraphBudget(
-        max_attempts=_bounded_int(budget["max_attempts"], f"{pointer}/max_attempts", 1, 1000),
+        max_attempts=_bounded_int(
+            budget["max_attempts"], f"{pointer}/max_attempts", 1, _MAX_ATTEMPTS_CEILING,
+        ),
         max_wallclock_s=_bounded_int(budget["max_wallclock_s"], f"{pointer}/max_wallclock_s", 1, 86400),
         max_tokens=_optional_int(budget.get("max_tokens"), f"{pointer}/max_tokens", minimum=1),
         max_cost_microunits=_optional_int(budget.get("max_cost_microunits"), f"{pointer}/max_cost_microunits", minimum=0),
@@ -360,7 +601,7 @@ def _reject_nonportable(value: object, pointer: str) -> None:
     if isinstance(value, Mapping):
         for key, child in value.items():
             lowered = str(key).lower()
-            if any(word in lowered for word in _SECRET_WORDS):
+            if any(word in lowered for word in _SECRET_WORDS) and not _is_declared_quantity(lowered, child):
                 raise _error("secret_field", pointer, "authoring graphs cannot contain secret-shaped fields")
             _reject_nonportable(child, f"{pointer}/{key}")
     elif isinstance(value, list):
@@ -368,6 +609,29 @@ def _reject_nonportable(value: object, pointer: str) -> None:
             _reject_nonportable(child, f"{pointer}/{index}")
     elif isinstance(value, str) and _ABSOLUTE.match(value):
         raise _error("absolute_path", pointer, "authoring graphs cannot contain absolute local paths")
+
+
+def _is_declared_quantity(key: str, value: object) -> bool:
+    """Whether this key is a NAMED budget quantity holding an integer.
+
+    ``_SECRET_WORDS`` is matched as a SUBSTRING, which is right for catching ``auth_token`` and
+    ``github_api_key`` but wrong for ``max_tokens`` — a false positive that made the field
+    unauthorable in every manifest while it sat in the JSON schema, the closed allowed-set,
+    ``GraphBudget`` and the compiled plan.
+
+    The exemption is an explicit ALLOWLIST of the two field names that needed it, not "any
+    number under any secret-shaped name". The broader rule was tried first and let
+    ``api_key: 999999`` through: numeric identifiers, PINs and account numbers are real, so
+    "no integer is a credential" is an assumption this check has no business making. Scoping to
+    named fields gives up nothing — those two are the only budget keys whose names collide with
+    a secret word — and it keeps the check refusing everything it refused before.
+
+    The integer requirement is belt and braces: ``max_tokens: "sk-live-…"`` is still refused.
+    ``bool`` is excluded because it is an int subclass, and a flag is not a quantity.
+    """
+    if key not in _BUDGET_QUANTITY_KEYS:
+        return False
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _mapping(value: object, pointer: str) -> Mapping[str, object]:

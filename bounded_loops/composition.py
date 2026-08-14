@@ -78,6 +78,7 @@ from bounded_loops.adapters.io.budget import BudgetMeter
 from bounded_loops.adapters.io.kill_switch import EnvKillSwitch  # NOT FileKillSwitch — see  B
 from bounded_loops.adapters.io.approval import CliApproval, AutoApproval
 from bounded_loops.adapters.io.clock import UtcClock
+from bounded_loops.application.env_passthrough import resolve_env_passthrough as _resolve_env_passthrough
 
 # P2 gates (axe) — genuinely not yet
 # authored. Lazy/guarded import, mirroring the qualixar block below.
@@ -146,7 +147,6 @@ RUNNER_REGISTRY: dict[str, type] = {
 # wiring. Default-closed: an unset/empty operator allowlist means NO
 # env_passthrough entry is ever passed through, regardless of what any
 # loop.yaml requests.
-_ENV_PASSTHROUGH_OPERATOR_ALLOWLIST_VAR = "BOUNDED_LOOPS_ENV_PASSTHROUGH_ALLOW"
 _SCRATCH_MARKER = ".bounded-loops-scratch"
 
 # Universal gate registry: command/pytest/jsonschema unconditionally (v1
@@ -462,42 +462,6 @@ def _instantiate_runner(runner_key: str, manifest: LoopManifest,
     if runner_key == "worktree":
         return WorktreeRunner(**kwargs)
     raise ManifestError(f"Internal error: no instantiation rule for runner '{runner_key}'")
-
-
-def _resolve_env_passthrough(manifest: LoopManifest) -> dict[str, str]:
-    """
-    Resolves manifest.env_passthrough
-    into real values, gated by an OPERATOR-level allowlist — the actual
-    authorization control  explicitly deferred to this wiring.
-    Default-closed: if the operator allowlist var is unset/empty, NO
-    env_passthrough entry is ever passed through, regardless of what any
-    loop.yaml requests. A loop naming a var outside the operator allowlist,
-    or a var the allowlist permits but that is absent from the real
-    environment, both FAIL CLOSED with a clear ManifestError — never a
-    silent None-injection or an opaque downstream tool auth failure.
-    """
-    if not manifest.env_passthrough:
-        return {}
-    operator_allowed = {
-        v.strip() for v in os.environ.get(_ENV_PASSTHROUGH_OPERATOR_ALLOWLIST_VAR, "").split(",")
-        if v.strip()
-    }
-    resolved: dict[str, str] = {}
-    for name in manifest.env_passthrough:
-        if name not in operator_allowed:
-            raise ManifestError(
-                f"loop.yaml requests runner.env_passthrough: {name}, but it is not in "
-                f"the operator allowlist ({_ENV_PASSTHROUGH_OPERATOR_ALLOWLIST_VAR}). "
-                "Refusing to pass through an unauthorized variable."
-            )
-        if name not in os.environ:
-            raise ManifestError(
-                f"loop.yaml requests runner.env_passthrough: {name}, and it is operator-"
-                "allowlisted, but it is not set in the current environment. Refusing to "
-                "launch with a missing credential rather than run unauthenticated."
-            )
-        resolved[name] = os.environ[name]
-    return resolved
 
 
 def _otel_requested() -> bool:

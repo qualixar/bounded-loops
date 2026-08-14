@@ -11,7 +11,10 @@ hash are rendered as the anchor that ties this projection to the log it came fro
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from bounded_loops.graph.application.arena_projection import ArenaProjection
+from bounded_loops.graph.domain.usage import MICROUNITS_PER_USD
 
 _STATE_GLYPH = {
     "SUCCEEDED": "✓",
@@ -41,6 +44,7 @@ def render_state_markdown(projection: ArenaProjection) -> str:
     sections = (
         _header(projection),
         _progress(projection),
+        _spend(projection),
         _pending_interrupts(projection),
         _waves(projection),
         _nodes_table(projection),
@@ -72,6 +76,23 @@ def _progress(p: ArenaProjection) -> str:
     parts = [f"**{counts.get('SUCCEEDED', 0)}/{total}** succeeded"]
     parts.extend(f"{counts[state]} {label}" for label, state in _PROGRESS_ORDER if counts.get(state))
     return "## Progress\n\n" + " · ".join(parts)
+
+
+def _spend(p: ArenaProjection) -> str:
+    """What this run has consumed, and whether the number is the truth or a floor.
+
+    An under-count shown as a measurement is worse than showing nothing: an operator reading
+    "1,200 tokens" makes different decisions than one reading "at least 1,200". So an
+    incomplete total says so, in the same line, rather than in a footnote nobody reads.
+    """
+    if not p.spend_tokens and not p.spend_cost_microunits and p.spend_complete:
+        return "## Spend\n\nNothing measured."
+    qualifier = "" if p.spend_complete else " (at least — some attempts reported no usage)"
+    cost = Decimal(p.spend_cost_microunits) / MICROUNITS_PER_USD
+    return (
+        "## Spend\n\n"
+        f"**{p.spend_tokens:,}** tokens · **${cost:.6f}**{qualifier}"
+    )
 
 
 def _pending_interrupts(p: ArenaProjection) -> str:
@@ -116,6 +137,20 @@ def _nodes_table(p: ArenaProjection) -> str:
 
 
 def _next_actions(p: ArenaProjection) -> str:
+    if p.budget_pause is not None and p.run_state not in ("SUCCEEDED", "FAILED"):
+        # Checked FIRST for a RUNNING run: without it a budget-paused run renders as "Running:
+        # <node>", which is exactly wrong — nothing is running and nothing will until the
+        # operator acts. Indistinguishable from progress is the failure mode a pause exists to
+        # avoid.
+        reason = p.budget_pause.get("reason", "the run budget was reached")
+        return (
+            "## Next actions\n\n"
+            f"**Paused on budget** — {_cell(str(reason))}\n\n"
+            "Continue with a higher ceiling:\n\n"
+            "```\nbl graph resume --run <dir> --max-tokens <n>\n```\n\n"
+            "Or `--max-cost-usd <amount>`, or `--budget-file <json>`. A LOWER ceiling stops "
+            "the run sooner — the same command either way."
+        )
     if p.run_state == "SUCCEEDED":
         return "## Next actions\n\nRun complete — all nodes succeeded."
     if p.run_state == "FAILED":

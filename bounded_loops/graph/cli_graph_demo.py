@@ -25,11 +25,8 @@ from bounded_loops.graph.application.execution_policy import (
     ExecutionEnvelope,
     NetworkMode,
 )
-from bounded_loops.graph.application.run_graph import (
-    GateVerdict,
-    GraphRunController,
-    WorkerResult,
-)
+from bounded_loops.graph.application.run_graph import GraphRunController
+from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
 from bounded_loops.graph.application.validate_graph import parse_authoring_graph_yaml
 from bounded_loops.graph.domain.artifacts import ArtifactPolicy
 from bounded_loops.graph.domain.authoring import _NULL_POLICY_DIGEST
@@ -97,13 +94,14 @@ class _DemoWorker:
     _project: str
 
     def execute(
-        self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope
+        self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
+        attempt: int, repair_round: int,
     ) -> WorkerResult:
         content = f"DEMONSTRATION NODE: {node.node_id}".encode("utf-8")
         policy = ArtifactPolicy(
             organization_id=self._org,
             project_id=self._project,
-            producer_attempt="1",
+            producer_attempt=str(attempt),
             media_type="text/plain",
             sensitivity="public",
             retention_class="standard",
@@ -129,7 +127,8 @@ class _DemoGate:
     """Demonstration gate; always passes.  Distinct object from worker."""
 
     def evaluate(
-        self, *, plan: ExecutionPlan, node: PlannedNode, result: WorkerResult
+        self, *, plan: ExecutionPlan, node: PlannedNode, result: WorkerResult,
+        attempt: int, repair_round: int,
     ) -> GateVerdict:
         return GateVerdict(True, "demonstration gate: always passes")
 

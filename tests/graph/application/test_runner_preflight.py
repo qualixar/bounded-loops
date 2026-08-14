@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from bounded_loops.graph.application.runner_preflight import (
+from bounded_loops.graph.adapters.preflight.runner_preflight import (
     ProbeOutcome,
     default_runner_profiles,
     preflight_runners,

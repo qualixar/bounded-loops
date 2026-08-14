@@ -121,7 +121,9 @@ def compile_graph(graph: AuthoringGraphSpec, snapshot: CompileSnapshot) -> Execu
     policy_digest = _digest(snapshot.policy_digest, "/policy_digest")
     _validate_packages(graph, snapshot.package_digests)
     bindings = _resolve_bindings(graph, snapshot)
-    nodes = tuple(_planned_node(node, bindings) for node in graph.nodes)
+    nodes = tuple(
+        _planned_node(node, bindings, graph.policies.repair_budget) for node in graph.nodes
+    )
     edges = tuple(PlannedEdge(edge.from_node, edge.from_port, edge.to_node, edge.to_port, edge.when) for edge in graph.edges)
     levels = _topological_levels(nodes, edges)
     canonical = _canonical_plan(graph, policy_digest, nodes, edges, levels, bindings)
@@ -254,7 +256,9 @@ def _resolve_bindings(graph: AuthoringGraphSpec, snapshot: CompileSnapshot) -> d
     return bindings
 
 
-def _planned_node(node: AuthoringNode, bindings: Mapping[str, ResolvedBinding]) -> PlannedNode:
+def _planned_node(
+    node: AuthoringNode, bindings: Mapping[str, ResolvedBinding], repair_budget: int = 0,
+) -> PlannedNode:
     # Kept separate from validation to preserve compiler purity over a frozen graph.
     package = None
     if node.kind is NodeKind.LOOP:
@@ -267,6 +271,19 @@ def _planned_node(node: AuthoringNode, bindings: Mapping[str, ResolvedBinding]) 
         "required": node.kind is NodeKind.APPROVAL,
         "required_role": node.details.get("required_role"),
     }
+    # publication_policy reaches the worker through the policy map so the portable graph does not
+    # carry the deployment's resolution logic — the same graph publishes under different rules in
+    # different deployments. Added only when present, same convention as repair fields below.
+    if node.kind is NodeKind.PUBLISH:
+        approval["publication_policy"] = node.details.get("publication_policy")
+    # Repair reaches the runtime through the node policy map, because the controller and the replay
+    # verifier both need it and neither holds the manifest. Added ONLY when declared, so a graph
+    # without repair serialises byte-identically and keeps its plan_id — and therefore keeps every
+    # existing run directory resumable.
+    if node.repair_target is not None:
+        approval["repair_target"] = node.repair_target
+    if repair_budget:
+        approval["repair_budget"] = repair_budget
     return PlannedNode(
         node_id=node.id,
         kind=node.kind.value,
@@ -274,6 +291,9 @@ def _planned_node(node: AuthoringNode, bindings: Mapping[str, ResolvedBinding]) 
         binding_id=binding.binding_id if binding else None,
         required_effects=node.effects,
         isolation=node.isolation,
+        # PER ATTEMPT, not per node: the workers apply this as a subprocess deadline on each
+        # attempt, so a node's total wall time is up to max_attempts * max_wallclock_s.  A
+        # node-total wallclock ceiling is a separate budget and does not exist yet.
         hard_deadline_ms=node.budget.max_wallclock_s * 1000,
         budgets={
             "max_attempts": node.budget.max_attempts,
@@ -307,6 +327,32 @@ def _topological_levels(nodes: tuple[PlannedNode, ...], edges: tuple[PlannedEdge
     return tuple(levels)
 
 
+#: Keys carried on ``PlannedNode.approval_policy`` for the runtime but EXCLUDED from the plan's
+#: canonical form, and therefore from ``plan_id``.
+#:
+#: The only admissible reason to exempt a key is that its value is ALREADY covered by
+#: ``source_graph_digest`` — i.e. it is authored in the manifest, so it rides inside
+#: ``_canonical_node``'s ``details`` and any edit to it moves ``graph.digest`` and hence ``plan_id``
+#: anyway. Under that rule an exemption changes nothing about what the digest detects; it only stops
+#: a compiler-internal plumbing decision from rewriting digests that already exist.
+#:
+#: ``publication_policy`` is exactly that case, and it cost a real regression. v0.4.0 already
+#: REQUIRED the field on a publish node at authoring time and never placed it in the plan; P4.5
+#: started copying it into ``approval_policy`` so the publish worker could read it. Every 0.4.0 graph
+#: with a publish node therefore recompiled to a different ``plan_id`` and refused to resume — and
+#: the graphs affected were precisely the ones with an irreversible effect. Found by the P4.5 audit
+#: (Grok 8). ``test_publication_policy_still_changes_the_plan_id_through_the_manifest`` is what keeps
+#: the exemption honest: change the authored value and ``plan_id`` must still move.
+_PLAN_DIGEST_EXEMPT_APPROVAL_KEYS = frozenset({"publication_policy"})
+
+
+def _canonical_approval_policy(node: PlannedNode) -> dict[str, object]:
+    return {
+        key: value for key, value in node.approval_policy.items()
+        if key not in _PLAN_DIGEST_EXEMPT_APPROVAL_KEYS
+    }
+
+
 def _canonical_plan(graph: AuthoringGraphSpec, policy_digest: str, nodes: tuple[PlannedNode, ...], edges: tuple[PlannedEdge, ...], levels: tuple[tuple[str, ...], ...], bindings: Mapping[str, ResolvedBinding]) -> dict[str, object]:
     return {
         "api_version": "bounded-loops.dev/plan/v1",
@@ -318,7 +364,7 @@ def _canonical_plan(graph: AuthoringGraphSpec, policy_digest: str, nodes: tuple[
         "edges": [{"from_node": edge.from_node, "from_port": edge.from_port, "to_node": edge.to_node, "to_port": edge.to_port, "when": edge.when} for edge in edges],
         "levels": [list(level) for level in levels],
         "nodes": [
-            {"approval_policy": dict(node.approval_policy), "binding_id": node.binding_id, "budgets": dict(node.budgets), "hard_deadline_ms": node.hard_deadline_ms, "isolation": node.isolation.value, "kind": node.kind, "node_id": node.node_id, "package_digest": node.package_digest, "required_effects": sorted(effect.value for effect in node.required_effects)}
+            {"approval_policy": _canonical_approval_policy(node), "binding_id": node.binding_id, "budgets": dict(node.budgets), "hard_deadline_ms": node.hard_deadline_ms, "isolation": node.isolation.value, "kind": node.kind, "node_id": node.node_id, "package_digest": node.package_digest, "required_effects": sorted(effect.value for effect in node.required_effects)}
             for node in nodes
         ],
         "package_digests": sorted({node.package_digest for node in nodes if node.package_digest}),

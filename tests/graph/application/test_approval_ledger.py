@@ -19,7 +19,7 @@ import pytest
 
 from bounded_loops.graph.application.approval_gate import RecordedApprovalResolver
 from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
-from bounded_loops.graph.application.run_graph import ApprovalOutcome
+from bounded_loops.graph.application.node_contracts import ApprovalOutcome
 from bounded_loops.graph.application.validate_graph import parse_authoring_graph_yaml
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import GraphRunIdentity
@@ -81,7 +81,7 @@ def test_fresh_ledger_produces_pending_resolver(tmp_path: Path) -> None:
     identity = _identity(plan)
     resolver = build_durable_approval_resolver(identity=identity, plan=plan, run_dir=tmp_path)
     assert isinstance(resolver, RecordedApprovalResolver)
-    outcome = resolver.resolve(identity=identity, node=plan.nodes[0], attempt=1)
+    outcome = resolver.resolve(identity=identity, node=plan.nodes[0], attempt=1, repair_round=0)
     assert outcome is ApprovalOutcome.PENDING
 
 
@@ -100,7 +100,7 @@ def test_committed_approval_is_resolved_as_approved(tmp_path: Path) -> None:
         "rejections": [],
     })
     resolver = build_durable_approval_resolver(identity=identity, plan=plan, run_dir=tmp_path)
-    outcome = resolver.resolve(identity=identity, node=plan.nodes[0], attempt=1)
+    outcome = resolver.resolve(identity=identity, node=plan.nodes[0], attempt=1, repair_round=0)
     assert outcome is ApprovalOutcome.APPROVED
 
 
@@ -119,7 +119,7 @@ def test_committed_rejection_is_resolved_as_rejected(tmp_path: Path) -> None:
         }],
     })
     resolver = build_durable_approval_resolver(identity=identity, plan=plan, run_dir=tmp_path)
-    outcome = resolver.resolve(identity=identity, node=plan.nodes[0], attempt=1)
+    outcome = resolver.resolve(identity=identity, node=plan.nodes[0], attempt=1, repair_round=0)
     assert outcome is ApprovalOutcome.REJECTED
 
 
@@ -287,10 +287,10 @@ def test_load_approvals_with_boolean_resource_version_fails_closed(tmp_path: Pat
 
 def test_graph_runtime_facade_reexports_load_approvals() -> None:
     """The facade's existing tests import `_load_approvals` from
-    `bounded_loops.graph.application.graph_runtime_facade` — the extraction must keep
+    `bounded_loops.graph.graph_runtime_facade` — the extraction must keep
     that import path working via re-export, not just move the code out from under it."""
     from bounded_loops.graph.application.approval_ledger import _load_approvals as ledger_fn
-    from bounded_loops.graph.application.graph_runtime_facade import _load_approvals as facade_fn
+    from bounded_loops.graph.graph_runtime_facade import _load_approvals as facade_fn
 
     assert facade_fn is ledger_fn
 
@@ -301,8 +301,78 @@ def test_graph_runtime_facade_reexports_build_durable_approval_resolver() -> Non
     from bounded_loops.graph.application.approval_ledger import (
         build_durable_approval_resolver as ledger_fn,
     )
-    from bounded_loops.graph.application.execute_graph import (
+    from bounded_loops.graph.graph_composition import (
         build_durable_approval_resolver as execute_graph_fn,
     )
 
     assert ledger_fn is execute_graph_fn
+
+
+# ── the round survives the durable ledger (P4.5 round-2 audit, Grok 2) ───────────────────
+
+
+def _commit_record(*, repair_round: object = 1) -> dict:
+    aid = _approval_id("checkpoint")
+    entry: dict = {
+        "approval_id": aid, "new_resource_version": 2, "idempotency_key": aid,
+        "node_id": "checkpoint", "actor_id": _ORG, "decided_at": "2026-08-11T00:00:00Z",
+    }
+    if repair_round is not None:
+        entry["repair_round"] = repair_round
+    return {"resource_version": 2, "commits": [entry], "rejections": []}
+
+
+def test_a_durable_grant_carries_the_round_it_was_made_in(tmp_path: Path) -> None:
+    """``approvals.json`` records ``repair_round``, and the rehydrated resolver honours it."""
+    from bounded_loops.graph.application.approval_ledger import build_durable_approval_resolver
+
+    plan = _plan()
+    identity = _identity(plan)
+    _write_ledger(tmp_path, _commit_record(repair_round=1))
+
+    resolver = build_durable_approval_resolver(identity=identity, plan=plan, run_dir=tmp_path)
+
+    assert resolver.resolve(
+        identity=identity, node=plan.nodes[0], attempt=1, repair_round=1,
+    ) is ApprovalOutcome.APPROVED
+    assert resolver.resolve(
+        identity=identity, node=plan.nodes[0], attempt=1, repair_round=0,
+    ) is ApprovalOutcome.PENDING, "a round-1 grant must not authorize round 0 either"
+
+
+def test_a_record_written_before_the_round_existed_still_resolves_at_round_0(tmp_path: Path) -> None:
+    """Backward compatibility is the whole reason round 0 keeps its old coordinates.
+
+    An ``approvals.json`` written by 0.4.0, or by any build before this field existed, has no
+    ``repair_round`` key. It must read as round 0 — the round it was actually made in — so an
+    existing paused run still resumes on the one decision its operator already gave.
+    """
+    from bounded_loops.graph.application.approval_ledger import build_durable_approval_resolver
+
+    plan = _plan()
+    identity = _identity(plan)
+    _write_ledger(tmp_path, _commit_record(repair_round=None))
+
+    resolver = build_durable_approval_resolver(identity=identity, plan=plan, run_dir=tmp_path)
+
+    assert resolver.resolve(
+        identity=identity, node=plan.nodes[0], attempt=1, repair_round=0,
+    ) is ApprovalOutcome.APPROVED
+
+
+@pytest.mark.parametrize("junk", ["one", -1, True, 1.5, [1], {"a": 1}])
+def test_a_malformed_recorded_round_fails_closed(tmp_path: Path, junk: object) -> None:
+    """A decision whose scope cannot be read is not a round-0 decision.
+
+    ``True`` is in the list on purpose: ``isinstance(True, int)`` is True in Python, so a bare
+    integer check would accept it and read the round as 1.
+    """
+    from bounded_loops.graph.application.approval_ledger import build_durable_approval_resolver
+
+    plan = _plan()
+    identity = _identity(plan)
+    record = _commit_record(repair_round=junk)
+    _write_ledger(tmp_path, record)
+
+    with pytest.raises(GraphIntegrityError, match="malformed repair_round"):
+        build_durable_approval_resolver(identity=identity, plan=plan, run_dir=tmp_path)

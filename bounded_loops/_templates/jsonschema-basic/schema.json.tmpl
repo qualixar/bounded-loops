@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "{{LOOP_NAME}} output",
+  "description": "The shape output.json must satisfy for this loop to reach DONE.",
+  "type": "object",
+  "required": ["status", "version"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["ok", "degraded", "down"],
+      "description": "Service health state."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Config schema version — must be a positive integer."
+    }
+  },
+  "additionalProperties": false
+}

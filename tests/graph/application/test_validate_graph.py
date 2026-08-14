@@ -22,7 +22,10 @@ def _graph() -> dict[str, object]:
                 "kind": "loop",
                 "inputs": {"question": "text"},
                 "outputs": {"evidence": "evidence_bundle"},
-                "budget": {"max_attempts": 2, "max_wallclock_s": 60},
+                # max_attempts is 1 and on_failure is fail_graph throughout this fixture
+                # because those are the only values the runtime actually routes; the
+                # validator now refuses the rest rather than accepting and ignoring them.
+                "budget": {"max_attempts": 1, "max_wallclock_s": 60},
                 "effects": ["read_only"],
                 "isolation": "process_restricted",
                 "connection_slot": "research-model",
@@ -37,7 +40,7 @@ def _graph() -> dict[str, object]:
                 "budget": {"max_attempts": 1, "max_wallclock_s": 30},
                 "effects": ["read_only"],
                 "isolation": "workspace_only",
-                "on_failure": "await_human",
+                "on_failure": "fail_graph",
                 "required_role": "reviewer",
             },
         ],
@@ -145,6 +148,38 @@ def test_invalid_json_is_rejected():
             lambda g: g["nodes"][0].update({"on_failure": "ignore_and_continue"}),
             "on_failure",
         ),
+        # on_failure_unimplemented: a value the SCHEMA declares but the RUNTIME does not
+        # route.  Accepting these would return a plan whose declared failure policy is
+        # silently discarded. Refusing is the same fail-closed rule this project applies to
+        # its connectors. ``repair`` LEFT this set in P4.25b — see the repair cases below.
+        (
+            lambda g: g["nodes"][0].update({"on_failure": "repair"}),
+            "on_failure",  # now: repair must name its target
+        ),
+        (
+            lambda g: g["nodes"][0].update({"on_failure": "continue"}),
+            "on_failure_unimplemented",
+        ),
+        (
+            lambda g: g["nodes"][0].update({"on_failure": "await_human"}),
+            "on_failure_unimplemented",
+        ),
+        # Spend caps are no longer refused — the runtime meters them (see
+        # test_node_spend.py). What IS still refused is a cap below its floor: a node that
+        # may not use one single token cannot do anything, so that is a mis-authored graph
+        # rather than a policy. A cost cap of 0 is meaningful ("must not cost money") and is
+        # accepted, which test_a_spend_cap_is_now_authorable pins.
+        (
+            lambda g: g["nodes"][0]["budget"].update({"max_tokens": 0}),
+            "range",
+        ),
+        # max_attempts: above the ceiling the controller enforces.  Narrowed from 1000
+        # because the retry budget multiplies the gate's per-attempt false-accept
+        # probability, so an over-large budget erodes the gate's own guarantee.
+        (
+            lambda g: g["nodes"][0]["budget"].update({"max_attempts": 101}),
+            "range",
+        ),
         # edge_condition: edge 'when' that is not a string or null (line 231)
         (
             lambda g: g["edges"][0].update({"when": 42}),
@@ -178,3 +213,70 @@ def test_additional_graph_validation_error_codes(mutate, code):
     assert raised.value.code == code, (
         f"expected code={code!r}, got code={raised.value.code!r}"
     )
+
+
+@pytest.mark.parametrize(
+    ("budget", "expected_tokens", "expected_cost"),
+    [
+        ({"max_tokens": 50_000}, 50_000, None),
+        ({"max_cost_microunits": 1_000_000}, None, 1_000_000),
+        ({"max_tokens": 1, "max_cost_microunits": 0}, 1, 0),
+    ],
+)
+def test_a_spend_cap_is_now_authorable(budget, expected_tokens, expected_cost):
+    """These fields were refused outright ("no component meters it") until spend landed.
+
+    A cost cap of 0 is a real declaration — "this node must not cost money" — so it is
+    accepted, not treated as a missing value. The runtime honours it by permitting free work
+    and refusing the first attempt that charges anything.
+    """
+    graph = _graph()
+    graph["nodes"][0]["budget"].update(budget)
+
+    spec = validate_authoring_graph(graph)
+
+    assert spec.nodes[0].budget.max_tokens == expected_tokens
+    assert spec.nodes[0].budget.max_cost_microunits == expected_cost
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "accepted"),
+    [
+        # The exemption is a narrow ALLOWLIST of the two budget field names whose names collide
+        # with a secret word, and only when they hold an integer.
+        ("max_tokens", 50_000, True),
+        ("max_cost_microunits", 1_000_000, True),
+        ("max_tokens", "sk-live-not-a-real-key", False),  # belt and braces
+        ("max_tokens", True, False),                      # a flag is not a quantity
+        # Everything else under a secret-shaped name stays refused — INCLUDING numbers. A
+        # broader "any number cannot be a credential" rule was tried first and let
+        # api_key: 999999 through. Numeric identifiers, PINs and account numbers are real, so
+        # that is an assumption this check has no business making.
+        ("api_key", 999_999, False),
+        ("api_key", 1.5, False),
+        ("api_key", None, False),
+        ("api_key", "sk-live-not-a-real-key", False),
+        ("auth_token", "ghp_not-a-real-token", False),
+        ("tokens", ["one", "two"], False),
+        ("credential", {"nested": "value"}, False),
+        ("password", True, False),
+        # Collateral: a legitimate quantity NOT on the allowlist is refused too. Accepted as
+        # the cost of not assuming numbers are safe; the fix for an author who hits it is a
+        # rename, and the alternative was a numeric credential passing validation.
+        ("token_limit", 4_096, False),
+    ],
+)
+def test_only_named_budget_quantities_are_exempt_from_the_secret_shape_check(
+    field, value, accepted,
+):
+    graph = _graph()
+    # ``presentation`` is the graph's open sub-mapping, so an arbitrary key here reaches the
+    # secret check without first hitting the closed allowed-set on a node.
+    graph["presentation"] = {field: value}
+
+    if accepted:
+        assert validate_authoring_graph(graph).presentation[field] == value
+        return
+    with pytest.raises(GraphValidationError) as raised:
+        validate_authoring_graph(graph)
+    assert raised.value.code == "secret_field"

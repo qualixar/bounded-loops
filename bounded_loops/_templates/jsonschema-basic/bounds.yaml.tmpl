@@ -1,0 +1,12 @@
+# bounds.yaml — safety envelope for {{LOOP_NAME}}
+max_iterations: 10
+no_progress_window: 3
+max_tokens: null
+max_wallclock_s: 60
+sandbox: true
+quarantine_inputs: true
+# schema: path to the JSON Schema file (relative to the loop directory).
+# JsonSchemaGate validates workspace/output.json against this schema.
+schema: schema.json
+trace: true
+require_approval: false

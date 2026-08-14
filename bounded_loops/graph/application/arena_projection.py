@@ -6,23 +6,86 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
-from bounded_loops.graph.application.schedule_ready import NodeState, predecessors_admit
+from bounded_loops.graph.application.graph_ports import EventLogPort
+from bounded_loops.graph.application.failure_policy import RUN_SUCCEEDS_ON
+from bounded_loops.graph.application.repair_rounds import (
+    REPAIR_ROUND_EVENT,
+    assert_boundary_is_legal,
+    descendants,
+)
+from bounded_loops.graph.application.schedule_ready import (
+    Admission,
+    NodeState,
+    predecessors_admission,
+)
+from bounded_loops.graph.application.node_spend import (
+    NodeSpend,
+    consumed_spend_from,
+    run_spend,
+)
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import GraphRunIdentity, StoredGraphEvent
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode, ResolvedBinding
 
 
 _ALLOWED = {
-    "PENDING": frozenset({"READY"}),
+    # PENDING has TWO exits since edge guards became enforceable. SKIPPED is reached when every
+    # incoming edge was explicitly guarded and excluded — the branch was not taken. See the
+    # admission check below: BOTH exits are causality decisions and both are verified.
+    "PENDING": frozenset({"READY", "SKIPPED"}),
     "READY": frozenset({"STARTING", "AWAITING_APPROVAL"}),
-    "STARTING": frozenset({"RUNNING"}),
-    "RUNNING": frozenset({"GATING", "FAILED"}),
+    # STARTING -> FAILED is a real outcome, not a corruption: a node can be dispatched and then
+    # refused before it ever runs — a denied execution policy, no connector worker wired, a
+    # budget already spent. Omitting it made EVERY such run permanently unreadable to the Arena,
+    # `bl graph status` and resume; a real `bl graph run --execute` against a policy-denied node
+    # crashed with "Arena receipt node lifecycle is invalid" instead of reporting the failure.
+    # Found by running the CLI for real — no unit test reached it, because the fixtures all
+    # authorise every node. It opens no path to SUCCEEDED, so the independent-gate invariant is
+    # untouched.
+    "STARTING": frozenset({"RUNNING", "FAILED"}),
+    # RUNNING -> RUNNING and GATING -> RUNNING are the two retry edges of a bounded
+    # loop: the next attempt re-enters RUNNING either after the gate rejected it
+    # (from GATING) or after a worker/artifact fault that never reached the gate
+    # (from RUNNING).  Both are only legal when the attempt number advances — see
+    # ``_attempt_is_consistent``.
+    "RUNNING": frozenset({"GATING", "RUNNING", "FAILED"}),
     "AWAITING_APPROVAL": frozenset({"SUCCEEDED", "FAILED"}),
-    "GATING": frozenset({"SUCCEEDED", "FAILED"}),
+    "GATING": frozenset({"SUCCEEDED", "RUNNING", "FAILED"}),
     "SUCCEEDED": frozenset(),
     "FAILED": frozenset(),
+    "SKIPPED": frozenset(),
 }
+# A new attempt re-enters RUNNING from exactly these states.
+_RETRY_FROM = frozenset({"RUNNING", "GATING"})
+#: The same rule as the controller's, as receipt STATE NAMES — one source, two spellings.
+_RUN_SUCCEEDS_ON_NAMES = frozenset(state.value for state in RUN_SUCCEEDS_ON)
+# The node lifecycle event types, which are the ONLY ones carrying a ``state``.
+# Mirrors ``event_log._NODE_EVENTS``; filtering on the ``node.`` prefix instead would
+# also catch the additive ``node.attempt.failed``, which carries no state and would
+# raise KeyError.  A tripwire test asserts these two sets stay identical.
+_LIFECYCLE_EVENTS = frozenset({
+    "node.ready", "node.starting", "node.running", "node.awaiting_approval",
+    "node.gating", "node.succeeded", "node.failed", "node.skipped",
+})
+
+
+def _attempt_is_consistent(
+    next_state: str, current_state: str, attempt: int, current_attempt: int,
+) -> bool:
+    """Whether an attempt number is legal for one lifecycle transition.
+
+    Three cases: admission out of PENDING and a retry edge both ADVANCE the attempt by
+    one; every other transition moves within a single attempt and must not change it.
+
+    SKIPPED is the exception to the PENDING rule. It is the other exit from PENDING, but no
+    attempt was ever made — the branch was not taken — so the count must NOT advance. Advancing it
+    would assert an attempt that never ran.
+    """
+    if next_state == "SKIPPED":
+        return attempt == current_attempt
+    if current_state == "PENDING" or (next_state == "RUNNING" and current_state in _RETRY_FROM):
+        return attempt == current_attempt + 1
+    return attempt == current_attempt
 
 
 @dataclass(frozen=True)
@@ -55,6 +118,12 @@ class ArenaNodeProjection:
     artifact_digests: tuple[str, ...]
     route: tuple[str, str, str, bool, str] | None
     transport: str | None
+    #: What this node has spent across ALL its attempts, from the receipts. ``spend_complete``
+    #: is False when some attempt reported nothing, which makes the totals a LOWER BOUND — a
+    #: surface that showed an under-count as a measurement would be worse than showing nothing.
+    spend_tokens: int = 0
+    spend_cost_microunits: int = 0
+    spend_complete: bool = True
 
 
 @dataclass(frozen=True)
@@ -71,11 +140,21 @@ class ArenaProjection:
     nodes: tuple[ArenaNodeProjection, ...]
     edges: tuple[tuple[str, str], ...]
     levels: tuple[tuple[str, ...], ...]
+    #: Why the run stopped, when it stopped on the operator's total rather than on its own
+    #: work. A run that is RUNNING but going nowhere is otherwise indistinguishable, in every
+    #: surface, from one still making progress.
+    budget_pause: dict[str, object] | None = None
+    #: The whole run's spend, so a surface can show one number without summing nodes itself.
+    #: ``spend_complete`` False means the totals are a LOWER BOUND: some attempt reported
+    #: nothing, and presenting an under-count as a measurement is worse than showing nothing.
+    spend_tokens: int = 0
+    spend_cost_microunits: int = 0
+    spend_complete: bool = True
 
 
 def read_arena_projection(
     plan: ExecutionPlan,
-    event_log: GraphEventLog,
+    event_log: EventLogPort,
     request: ArenaReadRequest,
     authorizer: ArenaAuthorizationPort,
     receipt_verifier: ArenaReceiptVerifierPort,
@@ -87,9 +166,21 @@ def read_arena_projection(
     snapshot = event_log.verified_snapshot()
     receipt_verifier.verify(identity, snapshot.receipts)
     latest = latest_node_states(plan, snapshot.receipts)
-    if snapshot.projection.state == "SUCCEEDED" and any(value["state"] != "SUCCEEDED" for value in latest.values()):
-        raise GraphIntegrityError("Arena succeeded receipt has a planned node that is not succeeded")
+    # SKIPPED counts, exactly as it does for the controller's own terminal verdict
+    # (``failure_policy.RUN_SUCCEEDS_ON``): a conditional graph whose untaken branch was correctly
+    # skipped did succeed. Requiring every node to be SUCCEEDED made the Arena contradict the
+    # controller — the run sealed SUCCEEDED and then could not be read back at all.
+    # Found by the P4.25a dual audit (Grok): RUN_SUCCEEDS_ON was threaded into run_graph and nowhere
+    # else, so the two halves of one rule disagreed.
+    if snapshot.projection.state == "SUCCEEDED" and any(
+        value["state"] not in _RUN_SUCCEEDS_ON_NAMES for value in latest.values()
+    ):
+        raise GraphIntegrityError(
+            "Arena succeeded receipt has a planned node that neither succeeded nor was skipped"
+        )
     bindings = {binding.binding_id: binding for binding in plan.connection_bindings}
+    spend = consumed_spend_from(plan, snapshot.receipts)
+    total = run_spend(spend)
     return ArenaProjection(
         organization_id=identity.organization_id,
         project_id=identity.project_id,
@@ -100,7 +191,14 @@ def read_arena_projection(
         run_state=snapshot.projection.state,
         receipt_sequence=snapshot.projection.sequence,
         receipt_head_hash=snapshot.projection.head_hash,
-        nodes=tuple(_node_projection(node, latest[node.node_id], bindings) for node in plan.nodes),
+        budget_pause=_budget_pause(snapshot.receipts),
+        spend_tokens=total.tokens,
+        spend_cost_microunits=total.cost_microunits,
+        spend_complete=total.complete,
+        nodes=tuple(
+            _node_projection(node, latest[node.node_id], bindings, spend[node.node_id])
+            for node in plan.nodes
+        ),
         edges=tuple((edge.from_node, edge.to_node) for edge in plan.edges),
         levels=tuple(tuple(level) for level in plan.levels),
     )
@@ -133,9 +231,36 @@ def latest_node_states(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ..
     values = {node.node_id: {"state": "PENDING", "attempt": 0} for node in plan.nodes}
     nodes_by_id = {node.node_id: node for node in plan.nodes}
     predecessors = _predecessors(plan)
+    rounds = 0
     for stored in receipts:
         event = stored.event
-        if not event.event_type.startswith("node."):
+        if event.event_type == REPAIR_ROUND_EVENT:
+            # A repair-round boundary is the ONE place state may move backward. Everything about it
+            # is verified first, because the terminal states it resets are exactly the evidence a
+            # reader relies on — an unchecked boundary would let a forged log erase any failure.
+            rounds += 1
+            target = str(event.payload["target_node"])
+            trigger = str(event.payload["trigger_node"])
+            if target not in values or trigger not in values:
+                raise GraphIntegrityError("repair round names a node outside the immutable plan")
+            # Numbering first: it is a property of the LOG, and a gap would let a stream hide a
+            # round — which is exactly the count the global budget is measured on.
+            declared_round = event.payload["round"]
+            if not isinstance(declared_round, int) or declared_round != rounds:
+                raise GraphIntegrityError(
+                    "repair rounds must be numbered consecutively from 1"
+                )
+            assert_boundary_is_legal(
+                plan, round_index=rounds, trigger_node=trigger, target_node=target,
+                trigger_state=str(values[trigger]["state"]),
+                trigger_cause=values[trigger].get("cause"),
+            )
+            # Suffix locality: reset the target and its descendants, nothing else. Resetting a wider
+            # set would silently redo unrelated work and break the bound's first condition.
+            for reset_id in descendants(plan, target):
+                values[reset_id] = {"state": "PENDING", "attempt": 0}
+            continue
+        if event.event_type not in _LIFECYCLE_EVENTS:
             continue
         node_id = event.payload["node_id"]
         if node_id not in values:
@@ -152,17 +277,24 @@ def latest_node_states(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ..
             or not isinstance(current_state, str)
             or isinstance(current_attempt, bool)
             or not isinstance(current_attempt, int)
-            or attempt != current_attempt + 1 and current_state == "PENDING"
             or next_state not in _ALLOWED[current_state]
         ):
             raise GraphIntegrityError("Arena receipt node lifecycle is invalid")
-        if attempt != current_attempt and current_state != "PENDING":
+        if not _attempt_is_consistent(next_state, current_state, attempt, current_attempt):
             raise GraphIntegrityError("Arena receipt node attempt sequence is invalid")
-        # A node may only ever leave PENDING via READY (`_ALLOWED`); that single
-        # admission edge is where cross-node causality is decided, and predecessor
-        # states are monotonic thereafter, so one check here is sufficient and sound.
-        if current_state == "PENDING" and next_state == "READY":
-            _assert_causal_admission(nodes_by_id[node_id], predecessors[node_id], values)
+        # PENDING has exactly TWO exits (`_ALLOWED`): READY and SKIPPED. Both are cross-node
+        # causality decisions, and predecessor states are monotonic thereafter, so checking each
+        # exit once here is sufficient and sound.
+        #
+        # Checking only READY — which was sound while READY was the sole exit — would leave SKIPPED
+        # as an unguarded back door: a forged, fully re-hash-chained log could mark a node SKIPPED to
+        # walk past an unsatisfied dependency, or claim SKIPPED for a node whose branch was in fact
+        # taken. Each exit is therefore matched against the verdict that exit REQUIRES.
+        if current_state == "PENDING" and next_state in ("READY", "SKIPPED"):
+            _assert_causal_admission(
+                nodes_by_id[node_id], predecessors[node_id], values,
+                expected=Admission.ADMIT if next_state == "READY" else Admission.SKIP,
+            )
         # AWAITING_APPROVAL is an approval-node-only human hold. `_ALLOWED` is
         # kind-agnostic, so enforce the kind here: no other node kind may reach it,
         # in an honest OR a fully re-hash-chained log — a non-approval node still
@@ -179,37 +311,50 @@ def latest_node_states(plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ..
     return values
 
 
-def _predecessors(plan: ExecutionPlan) -> dict[str, tuple[str, ...]]:
-    """Map each planned node to its DAG predecessors (edge sources), mirroring the
-    scheduler's construction in ``derive_ready_nodes``."""
-    sources: dict[str, list[str]] = {node.node_id: [] for node in plan.nodes}
+def _predecessors(plan: ExecutionPlan) -> dict[str, tuple[tuple[str, str | None], ...]]:
+    """Map each planned node to its DAG predecessors as (source id, edge guard) pairs, mirroring the
+    scheduler's construction in ``derive_ready_nodes``.
+
+    The guard travels with the source because admission depends on it. Carrying only the id — as this
+    did before edge guards were enforced — would let the verifier and the scheduler disagree the
+    moment a graph used a conditional edge, which is exactly the divergence this shared predicate
+    exists to prevent."""
+    sources: dict[str, list[tuple[str, str | None]]] = {node.node_id: [] for node in plan.nodes}
     for edge in plan.edges:
-        sources[edge.to_node].append(edge.from_node)
+        sources[edge.to_node].append((edge.from_node, edge.when))
     return {node_id: tuple(parents) for node_id, parents in sources.items()}
 
 
 def _assert_causal_admission(
-    node: PlannedNode, predecessors: tuple[str, ...], values: dict[str, dict[str, object]],
+    node: PlannedNode,
+    predecessors: tuple[tuple[str, str | None], ...],
+    values: dict[str, dict[str, object]],
+    *,
+    expected: Admission,
 ) -> None:
-    """Fail closed if a node left PENDING before its DAG predecessors admitted it.
+    """Fail closed if a node left PENDING on an exit its predecessors did not authorise.
 
     This is the receipt-time dual of the scheduler's admission rule
-    (``predecessors_admit``): the SAME predicate that lets ``derive_ready_nodes``
-    dispatch a node must hold over the predecessor states rebuilt from the receipt
+    (``predecessors_admission``): the SAME predicate that decides what ``derive_ready_nodes`` and
+    ``derive_skipped_nodes`` may do must hold over the predecessor states rebuilt from the receipt
     sequence so far. A tampered, fully re-hash-chained log that inverts DAG order — a
     child reaching READY (and thus SUCCEEDED) before its parents — is rejected here even
     though every per-node ``_ALLOWED`` lifecycle is individually legal. Join semantics
-    are honored exactly, because the check and the scheduler share one predicate."""
-    parents: list[NodeState] = []
-    for source in predecessors:
+    are honored exactly, because the check and the scheduler share one predicate.
+
+    ``expected`` is the verdict the taken exit requires: ADMIT for READY, SKIP for SKIPPED. Matching
+    the exit against its own verdict is what stops the two exits being interchangeable — a log may
+    not skip a node whose branch was taken, nor dispatch one whose branch was not."""
+    parents: list[tuple[NodeState, str | None]] = []
+    for source, guard in predecessors:
         state = values[source]["state"]
         if not isinstance(state, str) or state not in NodeState.__members__:
             raise GraphIntegrityError("Arena receipt node state is invalid")
-        parents.append(NodeState(state))
-    if not predecessors_admit(node.kind, node.approval_policy, tuple(parents)):
+        parents.append((NodeState(state), guard))
+    if predecessors_admission(node.kind, node.approval_policy, tuple(parents)) is not expected:
         raise GraphIntegrityError(
             f"Arena receipt violates DAG causality: node {node.node_id!r} left PENDING "
-            "before its plan predecessors admitted it"
+            f"on an exit its plan predecessors did not authorise (required {expected.value})"
         )
 
 
@@ -217,6 +362,7 @@ def _node_projection(
     node: PlannedNode,
     receipt: dict[str, object],
     bindings: dict[str, ResolvedBinding],
+    spend: NodeSpend,
 ) -> ArenaNodeProjection:
     route = _route(receipt.get("route"))
     transport = receipt.get("transport")
@@ -236,7 +382,22 @@ def _node_projection(
         required_effects=tuple(sorted(effect.value for effect in node.required_effects)),
         isolation=node.isolation.value, hard_deadline_ms=node.hard_deadline_ms,
         artifact_digests=tuple(artifacts), route=route, transport=transport,
+        spend_tokens=spend.tokens, spend_cost_microunits=spend.cost_microunits,
+        spend_complete=spend.complete,
     )
+
+
+def _budget_pause(receipts: tuple[StoredGraphEvent, ...]) -> dict[str, object] | None:
+    """The most recent budget pause, or ``None`` if the run never hit the operator's total.
+
+    Read from the receipts rather than tracked separately, for the same reason spend is: the
+    log is the only thing that survives the process that wrote it. Only surfaced while the run
+    is still going — a pause that was later resumed past is history, not the current state.
+    """
+    for stored in reversed(receipts):
+        if stored.event.event_type == "run.budget.paused":
+            return dict(stored.event.payload)
+    return None
 
 
 def _route(value: object) -> tuple[str, str, str, bool, str] | None:

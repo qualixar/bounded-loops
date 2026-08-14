@@ -56,13 +56,15 @@ import sys
 from pathlib import Path
 from bounded_loops.graph.application.approval_ledger import _load_approvals
 from bounded_loops.graph.application.arena_projection import ArenaProjection, ArenaReadRequest
-from bounded_loops.graph.application.execute_graph import (
+from bounded_loops.graph.graph_run_report import (
     _EXIT_PAUSED,
     _awaiting_approval_nodes,
     approve_command_hint,
 )
-from bounded_loops.graph.application.graph_runtime_facade import LocalGraphRuntimeFacade
+from bounded_loops.graph.cli_graph_providers import _catalog_path
+from bounded_loops.graph.graph_runtime_facade import LocalGraphRuntimeFacade
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
+from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
 
@@ -95,7 +97,7 @@ def _load_node_prompts(inputs_path: object) -> tuple[dict[str, str] | None, str 
 
 
 def _load_identity_and_facade(
-    run_dir: Path, node_prompts: dict[str, str],
+    run_dir: Path, node_prompts: dict[str, str], catalog_path: Path | None = None,
 ) -> tuple[GraphRunIdentity, LocalGraphRuntimeFacade] | tuple[None, None]:
     """Load the run's identity and construct a flat-addressed facade for *run_dir*.
 
@@ -110,7 +112,9 @@ def _load_identity_and_facade(
     ``cli_graph.py``.
     """
     try:
-        facade = LocalGraphRuntimeFacade.for_run_dir(run_dir, node_prompts=node_prompts)
+        facade = LocalGraphRuntimeFacade.for_run_dir(
+            run_dir, node_prompts=node_prompts, provider_catalog=catalog_path,
+        )
     except (GraphIntegrityError, GraphValidationError) as exc:
         _err(f"graph approve: {exc}")
         return None, None
@@ -121,7 +125,9 @@ def _load_identity_and_facade(
     # already-validated view (dual-audit convergence MINOR — removes a redundant TOCTOU).
     resolved = run_dir.resolve()
     try:
-        _plan, identity, _meta = load_plan_from_run_dir(resolved)
+        _plan, identity, _meta = load_plan_from_run_dir(
+            resolved, package_digests=admitted_loop_package_digests(),
+        )
     except (FileNotFoundError, ValueError, GraphValidationError) as exc:
         _err(f"graph approve: cannot reconstruct plan — {exc}")
         return None, None
@@ -145,7 +151,9 @@ def cmd_graph_approve(args: argparse.Namespace) -> int:
         _err(f"graph approve: {error}")
         return 2
 
-    identity, facade = _load_identity_and_facade(run_dir, node_prompts or {})
+    identity, facade = _load_identity_and_facade(
+        run_dir, node_prompts or {}, _catalog_path(args),
+    )
     if identity is None or facade is None:
         return 2
 
@@ -162,7 +170,18 @@ def cmd_graph_approve(args: argparse.Namespace) -> int:
     already_decided = _already_decided(run_dir.resolve(), args.node)
 
     try:
-        projection = facade.approve(request, node_id=args.node, decision=args.decision)
+        # A run that paused on its spend ceiling needs one supplied here too: approving a
+        # checkpoint CONTINUES the run, and the controller refuses to continue a paused run with
+        # no ceiling. Without these flags a budget pause followed by a human gate could not be
+        # finished from this command at all.
+        from bounded_loops.graph.cli_graph import _resolve_budget
+
+        run_budget, price_table = _resolve_budget(args)
+        projection = facade.approve(
+            request, node_id=args.node, decision=args.decision,
+            run_budget=run_budget if run_budget.declared else None,
+            price_table=price_table if price_table.prices else None,
+        )
     except (GraphIntegrityError, GraphValidationError) as exc:
         _err(f"graph approve: {exc}")
         return 2

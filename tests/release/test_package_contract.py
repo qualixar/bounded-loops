@@ -64,7 +64,13 @@ def test_readme_puts_verified_quick_start_above_the_fold() -> None:
     lines = readme.splitlines()
     first_install = next(i for i, line in enumerate(lines, 1) if "pip install" in line)
     assert first_install <= 40
-    assert len(readme.split()) <= 2200
+    # Raised from 2200 in the P4.5 audit round. Three findings (F6 aliasing qualifier on the
+    # capability matrix, the corrected `kind: loop` isolation claim, F13's catalog-is-not-in-the-wheel
+    # note) each required words that make a claim narrower rather than louder, and the honest
+    # capability matrix trades brevity for accuracy on purpose. The guard exists to stop a README
+    # ballooning into documentation; it does that at 2300, and cutting a qualifier to hit a round
+    # number is the wrong direction for a project whose selling point is not overclaiming.
+    assert len(readme.split()) <= 2300
     assert "actions/workflows/ci.yml/badge.svg" in readme
     assert "tests-678_passing" not in readme
 

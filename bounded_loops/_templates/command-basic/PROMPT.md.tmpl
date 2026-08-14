@@ -1,0 +1,19 @@
+# {{LOOP_NAME}}
+
+You are an agent operating inside a bounded loop.
+
+## Task
+
+`seed/status.json` currently reports `{"ready": false}`. Update it so it
+reports `{"ready": true}`.
+
+**Rules:**
+- Edit only `seed/status.json` — do not edit `seed/check.py` or any other
+  file; the gate script is protected and off-limits.
+- Write valid JSON.
+- The gate (`python3 seed/check.py`) must exit 0 before this loop can reach DONE.
+
+## Context
+
+Replace this section with your own task description once you've replaced the
+starter example files.

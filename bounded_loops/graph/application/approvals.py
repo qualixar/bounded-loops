@@ -197,8 +197,21 @@ def _validate_request(request: ApprovalRequest) -> None:
     for value in (request.graph_digest, request.plan_digest, request.evidence_digest):
         _digest(value, "/request")
     _instant(request.expires_at, "/request/expires_at")
-    if not request.requested_effects or not all(isinstance(effect, Effect) for effect in request.requested_effects):
-        raise GraphValidationError("approval_request", "/request/requested_effects", "approval effects must be declared")
+    # Only the TYPE is checked, deliberately, and the reason matters because the empty-set guard was
+    # here before and was removed and was then restored again.
+    #
+    # The real defect was never the empty set — it was that ``requested_effects`` came from the
+    # APPROVAL NODE's own effects, which are always empty, so the recorded decision bound to nothing
+    # while a downstream publish fired ``external_write``. That is now fixed at the source: the facade
+    # derives the set from every node REACHABLE from the approval (``gated_effects_for_approval``).
+    #
+    # With a correct derivation, an empty set is TRUE INFORMATION — this approval gates nothing
+    # effect-bearing, which is a legitimate shape for a plain checkpoint and one that real graphs use.
+    # Re-adding the guard made the CLI refuse those graphs outright and broke 19 tests. A guard that
+    # exists to compensate for a wrong derivation should be deleted once the derivation is right,
+    # not kept as a second opinion about the same fact.
+    if not all(isinstance(effect, Effect) for effect in request.requested_effects):
+        raise GraphValidationError("approval_request", "/request/requested_effects", "approval effects must be valid Effect values")
 
 
 def _validate_decision(decision: ApprovalDecision, now: datetime) -> None:

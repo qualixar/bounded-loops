@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# run.sh — standalone bounded loop for {{LOOP_NAME}}
+# NO engine required — this script IS a minimal bounded loop on its own.
+#
+# Usage:
+#   ./run.sh                          # uses stub agent (writes valid output.json)
+#   AGENT_CLI="claude -p" ./run.sh    # plug in any agent CLI
+#
+# Requirements: bash 3.2+, Python 3.11+, jsonschema (pip install jsonschema)
+
+set -euo pipefail
+
+LOOP_DIR="$(cd "$(dirname "$0")" && pwd)"
+MAX_ITER=10
+WORKSPACE="$(mktemp -d)"
+trap 'rm -rf "$WORKSPACE"' EXIT
+
+if ! python3 -c "import jsonschema" 2>/dev/null; then
+    echo "error: 'jsonschema' not found. Install it: pip install jsonschema" >&2
+    exit 2
+fi
+
+if [ -d "$LOOP_DIR/seed" ]; then
+    cp -r "$LOOP_DIR/seed" "$WORKSPACE/seed"
+fi
+
+AGENT_CLI="${AGENT_CLI:-bash $LOOP_DIR/cassettes/stub-agent.sh}"
+
+echo "=== {{LOOP_NAME}} — standalone run ==="
+echo "Workspace : $WORKSPACE"
+echo "Agent     : $AGENT_CLI"
+echo "Max laps  : $MAX_ITER"
+echo ""
+
+i=0
+cd "$WORKSPACE"
+
+while [ "$i" -lt "$MAX_ITER" ]; do
+    i=$((i + 1))
+    echo "--- Lap $i ---"
+    $AGENT_CLI < "$LOOP_DIR/PROMPT.md"
+
+    if python3 -c "
+import json, jsonschema, sys, pathlib
+schema = json.loads(pathlib.Path('$LOOP_DIR/schema.json').read_text())
+target = pathlib.Path('output.json')
+if not target.exists():
+    print('FAIL: output.json not found', file=sys.stderr); sys.exit(1)
+try:
+    data = json.loads(target.read_text())
+    jsonschema.validate(data, schema)
+    print('PASS: output.json validates against schema.json')
+except jsonschema.ValidationError as e:
+    print(f'FAIL: {e.message}', file=sys.stderr); sys.exit(1)
+"; then
+        echo ""
+        echo "GREEN — gate passed on lap $i"
+        exit 0
+    fi
+
+    echo "Gate failed. Looping..."
+done
+
+echo "HALT — max iterations ($MAX_ITER) reached without green gate"
+exit 1

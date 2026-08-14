@@ -1,0 +1,19 @@
+name: {{LOOP_NAME}}
+description: >
+  Drive an agent until output.json conforms to schema.json. Demonstrates the
+  JsonSchemaGate end to end: real gate FAIL on a broken starting config
+  (wrong types, missing field), then real gate PASS after the agent corrects
+  it. Ships a deliberate schema violation so there is something concrete to fix
+  on lap 1. Keyless — no API key required.
+pattern: evaluator-optimizer
+role:
+  - engineering
+  - backend
+rung: L1
+spec: PROMPT.md
+runner:
+  default: stub
+gate:
+  kind: jsonschema
+bounds: bounds.yaml
+memory: STATE.md

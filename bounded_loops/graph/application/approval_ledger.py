@@ -59,6 +59,8 @@ import json
 from pathlib import Path
 
 from bounded_loops.graph.application.approval_gate import RecordedApprovalResolver
+from bounded_loops.graph.application.repair_rounds import rounds_spent
+from bounded_loops.graph.domain.events import StoredGraphEvent
 from bounded_loops.graph.application.approvals import ApprovalCommit
 from bounded_loops.graph.domain.approvals import ApprovalRequest
 from bounded_loops.graph.domain.errors import GraphIntegrityError
@@ -103,6 +105,34 @@ def _approval_id(identity: GraphRunIdentity, node_id: str) -> str:
     return hashlib.sha256(
         f"{identity.organization_id}:{identity.project_id}:{identity.run_id}:{node_id}".encode("utf-8")
     ).hexdigest()
+
+
+def decision_round(receipts: tuple[StoredGraphEvent, ...]) -> int:
+    """The repair round a human decision recorded NOW belongs to.
+
+    Derived from the receipts, never from memory — the same rule the repair budget follows, and for
+    the same reason: an in-memory counter resets on every process restart. Stamping this into
+    ``approvals.json`` is what stops a grant made in round 0 from satisfying the pause a later repair
+    round opens, which the P4.5 round-2 audit demonstrated as a human-in-the-loop bypass (Grok 2).
+
+    Lives here rather than in the facade because approval durability is this module's subject, and
+    the facade was already one line under the 800-line cap.
+    """
+    return rounds_spent(receipts)
+
+
+def _stored_round(stored: dict, node_id: str) -> int:
+    """The repair round a durable decision was made in. Absent means round 0.
+
+    Fail closed on a malformed value rather than defaulting: a decision whose round cannot be read
+    is a decision whose scope is unknown, and the safe reading of unknown scope is not "round 0".
+    """
+    recorded = stored.get("repair_round", 0)
+    if isinstance(recorded, bool) or not isinstance(recorded, int) or recorded < 0:
+        raise GraphIntegrityError(
+            f"durable approval record for node {node_id!r} has a malformed repair_round"
+        )
+    return recorded
 
 
 def _rehydrated_request(
@@ -174,12 +204,17 @@ def build_durable_approval_resolver(
         except (KeyError, TypeError, ValueError) as exc:
             raise GraphIntegrityError(f"durable approval record for node {node_id!r} is malformed") from exc
         stored_nonce = stored.get("nonce")
+        # A decision recorded before this field existed reads as round 0, which is exactly the round
+        # it was made in — so every existing approvals.json keeps working and only rounds 1+ need a
+        # fresh decision (Grok 2).
+        decision_round = _stored_round(stored, node_id)
         resolver.record_committed_approval(
             identity=identity,
             request=_rehydrated_request(
                 identity, node, nonce=str(stored_nonce) if stored_nonce else None,
             ),
             commit=commit,
+            repair_round=decision_round,
         )
         approved.add((node_id, 1))
 
@@ -195,7 +230,10 @@ def build_durable_approval_resolver(
             attempt = int(stored.get("attempt", 1))
         except (TypeError, ValueError) as exc:
             raise GraphIntegrityError(f"durable rejection record for node {node_id!r} is malformed") from exc
-        resolver.record_rejection(identity=identity, node_id=node_id, attempt=attempt)
+        resolver.record_rejection(
+            identity=identity, node_id=node_id, attempt=attempt,
+            repair_round=_stored_round(stored, node_id),
+        )
         rejected.add((node_id, attempt))
 
     # Node-level conflict: a node must never carry BOTH decisions, regardless of attempt —

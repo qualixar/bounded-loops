@@ -65,7 +65,7 @@ Construct it once; the facade is re-used across calls:
 
 ```python
 from pathlib import Path
-from bounded_loops.graph.application.graph_runtime_facade import (
+from bounded_loops.graph.graph_runtime_facade import (
     LocalGraphRuntimeFacade,
     SameTenantArenaAuthorizer,
 )

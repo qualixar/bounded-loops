@@ -19,7 +19,8 @@ from bounded_loops.graph.application.execution_policy import (
     ExecutionEnvelope,
     NetworkMode,
 )
-from bounded_loops.graph.application.run_graph import GateVerdict, GraphRunController, WorkerResult
+from bounded_loops.graph.application.run_graph import GraphRunController
+from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
 from bounded_loops.graph.application.validate_graph import validate_authoring_graph
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.events import GraphRunIdentity
@@ -66,7 +67,7 @@ def _identity(plan) -> GraphRunIdentity:
 class _SpyWorker:
     calls: list
 
-    def execute(self, *, plan, node, envelope) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:
         self.calls.append(node.node_id)
         return WorkerResult((_DIGEST,), _ROUTE, "https")
 
@@ -75,7 +76,7 @@ class _SpyWorker:
 class _Gate:
     passed: bool
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         return GateVerdict(self.passed, "independent fixture gate")
 
 

@@ -25,11 +25,8 @@ from bounded_loops.graph.application.approvals import (
 )
 from bounded_loops.graph.application.arena_projection import latest_node_states
 from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
-from bounded_loops.graph.application.run_graph import (
-    ApprovalOutcome,
-    GateVerdict,
-    GraphRunController,
-)
+from bounded_loops.graph.application.run_graph import GraphRunController
+from bounded_loops.graph.application.node_contracts import ApprovalOutcome, GateVerdict
 from bounded_loops.graph.application.validate_graph import validate_authoring_graph
 from bounded_loops.graph.domain.approvals import ApprovalDecision, ApprovalRequest
 from bounded_loops.graph.domain.authoring import Effect
@@ -72,10 +69,10 @@ def _identity(plan, run_id: str = "run-1") -> GraphRunIdentity:
 class _Unused:
     """Every collaborator an approval node must NOT touch: asserts if called."""
 
-    def execute(self, *, plan, node, envelope):
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0):
         raise AssertionError("worker must not run for an approval node")
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         raise AssertionError("independent gate must not run for an approval node")
 
     def verify(self, *, identity, digests) -> None:
@@ -106,7 +103,7 @@ def _node(plan):
 def test_resolver_defaults_to_pending(tmp_path):
     plan = _approval_plan()
     resolver = RecordedApprovalResolver()
-    assert resolver.resolve(identity=_identity(plan), node=_node(plan), attempt=1) is ApprovalOutcome.PENDING
+    assert resolver.resolve(identity=_identity(plan), node=_node(plan), attempt=1, repair_round=0) is ApprovalOutcome.PENDING
 
 
 def test_recording_a_grant_requires_a_durable_commit():
@@ -122,7 +119,7 @@ def test_a_decision_recorded_for_one_run_does_not_resolve_another_run():
     resolver.record_rejection(identity=_identity(plan, run_id="run-1"), node_id="approve", attempt=1)
     # A different run of the same plan/node/attempt is unaffected — still PENDING.
     assert resolver.resolve(
-        identity=_identity(plan, run_id="run-2"), node=_node(plan), attempt=1,
+        identity=_identity(plan, run_id="run-2"), node=_node(plan), attempt=1, repair_round=0,
     ) is ApprovalOutcome.PENDING
 
 
@@ -234,7 +231,7 @@ class _FixedApprovalResolver:
 
     outcome: ApprovalOutcome
 
-    def resolve(self, *, identity, node, attempt) -> ApprovalOutcome:
+    def resolve(self, *, identity, node, attempt, repair_round=0) -> ApprovalOutcome:
         return self.outcome
 
 
@@ -283,7 +280,7 @@ def test_resume_completes_the_run_once_the_approval_is_granted(tmp_path):
     assert projection.state == "SUCCEEDED"
     assert [event.event.event_type for event in resumed.event_log.replay()] == [
         "run.created", "run.started", "node.ready", "node.awaiting_approval",
-        "node.succeeded", "run.succeeded",
+        "run.resumed", "node.succeeded", "run.succeeded",
     ]
 
 
@@ -301,7 +298,7 @@ def test_resume_fails_closed_after_a_recorded_rejection(tmp_path):
     events = resumed.event_log.replay()
     assert [event.event.event_type for event in events] == [
         "run.created", "run.started", "node.ready", "node.awaiting_approval",
-        "node.failed", "run.failed",
+        "run.resumed", "node.failed", "run.failed",
     ]
     assert events[-2].event.payload["reason"] == "human approval was rejected"
 
@@ -316,9 +313,11 @@ def test_resume_without_a_decision_stays_paused_and_appends_no_duplicate_events(
     projection = resumed.resume()
 
     assert projection.state == "RUNNING"
-    # Idempotent re-pause: the re-driven prefix re-appends as head-safe no-ops.
+    # Idempotent re-pause: the re-driven prefix re-appends as head-safe no-ops. The one
+    # genuinely new record is run.resumed — an approval node runs no worker, so there is no
+    # attempt to re-drive.
     assert [event.event.event_type for event in resumed.event_log.replay()] == [
-        "run.created", "run.started", "node.ready", "node.awaiting_approval",
+        "run.created", "run.started", "node.ready", "node.awaiting_approval", "run.resumed",
     ]
 
 
@@ -397,3 +396,59 @@ def test_resume_rejects_an_approval_node_forced_through_the_worker_path(tmp_path
     resumed = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), RecordedApprovalResolver())
     with pytest.raises(GraphIntegrityError, match="bypassing the human gate"):
         resumed.resume()
+
+# ── a repair round must ask the human AGAIN (P4.5 round-2 audit, Grok 2) ─────────────────
+
+
+def test_a_grant_in_round_0_does_NOT_satisfy_a_repair_round(tmp_path):
+    """The human-in-the-loop bypass the round-2 audit demonstrated.
+
+    A repair resets the approval node to PENDING and re-runs the whole suffix, so the work the human
+    is being asked about is DIFFERENT work. With the round missing from the resolver key, the round-0
+    grant satisfied the round-1 pause: the node went READY -> AWAITING_APPROVAL -> SUCCEEDED with no
+    second decision, and the audit observed two ``node.succeeded`` receipts on one approval node from
+    a single grant. The irreversible effect downstream was then authorized by an approval of evidence
+    that no longer existed.
+    """
+    plan = _approval_plan()
+    identity = _identity(plan)
+    resolver = RecordedApprovalResolver()
+    request = _request()
+    commit = ApprovalCommit(
+        approval_id=request.approval_id, new_resource_version=2, idempotency_key="idem-1",
+    )
+    resolver.record_committed_approval(identity=identity, request=request, commit=commit)
+
+    approved_round_0 = resolver.resolve(
+        identity=identity, node=_node(plan), attempt=1, repair_round=0,
+    )
+    pending_round_1 = resolver.resolve(
+        identity=identity, node=_node(plan), attempt=1, repair_round=1,
+    )
+
+    assert approved_round_0 is ApprovalOutcome.APPROVED, "round 0 must keep resolving as it always did"
+    assert pending_round_1 is ApprovalOutcome.PENDING, (
+        "a repair round inherited the previous grant — the human never saw this round's work"
+    )
+
+
+def test_a_grant_recorded_IN_a_repair_round_resolves_for_that_round():
+    """The other direction: once the human decides round 1, round 1 proceeds."""
+    plan = _approval_plan()
+    identity = _identity(plan)
+    resolver = RecordedApprovalResolver()
+    request = _request()
+    commit = ApprovalCommit(
+        approval_id=request.approval_id, new_resource_version=2, idempotency_key="idem-1",
+    )
+    resolver.record_committed_approval(
+        identity=identity, request=request, commit=commit, repair_round=1,
+    )
+
+    assert resolver.resolve(
+        identity=identity, node=_node(plan), attempt=1, repair_round=1,
+    ) is ApprovalOutcome.APPROVED
+    # And it does not leak backwards into round 0 either.
+    assert resolver.resolve(
+        identity=identity, node=_node(plan), attempt=1, repair_round=0,
+    ) is ApprovalOutcome.PENDING

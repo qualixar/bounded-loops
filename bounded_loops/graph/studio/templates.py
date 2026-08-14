@@ -62,6 +62,8 @@ _BLOG_PIPELINE: dict[str, Any] = {
         },
         {
             "id": "draft", "kind": "tool", "tool_ref": "model:draft-writer",
+            # 2 attempts: drafting is the node most likely to be rejected by its gate on a
+            # first pass, and the controller now honours the budget.
             "inputs": {"claims": "json"}, "outputs": {"draft": "text"}, "budget": _budget(2, 120),
             "effects": ["workspace_write"], "isolation": "workspace_only",
         },

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from bounded_loops.graph.application.execute_graph import execute_graph_run
+from bounded_loops.graph.graph_composition import execute_graph_run
 from bounded_loops.graph.cli_graph import register
 from bounded_loops.graph.console.cli_console import cmd_graph_console
 from bounded_loops.graph.console.server import ConsoleServer

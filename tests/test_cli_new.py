@@ -31,7 +31,7 @@ def test_new_list_does_not_crash_if_no_templates_bundled(tmp_path, monkeypatch, 
     patch actually takes effect (subprocess would not see it).
     """
     missing_root = tmp_path / "nonexistent-templates-root"
-    monkeypatch.setattr("bounded_loops.cli._templates_root", lambda: missing_root)
+    monkeypatch.setattr("bounded_loops.cli_new._templates_root", lambda: missing_root)
 
     code = main(["new", "--list"])
 
@@ -137,7 +137,7 @@ def test_new_template_with_dot_tmpl_in_a_directory_name_is_not_mangled(tmp_path,
     nested_dir.mkdir(parents=True)
     (nested_dir / "file.py.tmpl").write_text("# {{LOOP_NAME}}\n", encoding="utf-8")
 
-    monkeypatch.setattr("bounded_loops.cli._templates_root", lambda: fixture_root)
+    monkeypatch.setattr("bounded_loops.cli_new._templates_root", lambda: fixture_root)
 
     dest = tmp_path / "dot-tmpl-dest"
     code = main(["new", "dot-tmpl-fixture", str(dest), "--name", "dot-tmpl-loop"])

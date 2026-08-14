@@ -119,6 +119,37 @@ def test_a_denied_egress_never_forwards():
     assert forwarder.calls == []
 
 
+def test_two_bindings_on_one_connection_fail_before_any_egress():
+    """An ambiguous connection binding is refused at the MINT — nothing leaves the process.
+
+    A grant carries the ``connection_id`` but not the ``binding_id``, so the broker recovers the
+    binding by scanning for the one whose connection matches. Two bindings on one connection make
+    that ambiguous and the mint refuses.
+
+    This pins WHERE it refuses, which is the whole severity question for an ``external_write``
+    node: the controller reports the resulting worker failure as ``cause=worker_fault`` with an
+    empty ``node.spend``, and that classification cannot distinguish "refused before the request"
+    from "the provider was already paid". It is the former — asserted here by the forwarder never
+    being called, and egress never being authorized.
+    """
+    forwarder = _RecordingForwarder(ConnectorResult(True, "ok"))
+    invoker = ConnectorInvoker(
+        credential_broker=OpaqueCredentialBroker([
+            CredentialBinding(binding_id="bind-1", connection_id="conn-1", kind=CredentialKind.VAULT_REFERENCE),
+            CredentialBinding(binding_id="bind-2", connection_id="conn-1", kind=CredentialKind.VAULT_REFERENCE),
+        ]),
+        egress_broker=EgressBroker(resolver=_StaticResolver((_PUBLIC,))),
+        forwarder=forwarder,
+    )
+
+    result = _invoke(invoker)
+
+    assert not result.ok
+    assert "credential lease refused" in result.reason
+    assert "exactly one broker binding" in result.reason
+    assert forwarder.calls == [], "the request must never be forwarded — no provider was paid"
+
+
 def test_a_refused_lease_never_forwards():
     forwarder = _RecordingForwarder(ConnectorResult(True, "ok"))
     # The grant does not authorize this destination, so mint_lease refuses.

@@ -11,11 +11,10 @@ from bounded_loops.graph.application.execution_policy import (
     ExecutionEnvelope,
     NetworkMode,
 )
-from bounded_loops.graph.application.run_graph import (
-    GateVerdict,
-    GraphRunController,
-    WorkerResult,
-)
+from bounded_loops.graph.application.run_graph import GraphRunController
+from bounded_loops.graph.application.arena_projection import latest_node_states
+from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
+from bounded_loops.graph.application.resume_states import states_from_receipts
 from bounded_loops.graph.application.schedule_ready import NodeState
 from bounded_loops.graph.application.validate_graph import validate_authoring_graph
 from bounded_loops.graph.domain.connections import ResolvedRoute
@@ -73,7 +72,7 @@ def _identity(plan) -> GraphRunIdentity:
 class _Worker:
     calls: list[str]
 
-    def execute(self, *, plan, node, envelope) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:
         self.calls.append(node.node_id)
         return WorkerResult(
             ("sha256:" + "d" * 64,),
@@ -87,7 +86,7 @@ class _Gate:
     passed: bool
     calls: list[tuple[str, tuple[str, ...]]]
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         self.calls.append((node.node_id, result.output_artifact_digests))
         return GateVerdict(self.passed, "independent fixture gate")
 
@@ -104,17 +103,17 @@ class _Artifacts:
 
 
 class _ExplodingWorker:
-    def execute(self, *, plan, node, envelope) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:
         raise RuntimeError("provider output must not become a receipt reason")
 
 
 class _MismatchedRouteWorker:
-    def execute(self, *, plan, node, envelope) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:
         return WorkerResult(("sha256:" + "d" * 64,), ResolvedRoute("other", "codex", "in", False, "sha256:" + "c" * 64))
 
 
 class _TransportProofWorker:
-    def execute(self, *, plan, node, envelope) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:
         return WorkerResult(
             ("sha256:" + "d" * 64,),
             ResolvedRoute("openai", "codex", "in", False, "sha256:" + "c" * 64),
@@ -177,7 +176,7 @@ def test_controller_records_worker_and_independent_gate_before_success(tmp_path)
     assert gate.calls == [("research", ("sha256:" + "d" * 64,))]
     assert [event.event.event_type for event in controller.event_log.replay()] == [
         "run.created", "run.started", "node.ready", "node.starting", "node.running",
-        "node.gating", "node.succeeded", "run.succeeded",
+        "node.spend", "node.gating", "node.succeeded", "run.succeeded",
     ]
     succeeded = controller.event_log.replay()[-2]
     assert succeeded.event.payload["route"] == {
@@ -331,7 +330,7 @@ class _CrashWorker:
     def __init__(self, crash_on: str) -> None:
         self._crash_on = crash_on
 
-    def execute(self, *, plan, node, envelope) -> WorkerResult:
+    def execute(self, *, plan, node, envelope, attempt=1, repair_round=0) -> WorkerResult:
         if node.node_id == self._crash_on:
             raise _SimulatedCrash("simulated process crash")
         return WorkerResult(
@@ -341,9 +340,10 @@ class _CrashWorker:
         )
 
 
-def _controller(plan, event_log, worker, gate=None):
+def _controller(plan, event_log, worker, gate=None, continue_on_failure=False):
     return GraphRunController(
         plan=plan, event_log=event_log, worker=worker, gate=gate or _Gate(True, []),
+        continue_on_failure=continue_on_failure,
         artifact_verifier=_artifacts(), execution_policy=_policy(plan),
         execution_enforcer=_Enforcer([]), timestamp=lambda: "2026-08-08T00:00:00Z",
     )
@@ -408,9 +408,12 @@ def test_resume_redrives_a_node_interrupted_mid_execution(tmp_path):
     assert resumed.resume().state == "SUCCEEDED"
     assert worker.calls == ["research"]  # re-driven exactly once
     # No duplicated events — the deterministic prefix re-appended as head-safe no-ops.
+    # run.resumed and node.redrive are the two records a resume DOES add: without them a
+    # resume left no trace, so re-executing an incomplete attempt was unobservable.
     assert [e.event.event_type for e in resumed.event_log.replay()] == [
         "run.created", "run.started", "node.ready", "node.starting", "node.running",
-        "node.gating", "node.succeeded", "run.succeeded",
+        "run.resumed", "node.redrive", "node.spend", "node.gating", "node.succeeded",
+        "run.succeeded",
     ]
 
 
@@ -478,7 +481,8 @@ def test_resume_tolerates_a_live_clock_different_from_the_crashed_run(tmp_path):
     assert worker.calls == ["research"]
     assert [e.event.event_type for e in resumed.event_log.replay()] == [
         "run.created", "run.started", "node.ready", "node.starting", "node.running",
-        "node.gating", "node.succeeded", "run.succeeded",
+        "run.resumed", "node.redrive", "node.spend", "node.gating", "node.succeeded",
+        "run.succeeded",
     ]
 
 
@@ -563,11 +567,14 @@ def test_resume_refuses_to_redrive_an_effectful_node_interrupted_mid_execution(t
     """An external/irreversible-effect node interrupted mid-execution must fail closed
     (a resume idempotency key is required, ADR-12 D7) — never blindly re-executed."""
     plan = _effectful_plan()
-    controller = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", _identity(plan)), _Worker([]))
     with pytest.raises(GraphIntegrityError, match="idempotency key"):
-        controller._states_from({"pay": {"state": "RUNNING", "attempt": 1}})
+        states_from_receipts(
+            plan, {"pay": {"state": "RUNNING", "attempt": 1}}, continue_on_failure=False,
+        )
     # A never-started effectful node (PENDING) is fine to (re-)drive.
-    assert controller._states_from({"pay": {"state": "PENDING", "attempt": 0}})["pay"] is NodeState.PENDING
+    assert states_from_receipts(
+        plan, {"pay": {"state": "PENDING", "attempt": 0}}, continue_on_failure=False,
+    )["pay"] is NodeState.PENDING
 
 
 def _raw_append(store: GraphEventLog, head: str, event_type: str, key: str, payload: dict[str, object]) -> str:
@@ -648,7 +655,7 @@ def test_gate_rejection_records_the_verdict_on_node_failed(tmp_path):
 class _EvidenceGate:
     calls: list
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         self.calls.append(node.node_id)
         return GateVerdict(True, "audited", evidence_digest="sha256:" + "e" * 64)
 
@@ -673,7 +680,7 @@ def test_gate_evidence_digest_is_recorded_in_the_verdict(tmp_path):
 class _MalformedVerdictGate:
     calls: list
 
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         self.calls.append(node.node_id)
         return GateVerdict(True, "", evidence_digest="not-a-digest")
 
@@ -701,7 +708,7 @@ def test_a_malformed_gate_verdict_fails_the_node_closed_and_stays_projectable(tm
 
 
 class _NonBoolVerdictGate:
-    def evaluate(self, *, plan, node, result) -> GateVerdict:
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
         return GateVerdict(1, "ok")  # type: ignore[arg-type]  # non-bool decision is malformed
 
 
@@ -721,3 +728,304 @@ def test_a_non_bool_verdict_decision_fails_the_node_closed(tmp_path):
     assert failed.event.payload["reason"] == "independent gate returned an invalid verdict"
     assert GraphEventLog(tmp_path / "events.jsonl", _identity(plan)).replay_projection().state == "FAILED"
 
+
+
+# ── conditional edges end to end (P4.25a) ────────────────────────────────────────────────
+
+
+def _guarded_graph(guard: str, fail_mode: str = "fail_closed") -> dict[str, object]:
+    return {
+        "api_version": "bounded-loops.dev/graph/v1",
+        "graph_id": "guarded-run",
+        "version": "1.0.0",
+        "nodes": [
+            {"id": "a", "kind": "research_claim", "inputs": {}, "outputs": {"claim": "text"},
+             "budget": {"max_attempts": 1, "max_wallclock_s": 1}, "effects": ["read_only"],
+             "isolation": "workspace_only"},
+            {"id": "b", "kind": "research_claim", "inputs": {"ctx": "text"},
+             "outputs": {"claim": "text"},
+             "budget": {"max_attempts": 1, "max_wallclock_s": 1}, "effects": ["read_only"],
+             "isolation": "workspace_only"},
+        ],
+        "edges": [{"from_node": "a", "from_port": "claim", "to_node": "b", "to_port": "ctx",
+                   "when": guard}],
+        "connection_slots": [],
+        "policies": {"data_class": "public", "fail_mode": fail_mode},
+    }
+
+
+@pytest.mark.parametrize("guard", ["failed", "skipped", "terminal"])
+def test_a_failure_conditioned_edge_is_REFUSED_under_fail_closed(guard):
+    """The reachability rule, and the reason this phase is not finished.
+
+    Under ``fail_closed`` the controller returns a terminal projection at the FIRST node failure, so
+    the scheduler never runs again and a failure-conditioned edge can never be admitted. Accepting
+    one would ship precisely the defect enforcing ``when`` was meant to close: a condition the
+    author wrote, the engine stored, and nothing ever applied.
+
+    This mirrors the existing ``_ON_FAILURE_UNIMPLEMENTED`` rule, which already refuses
+    ``on_failure: continue|repair|await_human`` for the same reason.
+    """
+    with pytest.raises(GraphValidationError, match="can never be reached"):
+        validate_authoring_graph(_guarded_graph(guard))
+
+
+def test_a_succeeded_condition_is_accepted_because_it_is_reachable():
+    graph = validate_authoring_graph(_guarded_graph("succeeded"))
+    assert [edge.when for edge in graph.edges] == ["succeeded"]
+
+
+def test_an_unconditional_graph_still_runs_unchanged(tmp_path):
+    """The backward-compatibility lock: enforcing guards must not alter an unguarded run."""
+    plan = _two_node_plan()
+    worker = _Worker([])
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    projection = _controller(plan, log, worker).run()
+
+    assert projection.state == "SUCCEEDED"
+    assert worker.calls == ["a", "b"]
+    assert "node.skipped" not in [e.event.event_type for e in log.replay()]
+    assert latest_node_states(plan, log.replay())["b"]["state"] == "SUCCEEDED"
+
+
+# ── continue_declared: routing around a failure (P4.25a-2) ───────────────────────────────
+
+
+def _continue_plan(guard: str | None):
+    """``a -> b`` under a fail mode that keeps driving the graph after a node fails.
+
+    Mirrors ``_two_node_plan``'s slots and bindings: the shared stubs verify an observed route and
+    transport against the node's binding, so an unbound node fails before it ever reaches the gate.
+    """
+    graph = validate_authoring_graph({
+        "api_version": "bounded-loops.dev/graph/v1",
+        "graph_id": "continue-run",
+        "version": "1.0.0",
+        "nodes": [
+            {"id": "a", "kind": "research_claim", "inputs": {}, "outputs": {"claim": "text"},
+             "budget": {"max_attempts": 1, "max_wallclock_s": 1}, "effects": ["read_only"],
+             "isolation": "workspace_only", "connection_slot": "model_a"},
+            {"id": "b", "kind": "research_claim", "inputs": {"ctx": "text"},
+             "outputs": {"claim": "text"},
+             "budget": {"max_attempts": 1, "max_wallclock_s": 1}, "effects": ["read_only"],
+             "isolation": "workspace_only", "connection_slot": "model_b"},
+        ],
+        "edges": [{"from_node": "a", "from_port": "claim", "to_node": "b", "to_port": "ctx",
+                   "when": guard}],
+        "connection_slots": [
+            {"id": "model_a", "requires": ["text_generation"], "data_class_max": "public"},
+            {"id": "model_b", "requires": ["text_generation"], "data_class_max": "public"},
+        ],
+        "policies": {"data_class": "public", "fail_mode": "continue_declared"},
+    })
+
+    def _binding(binding_id, slot_id, connection_id):
+        return {
+            "binding_id": binding_id, "slot_id": slot_id, "connector_id": "codex-cli",
+            "connector_version": "1.0.0", "connection_id": connection_id,
+            "admission_digest": "sha256:" + "b" * 64,
+            "route_policy_digest": "sha256:" + "c" * 64, "provider_id": "openai",
+            "model_target": "codex", "region": "in", "fallback": False,
+            "capabilities": {"text_generation"},
+            "data_class_max": "public", "allowed_effects": {"read_only"},
+            "isolation": "workspace_only", "transport": "local_cli", "admitted": True,
+        }
+
+    return compile_graph(graph, CompileSnapshot(
+        policy_digest="sha256:" + "a" * 64, package_digests=frozenset(),
+        connections=(
+            _binding("binding-1", "model_a", "conn-1"),
+            _binding("binding-2", "model_b", "conn-2"),
+        ),
+    ))
+
+
+@dataclass
+class _GateRejecting:
+    """An independent gate that rejects exactly ONE node, so a single node can fail in a run."""
+
+    reject: str
+    calls: list[tuple[str, tuple[str, ...]]]
+
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
+        self.calls.append((node.node_id, result.output_artifact_digests))
+        return GateVerdict(node.node_id != self.reject, "selective fixture gate")
+
+
+@dataclass
+class _GateExploding:
+    """A BROKEN gate: it raises instead of returning a verdict."""
+
+    calls: list[str]
+
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
+        self.calls.append(node.node_id)
+        raise RuntimeError("gate is broken")
+
+
+def test_a_failure_conditioned_branch_runs_when_its_upstream_fails(tmp_path):
+    """The whole point of the phase. 'a' is rejected by the independent gate, so 'b' runs.
+
+    The run still reports FAILED — a failure is a failure — but the recovery branch executed.
+    """
+    plan = _continue_plan("failed")
+    worker = _Worker([])
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    projection = _controller(
+        plan, log, worker, gate=_GateRejecting("a", []), continue_on_failure=True,
+    ).run()
+
+    assert projection.state == "FAILED"
+    assert worker.calls == ["a", "b"]  # the recovery branch really ran
+    events = [e.event.event_type for e in log.replay()]
+    assert "node.skipped" not in events  # the branch WAS taken
+    # Exactly ONE run.failed, written at the end -- not mid-run, which would have sealed the
+    # stream and made every later append illegal.
+    assert events.count("run.failed") == 1
+    assert events[-1] == "run.failed"
+
+
+def test_the_untaken_branch_is_skipped_and_the_run_still_succeeds(tmp_path):
+    """Mirror case: 'a' succeeds, so the ``failed`` branch is not taken and must be SKIPPED —
+    and an untaken branch must not make an otherwise-clean run report FAILED."""
+    plan = _continue_plan("failed")
+    worker = _Worker([])
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    projection = _controller(plan, log, worker, continue_on_failure=True).run()
+
+    assert projection.state == "SUCCEEDED"
+    assert worker.calls == ["a"]
+    skipped = [e.event.payload for e in log.replay() if e.event.event_type == "node.skipped"]
+    assert skipped[0]["node_id"] == "b"
+    assert skipped[0]["attempt"] == 0
+    assert "branch not taken" in skipped[0]["reason"]
+    assert latest_node_states(plan, log.replay())["b"]["state"] == "SKIPPED"
+
+
+def test_an_UNGUARDED_dependency_failure_still_blocks_under_continue(tmp_path):
+    """Continuing must not turn a failed dependency into a green light: 'b' has an
+    unconditional edge, so it must never run even though the run kept going."""
+    plan = _continue_plan(None)
+    worker = _Worker([])
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    projection = _controller(
+        plan, log, worker, gate=_GateRejecting("a", []), continue_on_failure=True,
+    ).run()
+
+    assert projection.state == "FAILED"
+    assert worker.calls == ["a"]
+    events = [e.event.event_type for e in log.replay()]
+    assert "node.skipped" not in events  # blocked, NOT retired as an untaken branch
+
+
+def test_a_broken_gate_halts_the_run_even_under_continue(tmp_path):
+    """The HALT classification. A gate that raises has proved unreliable, so no later verdict
+    from it can be trusted — continuing would keep gating on a known-broken authority."""
+    plan = _continue_plan("failed")
+    worker = _Worker([])
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    projection = _controller(
+        plan, log, worker, gate=_GateExploding([]), continue_on_failure=True,
+    ).run()
+
+    assert projection.state == "FAILED"
+    assert worker.calls == ["a"]  # 'b' never ran, despite its ``failed`` condition
+    causes = [
+        e.event.payload.get("cause") for e in log.replay()
+        if e.event.event_type == "node.failed"
+    ]
+    assert causes == ["gate_broken"]
+
+
+def test_the_default_fail_mode_still_stops_at_the_first_failure(tmp_path):
+    """Backward compatibility: without continue_on_failure the run seals at the first failure.
+
+    Uses an UNCONDITIONAL plan, because a failure-conditioned one is now refused outright by a
+    controller built to halt — see the construction test below.
+    """
+    plan = _continue_plan(None)
+    worker = _Worker([])
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    projection = _controller(plan, log, worker, gate=_GateRejecting("a", [])).run()
+
+    assert projection.state == "FAILED"
+    assert worker.calls == ["a"]  # 'b' blocked on its failed dependency
+
+
+
+def test_a_controller_built_to_halt_REFUSES_TO_DRIVE_a_failure_conditioned_plan(tmp_path):
+    """The hole this closes: a graph may declare a continue fail mode and still reach a controller
+    assembled without it. Rather than silently ignore the condition, driving it fails."""
+    plan = _continue_plan("failed")
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    with pytest.raises(GraphIntegrityError, match="built to stop at the first node failure"):
+        _controller(plan, log, _Worker([])).run()
+
+
+def test_an_ALREADY_TERMINAL_run_can_still_be_read_back_by_a_halting_controller(tmp_path):
+    """The refusal guards DRIVING, and a sealed run drives nothing.
+
+    Checking it in the constructor made an idempotent resume of a finished run raise instead of
+    returning its projection, and made a legacy run directory with no recorded fail mode unreadable.
+    Found by the P4.25a dual audit (Muse finding 3).
+    """
+    plan = _continue_plan("failed")
+    identity = _identity(plan)
+    sealed = _controller(
+        plan, GraphEventLog(tmp_path / "events.jsonl", identity), _Worker([]),
+        continue_on_failure=True,
+    ).run()
+    assert sealed.state in ("SUCCEEDED", "FAILED")
+
+    # A fresh controller WITHOUT the flag must still construct and report the terminal projection.
+    reader = _controller(plan, GraphEventLog(tmp_path / "events.jsonl", identity), _Worker([]))
+    assert reader.resume().state == sealed.state
+
+
+def test_an_unconditional_plan_is_unaffected_by_that_refusal(tmp_path):
+    plan = _continue_plan(None)
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+    assert _controller(plan, log, _Worker([])).run().state == "SUCCEEDED"
+
+
+def test_a_resumed_run_keeps_driving_past_a_FAILED_node_under_continuation(tmp_path):
+    """Fixing the resume seal exposed the next bug: states_from_receipts raised on a FAILED node,
+    so continue_declared worked on a fresh run and broke the moment the run was resumed."""
+    plan = _continue_plan("failed")
+    latest = {
+        "a": {"state": "FAILED", "attempt": 1},
+        "b": {"state": "PENDING", "attempt": 0},
+    }
+
+    states = states_from_receipts(plan, latest, continue_on_failure=True)
+
+    assert states["a"] is NodeState.FAILED   # settled, not re-driven, not an error
+    assert states["b"] is NodeState.PENDING  # still drivable via its ``failed`` condition
+
+
+def test_a_resumed_run_refuses_a_FAILED_node_when_it_must_halt(tmp_path):
+    """Under a halting fail mode resume() finalizes before reaching here, so this stays a
+    defensive guard rather than a reachable path."""
+    plan = _continue_plan(None)
+    with pytest.raises(GraphIntegrityError, match="has already failed"):
+        states_from_receipts(
+            plan, {"a": {"state": "FAILED", "attempt": 1}, "b": {"state": "PENDING", "attempt": 0}},
+            continue_on_failure=False,
+        )
+
+
+def test_a_resumed_run_does_not_re_open_a_SKIPPED_branch(tmp_path):
+    plan = _continue_plan("failed")
+    states = states_from_receipts(
+        plan,
+        {"a": {"state": "SUCCEEDED", "attempt": 1}, "b": {"state": "SKIPPED", "attempt": 0}},
+        continue_on_failure=True,
+    )
+    assert states["b"] is NodeState.SKIPPED

@@ -88,6 +88,102 @@ The run-time prompt (`inputs.json`: `node_id -> prompt string`) is not persisted
 the run directory. A prompt may contain a secret; the content-addressed reply
 artifact is the durable receipt.
 
+**Conditional edges (`when`)** — an edge fires only when its SOURCE node reached the
+outcome the edge names. Four values, and nothing else:
+
+| `when` | The edge applies when its source | Use |
+|---|---|---|
+| `null` (default) | SUCCEEDED | ordinary data dependency; identical to pre-0.5 behaviour |
+| `succeeded` | SUCCEEDED | the same rule, stated explicitly |
+| `failed` | FAILED | route around a failure — cleanup, notify, fall back |
+| `skipped` | SKIPPED | distinguish "upstream failed" from "upstream never ran" |
+| `terminal` | any terminal state | a branch that must run whatever happened |
+
+`failed` means FAILED and nothing else. A run-level stop — a fail-closed halt, an operator
+cancel, an expired deadline — satisfies neither `succeeded` nor `failed`, so a recovery
+branch does **not** fire on one and the halt propagates. Use `terminal` if you want a
+branch to run on those too.
+
+Two rules decide admission, and the distinction between them matters:
+
+- **A condition only ever removes an edge from consideration.** It never overrides the
+  join. `all_selected` still tolerates a failed parent and `any_successful` still admits
+  as soon as one parent succeeds — those are the join's decisions, not the condition's.
+- **An unconditional edge whose dependency failed still blocks.** Only an edge you
+  explicitly conditioned can be excluded. This is what keeps a failed dependency from
+  becoming a green light when a node has several parents.
+
+A node whose every incoming edge was excluded is marked **SKIPPED** — its branch was not
+taken — and the skip cascades to the rest of that branch. A run ends SUCCEEDED when every
+node either succeeded or was skipped; a FAILED node still fails the run, even if a
+`failed`-conditioned branch handled it.
+
+Data-dependent conditions (`result.status == 'failed'`) are **not** supported: anything
+outside the five values above is refused when the graph is validated. Versions up to 0.4.0
+accepted such strings and then ignored them, so those edges never applied their condition.
+
+**`failed`, `skipped` and `terminal` require `fail_mode: continue_declared`.** Under
+`fail_mode: fail_closed` (the default) the run stops at the *first* node failure, so the
+scheduler never gets another turn and a failure-conditioned edge could never be admitted.
+Authoring one there is **refused at validation** rather than accepted and silently ignored,
+and the error names the mode to switch to.
+
+`continue_declared` keeps driving the graph after a node fails — but only past the node's
+own bounded-loop outcome: a gate rejection, a worker fault, an unverified artifact, a spent
+retry budget, exhausted re-drives. A **broken gate**, a denied execution policy or isolation
+refusal, a missing worker, a rejected or unresolved human approval, an exhausted spend cap, a
+broken worker contract, or an unmeasurable budget all still stop the run whatever the mode:
+continuing past those would keep spending money, trust a gate that has already proved
+unreliable, or route around a control that said no.
+
+An unconditional edge whose dependency failed still blocks in either mode. A run that had any
+FAILED node still reports FAILED, even when a `failed`-conditioned branch handled it —
+whether a handled failure clears the run is a repair-semantics question, not this one.
+
+The mode is recorded in the run directory's `run-meta.json`, so `resume` and `approve` drive
+the graph exactly the way the original run did. A run directory written before the mode was
+recorded reduces to `fail_closed`, which is how it originally executed.
+
+**Repair a node upstream (`on_failure: repair`)** — a conditional edge points forward; a
+**repair** points backward. When a node exhausts its budget, the ancestor it names runs
+again, and everything reachable from that ancestor runs again after it.
+
+```yaml
+policies: {fail_mode: continue_declared, repair_budget: 2}
+nodes:
+  - id: verify
+    on_failure: {mode: repair, target: fetch}   # fetch is an ancestor of verify
+```
+
+The target is **named**, not implied, because the bound below is only checkable against an
+explicit target. The object form is required for `repair`; the other failure policies stay
+bare strings.
+
+`repair_budget` is a **global** bound on repair rounds for the whole run — never per node.
+That is deliberate: bound repairs per node instead and two nodes can repair each other
+forever, each seeing its own counter as unspent. One global counter is what makes the run
+provably terminate.
+
+**Total node executions are bounded by `(1 + repair_budget) × Σᵥ max_attemptsᵥ`.**
+(`max_attempts` is the total attempts a node may make, so a node with `max_attempts: 1`
+contributes 1. In the retry-budget notation used by the scheduling literature, where `bᵥ` is
+the number of *retries*, that is `(1 + R) × Σᵥ(bᵥ + 1)` — the same quantity.)
+Per-node retry budgets alone do *not* bound a graph with repair — that is the whole point.
+
+Repair is a **bounded outer loop, not a cycle**. Nothing is revived: a round boundary is
+recorded as `run.repair.round`, each reset node gets a `node.repaired` receipt naming the
+terminal state it left, and every receipt in a round carries that round. Within a round the
+state machine is unchanged, so the audit trail stays verifiable — a replay refuses a boundary
+whose trigger did not fail, whose failure was not one a run may continue past (a broken gate or a
+denied policy cannot be repaired), whose target the trigger did not declare, that is numbered out
+of sequence, or that exceeds the budget.
+
+Refused at validation: a target that is not a strict ancestor (including the node itself), a
+target that does not exist, `repair` with a `repair_budget` of 0, and `repair` under
+`fail_mode: fail_closed` — where the run stops at the first failure, so a repair could never
+begin. `on_failure: continue` and `await_human` remain declared-but-unimplemented and are
+still refused.
+
 **Fail-closed preflight** (checked before any node runs):
 - `approval` nodes are **not refused at preflight** — they are skipped during
   preflight and the run pauses (exit code 3) when execution reaches them.  Use
@@ -123,11 +219,27 @@ nodes are not re-driven through the gate on resume — the resume trusts recorde
 verdicts so long as the hash chain covering those events is intact. Incomplete nodes
 (those that did not reach SUCCEEDED in the prior run) are re-driven normally.
 
-The run directory contains `manifest.yaml`, `connections.json`, `plan.json`, and
-`run-meta.json`. `bl graph status` and `bl graph arena` reconstruct the full plan from
-these files and verify that the reconstructed `plan_id` matches the stored one before
-reading any events. A tampered manifest or connections file produces a mismatch and
-the command refuses to continue.
+#### Run directory layout
+
+Every file `bl graph status`, `arena`, `resume` and `approve` reconstruct a run from:
+
+| File | Written by | Contents |
+|---|---|---|
+| `plan.json` | `execute_graph_run` | canonical execution plan bytes |
+| `manifest.yaml` | `execute_graph_run` | the original authoring manifest |
+| `connections.json` | `execute_graph_run` | admitted connection records |
+| `run-meta.json` | `execute_graph_run` | plan_id, org, project, run_id, policy_digest, fail_mode, compiler_version |
+| `controller-events.jsonl` | the controller | hash-chained event log |
+| `approvals.json` | `bl graph approve` | durable human decisions, with the repair round each was made in |
+| `artifacts/` | the workers | per-node content-addressed artifact store |
+| `published-effects.json` | a publish node | the effect burn ledger |
+
+Two addressing modes: a hosted root (`runs_root/org/project/run_id`, every segment
+containment-checked) and a flat single directory (`--out <dir>`, which `bl graph run --execute`
+writes and `bl graph approve` opens). `bl graph status` and `bl graph arena` reconstruct the full
+plan from these files and verify that the reconstructed `plan_id` matches the stored one before
+reading any events. A tampered manifest or connections file produces a mismatch and the command
+refuses to continue.
 
 ---
 
@@ -327,6 +439,47 @@ external traffic.
 
 ---
 
+### 14. Irreversible effects — `kind: publish` and the publication ledger
+
+A `publish` node is the one place a graph is allowed to do something it cannot undo. It
+declares a `publication_policy` (a named string the deployment resolves; the node fails
+closed without one) and its effect is recorded in `published-effects.json` by
+`LocalPublicationLedger.check_and_record`, keyed on **`run_id / plan_id / node_id`** and
+carrying a payload digest computed over the artifacts of every upstream node.
+
+**`attempt` and `repair_round` are deliberately NOT in that key**, and the omission is the
+guarantee rather than an oversight. Include `attempt` and attempt 2 fires the effect again after
+attempt 1 already ran — with an event log that looks perfectly honest and a bank debited twice.
+Include `repair_round` and a repair produces `1 + repair_budget` publications, each with its own
+tidy trace. The triple above is the only key that burns **once** per run, plan and node, which is
+also why a repair round re-running a publish node is a no-op rather than a second effect.
+
+The repeat behaviour is three-valued: an unseen key fires; the same key with the same payload
+digest returns `already_published`; the same key with a *different* payload digest raises and
+HALTs the run, because the effect was already burned with different content.
+
+**The ordering, stated exactly, because a diagram is easy to draw wrong.** The ledger write
+*is* the effect in this local sink — it is not a write-ahead record of an effect that happens
+afterwards. The hash-chained event log is the WAL for **run state**, not a pre-effect entry for
+the publication. So:
+
+- There is no `ledger → external call → ledger` sequence to point at. Do not draw one.
+- `_load()` then `_save()` is a read-modify-write with **no lock**. Two concurrent publish
+  attempts on the same key can both observe it absent and both fire. An atomic
+  compare-and-swap (`fcntl.flock`, or an atomic rename) is what the name "exactly-once" would
+  require, and it is not there yet.
+- A production sink that calls a real external service needs the WAL entry written **before**
+  the outbound call, and a reconciliation pass for the crash-in-between case. That is a
+  deployment-provided `PublicationLedgerPort`, not something this local implementation gives you.
+- A corrupt or unreadable ledger is refused, not treated as empty — an unparseable file HALTs
+  rather than re-firing every effect it used to contain.
+
+`bl graph approve` gating a publish node is what makes the ordering human-checkable: the
+approval's authorized effect set is derived from the nodes reachable from it, so an approval
+that gates nothing effect-bearing cannot silently authorize a publication.
+
+---
+
 ## Documented seams — partial or narrower-than-production wiring
 
 Each of these has a real, tested mechanism in the codebase already. What is listed here
@@ -404,12 +557,16 @@ is the honest statement of this posture.
 `pip install bounded-loops` installs `pytest>=8.0` as a core runtime dependency.
 This is intentional, not a packaging error.
 
-The engine ships a built-in `pytest` gate kind. When a graph node declares
-`kind: loop` with a pytest gate, the engine invokes `python -m pytest` as a
+The engine ships a built-in `pytest` gate kind. When a bounded loop declares
+`gate.kind: pytest` (in `loop.yaml`), the engine invokes `python -m pytest` as a
 subprocess at run time — not as a test framework for this project's own test suite,
-but as the independent gate that checks the node's output. Because that subprocess
-call is part of the engine's runtime path (not just a development or CI tool), pytest
+but as the independent gate that checks the workspace. Because that subprocess call
+is part of the engine's runtime path (not just a development or CI tool), pytest
 must be present in the same environment as the engine itself.
+
+Note: `kind: loop` as a **graph node kind** is distinct from a standalone loop using
+a pytest gate. `kind: loop` graph nodes ARE executable via `bl graph run --execute` as of 0.5.0
+in this release — preflight refuses them. See the capability matrix above.
 
 A test (`test_default_install_includes_pytest_for_shipped_pytest_gates`) asserts this
 dependency is present and reachable, specifically to prevent well-meaning packaging

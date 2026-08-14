@@ -21,28 +21,27 @@ register(subparsers) wires all subparsers under the "graph" group.
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import sys
 from pathlib import Path
 
-from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
-from bounded_loops.graph.application.arena_projection import (
-    ArenaReadRequest,
-    read_arena_projection,
-)
+from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.graph.application.compile_graph import (
     CompileSnapshot,
     compile_graph,
 )
-from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
+from bounded_loops.graph.application.node_spend import RunBudget
+from bounded_loops.graph.domain.errors import GraphIntegrityError
+from bounded_loops.graph.domain.pricing import PriceTable
 from bounded_loops.graph.application.validate_graph import (
     parse_authoring_graph_json,
     parse_authoring_graph_yaml,
 )
 from bounded_loops.graph.domain.authoring import _NULL_POLICY_DIGEST
+from bounded_loops.graph.adapters.connectors.provider_catalog import resolve_cli_profiles
+from bounded_loops.graph.cli_graph_inspect import cmd_graph_lint, cmd_graph_plan, cmd_graph_status
+from bounded_loops.graph.cli_graph_providers import _catalog_path
 from bounded_loops.graph.domain.errors import GraphValidationError
-from bounded_loops.graph.domain.events import GraphRunIdentity
 # cmd_graph_artifacts, cmd_graph_approve, and cmd_graph_demo live in sibling modules to
 # keep this file within the 800-line hard cap; re-exported here so `bl graph artifacts`,
 # `bl graph approve`, `bl graph demo`, and any existing imports resolve unchanged.
@@ -66,23 +65,12 @@ from bounded_loops.graph.cli_graph_demo import (
 # public-contract debt (it silently changed `--out`'s meaning and only existed to reuse
 # that path math). `bl graph approve` now opens `--out <dir>` literally via
 # `LocalGraphRuntimeFacade.for_run_dir`, so the nesting is gone.
-_CLI_EXECUTE_ORG = "local-org"
-_CLI_EXECUTE_PROJECT = "local-project"
-_CLI_EXECUTE_RUN_ID = "graph-run"
-
-
-class _TrivialAuthorizer:
-    """Always authorises; used for local same-tenant arena reads."""
-
-    def authorize(self, request: ArenaReadRequest) -> bool:
-        return True
-
-
-class _NoOpReceiptVerifier:
-    """No-op receipt verifier for local reads."""
-
-    def verify(self, identity: GraphRunIdentity, receipts: object) -> None:
-        pass
+# Imported, not re-declared: these used to be a second copy of the same three strings.
+from bounded_loops.graph.graph_composition import (  # noqa: E402
+    LOCAL_ORGANIZATION_ID as _CLI_EXECUTE_ORG,
+    LOCAL_PROJECT_ID as _CLI_EXECUTE_PROJECT,
+    LOCAL_RUN_ID as _CLI_EXECUTE_RUN_ID,
+)
 
 
 # ── private helpers ────────────────────────────────────────────────────────────
@@ -91,231 +79,36 @@ def _err(msg: str) -> None:
     print(f"error: {msg}", file=sys.stderr)
 
 
+def _parse_loop_roots(raw: list[str] | None) -> "tuple[Path, ...] | None":
+    """Convert an argparse append-list of root dirs to a Path tuple, or None (use defaults)."""
+    return tuple(Path(p) for p in raw) if raw else None
+
+
 # ── handlers ───────────────────────────────────────────────────────────────────
 
-def cmd_graph_lint(args: argparse.Namespace) -> int:
-    """bl graph lint <manifest.(yaml|json)> — validate; print digest + counts."""
-    manifest_path = Path(args.manifest)
-    suffix = manifest_path.suffix.lower()
-    # User-supplied path: symlinks intentionally allowed (local CLI, like `cat`).
-    try:
-        text = manifest_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        _err(f"graph lint: cannot read '{manifest_path}' — {exc}")
-        if getattr(args, "json", False):
-            print(json.dumps({"valid": False, "code": "io_error",
-                              "pointer": "/", "message": str(exc)},
-                             sort_keys=True))
-        return 2
+def _resolve_budget(args: argparse.Namespace) -> tuple["RunBudget", "PriceTable"]:
+    """The run's spend ceilings and the rates that price them, file first then flags.
 
-    try:
-        if suffix == ".json":
-            spec = parse_authoring_graph_json(text)
-        elif suffix in (".yaml", ".yml"):
-            spec = parse_authoring_graph_yaml(text)
-        else:
-            msg = f"graph lint: unsupported extension '{suffix}'; expected .yaml or .json"
-            _err(msg)
-            if getattr(args, "json", False):
-                print(json.dumps({"valid": False, "code": "unsupported_extension",
-                                  "pointer": "/", "message": msg},
-                                 sort_keys=True))
-            return 2
-    except GraphValidationError as exc:
-        _err(f"graph lint: [{exc.code}] {exc.pointer} — {exc.message}")
-        if getattr(args, "json", False):
-            print(json.dumps(
-                {"valid": False, "code": exc.code,
-                 "pointer": exc.pointer, "message": exc.message},
-                sort_keys=True,
-            ))
-        return 2
-
-    node_ids = [n.id for n in spec.nodes]
-    slot_ids = [s.id for s in spec.connection_slots]
-
-    if getattr(args, "json", False):
-        print(json.dumps(
-            {
-                "digest": spec.digest,
-                "edge_count": len(spec.edges),
-                "node_ids": node_ids,
-                "schema_version": 1,
-                "slot_ids": slot_ids,
-                "valid": True,
-            },
-            sort_keys=True,
-        ))
-    else:
-        print(f"digest  : {spec.digest}")
-        print(f"nodes   : {len(node_ids)} ({', '.join(node_ids)})")
-        print(f"edges   : {len(spec.edges)}")
-        print(f"slots   : {len(slot_ids)} ({', '.join(slot_ids)})")
-        print("OK")
-    return 0
-
-
-def cmd_graph_plan(args: argparse.Namespace) -> int:
-    """bl graph plan <manifest> [--connections <json>] — validate then compile."""
-    manifest_path = Path(args.manifest)
-    suffix = manifest_path.suffix.lower()
-    # User-supplied path: symlinks intentionally allowed (local CLI, like `cat`).
-    try:
-        text = manifest_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        _err(f"graph plan: cannot read '{manifest_path}' — {exc}")
-        return 2
-
-    try:
-        if suffix == ".json":
-            graph = parse_authoring_graph_json(text)
-        elif suffix in (".yaml", ".yml"):
-            graph = parse_authoring_graph_yaml(text)
-        else:
-            _err(f"graph plan: unsupported extension '{suffix}'")
-            return 2
-    except GraphValidationError as exc:
-        _err(f"graph plan: validation failed [{exc.code}] {exc.pointer} — {exc.message}")
-        return 2
-
-    if graph.connection_slots and not getattr(args, "connections", None):
-        _err("graph plan: compile requires --connections for connection-bound nodes")
-        return 2
-
-    connections_raw: list[object] = []
-    if getattr(args, "connections", None):
-        try:
-            connections_raw = json.loads(
-                Path(args.connections).read_text(encoding="utf-8")
-            )
-        except (OSError, json.JSONDecodeError) as exc:
-            _err(f"graph plan: cannot load connections — {exc}")
-            return 2
-
-    try:
-        snapshot = CompileSnapshot(
-            policy_digest=_NULL_POLICY_DIGEST,
-            package_digests=frozenset(),
-            connections=tuple(connections_raw),  # type: ignore[arg-type]
-        )
-        plan = compile_graph(graph, snapshot)
-    except GraphValidationError as exc:
-        _err(f"graph plan: compile failed [{exc.code}] {exc.pointer} — {exc.message}")
-        return 2
-
-    if getattr(args, "json", False):
-        nodes_out = [
-            {
-                "binding_id": n.binding_id,
-                "effects": sorted(e.value for e in n.required_effects),
-                "isolation": n.isolation.value,
-                "kind": n.kind,
-                "node_id": n.node_id,
-            }
-            for n in plan.nodes
-        ]
-        bindings_out = [
-            {
-                "binding_id": b.binding_id,
-                "provider_id": b.provider_id,
-                "transport": b.transport,
-            }
-            for b in plan.connection_bindings
-        ]
-        print(json.dumps(
-            {
-                "bindings": bindings_out,
-                "levels": [list(level) for level in plan.levels],
-                "nodes": nodes_out,
-                "plan_id": plan.plan_id,
-                "policy_digest": plan.policy_digest,
-                "schema_version": 1,
-                "source_graph_digest": plan.source_graph_digest,
-            },
-            sort_keys=True,
-        ))
-    else:
-        print(f"plan_id : {plan.plan_id}")
-        print(f"graph   : {plan.source_graph_digest}")
-        print(f"policy  : {plan.policy_digest}")
-        for i, level in enumerate(plan.levels):
-            nodes_in_level = ", ".join(level)
-            print(f"wave {i}  : [{nodes_in_level}]")
-        for node in plan.nodes:
-            effects = ", ".join(sorted(e.value for e in node.required_effects))
-            print(
-                f"  node {node.node_id!r}: kind={node.kind}  "
-                f"effects=[{effects}]  isolation={node.isolation.value}"
-            )
-    return 0
-
-
-_STATUS_NOTICE = "LOCAL/UNVERIFIED — status is read from a local event log; not verified by an Arena server."
-
-
-def cmd_graph_status(args: argparse.Namespace) -> int:
-    """bl graph status --run <dir> — reconstruct plan + read arena projection."""
-    run_dir = Path(args.run)
-    if not run_dir.is_dir():
-        _err(f"graph status: '{run_dir}' is not a directory")
-        return 2
-
-    try:
-        plan, identity, run_meta = load_plan_from_run_dir(run_dir)
-    except (FileNotFoundError, ValueError, GraphValidationError) as exc:
-        _err(f"graph status: cannot reconstruct plan — {exc}")
-        return 2
-
-    try:
-        event_log = GraphEventLog(run_dir / "controller-events.jsonl", identity)
-    except Exception as exc:  # noqa: BLE001
-        _err(f"graph status: cannot open event log — {exc}")
-        return 2
-
-    request = ArenaReadRequest(
-        subject_id=identity.organization_id, organization_id=identity.organization_id,
-        project_id=identity.project_id, run_id=identity.run_id,
+    A file holds the deployment's standing numbers; a flag is typed deliberately for the run
+    in front of you, so a flag wins. Overriding happens per dimension: setting --max-tokens
+    says nothing about a cost ceiling in the file, and silently dropping that would remove a
+    bound the operator still expects to hold.
+    """
+    from bounded_loops.graph.application.budget_config import (
+        load_budget_file,
+        resolve_run_budget,
     )
-    try:
-        projection = read_arena_projection(
-            plan,
-            event_log,
-            request,
-            _TrivialAuthorizer(),
-            _NoOpReceiptVerifier(),
-        )
-    except Exception as exc:  # noqa: BLE001
-        _err(f"graph status: arena projection failed — {exc}")
-        return 2
+    from bounded_loops.graph.domain.pricing import empty_price_table
 
-    is_demo: bool = bool(run_meta.get("demonstration"))
-
-    if getattr(args, "json", False):
-        # dataclasses.asdict on ArenaProjection — tuple fields become lists.
-        out_dict = dataclasses.asdict(projection)
-        out_dict["demonstration"] = is_demo
-        out_dict["notice"] = _STATUS_NOTICE
-        out_dict["verified"] = False
-        print(json.dumps(out_dict, sort_keys=True))
-    else:
-        print(f"notice    : {_STATUS_NOTICE}")
-        print(f"demonstration: {is_demo}")
-        print(f"run_state : {projection.run_state}")
-        print(f"run_id    : {projection.run_id}")
-        print()
-        header = f"{'NODE':<20} {'KIND':<20} {'STATE':<12} {'ISOLATION':<22} {'EFFECTS':<20} ARTIFACTS"
-        print(header)
-        print("-" * len(header))
-        for node in projection.nodes:
-            effects = ",".join(node.required_effects) or "-"
-            artifacts = ",".join(node.artifact_digests[:1]) or "-"
-            if artifacts != "-":
-                artifacts = artifacts[:20] + "..."
-            print(
-                f"{node.node_id:<20} {node.kind:<20} {node.state:<12} "
-                f"{node.isolation:<22} {effects:<20} {artifacts}"
-            )
-    return 0
+    from_file, table = RunBudget(), empty_price_table()
+    if getattr(args, "budget_file", None):
+        from_file, table = load_budget_file(Path(args.budget_file))
+    budget = resolve_run_budget(
+        from_file=from_file,
+        max_tokens=getattr(args, "max_tokens", None),
+        max_cost_usd=getattr(args, "max_cost_usd", None),
+    )
+    return budget, table
 
 
 def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) -> int:
@@ -399,8 +192,23 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
             _err(f"graph run: cannot load --audit-plan — {exc}")
             return 2
 
-    from bounded_loops.graph.application.execute_graph import execute_graph_run
+    try:
+        run_budget, price_table = _resolve_budget(args)
+    except GraphIntegrityError as exc:
+        _err(f"graph run: {exc}")
+        return 2
+
+    catalog_path = _catalog_path(args)
+    try:
+        cli_profiles = resolve_cli_profiles(catalog_path=catalog_path)
+    except GraphValidationError as exc:
+        _err(f"graph run: provider catalog rejected — [{exc.code}] {exc.pointer} — {exc.message}")
+        return 2
+
+    from bounded_loops.graph.graph_composition import execute_graph_run
     return execute_graph_run(
+        cli_profiles=cli_profiles,
+        provider_catalog=catalog_path,
         manifest_text=text,
         manifest_suffix=".json" if suffix == ".json" else ".yaml",
         connections_raw=list(connections_raw),
@@ -412,6 +220,9 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
         json_out=getattr(args, "json", False),
         admitted_connections=admitted_connections,
         audit_plan_json=audit_plan_json_text,
+        run_budget=run_budget,
+        price_table=price_table,
+        loop_package_roots=_parse_loop_roots(getattr(args, "loop_roots", None)),
     )
 
 
@@ -428,7 +239,7 @@ def cmd_graph_run(args: argparse.Namespace) -> int:
         manifest = getattr(args, "manifest", None)
         if not manifest:
             # No manifest → the built-in native-sandbox demonstration (unchanged).
-            from bounded_loops.graph.application.sandbox_demo import run_sandbox_demo
+            from bounded_loops.graph.sandbox_demo import run_sandbox_demo
             return run_sandbox_demo(Path(out), json_out=getattr(args, "json", False))
         # A user manifest → REAL execution of its admitted local-CLI connector nodes.
         return _execute_manifest(args, manifest, Path(out))
@@ -475,7 +286,9 @@ def cmd_graph_run(args: argparse.Namespace) -> int:
     try:
         snapshot = CompileSnapshot(
             policy_digest=_NULL_POLICY_DIGEST,
-            package_digests=frozenset(),
+            package_digests=admitted_loop_package_digests(
+                _parse_loop_roots(getattr(args, "loop_roots", None))
+            ),
             connections=tuple(connections_raw),  # type: ignore[arg-type]
         )
         plan = compile_graph(graph, snapshot)
@@ -638,8 +451,64 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
             "Does not affect the run itself — read-side projection only."
         ),
     )
+    run_p.add_argument(
+        "--max-tokens", default=None, type=int, metavar="<n>",
+        help=(
+            "Ceiling on the tokens this WHOLE run may spend, across every node. Reaching it "
+            "PAUSES the run — it stays resumable — rather than failing it, so no completed "
+            "work is thrown away. Resume with a higher ceiling to continue. Overrides "
+            "max_tokens from --budget-file."
+        ),
+    )
+    run_p.add_argument(
+        "--max-cost-usd", default=None, metavar="<amount>",
+        help=(
+            "Ceiling on what this whole run may cost, in USD (e.g. 2.50). Needs rates: a "
+            "provider reports tokens, not money, so supply a price table via --budget-file or "
+            "every cost cap fails closed as unmeasurable. Overrides max_cost_usd from "
+            "--budget-file."
+        ),
+    )
+    run_p.add_argument(
+        "--budget-file", default=None, metavar="<json>",
+        help=(
+            "Path to a JSON budget file: {\"max_tokens\": N, \"max_cost_usd\": \"2.50\", "
+            "\"prices\": {\"provider/model\": {\"input_microunits_per_mtok\": N, "
+            "\"output_microunits_per_mtok\": N}}}. NO default prices ship — a table baked "
+            "into the package would be wrong the week a provider repriced, and a stale low "
+            "price under-charges, which is the direction that lets a cap permit unauthorised "
+            "spend. Explicit flags override this file per dimension."
+        ),
+    )
+    run_p.add_argument(
+        "--providers", default=None, metavar="<catalog.toml>",
+        help=(
+            "Path to a provider catalog (TOML) adding or overriding agent CLIs, so a new "
+            "provider needs no code change and no release. Entries hold NAMES of environment "
+            "variables to forward, never values; a catalog that tries to carry a credential is "
+            "refused. See `bl graph providers` for what is currently wired."
+        ),
+    )
     run_p.add_argument("--json", action="store_true", help="Emit JSON output.")
+    run_p.add_argument(
+        "--loop-roots", action="append", dest="loop_roots", default=None, metavar="<dir>",
+        help=(
+            "Directory of loop packages to admit, in addition to the shipped packages (repeatable). "
+            "Packages are resolved BY DIGEST — adding a root makes a package findable; "
+            "it cannot change which bytes a given digest means."
+        ),
+    )
     run_p.set_defaults(func=cmd_graph_run)
+
+    from bounded_loops.graph.cli_graph_providers import add_providers_parser
+    add_providers_parser(graph_subs)
+
+    from bounded_loops.graph.cli_graph_metrics import add_metrics_parser
+    add_metrics_parser(graph_subs)
+
+    # resume (handler lives in cli_graph_resume.py to keep this file within budget)
+    from bounded_loops.graph.cli_graph_resume import add_resume_parser
+    add_resume_parser(graph_subs)
 
     # approve (handler lives in cli_graph_approve.py to keep this file within budget)
     approve_p = graph_subs.add_parser(
@@ -671,6 +540,18 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
             "re-supply one here if a pending connector node needs it to resume."
         ),
     )
+    # Same names as `run` and `resume`: approving continues the run, so it needs a ceiling
+    # when that run paused on one.
+    approve_p.add_argument("--max-tokens", default=None, type=int, metavar="<n>",
+                           help="Spend ceiling for the continuation this approval triggers.")
+    approve_p.add_argument("--max-cost-usd", default=None, metavar="<amount>",
+                           help="Cost ceiling in USD for the continuation this approval triggers.")
+    approve_p.add_argument("--budget-file", default=None, metavar="<json>",
+                           help="Budget file with standing ceilings and the price table.")
+    approve_p.add_argument(
+        "--providers", default=None, metavar="<catalog.toml>",
+        help="Provider catalog (TOML) this run needs. Supply the SAME catalog the run was created with: a run whose plan names a catalog provider cannot be continued by a process that has never heard of it. BOUNDED_LOOPS_PROVIDERS is the machine-wide default.",
+    )
     approve_p.add_argument("--json", action="store_true", help="Emit JSON output.")
     approve_p.set_defaults(func=cmd_graph_approve)
 
@@ -685,6 +566,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
                          help="Directory written by `bl graph demo`.")
     arena_p.add_argument("--out", default=None, metavar="<file.html>",
                          help="Output HTML path (default: <run>/arena.html).")
+    arena_p.add_argument(
+        "--loop-roots", action="append", dest="loop_roots", default=None, metavar="<dir>",
+        help="Directory of loop packages to search when resolving package names in the Arena (repeatable).",
+    )
     arena_p.set_defaults(func=cmd_graph_arena)
 
     # studio (handler lives in the studio package to keep this file within budget)
@@ -698,6 +583,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
                           help="Open an existing graph for editing (validated first).")
     studio_p.add_argument("--out", default=None, metavar="<file.html>",
                           help="Output HTML path (default: ./graph-studio.html).")
+    studio_p.add_argument(
+        "--loop-roots", action="append", dest="loop_roots", default=None, metavar="<dir>",
+        help="Directory of loop packages to include in the Studio catalogue picker (repeatable).",
+    )
     studio_p.set_defaults(func=cmd_graph_studio)
 
     # console (handler lives in the console package to keep this file within budget)

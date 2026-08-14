@@ -13,7 +13,7 @@ from bounded_loops.graph.adapters.connectors.admitted_connection_request import 
     AdmittedConnectionRecord,
     split_endpoint_host,
 )
-from bounded_loops.graph.application.execute_graph import _https_isolation
+from bounded_loops.graph.graph_composition import _https_isolation
 from bounded_loops.graph.domain.authoring import DataClass, Effect, IsolationLevel
 from bounded_loops.graph.domain.connections import RoutePolicy
 from bounded_loops.graph.domain.errors import GraphValidationError

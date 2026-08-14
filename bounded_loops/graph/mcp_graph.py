@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Callable, Protocol
 
+from bounded_loops.graph.application.node_spend import RunBudget
 from bounded_loops.graph.application.arena_projection import ArenaProjection, ArenaReadRequest
 from bounded_loops.graph.application.state_document import render_state_markdown
 from bounded_loops.graph.domain.errors import GraphError, GraphValidationError
@@ -39,9 +40,14 @@ class GraphRuntimeFacade(Protocol):
 
     def status(self, request: ArenaReadRequest) -> ArenaProjection: ...
 
-    def resume(self, request: ArenaReadRequest) -> ArenaProjection: ...
+    def resume(
+        self, request: ArenaReadRequest, *, run_budget: RunBudget | None = None,
+    ) -> ArenaProjection: ...
 
-    def approve(self, request: ArenaReadRequest, *, node_id: str, decision: str) -> ArenaProjection: ...
+    def approve(
+        self, request: ArenaReadRequest, *, node_id: str, decision: str,
+        run_budget: RunBudget | None = None,
+    ) -> ArenaProjection: ...
 
 
 def graph_status(facade: GraphRuntimeFacade, payload: dict) -> dict:
@@ -54,18 +60,43 @@ def graph_state_md(facade: GraphRuntimeFacade, payload: dict) -> dict:
     return _guarded(lambda: {"ok": True, "state_md": render_state_markdown(facade.status(_read_request(payload)))})
 
 
-def graph_resume(facade: GraphRuntimeFacade, payload: dict, *, confirm: bool = False) -> dict:
+def _ceiling(max_tokens: int | None, max_cost_usd: str | None) -> RunBudget | None:
+    """A spend ceiling for one continuation, or ``None`` to use the facade's own.
+
+    A run that paused on its ceiling cannot be continued without one — the controller refuses,
+    because continuing with no limit is the opposite of what a budget pause asks for. Exposing
+    it here is what makes a paused run resumable over MCP at all.
+    """
+    from bounded_loops.graph.application.budget_config import usd_to_microunits
+
+    if max_tokens is None and max_cost_usd is None:
+        return None
+    return RunBudget(
+        max_tokens=max_tokens,
+        max_cost_microunits=usd_to_microunits(max_cost_usd) if max_cost_usd else None,
+    )
+
+
+def graph_resume(
+    facade: GraphRuntimeFacade, payload: dict, *, confirm: bool = False,
+    max_tokens: int | None = None, max_cost_usd: str | None = None,
+) -> dict:
     """Resume an interrupted run. MUTATING: gated by a server-side confirm."""
     def _run() -> dict:
         request = _read_request(payload)
         if not confirm:
             return _preview(f"resume run {request.run_id!r}")
-        return {"ok": True, "projection": _projection_dict(facade.resume(request))}
+        return {"ok": True, "projection": _projection_dict(
+            facade.resume(request, run_budget=_ceiling(max_tokens, max_cost_usd)),
+        )}
 
     return _guarded(_run)
 
 
-def graph_approve(facade: GraphRuntimeFacade, payload: dict, *, node_id: str, decision: str, confirm: bool = False) -> dict:
+def graph_approve(
+    facade: GraphRuntimeFacade, payload: dict, *, node_id: str, decision: str,
+    confirm: bool = False, max_tokens: int | None = None, max_cost_usd: str | None = None,
+) -> dict:
     """Record a human decision for an approval node so a paused run can continue. MUTATING: gated
     by a server-side confirm. The caller supplies only the decision + node; the facade binds the
     authority from the authenticated subject."""
@@ -75,7 +106,10 @@ def graph_approve(facade: GraphRuntimeFacade, payload: dict, *, node_id: str, de
         _validate_decision(decision)
         if not confirm:
             return _preview(f"{decision} approval node {node_id!r} in run {request.run_id!r}")
-        projection = facade.approve(request, node_id=node_id, decision=decision)
+        projection = facade.approve(
+            request, node_id=node_id, decision=decision,
+            run_budget=_ceiling(max_tokens, max_cost_usd),
+        )
         return {"ok": True, "projection": _projection_dict(projection)}
 
     return _guarded(_run)
@@ -101,8 +135,16 @@ def register(mcp: object, facade: GraphRuntimeFacade, *, subject_provider: Calla
         return graph_state_md(facade, _payload(subject_provider(), organization_id, project_id, run_id))
 
     @tool()
-    def graph_resume_tool(organization_id: str, project_id: str, run_id: str, confirm: bool = False) -> dict:
-        return graph_resume(facade, _payload(subject_provider(), organization_id, project_id, run_id), confirm=confirm)
+    def graph_resume_tool(
+        organization_id: str, project_id: str, run_id: str, confirm: bool = False,
+        max_tokens: int | None = None, max_cost_usd: str | None = None,
+    ) -> dict:
+        """Resume a run. A run that paused on its spend ceiling needs a new one supplied here —
+        continuing with no limit is not what a budget pause is asking for."""
+        return graph_resume(
+            facade, _payload(subject_provider(), organization_id, project_id, run_id),
+            confirm=confirm, max_tokens=max_tokens, max_cost_usd=max_cost_usd,
+        )
 
     @tool()
     def graph_approve_tool(

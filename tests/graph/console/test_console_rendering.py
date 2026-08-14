@@ -135,3 +135,87 @@ def test_render_console_page_only_lists_nodes_currently_awaiting_approval() -> N
     assert "pending" in html
     # "done" must not get its own Approve/Reject form (it already resolved).
     assert 'name="node_id" value="done"' not in html
+
+
+# ── spend, and the stop-and-decide card ───────────────────────────────────────
+# A budget pause is a decision point. The console is the surface for an operator who does not
+# use a CLI, so it has to say what was spent, what was authorised, and offer a new number.
+
+
+def _paused(**overrides: object) -> ArenaProjection:
+    pause: dict[str, object] = {
+        "node_id": "worker", "attempt": 3, "tokens": 200, "cost_microunits": 2_400,
+        "max_tokens": 150,
+        "reason": "this run token budget is spent: 200 of 150 consumed, so no further "
+                  "attempt may start",
+    }
+    pause.update(overrides)
+    return ArenaProjection(
+        organization_id="local-org", project_id="local-project", run_id="run-1",
+        graph_digest="sha256:" + "a" * 64, plan_digest="sha256:" + "b" * 64,
+        policy_digest="sha256:" + "c" * 64, run_state="RUNNING",
+        receipt_sequence=9, receipt_head_hash="0" * 64,
+        nodes=(_node(node_id="worker", state="GATING"),), edges=(), levels=(("worker",),),
+        budget_pause=pause, spend_tokens=200, spend_cost_microunits=2_400,
+        spend_complete=True,
+    )
+
+
+def test_a_paused_run_shows_what_it_spent_and_offers_a_new_limit() -> None:
+    html = render_console_page(
+        identity=_IDENTITY, projection=_paused(), token="tok123", notice=None,
+    )
+
+    assert "Paused" in html and "spending limit reached" in html
+    assert "200" in html and "$0.002400" in html
+    assert "token ceiling <strong>150</strong>" in html
+    # The form is the point: one number, one button, no CLI and no manifest edit.
+    assert 'action="/continue"' in html
+    assert 'name="max_tokens"' in html
+    assert 'name="max_cost_usd"' in html
+    assert 'value="tok123"' in html, "the CSRF token must ride the form"
+    assert "LOWER number stops the run sooner" in html
+
+
+def test_an_incomplete_total_is_shown_as_a_floor() -> None:
+    """"200 tokens" and "at least 200 tokens" support different decisions."""
+    html = render_console_page(
+        identity=_IDENTITY,
+        projection=ArenaProjection(
+            organization_id="local-org", project_id="local-project", run_id="run-1",
+            graph_digest="sha256:" + "a" * 64, plan_digest="sha256:" + "b" * 64,
+            policy_digest="sha256:" + "c" * 64, run_state="RUNNING",
+            receipt_sequence=3, receipt_head_hash="0" * 64,
+            nodes=(_node(),), edges=(), levels=(("checkpoint",),),
+            spend_tokens=200, spend_cost_microunits=0, spend_complete=False,
+        ),
+        token="t", notice=None,
+    )
+
+    assert "Spent at least" in html
+
+
+def test_a_run_that_never_paused_shows_no_limit_card() -> None:
+    html = render_console_page(
+        identity=_IDENTITY, projection=_projection(nodes=(_node(),)), token="t", notice=None,
+    )
+
+    assert "spending limit reached" not in html
+    assert 'action="/continue"' not in html
+    assert "No spend measured yet." in html
+
+
+def test_a_finished_run_does_not_ask_for_a_new_limit() -> None:
+    """A terminal run can spend nothing more, so asking would be noise."""
+    finished = _paused()
+    html = render_console_page(
+        identity=_IDENTITY,
+        projection=ArenaProjection(
+            **{**finished.__dict__, "run_state": "SUCCEEDED"},
+        ),
+        token="t", notice=None,
+    )
+
+    assert 'action="/continue"' not in html
+    # The spend itself is still reported — that is history worth reading.
+    assert "200" in html

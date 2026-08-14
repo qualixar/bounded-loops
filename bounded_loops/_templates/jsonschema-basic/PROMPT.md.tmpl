@@ -1,0 +1,25 @@
+# {{LOOP_NAME}}
+
+You are an agent operating inside a bounded loop.
+
+## Task
+
+`seed/output.json` contains a broken service config that fails `schema.json`.
+Produce a corrected version as `output.json` (at the workspace root, not inside
+`seed/`) that validates against `schema.json`.
+
+**Current violations in seed/output.json:**
+- `status` is `"unknown"` — must be one of `"ok"`, `"degraded"`, `"down"`
+- `version` is the string `"2"` — must be an integer
+
+**Rules:**
+- Write the corrected config to `output.json` at the workspace root (NOT to
+  `seed/output.json` — that is the broken starting state for reference only).
+- Conform strictly to `schema.json` — the gate (JsonSchemaGate) validates
+  your output against it; there is no partial credit.
+- Do not add extra keys (`additionalProperties: false`).
+
+## Context
+
+Replace this section with your own task description once you've replaced the
+starter example files.

@@ -99,7 +99,7 @@ def _standin(tmp_path: Path, body: str) -> str:
 def test_runs_a_local_cli_and_captures_its_reply(tmp_path):
     cli = _standin(tmp_path, "#!/bin/sh\nprintf 'ECHO:'; cat\n")
     worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(cli), prompt="hello graph")))
-    result = worker.execute(plan=_plan(), node=_node(), envelope=_envelope())
+    result = worker.execute(plan=_plan(), node=_node(), envelope=_envelope(), attempt=1, repair_round=0)
     assert len(result.output_artifact_digests) == 1
     assert result.observed_transport == "local_cli"
     assert result.observed_route is not None and result.observed_route.provider_id == "anthropic"
@@ -109,7 +109,7 @@ def test_runs_a_local_cli_and_captures_its_reply(tmp_path):
 def test_rejects_a_non_local_cli_node(tmp_path):
     worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(_standin(tmp_path, "#!/bin/sh\ncat\n")), prompt="x")))
     with pytest.raises(GraphIntegrityError, match="local-CLI"):
-        worker.execute(plan=_plan(transport="api_proxy"), node=_node(), envelope=_envelope())
+        worker.execute(plan=_plan(transport="api_proxy"), node=_node(), envelope=_envelope(), attempt=1, repair_round=0)
 
 
 def test_a_deny_network_envelope_is_refused(tmp_path):
@@ -118,27 +118,27 @@ def test_a_deny_network_envelope_is_refused(tmp_path):
     # remains a literal substring, so this also pins backward compat of the error text).
     worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(_standin(tmp_path, "#!/bin/sh\ncat\n")), prompt="x")))
     with pytest.raises(GraphIntegrityError, match="open-network"):
-        worker.execute(plan=_plan(), node=_node(), envelope=_envelope(mode=NetworkMode.DENY))
+        worker.execute(plan=_plan(), node=_node(), envelope=_envelope(mode=NetworkMode.DENY), attempt=1, repair_round=0)
 
 
 def test_missing_cli_binary_fails_closed(tmp_path):
     worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile("/no/such/cli-xyz-404"), prompt="x")))
     with pytest.raises(GraphIntegrityError, match="not installed"):
-        worker.execute(plan=_plan(), node=_node(), envelope=_envelope())
+        worker.execute(plan=_plan(), node=_node(), envelope=_envelope(), attempt=1, repair_round=0)
 
 
 def test_a_failing_cli_is_a_closed_node_failure(tmp_path):
     cli = _standin(tmp_path, "#!/bin/sh\necho 'boom' >&2\nexit 3\n")
     worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(cli), prompt="x")))
     with pytest.raises(GraphIntegrityError, match="exited 3"):
-        worker.execute(plan=_plan(), node=_node(), envelope=_envelope())
+        worker.execute(plan=_plan(), node=_node(), envelope=_envelope(), attempt=1, repair_round=0)
 
 
 def test_failure_hint_redacts_a_secret_shaped_token(tmp_path):
     cli = _standin(tmp_path, "#!/bin/sh\necho 'auth failed key sk-ant-abcdefghijklmnopqrstuvwxyz012345' >&2\nexit 1\n")
     worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(cli), prompt="x")))
     with pytest.raises(GraphIntegrityError) as caught:
-        worker.execute(plan=_plan(), node=_node(), envelope=_envelope())
+        worker.execute(plan=_plan(), node=_node(), envelope=_envelope(), attempt=1, repair_round=0)
     message = str(caught.value)
     assert "sk-ant-abcdefghijklmnopqrstuvwxyz012345" not in message
     assert "REDACTED" in message
@@ -148,7 +148,7 @@ def test_unset_env_is_applied_to_the_child(tmp_path):
     cli = _standin(tmp_path, "#!/bin/sh\nprintf 'SECRET=%s' \"$SECRET_VAR\"\n")
     resolver = StaticCliResolver(CliInvocation(CliProfile(cli, unset_env=("SECRET_VAR",)), prompt=""))
     worker = _worker(tmp_path, resolver, environ={"PATH": os.environ.get("PATH", ""), "SECRET_VAR": "leaked"})
-    result = worker.execute(plan=_plan(), node=_node(), envelope=_envelope())
+    result = worker.execute(plan=_plan(), node=_node(), envelope=_envelope(), attempt=1, repair_round=0)
     assert _read(worker._store, result.output_artifact_digests[0]) == b"SECRET="
 
 
@@ -156,7 +156,7 @@ def test_prompt_delivered_as_argument(tmp_path):
     cli = _standin(tmp_path, '#!/bin/sh\nprintf "ARG:%s" "$1"\n')
     resolver = StaticCliResolver(CliInvocation(CliProfile(cli, prompt_via="arg"), prompt="via-arg"))
     worker = _worker(tmp_path, resolver)
-    result = worker.execute(plan=_plan(), node=_node(), envelope=_envelope())
+    result = worker.execute(plan=_plan(), node=_node(), envelope=_envelope(), attempt=1, repair_round=0)
     assert _read(worker._store, result.output_artifact_digests[0]) == b"ARG:via-arg"
 
 
@@ -185,7 +185,7 @@ def test_allowlist_envelope_without_the_cage_fails_closed_before_launching(tmp_p
     worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(cli), prompt="x")), capabilities=_NO_CAGE)
     dest = (NetworkDestination(hostname="api.anthropic.com", port=443),)
     with pytest.raises(GraphIntegrityError, match="Seatbelt loopback-proxy cage"):
-        worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest))
+        worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest), attempt=1, repair_round=0)
 
 
 def test_caged_argv_builds_a_loopback_only_seatbelt_profile(tmp_path):
@@ -267,7 +267,7 @@ def test_live_allowlist_cages_the_cli_to_only_the_loopback_proxy(tmp_path):
     cli = _python_standin(tmp_path, code)
     worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(cli), prompt="hello")))
     dest = (NetworkDestination(hostname="api.example.com", port=443),)
-    result = worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest))
+    result = worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest), attempt=1, repair_round=0)
     payload = json.loads(_read(worker._store, result.output_artifact_digests[0]))
     assert payload["proxy"].startswith("http://127.0.0.1:"), payload
     assert payload["to_proxy"] == "reachable", payload           # the loopback proxy IS reachable
@@ -310,7 +310,7 @@ def test_live_allowlist_completes_a_real_connect_handshake_and_distinguishes_the
     worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(cli), prompt="hello")))
     dest = (NetworkDestination(hostname="api.example.com", port=443),)
     with caplog.at_level("WARNING"):
-        result = worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest))
+        result = worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest), attempt=1, repair_round=0)
     payload = json.loads(_read(worker._store, result.output_artifact_digests[0]))
     print(f"\n[EMPIRICAL FIX-verify] CONNECT handshake from inside the ALLOWLIST cage: {payload!r}")
     # Both are refused on the wire (this fake domain resolves nowhere real) — the point is
@@ -342,7 +342,7 @@ def test_live_caged_cli_blocked_from_a_non_allowlisted_host_fails_closed_with_re
     worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(cli), prompt="hello")))
     dest = (NetworkDestination(hostname="api.example.com", port=443),)
     with pytest.raises(GraphIntegrityError) as caught:
-        worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest))
+        worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest), attempt=1, repair_round=0)
     message = str(caught.value)
     assert "exited 1" in message
     assert "sk-ant-abcdefghijklmnopqrstuvwxyz012345" not in message  # never a silent/leaked reply
@@ -378,7 +378,7 @@ def test_live_allowlist_blocks_dns_resolution_for_a_real_resolvable_host(tmp_pat
     cli = _python_standin(tmp_path, code)
     worker = _worker(tmp_path, StaticCliResolver(CliInvocation(CliProfile(cli), prompt="hello")))
     dest = (NetworkDestination(hostname="api.example.com", port=443),)
-    result = worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest))
+    result = worker.execute(plan=_plan(), node=_node(), envelope=_allowlist_envelope(dest), attempt=1, repair_round=0)
     payload = json.loads(_read(worker._store, result.output_artifact_digests[0]))
     print(f"\n[EMPIRICAL FIX 1] getaddrinfo('github.com') inside the ALLOWLIST cage: "
           f"{payload['resolution']!r}")
