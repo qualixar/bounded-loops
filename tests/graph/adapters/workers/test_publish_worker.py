@@ -229,10 +229,39 @@ def test_worker_receipt_payload_digest_is_reproducible(tmp_path: Path):
     ledger = LocalPublicationLedger(tmp_path / "ledger.json")
     result = _run_worker(store, ledger)
     receipt = _read_receipt(store, result.output_artifact_digests[0])
+    # upstream_digests=() because this fixture wires no reader — the degraded identity-only case.
+    # The receipt makes that visible rather than silent via upstream_artifact_count.
     expected_digest = _derive_payload_digest(
         publication_policy=POLICY, plan_id=PLAN_ID, node_id="publish-instruction",
+        upstream_digests=(),
     )
     assert receipt["payload_digest"] == expected_digest
+    assert receipt["upstream_artifact_count"] == 0
+
+
+def test_the_payload_digest_changes_when_the_upstream_evidence_changes():
+    """The property that makes this a PAYLOAD digest rather than an identity stamp.
+
+    Before this, the digest hashed only {node_id, plan_id, publication_policy}, so the documented
+    divergent-payload HALT was unreachable from a compiled plan: publication_policy lives inside
+    approval_policy, which is inside _canonical_plan, so changing it changes plan_id and therefore
+    changes the effect KEY as well. Same key + different digest could only be produced by mutating
+    approval_policy in memory — which is what the HALT test did, making it a property of a hand-built
+    object rather than of any graph that could be compiled. Found by the P4.5 audit (Grok finding 1).
+    """
+    fixed = dict(publication_policy=POLICY, plan_id=PLAN_ID, node_id="publish-instruction")
+
+    none = _derive_payload_digest(**fixed, upstream_digests=())
+    one = _derive_payload_digest(**fixed, upstream_digests=("sha256:" + "a" * 64,))
+    other = _derive_payload_digest(**fixed, upstream_digests=("sha256:" + "b" * 64,))
+
+    assert len({none, one, other}) == 3, "different evidence must give a different payload digest"
+    # Order must NOT matter: the same evidence arriving in a different edge order is the same
+    # publication, and treating it as divergent would HALT a healthy retry.
+    a, b = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    assert _derive_payload_digest(**fixed, upstream_digests=(a, b)) == _derive_payload_digest(
+        **fixed, upstream_digests=(b, a)
+    )
 
 
 # ── gate tests ────────────────────────────────────────────────────────────────
@@ -310,3 +339,35 @@ def test_gate_rejects_empty_result(tmp_path: Path):
     verdict = gate.evaluate(plan=_Plan(), node=_Node(), result=WorkerResult(()))
     assert not verdict.passed
     assert "no receipt" in verdict.reason
+
+
+def test_a_corrupt_ledger_halts_instead_of_re_firing_the_effect(tmp_path: Path):
+    """The most dangerous default there was: a damaged burn record reading as empty.
+
+    ``_load`` swallowed every error and returned ``{}``. A partial write — a crash mid
+    ``write_text``, a full disk — yields invalid JSON, the ledger reads as empty, every burned key
+    looks fresh, and the irreversible effect FIRES AGAIN. Absent and unreadable are different
+    facts, and only the first means "nothing has been published".
+    """
+    path = tmp_path / "ledger.json"
+    ledger = LocalPublicationLedger(path)
+    assert ledger.check_and_record("run/plan/node", "digest-abc") == "fired"
+    path.write_text('{"run/plan/node": "digest-abc"', encoding="utf-8")  # truncated mid-write
+
+    with pytest.raises(GraphIntegrityError, match="corrupt"):
+        ledger.check_and_record("run/plan/node", "digest-abc")
+
+
+def test_a_ledger_that_is_not_an_object_halts(tmp_path: Path):
+    path = tmp_path / "ledger.json"
+    path.write_text('["not", "an", "object"]', encoding="utf-8")
+
+    with pytest.raises(GraphIntegrityError, match="not a JSON object"):
+        LocalPublicationLedger(path).check_and_record("run/plan/node", "d")
+
+
+def test_a_missing_ledger_is_still_treated_as_empty(tmp_path: Path):
+    # Absent genuinely IS a fresh ledger; only unreadable is the dangerous case.
+    ledger = LocalPublicationLedger(tmp_path / "never-written.json")
+
+    assert ledger.check_and_record("run/plan/node", "d") == "fired"

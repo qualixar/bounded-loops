@@ -33,6 +33,7 @@ from bounded_loops.graph.adapters.workers.publish_worker import (
 from bounded_loops.graph.adapters.workers.sandboxed_worker import SandboxedNodeWorker
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope
 from bounded_loops.graph.application.graph_ports import ArtifactStorePort, EventLogPort
+from bounded_loops.graph.application.arena_projection import latest_node_states
 from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
 from bounded_loops.graph.application.workspace_promotion import WorkspaceInput
 from bounded_loops.graph.domain.artifacts import ArtifactRef
@@ -328,6 +329,10 @@ def build_kind_dispatchers(
     cap and groups all kind-specific wiring in one place.
     """
     loop_registry = LoopPackageRegistry(roots=loop_package_roots or _default_loop_roots())
+    # ONE reader for the loop worker, the publish worker and the publish gate. The gate recomputes
+    # the payload digest rather than trusting the receipt, so it must see exactly the evidence view
+    # the worker saw; two readers would be a place for them to disagree about what was published.
+    upstream_digests = _make_upstream_digests_reader(event_log)
     loop_worker = _LoopNodeWorker(
         sandboxed=SandboxedNodeWorker(
             identity=identity,
@@ -341,15 +346,22 @@ def build_kind_dispatchers(
         ),
         registry=loop_registry,
         run_id=run_id,
-        upstream_digests_fn=_make_upstream_digests_reader(event_log),
+        upstream_digests_fn=upstream_digests,
     )
     join_worker = JoinNodeWorker(
         store=store, organization_id=organization_id, project_id=project_id,
+        # Live node states at the moment the join executes. Without this the receipt records the
+        # plan's edge list and the gate compares the compiler to itself.
+        node_states_fn=lambda plan: {
+            node_id: str(value.get("state"))
+            for node_id, value in latest_node_states(plan, event_log.replay()).items()
+        },
     )
     ledger = LocalPublicationLedger(out_dir / "published-effects.json")
     publish_worker = PublishNodeWorker(
         store=store, ledger=ledger, run_id=run_id,
         organization_id=organization_id, project_id=project_id,
+        upstream_digests_fn=upstream_digests,
     )
     return (
         _KindDispatchWorker(
@@ -367,6 +379,7 @@ def build_kind_dispatchers(
             ),
             publish_gate=PublishReceiptGate(
                 store, run_id=run_id, organization_id=organization_id, project_id=project_id,
+                upstream_digests_fn=upstream_digests,
             ),
             fallback=StructuralAcceptanceGate(
                 store, organization_id=organization_id, project_id=project_id,

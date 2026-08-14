@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -48,14 +49,37 @@ class LocalPublicationLedger:
         self._path = ledger_path
 
     def _load(self) -> dict[str, str]:
+        """Read the burn ledger, or REFUSE. A corrupt ledger must never read as empty.
+
+        This used to swallow every error and return ``{}``, which is the most dangerous possible
+        default for a record of irreversible effects: a partial write — a crash mid ``write_text``,
+        a full disk — produces invalid JSON, the ledger reads as empty, every burned key looks
+        fresh, and **the effect fires again**. Absent and unreadable are completely different
+        facts, and only the first one means "nothing has been published".
+
+        Missing file still means empty, because that genuinely is a fresh ledger.
+        """
         if not self._path.exists():
             return {}
         try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError, ValueError):
-            return {}
+            raw = self._path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise GraphIntegrityError(
+                f"publication ledger {self._path} could not be read ({exc}); refusing to publish "
+                "rather than treat an unreadable burn record as empty"
+            ) from exc
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise GraphIntegrityError(
+                f"publication ledger {self._path} is corrupt ({exc}); refusing to publish rather "
+                "than treat a damaged burn record as empty. Inspect it by hand: an already-fired "
+                "irreversible effect may be recorded in it."
+            ) from exc
         if not isinstance(data, dict):
-            return {}
+            raise GraphIntegrityError(
+                f"publication ledger {self._path} is not a JSON object; refusing to publish"
+            )
         return {str(k): str(v) for k, v in data.items()}
 
     def _save(self, data: dict[str, str]) -> None:
@@ -65,11 +89,24 @@ class LocalPublicationLedger:
         )
 
     def check_and_record(self, effect_key: str, payload_digest: str) -> str:
-        """Atomically check and record one effect burn.
+        """Check and record one effect burn. **NOT atomic — see below.**
 
         Returns ``'fired'`` on the first call for this key, ``'already_published'``
         on a repeat with the same payload digest, or raises ``GraphIntegrityError``
         when a repeat arrives with a *different* payload digest.
+
+        This docstring said "Atomically check and record" and the body is a
+        read-modify-write with no lock. Stating an invariant the code does not implement is
+        worse than stating the limit, so the limits are named here:
+
+        * **No lock.** ``_load()`` then ``_save()`` is not a compare-and-swap. Two concurrent
+          publish attempts can both observe the key absent and both fire. Needs ``fcntl.flock``
+          or an atomic rename to be what the name suggests.
+        * **The ledger IS the effect here, not a write-ahead record of it.** A real publisher
+          calls an external service and then records; dying in between fires the effect with no
+          trace, and the next attempt re-fires. A production sink needs the WAL entry written
+          BEFORE the outbound call.
+        * A corrupt ledger is refused rather than silently treated as empty — see ``_load``.
         """
         data = self._load()
         if effect_key not in data:
@@ -85,17 +122,58 @@ class LocalPublicationLedger:
         )
 
 
+
+def _upstream_artifacts(
+    plan: ExecutionPlan,
+    node: PlannedNode,
+    upstream_digests_fn: "Callable[[str], tuple[str, ...]] | None",
+) -> tuple[str, ...]:
+    """Artifact digests of every node feeding *node*, sorted and de-duplicated.
+
+    This is the evidence the publish node is acting on, and hashing it is what turns an identity
+    stamp into a payload digest. ``None`` means the caller wired no reader — fixture graphs and unit
+    tests — and yields an empty tuple, which degrades to the old identity-only behaviour rather than
+    crashing. That degradation is deliberate but it is NOT silent: the receipt records
+    ``upstream_artifact_count``, so a reader can see that a publication was keyed on zero pieces of
+    evidence.
+    """
+    if upstream_digests_fn is None:
+        return ()
+    seen: set[str] = set()
+    for edge in plan.edges:
+        if edge.to_node == node.node_id:
+            seen.update(upstream_digests_fn(edge.from_node))
+    return tuple(sorted(seen))
+
 def _derive_payload_digest(
     *, publication_policy: str, plan_id: str, node_id: str,
+    upstream_digests: tuple[str, ...],
 ) -> str:
-    """Deterministic digest of the semantic content being published.
+    """Digest of the CONTENT being published, not of the node's identity.
 
-    Timestamp-free and attempt-free so the same publication always produces the
-    same digest. ``plan_id`` binds the exact compilation of the graph; ``node_id``
-    binds the node; ``publication_policy`` binds the channel and rules.
+    ``upstream_digests`` is what makes this a payload digest at all. Without it this function
+    hashed only ``{node_id, plan_id, publication_policy}`` — pure identity — and the
+    divergent-payload HALT was **unreachable from a compiled plan**: ``publication_policy`` is
+    copied into ``approval_policy``, which is inside ``_canonical_plan``, so changing the policy
+    changes ``plan_id`` and therefore changes the effect KEY too. Same key with a different digest
+    could only be produced by mutating ``approval_policy`` in memory, which is exactly what the
+    HALT test did — so the test proved a property of a hand-built object, not of any graph that
+    could be compiled. Found by the P4.5 audit (Grok finding 1).
+
+    The upstream artifact digests are the bytes the publish node is actually acting on, so two runs
+    that joined DIFFERENT evidence now produce different payload digests under the same effect key,
+    and the HALT fires for the reason it claims to.
+
+    Still timestamp-free and attempt-free: the same evidence must always give the same digest, or a
+    retry of an identical publication would look like a divergent one and HALT a healthy run.
     """
     content = json.dumps(
-        {"node_id": node_id, "plan_id": plan_id, "publication_policy": publication_policy},
+        {
+            "node_id": node_id,
+            "plan_id": plan_id,
+            "publication_policy": publication_policy,
+            "upstream_artifact_digests": sorted(upstream_digests),
+        },
         sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(content).hexdigest()
@@ -110,6 +188,10 @@ class PublishNodeWorker:
     run_id: str
     organization_id: str
     project_id: str
+    #: Reads the artifact digests a predecessor sealed. Optional so fixture graphs and unit tests
+    #: that wire no event log keep working; when absent the payload digest degrades to identity and
+    #: the receipt says so via ``upstream_artifact_count``.
+    upstream_digests_fn: Callable[[str], tuple[str, ...]] | None = None
 
     def execute(
         self,
@@ -132,6 +214,7 @@ class PublishNodeWorker:
             publication_policy=publication_policy,
             plan_id=plan.plan_id,
             node_id=node.node_id,
+            upstream_digests=_upstream_artifacts(plan, node, self.upstream_digests_fn),
         )
 
         # Raises GraphIntegrityError on a divergent-payload repeat (HALT semantics).
@@ -143,6 +226,9 @@ class PublishNodeWorker:
             "plan_id": plan.plan_id,
             "publication_policy": publication_policy,
             "payload_digest": payload_digest,
+            "upstream_artifact_count": len(
+                _upstream_artifacts(plan, node, self.upstream_digests_fn)
+            ),
             "outcome": outcome,
         }
         receipt_bytes = json.dumps(receipt, sort_keys=True).encode("utf-8")
@@ -172,11 +258,15 @@ class PublishReceiptGate:
         run_id: str,
         organization_id: str,
         project_id: str,
+        upstream_digests_fn: Callable[[str], tuple[str, ...]] | None = None,
     ) -> None:
         self._store = store
         self._run_id = run_id
         self._organization_id = organization_id
         self._project_id = project_id
+        # The gate RECOMPUTES the payload digest rather than trusting the receipt's copy, so it
+        # needs the same evidence view the worker had. Wired from the same reader in composition.
+        self._upstream_digests_fn = upstream_digests_fn
 
     def evaluate(
         self,
@@ -237,6 +327,7 @@ class PublishReceiptGate:
             publication_policy=publication_policy,
             plan_id=plan.plan_id,
             node_id=node.node_id,
+            upstream_digests=_upstream_artifacts(plan, node, self._upstream_digests_fn),
         )
         if receipt.get("payload_digest") != expected_digest:
             return GateVerdict(

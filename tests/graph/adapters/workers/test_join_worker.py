@@ -155,14 +155,23 @@ def test_gate_accepts_correct_receipt():
     assert verdict.passed, f"gate rejected a valid receipt: {verdict.reason}"
 
 
-def test_gate_verdict_names_mode_and_predecessors():
+def test_a_receipt_with_no_observed_parents_passes_but_says_causality_is_unverified():
+    """Honest degradation. With no event log wired the worker cannot see parent states, so the gate
+    checks the plan shape only — and SAYS so instead of reporting "causality verified".
+
+    That distinction is the whole finding: previously both worker and gate read the plan, so the
+    causality claim compared the compiler to itself and could not fail.
+    """
     store, node, plan, result = _run(
         join_mode="all_successful", predecessors=["a", "b"],
     )
     gate = JoinReceiptGate(store, organization_id=ORG, project_id=PROJECT)
+
     verdict = gate.evaluate(plan=plan, node=node, result=result)
+
     assert verdict.passed
-    assert "all_successful" in verdict.reason
+    assert "NOT observed" in verdict.reason
+    assert "unverified" in verdict.reason
 
 
 # ── gate tests: rejection paths ───────────────────────────────────────────────
@@ -218,3 +227,85 @@ def test_gate_rejects_empty_result():
     verdict = gate.evaluate(plan=_Plan(), node=_Node(), result=WorkerResult(()))
     assert not verdict.passed
     assert "no causality receipt" in verdict.reason
+
+
+# ---------------------------------------------------------------------------
+# Causality replay. These are the tests the previous receipt shape could not have.
+# ---------------------------------------------------------------------------
+
+
+def _run_with_states(
+    *,
+    join_mode: str,
+    parents: dict[str, str],
+    guards: dict[str, str | None] | None = None,
+    node_id: str = "join-checks",
+):
+    """Run a join whose worker can SEE its parents' live states."""
+    guards = guards or {}
+    node = _Node(node_id=node_id, approval_policy={"join_mode": join_mode})
+    edges = tuple(
+        _Edge(from_node=name, to_node=node_id, when=guards.get(name)) for name in parents
+    )
+    plan = _Plan(edges=edges)
+    store = _Store()
+    worker = JoinNodeWorker(
+        store=store, organization_id=ORG, project_id=PROJECT,
+        node_states_fn=lambda _plan: dict(parents),
+    )
+    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1)
+    return store, node, plan, result
+
+
+def test_the_receipt_records_the_live_parent_states_not_just_the_edge_list():
+    store, _, _, result = _run_with_states(
+        join_mode="all_successful", parents={"a": "SUCCEEDED", "b": "SUCCEEDED"},
+    )
+
+    receipt = _read_receipt(store, result.output_artifact_digests[0])
+
+    assert receipt["parents_observed"] is True
+    assert sorted(entry[0] for entry in receipt["parents"]) == ["a", "b"]
+    assert all(entry[1] == "SUCCEEDED" for entry in receipt["parents"])
+
+
+def test_a_join_whose_recorded_states_would_not_admit_it_is_refused():
+    """The check the old receipt shape made impossible.
+
+    ``all_successful`` with a FAILED parent must not admit. Previously the receipt carried only the
+    plan's edge list, so the gate re-read the plan and passed — a silent wrong number in a
+    hash-chained receipt. Now the gate replays the scheduler's own predicate over the recorded facts.
+    """
+    store, node, plan, result = _run_with_states(
+        join_mode="all_successful", parents={"a": "SUCCEEDED", "b": "FAILED"},
+    )
+    gate = JoinReceiptGate(store, organization_id=ORG, project_id=PROJECT)
+
+    verdict = gate.evaluate(plan=plan, node=node, result=result)
+
+    assert not verdict.passed
+    assert "would have produced" in verdict.reason
+
+
+def test_a_guard_excluded_parent_does_not_block_the_join():
+    """The exact shape from the audit: ``a --when:succeeded-->`` and ``b --when:failed-->``.
+
+    With ``a`` SUCCEEDED, the scheduler EXCLUDES ``b`` because its failed-guard is unsatisfied, and
+    admits. The replay must agree — the recorded facts include ``b``, but with its guard, so the
+    predicate can see that it was excluded rather than ignored.
+    """
+    store, node, plan, result = _run_with_states(
+        join_mode="all_successful",
+        parents={"a": "SUCCEEDED", "b": "SUCCEEDED"},
+        guards={"a": "succeeded", "b": "failed"},
+    )
+    gate = JoinReceiptGate(store, organization_id=ORG, project_id=PROJECT)
+
+    verdict = gate.evaluate(plan=plan, node=node, result=result)
+
+    assert verdict.passed, verdict.reason
+    # And the guard travelled into the receipt, so the exclusion is auditable rather than implied.
+    guards_recorded = {entry[0]: entry[2] for entry in _read_receipt(
+        store, result.output_artifact_digests[0]
+    )["parents"]}
+    assert guards_recorded == {"a": "succeeded", "b": "failed"}

@@ -15,12 +15,25 @@ What an outer gate can honestly add is verification of EVIDENCE it did not produ
 * the promoted outcome artifact exists, parses, and is the shape this engine writes;
 * the package digest in it matches the digest the PLAN admitted, so the receipt describes the
   package the node was compiled against and not some other package on the host;
-* the node and round in it match the node and round being gated, so a stale artifact from another
-  attempt cannot satisfy this one;
+* the node and round in it match the node and round being gated;
 * the loop's own terminal status is ``DONE``.
 
 That is strictly stronger than re-running the gate, because a re-run proves only that a check passes
 now, while this proves the recorded work is the work that was admitted.
+
+**What this gate CANNOT check, stated because an earlier version of this docstring claimed it could.**
+``IndependentGatePort.evaluate`` receives only ``(plan, node, result)`` — no attempt, no graph run id.
+So a receipt naming ``attempt=99``, an ``inner_run_id`` from a different run, or a fabricated
+``inner_ledger_digest`` still passes, as the P4.5 audit demonstrated. The claim that "a stale artifact
+from another attempt cannot satisfy this one" was false. What actually stops that in practice is
+upstream of the gate: each attempt gets a fresh workspace and promotes its own artifact, so the digest
+handed to ``evaluate`` belongs to this attempt. That is a property of the worker, not of this gate,
+and closing the gap properly means carrying the round and attempt on the port the way the loop bridge
+already does (task #39).
+
+``inner_ledger_digest`` is recorded but NOT verified here, and the inner log it commits to lives under
+the node's ``TMPDIR`` and is discarded with the sandbox. It is a fingerprint of bytes nobody keeps —
+useful only if a deployment chooses to persist that log. Do not describe it as tamper-evidence.
 """
 
 from __future__ import annotations
@@ -40,6 +53,14 @@ _ACCEPTED_STATUS = "DONE"
 #: failing. Calling them faults would let ``continue_declared`` treat an honest "did not converge"
 #: as a transient crash, and would have the controller retry a loop that already spent its bound.
 _REJECTED_STATUSES = frozenset({"HALT", "KILLED"})
+#: The inner loop's gate PASSED and it is waiting on a human. That is not a graph-level failure and
+#: it is not an unrecognised status — it used to fall through to the "unrecognised" branch and FAIL
+#: the node, so a loop that legitimately paused killed the run. Found by the P4.5 audit (Grok
+#: finding 6). Treated as not-yet-decided: the gate refuses to pass it, and says why, so the
+#: controller can surface a pause rather than a fault. A loop wanting human approval inside a graph
+#: should use a graph ``approval`` node, which is why this is a refusal with an explanation and not
+#: a new success path.
+_PAUSED_STATUS = "PAUSE"
 
 
 class LoopReceiptGate:
@@ -87,6 +108,14 @@ class LoopReceiptGate:
         if status in _REJECTED_STATUSES:
             return GateVerdict(
                 False, f"loop did not converge ({status}): {reason}", evidence_digest=digests[0],
+            )
+        if status == _PAUSED_STATUS:
+            return GateVerdict(
+                False,
+                f"loop paused awaiting a human decision: {reason}. Its own gate passed — this is "
+                "NOT a convergence failure. Lift the checkpoint to a graph `approval` node so the "
+                "run can pause and resume instead of failing here.",
+                evidence_digest=digests[0],
             )
         return GateVerdict(
             False,
