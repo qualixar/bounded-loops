@@ -10,10 +10,14 @@ import hashlib
 import json
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import cast
 
 
 from bounded_loops.graph.adapters.workers.join_worker import JoinNodeWorker, JoinReceiptGate
+from bounded_loops.graph.application.execution_policy import ExecutionEnvelope
+from bounded_loops.graph.application.graph_ports import ArtifactStorePort
 from bounded_loops.graph.application.node_contracts import WorkerResult
+from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 from bounded_loops.graph.domain.artifacts import (
     ArtifactAccess,
     ArtifactPolicy,
@@ -38,16 +42,50 @@ class _Edge:
 
 
 @dataclass
-class _Plan:
+class _PlanStub:
     edges: tuple[_Edge, ...] = field(default_factory=tuple)
     plan_id: str = "plan-join-1"
 
 
 @dataclass
-class _Node:
+class _NodeStub:
     node_id: str = "join-checks"
     kind: str = "join"
     approval_policy: dict = field(default_factory=lambda: {"join_mode": "all_successful"})
+
+
+# The stubs above carry only the fields the join worker and gate read. A real ExecutionPlan needs a
+# validated graph and a compile snapshot, which would turn every test here into a compiler test.
+# These factories declare that narrowing once — `mypy bounded_loops tests` is a CI gate, so an
+# untyped stub handed to a typed port is a red build.
+
+
+def _Plan(  # noqa: N802 - a factory standing in for the constructor it replaces
+    edges: tuple[_Edge, ...] = (), plan_id: str = "plan-join-1",
+) -> ExecutionPlan:
+    return cast(ExecutionPlan, _PlanStub(edges=edges, plan_id=plan_id))
+
+
+def _Node(  # noqa: N802
+    node_id: str = "join-checks", kind: str = "join", approval_policy: dict | None = None,
+) -> PlannedNode:
+    stub = _NodeStub(
+        node_id=node_id, kind=kind,
+        approval_policy={"join_mode": "all_successful"}
+        if approval_policy is None else approval_policy,
+    )
+    return cast(PlannedNode, stub)
+
+
+def _no_envelope() -> ExecutionEnvelope:
+    """The join worker runs no subprocess, so it never reads the envelope."""
+    return cast(ExecutionEnvelope, None)
+
+
+def _store_port(store: "_Store") -> ArtifactStorePort:
+    """``_Store.open`` is a ``@contextmanager``; the port declares ``-> BinaryIO``. Both work under
+    ``with``, so the stub is usable but not structurally the port."""
+    return cast(ArtifactStorePort, store)
 
 
 # ── minimal store stub ────────────────────────────────────────────────────────
@@ -97,15 +135,17 @@ def _run(
     node_id: str = "join-checks",
     join_mode: str = "all_successful",
     predecessors: list[str] | None = None,
-) -> tuple[_Store, _Node, _Plan, WorkerResult]:
+) -> tuple[_Store, PlannedNode, ExecutionPlan, WorkerResult]:
     if predecessors is None:
         predecessors = ["check-ledger", "check-fx", "check-journal"]
     node = _Node(node_id=node_id, approval_policy={"join_mode": join_mode})
     edges = tuple(_Edge(from_node=p, to_node=node_id) for p in predecessors)
     plan = _Plan(edges=edges)
     store = _Store()
-    worker = JoinNodeWorker(store=store, organization_id=ORG, project_id=PROJECT)
-    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
+    worker = JoinNodeWorker(
+        store=_store_port(store), organization_id=ORG, project_id=PROJECT,
+    )
+    result = worker.execute(plan=plan, node=node, envelope=_no_envelope(), attempt=1, repair_round=0)
     return store, node, plan, result
 
 
@@ -250,10 +290,10 @@ def _run_with_states(
     plan = _Plan(edges=edges)
     store = _Store()
     worker = JoinNodeWorker(
-        store=store, organization_id=ORG, project_id=PROJECT,
+        store=_store_port(store), organization_id=ORG, project_id=PROJECT,
         node_states_fn=lambda _plan: dict(parents),
     )
-    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
+    result = worker.execute(plan=plan, node=node, envelope=_no_envelope(), attempt=1, repair_round=0)
     return store, node, plan, result
 
 

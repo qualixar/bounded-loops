@@ -117,11 +117,25 @@ class ApprovalOutcome(str, Enum):
 
 
 class ApprovalResolverPort(Protocol):
-    """Reports whether a human has decided an approval node for THIS run/attempt.
+    """Reports whether a human has decided an approval node for THIS run, attempt and round.
 
     The controller never itself validates a human decision (roles, signatures,
     nonces live in the approvals use case); it only asks this port for the already
     recorded outcome, and treats ``PENDING`` as "keep waiting".
+
+    ``repair_round`` is required for the same reason it is on the worker and gate ports, and its
+    absence was a HUMAN-IN-THE-LOOP BYPASS rather than a bookkeeping slip. A repair resets the
+    approval node to PENDING and re-runs the whole suffix, producing work the human never saw. With
+    the round missing from the key, the round-0 grant satisfied the round-1 pause: the node went
+    READY -> AWAITING_APPROVAL -> SUCCEEDED with no second decision, and the irreversible effect
+    downstream was authorized by an approval of different evidence. Demonstrated by the P4.5 round-2
+    audit (Grok 2), which observed two ``node.succeeded`` receipts on one approval node from a single
+    grant.
+
+    Round 0 keys must remain exactly what they were, so a decision recorded before this parameter
+    existed still resolves. Only rounds 1 and up require a fresh decision.
     """
 
-    def resolve(self, *, identity: GraphRunIdentity, node: PlannedNode, attempt: int) -> "ApprovalOutcome": ...
+    def resolve(
+        self, *, identity: GraphRunIdentity, node: PlannedNode, attempt: int, repair_round: int,
+    ) -> "ApprovalOutcome": ...

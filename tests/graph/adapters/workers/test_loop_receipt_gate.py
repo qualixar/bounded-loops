@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from typing import cast
 from dataclasses import dataclass
 
 import pytest
 
 from bounded_loops.graph.adapters.workers.loop_receipt_gate import LoopReceiptGate
+from bounded_loops.graph.application.graph_ports import ArtifactReaderPort
 from bounded_loops.graph.application.node_contracts import WorkerResult
+from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
 ORG = "org-1"
 PROJECT = "proj-1"
@@ -61,8 +64,15 @@ def _outcome(**overrides: object) -> bytes:
 
 
 def _gate(store: _Store) -> LoopReceiptGate:
-    """No round here: it arrives per evaluation now, from the port (task #39)."""
-    return LoopReceiptGate(store, organization_id=ORG, project_id=PROJECT)
+    """No round here: it arrives per evaluation now, from the port (task #39).
+
+    The store cast is deliberate: ``_Store.open`` is a ``@contextmanager`` while
+    ``ArtifactReaderPort.open`` declares ``-> BinaryIO``. Both work under ``with`` — a real
+    ``BinaryIO`` is its own context manager — so the stub is usable but not structurally the port.
+    """
+    return LoopReceiptGate(
+        cast(ArtifactReaderPort, store), organization_id=ORG, project_id=PROJECT,
+    )
 
 
 def _evaluate(
@@ -70,7 +80,10 @@ def _evaluate(
     *, attempt: int = 1, repair_round: int = 0,
 ):
     return gate.evaluate(
-        plan=None, node=node or _Node(),
+        # This gate reads NOTHING from the plan — it re-reads the promoted artifact and compares it
+        # against the node. Passing a real ExecutionPlan would need a validated graph and a compile
+        # snapshot to assert nothing.
+        plan=cast(ExecutionPlan, None), node=cast(PlannedNode, node or _Node()),
         result=WorkerResult(output_artifact_digests=(digest,)),
         attempt=attempt, repair_round=repair_round,
     )
@@ -114,7 +127,8 @@ def test_an_unrecognised_status_fails_closed():
 
 def test_no_artifact_fails_closed():
     verdict = _gate(_Store({})).evaluate(
-        plan=None, node=_Node(), result=WorkerResult(output_artifact_digests=()), attempt=1, repair_round=0,
+        plan=cast(ExecutionPlan, None), node=cast(PlannedNode, _Node()),
+        result=WorkerResult(output_artifact_digests=()), attempt=1, repair_round=0,
     )
 
     assert not verdict.passed

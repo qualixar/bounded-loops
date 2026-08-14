@@ -334,7 +334,7 @@ local-development commands: [`plugins/README.md`](plugins/README.md).
 ## Known limitations
 
 - A `kind: loop` node whose `loop_package` digest resolves on this host runs; one that
-  does not is refused at preflight. `on_failure: repair` is refused on loop nodes.
+  does not is refused at preflight.
 - `bl graph run --execute` pauses at `approval` nodes (exit code 3, `AWAITING_APPROVAL`)
   and resumes via `bl graph approve`. Sandboxed arbitrary-tool nodes are a later phase.
 - The `ALLOWLIST` egress cage is a network-only restriction on macOS Seatbelt. A

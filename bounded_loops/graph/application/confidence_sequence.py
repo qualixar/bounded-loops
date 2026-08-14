@@ -1,6 +1,6 @@
 """Fixed-time empirical-Bernstein interval for a bounded [0, 1] random variable.
 
-NOT anytime-valid — see the ``prpl_eb_cs`` docstring. The title said "Anytime-valid confidence
+NOT anytime-valid — see the ``empirical_bernstein_interval`` docstring. The title said "Anytime-valid confidence
 sequence" and the first paragraph said "Implements ... PrPl-EB", both of which overstate what the
 arithmetic below delivers: this is the CLOSED-FORM FIXED-TIME bound, without the stitching term a
 confidence sequence needs.
@@ -22,7 +22,7 @@ where the 1/(3n) term comes from the Bennett inequality for [0, 1]-bounded
 variables (range b − a = 1 enters as (b−a)/(3n) = 1/(3n)).
 
 BACKGROUND ONLY -- WHAT WOULD MAKE THIS ANYTIME-VALID, WHICH THIS MODULE DOES NOT IMPLEMENT.
-Read the ``prpl_eb_cs`` docstring for what is actually established. The theory below describes the
+Read the ``empirical_bernstein_interval`` docstring for what is actually established. The theory below describes the
 e-process a STITCHED boundary would invert; the closed-form radius above is the fixed-time bound and
 does not carry the stitching term, so none of the simultaneous-over-all-n guarantee follows from it.
 This paragraph sits first in the file and would be what a paper citation reads, which is why it says
@@ -73,7 +73,7 @@ import math
 from typing import Sequence
 
 
-def prpl_eb_cs(
+def empirical_bernstein_interval(
     observations: Sequence[float],
     alpha: float = 0.05,
 ) -> tuple[float, float]:
@@ -92,6 +92,18 @@ def prpl_eb_cs(
     rate ``E[p_run]`` that ``bl graph metrics`` reports as the false-accept rate. Two different
     estimands. The 19-point gap over Wilson is a statement about ``p_run`` and must not be quoted as
     an improvement in α coverage.
+
+    AND THE NUMBER THAT MAKES THAT CONCRETE, because "different estimand" reads as a technicality
+    until someone measures it. On the same 4000-run simulation, asking whether each interval contained
+    the MARGINAL rate (α = 0.12) instead of that run's ``p_run``:
+
+        coverage of p_run          0.9690
+        coverage of marginal α     0.5850
+
+    So the interval is a 58.5% interval for the quantity the CLI labels, not a 95% one — a 38-point
+    MISS, not a 19-point improvement. Found by the P4.5 round-2 audit (Grok 6) and reproduced here.
+    A paper that wants a coverage number for the printed false-accept rate must measure THAT
+    estimand and publish THAT number; 96.9% is not it.
 
     HOW STRICT THE MEASUREMENT IS, measured rather than asserted. The suite perturbs the interval in
     two independent ways and requires coverage to fall below the 0.94 threshold for each: a 20%

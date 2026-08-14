@@ -183,6 +183,20 @@ def test_no_shipped_loop_package_hides_content_under_an_excluded_name():
     assert len(tracked) > 500, "git ls-files returned almost nothing; the check would be vacuous"
 
 
+def test_a_fifo_in_a_package_is_refused_rather_than_silently_skipped(tmp_path):
+    """``is_file()`` is False for a FIFO, so it used to be skipped entirely.
+
+    A gate whose ``run:`` branches on ``test -p seed/payload_fifo`` would then change verdict with
+    the pinned digest unmoved — the same defect class as a symlink, and demonstrated by the round-2
+    audit with ``os.mkfifo`` (Muse 3-1).
+    """
+    clone = _package(tmp_path)
+    os.mkfifo(clone / "seed" / "payload_fifo")
+
+    with pytest.raises(GraphIntegrityError, match="non-regular file"):
+        loop_package_digest(clone)
+
+
 def test_a_symlink_in_a_package_is_refused_rather_than_certified(tmp_path):
     clone = _package(tmp_path)
     (clone / "seed" / "outside").symlink_to(tmp_path)

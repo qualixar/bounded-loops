@@ -21,19 +21,25 @@ than no number, because it looks like evidence. That is the same discipline P2-B
 settled on: unmeasurable is not zero, and the honest output of an unmeasurable question is a refusal.
 
 **Intervals, not point estimates.** A rate of 0/12 is not "zero" — it is "no false accept observed
-in twelve attempts", which is compatible with a true rate near 25%. Every rate carries a Wilson score
-interval. Wilson rather than the textbook Wald interval because Wald collapses to [0, 0] at zero
-observed events, asserting certainty from an absence of evidence, which is precisely the error this
-module exists to avoid. Wilson needs no dependency beyond ``math``.
+in twelve attempts", which is compatible with a true rate near 25%. So every rate carries an
+interval, never a bare estimate: a point estimate understates uncertainty infinitely.
 
-**And the interval's own assumption is violated — stated, because it changes how the number reads.**
-Wilson assumes independent Bernoulli trials. Attempts in one run are not independent: retries of a
-node share its worker, prompt and failure mode. Correlation makes an iid interval too NARROW, so
-every bound here is a LOWER bound on the true uncertainty. That is why ``confusion_by_attempt`` is
-the primary figure rather than the pooled one: within a single attempt index there is at most one
-observation per node, which is much closer to the assumption than the pooled set is. A properly
-cluster-aware interval is P5 work (``confseq`` was verified UNUSABLE on py>=3.11); until
-then ``INDEPENDENCE_CAVEAT`` travels with every reported interval, including through the CLI.
+**Which interval, and what is actually known about it.** The reported figures use the FIXED-TIME
+empirical-Bernstein radius (``confidence_sequence.empirical_bernstein_interval``). It is NOT an
+anytime-valid confidence sequence — the radius carries no stitching term — and what is known about it
+is MEASURED, not proven: 96.9% coverage of a per-run latent rate under a simulated correlated-retry
+regime, against 77.5% for Wilson on the same data. Coverage of the MARGINAL rate these functions
+return is a different estimand and measures 0.5850 on that simulation, so the interval must not be
+described as a 95% interval for the rate printed beside it. ``INDEPENDENCE_CAVEAT`` travels with
+every number, including through the CLI and the JSON.
+
+The Wilson score interval it replaced is still computed and still emitted under
+``interval_method: "wilson_uncalibrated"``, for continuity and for comparison. Wilson assumes
+independent Bernoulli trials; attempts in one run are not independent, because retries of a node
+share its worker, prompt and failure mode, and correlation makes an iid interval too NARROW. That is
+also why ``confusion_by_attempt`` remains the most interpretable figure: within a single attempt index
+there is at most one observation per node. A genuinely cluster-aware, anytime-valid interval is P5
+work (``confseq`` was verified UNUSABLE on py>=3.11).
 
 Nothing here reads a store, a clock, or an adapter: receipts in, numbers out. That makes every figure
 reproducible from an archived log by anyone, which is the property a reviewer will want.
@@ -45,7 +51,7 @@ from dataclasses import dataclass
 import math
 from typing import Mapping, Sequence
 
-from bounded_loops.graph.application.confidence_sequence import prpl_eb_cs
+from bounded_loops.graph.application.confidence_sequence import empirical_bernstein_interval
 from bounded_loops.graph.domain.events import NodeFailureCause, StoredGraphEvent
 
 #: Below this many labelled attempts, a rate is reported as ``None`` rather than computed. Ten is
@@ -89,15 +95,18 @@ INDEPENDENCE_CAVEAT = (
 
 @dataclass(frozen=True)
 class Interval:
-    """A two-sided Wilson score interval for a proportion.
+    """A two-sided interval for a proportion. The METHOD is not carried here — see the caller.
 
-    **Read ``INDEPENDENCE_CAVEAT`` before quoting one of these.** The interval is computed as though
-    each gated attempt were an independent Bernoulli trial. They are not, and the direction of the
-    error is the unflattering one: correlation makes the interval too narrow, so this understates
+    Deliberately method-agnostic: ``*_cs`` functions fill it from the empirical-Bernstein radius,
+    ``Confusion.*_rate`` from Wilson, and the CLI labels which is which
+    (``interval_method``). This type used to say "a two-sided Wilson score interval", which stopped
+    being true when the empirical-Bernstein interval became the reported figure — a stale name on the
+    type every number flows through.
+
+    **Read ``INDEPENDENCE_CAVEAT`` before quoting one of these.** Neither method is an anytime-valid
+    confidence sequence here, and for Wilson the independence assumption is violated in the
+    unflattering direction: correlation makes an iid interval too narrow, so it understates
     uncertainty rather than overstating it.
-
-    It is reported anyway, with the caveat attached, because the alternative — a bare point estimate —
-    understates uncertainty *infinitely*. A too-narrow interval that says so beats no interval.
     """
 
     low: float
@@ -423,16 +432,24 @@ def _rate_cs(observations: list[float]) -> Rate:
     if n < MINIMUM_LABELLED_FOR_A_RATE:
         return Rate(numerator, n, None, None)
     mu = numerator / n
-    low, high = prpl_eb_cs(observations, alpha=0.05)
+    low, high = empirical_bernstein_interval(observations, alpha=0.05)
     return Rate(numerator, n, mu, Interval(low, high))
 
 
 def false_accept_rate_cs(receipts: Sequence[StoredGraphEvent]) -> Rate:
     """α — false-accept rate with an empirical-Bernstein interval (coverage measured, not proven).
 
-    Replaces the Wilson-based ``Confusion.false_accept_rate()``. The CS is valid
-    under optional stopping and without the independence assumption Wilson requires
-    but the retry data violates.
+    Replaces the Wilson-based ``Confusion.false_accept_rate()``, whose independence assumption the
+    retry data violates. The radius is the FIXED-TIME empirical-Bernstein form and carries no
+    stitching term, so this is **not** a confidence sequence and simultaneous validity over all
+    sample sizes does not follow from it. What is known is measured: 96.9% coverage of the per-run
+    latent rate under the simulated correlated-retry regime, against Wilson's 77.5%. Coverage of the
+    MARGINAL rate this function returns is a separate estimand that those figures do not measure.
+
+    An earlier version of this docstring said "the CS is valid under optional stopping and without
+    the independence assumption" — a theorem this module's own ``INDEPENDENCE_CAVEAT`` disavows
+    twelve lines above, and the eighth surviving instance of that claim to be found. It is the kind
+    of sentence a paper quotes.
     """
     verdicts = _gate_verdicts(receipts)
     labels = _labels(receipts)

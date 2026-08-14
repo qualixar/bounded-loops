@@ -63,7 +63,7 @@ from bounded_loops.graph.application.workspace_promotion import (
     materialize_workspace_inputs,
     promote_workspace_outputs,
 )
-from bounded_loops.graph.domain.artifacts import ArtifactAccess
+from bounded_loops.graph.domain.artifacts import ArtifactAccess, attempt_provenance
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
@@ -314,7 +314,7 @@ class SandboxedNodeWorker:
         policy = WorkspacePromotionPolicy(
             organization_id=self.organization_id,
             project_id=self.project_id,
-            producer_attempt=str(attempt),
+            producer_attempt=attempt_provenance(attempt, repair_round),
             declared_outputs=dict(spec.declared_outputs),
             max_file_bytes=self.max_file_bytes,
             sensitivity=self.sensitivity,

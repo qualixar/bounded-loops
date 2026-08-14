@@ -3,7 +3,7 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.0] — 2026-08-14
 
 ### Changed — BREAKING for embedders
 
@@ -51,7 +51,9 @@ All notable changes to bounded-loops are documented here. This project follows
   rate `E[p_run]`; coverage of the marginal rate is a **separate estimand that
   these figures do not measure**. So "96.9% vs 77.5%" is a statement about
   `p_run`, and quoting it as "α coverage" or as a 19-point improvement on α is a
-  misreading the numbers cannot support.
+  misreading the numbers cannot support. Measured on the same simulation: coverage of
+  the marginal rate is **0.5850**. For the quantity `bl graph metrics` prints, this is
+  a 58.5% interval, not a 95% one.
 
   **This is NOT an anytime-valid confidence sequence.** The radius is the
   fixed-time empirical-Bernstein form and carries no stitching term, so
@@ -92,6 +94,54 @@ All notable changes to bounded-loops are documented here. This project follows
   ignored by the runtime, so every run was fail-closed whatever the graph declared.
 
 ### Added
+
+- **`kind: loop` nodes run.** A graph node can now be a whole bounded loop, executed as a child
+  workflow. 0.4.0 accepted these nodes at compile and lint time and then refused them at preflight;
+  they now execute.
+
+  The package is pinned by **content digest**, not by name: `loop_package: sha256:<64 hex>` is
+  computed from the package's own bytes, re-verified inside the node's subprocess before the loop
+  runs, and resolution is by digest only — so pulling new commits cannot silently change what a
+  persisted `plan_id` executes. Isolation is per node and never defaulted; the node's sandbox wraps
+  the loop's own runner and gate, so the loop inherits the graph's execution envelope.
+
+  The outer gate verifies the loop's **receipt** — that the promoted outcome parses, names the
+  package the plan admitted, names this node, attempt and repair round, and reached `DONE`. It does
+  not re-run the loop's own gate: the loop already contains an independent gate, so re-running it
+  would make one object both producer and judge.
+
+- **`kind: join` and `kind: publish` nodes have workers and gates.** A join records the live state
+  and guard of every predecessor it observed, and its gate replays the scheduler's own admission
+  predicate rather than trusting the receipt. A publish node is the one place a graph may do
+  something it cannot undo; its effect is recorded in a publication ledger keyed on
+  `run_id / plan_id / node_id` — `attempt` and `repair_round` are excluded on purpose, because
+  including either would fire the effect again per attempt or per round — with a payload digest
+  over the upstream artifacts.
+  See `docs/graph-capabilities.md` section 14, including what the local ledger does **not**
+  guarantee.
+
+- **Six reference graphs, in `graphs/`.** Finance payment assurance, engineering release gate, retail
+  listing release, marketing campaign release, customer data request, solo-builder ship. Each is
+  fan-out to parallel loop checks → join → human approval → one irreversible publish, uses only
+  keyless shipped loops, and costs nothing to run. All six execute end to end in CI, from a checkout.
+
+- **Wire data between a loop and a graph.** A loop package may declare `inputs:` and `outputs:` port
+  blocks in its `loop.yaml`; the engine materialises each declared input before the loop starts and
+  promotes each declared output as a graph artifact afterwards. A loop that declares neither runs in
+  fixture mode, exactly as before. See [docs/EMBEDDING.md](docs/EMBEDDING.md).
+
+- **A documented embedding surface.** `bounded_loops.__all__` is the stable API — `load_loop`,
+  `wire`, `Bounds`, `Outcome`, `Status`, `LoopManifest`, plus `NodeWorkerPort`, `WorkerResult`,
+  `IndependentGatePort` and `GateVerdict` for plugging in your own worker or gate. Everything else is
+  internal and may change in any release. [docs/EMBEDDING.md](docs/EMBEDDING.md) is the walkthrough.
+
+- **`--loop-roots <dir>`** on `bl graph run`, `lint` and `plan`, repeatable, to add your own catalog
+  of loop packages. Resolution stays by digest, so an extra root can only make a package findable —
+  never redirect an admitted digest to different code.
+
+- **Real spend ceilings.** A run can declare token and cost caps, from a file or per-dimension
+  flags, and a node that declares a spend budget refuses to run on a worker that reports no usage
+  rather than metering it as free.
 
 - **Route around a failed node.** With `fail_mode: continue_declared`, `when: failed` runs a
   downstream node only when its upstream failed — a cleanup, notification, or fallback

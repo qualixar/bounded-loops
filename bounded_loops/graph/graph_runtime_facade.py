@@ -18,15 +18,8 @@ Security model
 * The ``_FileApprovalCommandPort`` persists decisions atomically (``os.replace``) with an
   exclusive file lock so concurrent resume+approve calls cannot corrupt the decision record.
 
-Run directory layout (``runs_root / org / project / run_id /``)
-----------------------------------------------------------------
-  plan.json                — canonical execution plan bytes (written by execute_graph_run)
-  manifest.yaml            — original authoring manifest
-  connections.json         — admitted connection records (JSON array)
-  run-meta.json            — execution metadata (plan_id, org, project, run_id, policy_digest)
-  controller-events.jsonl  — hash-chained event log
-  approvals.json           — (written here) durable approval decision records
-  artifacts/               — per-node artifact store
+Run directory layout: see ``docs/graph-capabilities.md`` ("Run directory layout"). This module
+writes ``approvals.json``; ``execute_graph_run`` writes the rest.
 
 Two addressing modes (0.4.0 — dual-audit reconciliation, design Q4/M2)
 -----------------------------------------------------------------------
@@ -80,6 +73,7 @@ from bounded_loops.graph.application.approval_ledger import (
     _load_approvals,
     _rehydrated_request,
     build_durable_approval_resolver,
+    decision_round,
 )
 from bounded_loops.graph.application.approvals import (
     ApprovalAuthorizationPort,
@@ -485,9 +479,11 @@ class LocalGraphRuntimeFacade:
             )
         else:
             # "rejected": authorize with the SAME authority as an approval (not merely same-tenant),
-            # then DURABLY record the rejection so a crash before the run fails is still recovered.
+            # then DURABLY record the rejection so a crash before the run fails is recovered.
             self._authorize_decision(request=request, identity=identity, node=node)
-            _FileApprovalCommandPort(run_dir).commit_rejection(
+            _FileApprovalCommandPort(
+                run_dir, _repair_round=decision_round(event_log.replay()),
+            ).commit_rejection(
                 node_id=node_id, attempt=1, approval_id=_approval_id(identity, node_id),
                 actor_id=request.subject_id,
                 decided_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -697,7 +693,9 @@ class LocalGraphRuntimeFacade:
             resource_version=current_version,
         )
 
-        command_port = _FileApprovalCommandPort(run_dir)
+        command_port = _FileApprovalCommandPort(
+            run_dir, _repair_round=decision_round(event_log.replay()),
+        )
         _approve_use_case(
             approval_request,
             target,

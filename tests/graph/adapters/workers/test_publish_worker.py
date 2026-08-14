@@ -14,6 +14,7 @@ import hashlib
 import json
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import cast
 from pathlib import Path
 
 import pytest
@@ -24,7 +25,13 @@ from bounded_loops.graph.adapters.workers.publish_worker import (
     PublishReceiptGate,
     _derive_payload_digest,
 )
+from bounded_loops.graph.application.execution_policy import ExecutionEnvelope
 from bounded_loops.graph.application.node_contracts import WorkerResult
+from bounded_loops.graph.application.graph_ports import (
+    ArtifactReaderPort,
+    ArtifactStorePort,
+)
+from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 from bounded_loops.graph.domain.artifacts import (
     ArtifactAccess,
     ArtifactPolicy,
@@ -42,19 +49,49 @@ POLICY = "finance-instruction-v1"
 
 
 # ── plan stubs ────────────────────────────────────────────────────────────────
+#
+# These carry only the fields the publish worker and gate actually read. That is deliberate — a real
+# ExecutionPlan needs a validated graph and a compile snapshot, which would make every test here a
+# compiler test. The typed factories below are where that narrowing is declared ONCE, instead of an
+# inline ignore at each of ~30 call sites. `mypy bounded_loops tests` is a CI gate, so an untyped
+# stub handed to a typed port is a red build, not a style preference.
+
 
 @dataclass
-class _Plan:
+class _PlanStub:
     plan_id: str = PLAN_ID
     edges: tuple = field(default_factory=tuple)
     nodes: tuple = field(default_factory=tuple)
 
 
 @dataclass
-class _Node:
+class _NodeStub:
     node_id: str = "publish-instruction"
     kind: str = "publish"
     approval_policy: dict = field(default_factory=lambda: {"publication_policy": POLICY})
+
+
+def _Plan(  # noqa: N802 - a factory standing in for the constructor it replaces
+    plan_id: str = PLAN_ID, edges: tuple = (), nodes: tuple = (),
+) -> ExecutionPlan:
+    return cast(ExecutionPlan, _PlanStub(plan_id=plan_id, edges=edges, nodes=nodes))
+
+
+def _Node(  # noqa: N802
+    node_id: str = "publish-instruction", kind: str = "publish",
+    approval_policy: dict | None = None,
+) -> PlannedNode:
+    stub = _NodeStub(
+        node_id=node_id, kind=kind,
+        approval_policy={"publication_policy": POLICY}
+        if approval_policy is None else approval_policy,
+    )
+    return cast(PlannedNode, stub)
+
+
+def _no_envelope() -> ExecutionEnvelope:
+    """The publish worker runs no subprocess, so it never reads the envelope."""
+    return cast(ExecutionEnvelope, None)
 
 
 # ── minimal store stub ────────────────────────────────────────────────────────
@@ -106,7 +143,7 @@ def _make_worker(
     run_id: str = RUN_ID,
 ) -> PublishNodeWorker:
     return PublishNodeWorker(
-        store=store,
+        store=_store_port(store),
         ledger=ledger,
         run_id=run_id,
         organization_id=ORG,
@@ -127,7 +164,7 @@ def _run_worker(
     node = _Node(node_id=node_id, approval_policy={"publication_policy": policy})
     plan = _Plan(plan_id=plan_id)
     worker = _make_worker(store, ledger, run_id=run_id)
-    return worker.execute(plan=plan, node=node, envelope=None, attempt=attempt, repair_round=0)
+    return worker.execute(plan=plan, node=node, envelope=_no_envelope(), attempt=attempt, repair_round=0)
 
 
 def _read_receipt(store: _Store, digest: str) -> dict:
@@ -212,7 +249,7 @@ def test_worker_fails_closed_on_missing_policy(tmp_path: Path):
         node = _Node(node_id="publish-instruction", approval_policy={"publication_policy": ""})
         plan = _Plan()
         worker = _make_worker(store, ledger)
-        worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
+        worker.execute(plan=plan, node=node, envelope=_no_envelope(), attempt=1, repair_round=0)
 
 
 def test_worker_receipt_encodes_effect_key(tmp_path: Path):
@@ -264,10 +301,22 @@ def test_the_payload_digest_changes_when_the_upstream_evidence_changes():
     )
 
 
+def _store_port(store: _Store) -> "ArtifactStorePort":
+    """``_Store.open`` is a ``@contextmanager``; the port declares ``-> BinaryIO``.
+
+    Both work under ``with``, and a real ``BinaryIO`` is its own context manager — so the stub is
+    usable but not structurally the port. Cast once, here, rather than at each construction site.
+    """
+    return cast("ArtifactStorePort", store)
+
+
 # ── gate tests ────────────────────────────────────────────────────────────────
 
 def _make_gate(store: _Store, *, run_id: str = RUN_ID) -> PublishReceiptGate:
-    return PublishReceiptGate(store, run_id=run_id, organization_id=ORG, project_id=PROJECT)
+    return PublishReceiptGate(
+        cast("ArtifactReaderPort", store),
+        run_id=run_id, organization_id=ORG, project_id=PROJECT,
+    )
 
 
 def test_gate_accepts_correct_receipt(tmp_path: Path):
@@ -276,7 +325,7 @@ def test_gate_accepts_correct_receipt(tmp_path: Path):
     node = _Node()
     plan = _Plan()
     worker = _make_worker(store, ledger)
-    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
+    result = worker.execute(plan=plan, node=node, envelope=_no_envelope(), attempt=1, repair_round=0)
 
     gate = _make_gate(store)
     verdict = gate.evaluate(plan=plan, node=node, result=result, attempt=1, repair_round=0)
@@ -289,7 +338,7 @@ def test_gate_rejects_wrong_node_id(tmp_path: Path):
     node = _Node(node_id="publish-instruction")
     plan = _Plan()
     worker = _make_worker(store, ledger)
-    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
+    result = worker.execute(plan=plan, node=node, envelope=_no_envelope(), attempt=1, repair_round=0)
 
     # Gate evaluates a different node — must not accept the receipt.
     impersonator = _Node(node_id="publish-other")
@@ -307,7 +356,7 @@ def test_gate_rejects_wrong_effect_key(tmp_path: Path):
     node = _Node()
     plan = _Plan()
     worker = _make_worker(store, ledger, run_id=RUN_ID)
-    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
+    result = worker.execute(plan=plan, node=node, envelope=_no_envelope(), attempt=1, repair_round=0)
 
     # Gate holds a DIFFERENT run_id — its expected effect_key doesn't match.
     gate = _make_gate(store, run_id="run-DIFFERENT")
@@ -323,7 +372,7 @@ def test_gate_rejects_tampered_payload_digest(tmp_path: Path):
     node = _Node()
     plan = _Plan()
     worker = _make_worker(store, ledger)
-    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1, repair_round=0)
+    result = worker.execute(plan=plan, node=node, envelope=_no_envelope(), attempt=1, repair_round=0)
 
     # Gate evaluates the same node but with a DIFFERENT publication_policy in approval_policy.
     # The gate recomputes the digest from this different policy and it won't match the receipt.

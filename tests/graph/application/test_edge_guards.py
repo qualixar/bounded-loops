@@ -7,6 +7,8 @@ release. Nothing in it exercises a guard. That is what this file is for.
 
 from __future__ import annotations
 
+from typing import Mapping, Sequence
+
 import pytest
 
 from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
@@ -32,19 +34,27 @@ def _node(node_id: str, kind: str = "research_claim", **extra: object) -> dict[s
     }
 
 
-def _graph(nodes: list[dict[str, object]], edges: list[dict[str, object]]) -> dict[str, object]:
+def _graph(
+    nodes: Sequence[Mapping[str, object]], edges: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
     # ``continue_declared``, not ``fail_closed``: a failure-conditioned edge is unreachable under
     # fail_closed (the run stops at the first failure) and validation refuses it there. These tests
     # exercise the SCHEDULER's semantics, which is the mode where those edges can be admitted.
     # The controller does not yet honour this mode — see the reachability tests in test_run_graph.
     return {
         "api_version": "bounded-loops.dev/graph/v1", "graph_id": "guards", "version": "1.0.0",
-        "nodes": nodes, "edges": edges, "connection_slots": [],
+        "nodes": list(nodes), "edges": list(edges), "connection_slots": [],
         "policies": {"data_class": "public", "fail_mode": "continue_declared"},
     }
 
 
-def _compile(nodes: list[dict[str, object]], edges: list[dict[str, object]]):
+def _compile(
+    nodes: Sequence[Mapping[str, object]], edges: Sequence[Mapping[str, object]],
+):
+    # Sequence/Mapping, not list/dict: `dict` is INVARIANT in its value type, so a literal
+    # `list[dict[str, str | None]]` is not a `list[dict[str, object]]` and mypy rejected every
+    # call. The function only reads these, so the read-only covariant shape is also the honest
+    # signature.
     graph = validate_authoring_graph(_graph(nodes, edges))
     return compile_graph(graph, CompileSnapshot(
         policy_digest="sha256:" + "a" * 64, package_digests=frozenset(), connections=(),
@@ -270,7 +280,7 @@ def _diamond(merge_kind: str = "research_claim", mode: str | None = None):
         _node("c", inputs={"feed": "text"}),
         _node("d", kind=merge_kind, outputs={}, **merge),
     ]
-    edges = [
+    edges: list[dict[str, object]] = [
         {"from_node": "a", "from_port": "out", "to_node": "b", "to_port": "feed",
          "when": "succeeded"},
         {"from_node": "a", "from_port": "out", "to_node": "c", "to_port": "feed",

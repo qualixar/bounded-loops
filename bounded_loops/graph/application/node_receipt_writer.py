@@ -206,10 +206,20 @@ class NodeReceiptWriter:
 
         The key includes the ordinal so successive re-drives are distinct events rather than one
         de-duplicated no-op — which is precisely what makes them countable, and so boundable.
+
+        The PAYLOAD carries the round too, not only the key. It used to carry attempt and ordinal
+        alone, so anything reading payloads rather than parsing keys — a projection, a dashboard, an
+        analysis script — saw every re-drive as round 0 (P4.5 round-2 audit, Grok 9). Omitted at
+        round 0, like every other payload here, so pre-repair receipts keep their exact bytes.
         """
+        payload: dict[str, object] = {
+            "node_id": node_id, "attempt": attempt, "redrive": redrive,
+        }
+        if self._repair_round:
+            payload["repair_round"] = self._repair_round
         self.append(
             f"{node_id}:node.redrive:{attempt}:{redrive}{self._round_suffix()}", "node.redrive",
-            {"node_id": node_id, "attempt": attempt, "redrive": redrive},
+            payload,
         )
 
     def _round_suffix(self) -> str:

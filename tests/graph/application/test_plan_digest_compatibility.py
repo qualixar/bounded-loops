@@ -22,10 +22,17 @@ import json
 import pytest
 import yaml
 
-from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
+from bounded_loops.graph.application.compile_graph import (
+    _PLAN_DIGEST_EXEMPT_APPROVAL_KEYS,
+    CompileSnapshot,
+    compile_graph,
+)
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
 from bounded_loops.graph.application.run_dir_persistence import persist_run_dir
-from bounded_loops.graph.application.validate_graph import validate_authoring_graph
+from bounded_loops.graph.application.validate_graph import (
+    _KIND_FIELDS,
+    validate_authoring_graph,
+)
 from bounded_loops.graph.domain.events import GraphRunIdentity
 
 #: Emitted by the v0.4.0 compiler for ``_PUBLISH_GRAPH`` below. Pre-fix HEAD produced
@@ -76,13 +83,55 @@ def test_a_040_publish_graph_still_compiles_to_the_plan_id_040_produced():
     )
 
 
-def test_publication_policy_still_changes_the_plan_id_through_the_manifest():
-    """What keeps the digest exemption honest.
+def test_every_exempt_key_is_ACTUALLY_covered_by_the_authored_manifest():
+    """The rule the exemption rests on, enforced instead of asserted.
 
-    ``publication_policy`` is excluded from the canonical PLAN, which is only sound because the
-    value is authored in the manifest and therefore already covered by ``source_graph_digest``. If
-    that ever stops being true this test fails, and the exemption must go.
+    A key may leave the canonical PLAN only because it is authored in the manifest and therefore
+    already inside ``source_graph_digest``. This test checks exactly that, key by key: for every
+    exempt key present on a node's ``approval_policy``, the same key must appear in that node's
+    AUTHORED details — which is what ``_canonical_node`` hashes into ``graph.digest``.
+
+    It replaces a test that claimed to keep the exemption honest and did not: changing
+    ``publication_policy`` in the YAML moves ``source_graph_digest`` whether or not the key is exempt,
+    so that test passed with the exemption, without it, and with a bogus key added to the frozenset.
+    Found by the P4.5 round-2 audit (Grok 8), which is a fair hit — a test that cannot fail for the
+    reason it names is worse than no test, because it stops anyone looking.
     """
+    manifest = _PUBLISH_GRAPH.format(policy="finance-instruction-v1")
+    graph = validate_authoring_graph(yaml.safe_load(manifest))
+    authored = {node.id: dict(node.details) for node in graph.nodes}
+    plan = compile_graph(graph, CompileSnapshot(
+        policy_digest=_POLICY_DIGEST, package_digests=frozenset(), connections=(),
+    ))
+
+    checked = 0
+    for node in plan.nodes:
+        for key in _PLAN_DIGEST_EXEMPT_APPROVAL_KEYS & set(node.approval_policy):
+            assert key in authored[node.node_id], (
+                f"{key!r} is exempt from the plan digest but is NOT authored on node "
+                f"{node.node_id!r}, so nothing else covers it — the exemption is a mutable region "
+                "under a pinned digest"
+            )
+            checked += 1
+    assert checked, "no exempt key was exercised; this graph does not test the rule"
+
+
+def test_the_exemption_set_holds_only_keys_the_authoring_schema_declares():
+    """A future exemption must be a manifest field, not a compiler-injected value.
+
+    ``_KIND_FIELDS`` is the authoring schema's own list of what a node kind may declare, and it is
+    what ends up in ``details``. An exempt key absent from every kind's field set could never be
+    covered by ``source_graph_digest``, so it would silently create the hole the rule forbids.
+    """
+    authorable = set().union(*_KIND_FIELDS.values())
+
+    assert _PLAN_DIGEST_EXEMPT_APPROVAL_KEYS <= authorable, (
+        f"exempt but not authorable anywhere: {_PLAN_DIGEST_EXEMPT_APPROVAL_KEYS - authorable}"
+    )
+
+
+def test_changing_the_authored_policy_moves_both_digests():
+    """Necessary but NOT sufficient on its own — see the two tests above for the actual rule."""
     _m1, first = _compile(policy="finance-instruction-v1")
     _m2, second = _compile(policy="finance-instruction-v2")
 

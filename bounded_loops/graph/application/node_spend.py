@@ -325,6 +325,43 @@ def _spent_reason(
     )
 
 
+def _event_round(stored: StoredGraphEvent) -> int:
+    """The repair round a receipt belongs to. Absent means round 0.
+
+    The writer omits ``repair_round`` at round 0 so every payload written before repair existed keeps
+    its exact bytes — the same convention the loop bridge uses. An explicit non-integer is a forged
+    or corrupted receipt and must not silently read as 0.
+    """
+    recorded = stored.event.payload.get("repair_round", 0)
+    if isinstance(recorded, bool) or not isinstance(recorded, int) or recorded < 0:
+        raise GraphIntegrityError("receipt repair_round is invalid")
+    return recorded
+
+
+def _reset_rounds(
+    node_ids: tuple[str, ...], receipts: tuple[StoredGraphEvent, ...],
+) -> dict[str, int]:
+    """For each node, the highest repair round whose boundary RESET it. 0 means never reset.
+
+    Taken from the ``node.repaired`` receipts the boundary writes, rather than recomputed from
+    ``descendants(target)``: the log records exactly which nodes a boundary reset, and a node outside
+    the reset suffix keeps its spent attempts — so re-deriving the suffix here would be a second
+    implementation of the same decision, free to disagree with the one that actually ran.
+    """
+    reset: dict[str, int] = {node_id: 0 for node_id in node_ids}
+    for stored in receipts:
+        if stored.event.event_type != "node.repaired":
+            continue
+        node_id = stored.event.payload.get("node_id")
+        if not isinstance(node_id, str) or node_id not in reset:
+            raise GraphIntegrityError("repair receipt references a node outside the plan")
+        recorded = stored.event.payload.get("round")
+        if isinstance(recorded, bool) or not isinstance(recorded, int) or recorded < 1:
+            raise GraphIntegrityError("repair receipt round is invalid")
+        reset[node_id] = max(reset[node_id], recorded)
+    return reset
+
+
 def consumed_attempts_from(
     plan: ExecutionPlan, receipts: tuple[StoredGraphEvent, ...],
 ) -> ResumeCursor:
@@ -364,6 +401,7 @@ def consumed_attempts_from(
     spent = {node_id: 0 for node_id in node_ids}
     started = {node_id: 0 for node_id in node_ids}
     redrives: dict[tuple[str, int], int] = {}
+    reset_round = _reset_rounds(node_ids, receipts)
     for stored in receipts:
         event_type = stored.event.event_type
         if event_type not in _CONSUMPTION_EVENTS:
@@ -371,6 +409,16 @@ def consumed_attempts_from(
         node_id = stored.event.payload["node_id"]
         if node_id not in spent:
             raise GraphIntegrityError("receipt references a node outside the plan")
+        if _event_round(stored) < reset_round[node_id]:
+            # Spent BEFORE the boundary that reset this node, so it is not spent NOW. Attempts reset
+            # at a repair boundary — that is what the `(1 + repair_budget) * Σ max_attempts` bound
+            # counts — and a fresh run gets that right only because its in-memory cursor starts
+            # empty and is never refreshed mid-run. A RESUME rebuilds the cursor from the log, so
+            # without this filter it saw a node's pre-boundary attempts as still spent and refused
+            # to give the repair round any attempt at all: the round that a fresh run would have
+            # driven to completion instead sealed the run FAILED. Found by the P4.5 round-2 audit
+            # (Muse 1-1) and reproduced by measuring the cursor after a real repaired run.
+            continue
         attempt = stored.event.payload["attempt"]
         if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
             raise GraphIntegrityError("receipt attempt count is invalid")

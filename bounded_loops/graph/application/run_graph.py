@@ -658,6 +658,7 @@ class GraphRunController:
             resolver=self._approval_resolver, receipts=self._receipts,
             identity=self.event_log.identity, fail=self._fail_node,
             projection=self.event_log.replay_projection,
+            repair_round=self._receipts.repair_round,
         )
 
     def _run_budget_pause(self, node_id: str, *, attempt: int) -> GraphRunProjection | None:

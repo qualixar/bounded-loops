@@ -49,6 +49,7 @@ def resolve_approval(
     identity: GraphRunIdentity,
     fail: _Fail,
     projection: Callable[[], GraphRunProjection],
+    repair_round: int = 0,
 ) -> GraphRunProjection | None:
     """Apply the recorded human decision for an approval node.
 
@@ -79,6 +80,11 @@ def resolve_approval(
             # attempt=1: approval nodes do not retry (ARCH-09); only the approval decision itself
             # is durable. Multi-attempt retry tracking would require a separate event kind and is
             # not supported at this layer.
+            #
+            # The ROUND, by contrast, is real and load-bearing: a repair resets this node and
+            # re-runs the suffix, so the human is being asked about different work. Passing the
+            # round is what stops a round-0 grant from silently authorizing round 1 (Grok 2).
+            repair_round=repair_round,
         )
     except Exception:
         # Consistent with worker/gate/policy failures: a resolver error fails the run closed

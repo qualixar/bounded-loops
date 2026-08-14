@@ -30,6 +30,10 @@ from bounded_loops.graph.application.repair_rounds import (
     rounds_spent,
     total_execution_bound,
 )
+from bounded_loops.graph.application.node_spend import (
+    _event_round,
+    consumed_attempts_from,
+)
 from bounded_loops.graph.application.run_graph import GraphRunController
 from bounded_loops.graph.application.validate_graph import validate_authoring_graph
 from bounded_loops.graph.domain.errors import GraphIntegrityError
@@ -277,6 +281,64 @@ def test_a_run_with_no_repair_declared_opens_no_rounds(tmp_path):
     log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
     _controller(plan, log, _Worker([])).run()
     assert rounds_spent(log.replay()) == 0
+
+
+def test_a_resume_after_a_boundary_gives_the_repair_round_its_OWN_attempts(tmp_path):
+    """A crash between the boundary and the round's first attempt must not eat the round.
+
+    ``consumed_attempts_from`` keyed only by ``node_id``, so it reported a node's PRE-boundary
+    attempts as still spent. A fresh run gets this right by accident — its in-memory cursor starts
+    empty and is never refreshed mid-run — but a resume rebuilds the cursor from the log, saw
+    ``spent == max_attempts``, and refused the repair round any attempt at all. The round a fresh run
+    would have driven to completion instead sealed the run FAILED.
+
+    Measured on this exact log before the fix: ``spent == {'fetch': 0, 'shape': 0, 'verify': 2}``
+    with ``max_attempts == 2``, i.e. ``verify`` refused. Found by the P4.5 round-2 audit (Muse 1-1).
+    """
+    plan = _plan(budget=1, attempts=2)
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+    _controller(plan, log, _Worker([]), gate=_GateRejecting("verify", [])).run()
+    full = log.replay()
+    # The durable state of a process that died after the reset was written and before round 1 ran.
+    cut = max(
+        index for index, stored in enumerate(full)
+        if stored.event.event_type in (REPAIR_ROUND_EVENT, "node.repaired")
+    ) + 1
+
+    cursor = consumed_attempts_from(plan, full[:cut])
+
+    assert rounds_spent(full[:cut]) == 1, "the truncated log must already carry the boundary"
+    caps = {node.node_id: node.budgets["max_attempts"] for node in plan.nodes}
+    refused = [node_id for node_id, spent in cursor.spent.items() if spent >= caps[node_id]]
+    assert refused == [], f"a resume would refuse {refused} their repair-round attempts"
+    assert cursor.spent["verify"] == 0, cursor.spent
+
+
+def test_attempts_before_a_boundary_still_count_for_a_node_the_boundary_did_NOT_reset(tmp_path):
+    """The other half: only nodes the boundary reset get fresh attempts.
+
+    Filtering every pre-boundary attempt would re-grant a full budget to nodes outside the reset
+    suffix, which is the same bug in the opposite direction. The reset set comes from the
+    ``node.repaired`` receipts the boundary actually wrote, so a node with none keeps its count.
+    """
+    plan = _plan(budget=1, attempts=2)
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+    _controller(plan, log, _Worker([]), gate=_GateRejecting("verify", [])).run()
+    receipts = log.replay()
+    reset_nodes = {
+        stored.event.payload["node_id"]
+        for stored in receipts if stored.event.event_type == "node.repaired"
+    }
+
+    # This graph repairs `fetch`, whose descendants are the whole plan — so assert the mechanism on
+    # the receipts rather than on a node that happens to be outside a suffix this plan has none of.
+    assert reset_nodes == {"fetch", "shape", "verify"}
+    # An attempt receipt carries its round, and round 0 omits the key entirely.
+    rounds = {
+        _event_round(stored)
+        for stored in receipts if stored.event.event_type == "node.attempt.failed"
+    }
+    assert rounds == {0, 1}, f"both rounds must be represented in the log: {rounds}"
 
 
 # ── the round and attempt reach BOTH ports (task #39) ──────────────────────────────────────

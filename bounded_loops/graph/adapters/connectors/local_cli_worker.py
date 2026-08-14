@@ -54,7 +54,7 @@ from bounded_loops.graph.adapters.connectors.cli_envelope import (
     CliEnvelope,
 )
 from bounded_loops.graph.application.node_contracts import WorkerResult
-from bounded_loops.graph.domain.artifacts import ArtifactPolicy
+from bounded_loops.graph.domain.artifacts import ArtifactPolicy, attempt_provenance
 from bounded_loops.graph.domain.connections import ResolvedRoute
 from bounded_loops.graph.domain.errors import (
     GraphIntegrityError,
@@ -341,7 +341,7 @@ class LocalCliConnectorWorker:
         # about its cost.
         reply = (parsed.reply if parsed is not None else stdout).encode("utf-8")
         usage = parsed.usage if parsed is not None else None
-        digest = self._store.put(BytesIO(reply), self._policy(attempt)).digest
+        digest = self._store.put(BytesIO(reply), self._policy(attempt, repair_round)).digest
         return WorkerResult((digest,), route, transport, usage=usage)
 
     @staticmethod
@@ -474,11 +474,11 @@ class LocalCliConnectorWorker:
         base.mkdir(parents=True, exist_ok=False)
         return base
 
-    def _policy(self, attempt: int) -> ArtifactPolicy:
+    def _policy(self, attempt: int, repair_round: int = 0) -> ArtifactPolicy:
         return ArtifactPolicy(
             organization_id=self._organization_id,
             project_id=self._project_id,
-            producer_attempt=str(attempt),
+            producer_attempt=attempt_provenance(attempt, repair_round),
             media_type="text/plain",
             sensitivity=self._sensitivity,
             retention_class=self._retention_class,

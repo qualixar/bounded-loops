@@ -1,4 +1,11 @@
-"""Exactly-once publish worker, local-auditable ledger, and receipt gate.
+"""Single-fire publish worker, local-auditable ledger, and receipt gate.
+
+NOT named "exactly-once", and the rename is the finding. ``check_and_record`` is a read-modify-
+write with no lock, so under concurrent publishes of the same key every caller can observe it
+absent and every caller fires — demonstrated by the P4.5 round-2 audit (Grok 5) with eight
+threads, all of which returned ``fired``. What IS enforced is single-fire under the sequential
+controller this engine ships, plus a payload-divergence HALT. A hosted or parallel deployment
+needs a compare-and-swap ledger; see ``docs/graph-capabilities.md`` section 14.
 
 The irreversible-effect guarantee rests on three properties enforced here:
 
@@ -32,7 +39,7 @@ from pathlib import Path
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope
 from bounded_loops.graph.application.graph_ports import ArtifactReaderPort, ArtifactStorePort
 from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
-from bounded_loops.graph.domain.artifacts import ArtifactAccess, ArtifactPolicy, ArtifactRef
+from bounded_loops.graph.domain.artifacts import attempt_provenance, ArtifactAccess, ArtifactPolicy, ArtifactRef
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
@@ -181,7 +188,9 @@ def _derive_payload_digest(
 
 @dataclass(frozen=True)
 class PublishNodeWorker:
-    """Exactly-once publish: derives a stable effect key and refuses to re-fire with a different payload."""
+    """Single-fire publish: derives a stable effect key and refuses to re-fire with a different
+    payload. Single-fire holds for the SEQUENTIAL controller — the ledger has no compare-and-swap,
+    so concurrent callers on one key can all fire (see the module docstring)."""
 
     store: ArtifactStorePort
     ledger: LocalPublicationLedger
@@ -235,7 +244,7 @@ class PublishNodeWorker:
         policy = ArtifactPolicy(
             organization_id=self.organization_id,
             project_id=self.project_id,
-            producer_attempt=str(attempt),
+            producer_attempt=attempt_provenance(attempt, repair_round),
             media_type="application/json",
             sensitivity="internal",
             retention_class="standard",

@@ -58,7 +58,14 @@ def _rate_text(label: str, rate: Rate) -> str:
     )
 
 
-def _rate_dict(rate: Rate) -> dict[str, object]:
+def _rate_dict(rate: Rate, *, method: str) -> dict[str, object]:
+    """One rate as JSON, with the interval's METHOD and ESTIMAND named beside it.
+
+    Both fields exist because the JSON used to emit the Wilson interval while the text output
+    emitted the empirical-Bernstein one, with nothing on either to say which was which — so a script
+    reading ``--json`` published the interval this release retired. An interval whose method a
+    consumer has to infer is an interval that gets quoted as whatever the reader assumes.
+    """
     return {
         "numerator": rate.numerator,
         "denominator": rate.denominator,
@@ -67,6 +74,11 @@ def _rate_dict(rate: Rate) -> dict[str, object]:
             None if rate.interval is None
             else {"low": rate.interval.low, "high": rate.interval.high}
         ),
+        "interval_method": method,
+        # The interval brackets the POOLED rate over the receipts it was computed from. The measured
+        # 96.9% coverage figure quoted elsewhere is coverage of a per-run LATENT rate, which is a
+        # different quantity: on the same simulation, coverage of the marginal rate was 0.5850.
+        "interval_estimand": "pooled rate over these receipts",
         "reported": rate.reportable,
     }
 
@@ -80,9 +92,17 @@ def _confusion_dict(result: Confusion) -> dict[str, object]:
         "unknown_label": result.unknown_label,
         "unlabelled": result.unlabelled,
         "labelled": result.labelled,
-        "false_accept_rate": _rate_dict(result.false_accept_rate()),
-        "false_rejection_rate": _rate_dict(result.false_reject_rate()),
-        "blocked_precision": _rate_dict(result.blocked_precision()),
+        # ``wilson_uncalibrated``: retained for continuity, named so it cannot be quoted as a
+        # calibrated 95% interval. Its independence assumption is the one retried attempts violate.
+        "false_accept_rate": _rate_dict(
+            result.false_accept_rate(), method="wilson_uncalibrated",
+        ),
+        "false_rejection_rate": _rate_dict(
+            result.false_reject_rate(), method="wilson_uncalibrated",
+        ),
+        "blocked_precision": _rate_dict(
+            result.blocked_precision(), method="wilson_uncalibrated",
+        ),
     }
 
 
@@ -115,7 +135,8 @@ def cmd_graph_metrics(args: argparse.Namespace) -> int:
     overall = confusion(receipts)
     per_attempt = confusion_by_attempt(receipts)
 
-    # Anytime-valid CS-based rates for text output (Wilson kept only in JSON via _confusion_dict)
+    # Fixed-time empirical-Bernstein rates. NOT anytime-valid: the radius carries no stitching
+    # term. Emitted in BOTH the text and the JSON output — see `empirical_bernstein` below.
     fa_cs = false_accept_rate_cs(receipts)
     fr_cs = false_reject_rate_cs(receipts)
     bp_cs = blocked_precision_cs(receipts)
@@ -126,6 +147,14 @@ def cmd_graph_metrics(args: argparse.Namespace) -> int:
             "run": str(run_dir),
             "overall": _confusion_dict(overall),
             "by_attempt": {str(k): _confusion_dict(v) for k, v in per_attempt.items()},
+            # The intervals the TEXT output prints — the empirical-Bernstein ones. Emitted here so
+            # `--json` and the human-readable form can never disagree about which method produced
+            # the number a reader is about to publish.
+            "empirical_bernstein": {
+                "false_accept_rate": _rate_dict(fa_cs, method="empirical_bernstein_fixed_time"),
+                "false_rejection_rate": _rate_dict(fr_cs, method="empirical_bernstein_fixed_time"),
+                "blocked_precision": _rate_dict(bp_cs, method="empirical_bernstein_fixed_time"),
+            },
             "advisory_blocked_precision_baseline": ADVISORY_BLOCKED_PRECISION_BASELINE,
             "independence_caveat": INDEPENDENCE_CAVEAT,
         }, indent=2, sort_keys=True))
@@ -193,8 +222,9 @@ def add_metrics_parser(graph_subs: argparse._SubParsersAction) -> None:  # type:
         help="Report what the independent gate actually achieved on a run.",
         description=(
             "Compare the gate's verdicts against recorded ground-truth labels and report the "
-            "false-accept rate, the false-REJECTION rate, and blocked precision — each with a 95% "
-            "confidence interval, and each WITHHELD when too few labels exist to support it. "
+            "false-accept rate, the false-REJECTION rate, and blocked precision — each with an "
+            "empirical-Bernstein interval at a nominal 95% whose COVERAGE IS MEASURED rather than "
+            "proven, and each WITHHELD when too few labels exist to support it. "
             "Computed from the receipt stream alone, so any figure can be regenerated from an "
             "archived run."
         ),

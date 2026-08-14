@@ -111,6 +111,10 @@ class _FileApprovalCommandPort:
     """
 
     _run_dir: Path
+    #: The repair round this decision belongs to, stamped into the durable record so a later round
+    #: cannot inherit it. Defaults to 0 so every existing construction site is unchanged and a
+    #: round-0 decision keeps exactly the coordinates it always had (Grok 2).
+    _repair_round: int = 0
 
     def commit(self, command: ApprovalCommand) -> ApprovalCommit:
         approval_path = self._run_dir / "approvals.json"
@@ -170,6 +174,10 @@ class _FileApprovalCommandPort:
                     # avoids depending on that.)
                     "nonce": command.request.nonce,
                     "request_digest": command.decision.request_digest,
+                    # The round the human decided IN. A repair resets the approval node and re-runs
+                    # the suffix, so a grant made in round 0 was made about different evidence; the
+                    # resolver keys on this so round 1 must ask again.
+                    "repair_round": self._repair_round,
                 })
                 # Write an ALLOW-LISTED schema only: preserve the durable ``rejections`` list (so an
                 # approval commit never wipes a prior rejection) but never re-serialize unknown/hostile
@@ -217,6 +225,7 @@ class _FileApprovalCommandPort:
                 rejections.append({
                     "node_id": node_id, "attempt": attempt, "approval_id": approval_id,
                     "actor_id": actor_id, "decided_at": decided_at,
+                    "repair_round": self._repair_round,
                 })
                 new_record = {
                     "resource_version": record.get("resource_version", 1),

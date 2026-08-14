@@ -219,11 +219,27 @@ nodes are not re-driven through the gate on resume — the resume trusts recorde
 verdicts so long as the hash chain covering those events is intact. Incomplete nodes
 (those that did not reach SUCCEEDED in the prior run) are re-driven normally.
 
-The run directory contains `manifest.yaml`, `connections.json`, `plan.json`, and
-`run-meta.json`. `bl graph status` and `bl graph arena` reconstruct the full plan from
-these files and verify that the reconstructed `plan_id` matches the stored one before
-reading any events. A tampered manifest or connections file produces a mismatch and
-the command refuses to continue.
+#### Run directory layout
+
+Every file `bl graph status`, `arena`, `resume` and `approve` reconstruct a run from:
+
+| File | Written by | Contents |
+|---|---|---|
+| `plan.json` | `execute_graph_run` | canonical execution plan bytes |
+| `manifest.yaml` | `execute_graph_run` | the original authoring manifest |
+| `connections.json` | `execute_graph_run` | admitted connection records |
+| `run-meta.json` | `execute_graph_run` | plan_id, org, project, run_id, policy_digest, fail_mode, compiler_version |
+| `controller-events.jsonl` | the controller | hash-chained event log |
+| `approvals.json` | `bl graph approve` | durable human decisions, with the repair round each was made in |
+| `artifacts/` | the workers | per-node content-addressed artifact store |
+| `published-effects.json` | a publish node | the effect burn ledger |
+
+Two addressing modes: a hosted root (`runs_root/org/project/run_id`, every segment
+containment-checked) and a flat single directory (`--out <dir>`, which `bl graph run --execute`
+writes and `bl graph approve` opens). `bl graph status` and `bl graph arena` reconstruct the full
+plan from these files and verify that the reconstructed `plan_id` matches the stored one before
+reading any events. A tampered manifest or connections file produces a mismatch and the command
+refuses to continue.
 
 ---
 
@@ -428,8 +444,15 @@ external traffic.
 A `publish` node is the one place a graph is allowed to do something it cannot undo. It
 declares a `publication_policy` (a named string the deployment resolves; the node fails
 closed without one) and its effect is recorded in `published-effects.json` by
-`LocalPublicationLedger.check_and_record`, keyed on `(run_id, plan_id, node_id, repair_round)`
-and carrying a payload digest computed over the artifacts of every upstream node.
+`LocalPublicationLedger.check_and_record`, keyed on **`run_id / plan_id / node_id`** and
+carrying a payload digest computed over the artifacts of every upstream node.
+
+**`attempt` and `repair_round` are deliberately NOT in that key**, and the omission is the
+guarantee rather than an oversight. Include `attempt` and attempt 2 fires the effect again after
+attempt 1 already ran — with an event log that looks perfectly honest and a bank debited twice.
+Include `repair_round` and a repair produces `1 + repair_budget` publications, each with its own
+tidy trace. The triple above is the only key that burns **once** per run, plan and node, which is
+also why a repair round re-running a publish node is a no-op rather than a second effect.
 
 The repeat behaviour is three-valued: an unseen key fires; the same key with the same payload
 digest returns `already_published`; the same key with a *different* payload digest raises and

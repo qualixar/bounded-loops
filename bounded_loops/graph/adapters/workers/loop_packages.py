@@ -87,8 +87,24 @@ def _digestible_entries(package: Path) -> Iterable[Path]:
                 f"loop package {package} contains a symlink ({path.relative_to(package)}); "
                 "a package must be self-contained to be content-addressed"
             )
-        if path.is_dir() or (path.is_file() and not path.name.endswith(_EXCLUDED_SUFFIXES)):
+        if path.is_dir():
             yield path
+            continue
+        if path.is_file():
+            if not path.name.endswith(_EXCLUDED_SUFFIXES):
+                yield path
+            continue
+        # Everything else is a FIFO, socket, or device node. ``is_file()`` is False for all of them,
+        # so the previous version simply skipped them — and a package could carry
+        # ``seed/payload_fifo`` that a gate's ``run:`` branches on with ``test -p`` while the pinned
+        # digest never moved. Same defect class as a symlink and the same answer: refuse, rather than
+        # certify a package whose behaviour depends on something the digest does not cover. Found by
+        # the P4.5 round-2 audit (Muse 3-1), which demonstrated it with ``os.mkfifo``.
+        raise GraphIntegrityError(
+            f"loop package {package} contains a non-regular file "
+            f"({path.relative_to(package)}); a package must be plain files and directories to be "
+            "content-addressed"
+        )
 
 
 #: Entry-kind tags in the canonical form. Present so a directory named ``x`` and an empty file named

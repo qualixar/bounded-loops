@@ -42,7 +42,7 @@ from bounded_loops.graph.application.schedule_ready import (
     NodeState,
     predecessors_admission,
 )
-from bounded_loops.graph.domain.artifacts import ArtifactAccess, ArtifactPolicy, ArtifactRef
+from bounded_loops.graph.domain.artifacts import attempt_provenance, ArtifactAccess, ArtifactPolicy, ArtifactRef
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedNode
 
 
@@ -91,7 +91,7 @@ class JoinNodeWorker:
         policy = ArtifactPolicy(
             organization_id=self.organization_id,
             project_id=self.project_id,
-            producer_attempt=str(attempt),
+            producer_attempt=attempt_provenance(attempt, repair_round),
             media_type="application/json",
             sensitivity="internal",
             retention_class="standard",

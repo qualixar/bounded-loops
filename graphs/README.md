@@ -52,7 +52,9 @@ bl graph approve --run /tmp/bl-run --node approve-finance --decision approved
 ```
 
 The full skeleton exercises: three parallel `kind: loop` checks → `kind: join` (causality gate) →
-`kind: approval` (HITL checkpoint) → `kind: publish` (exactly-once effect ledger).
+`kind: approval` (HITL checkpoint) → `kind: publish` (single-fire effect ledger — one fire per
+`run_id/plan_id/node_id`, including across repair rounds; the local ledger has no
+compare-and-swap, so that holds for the sequential controller this engine ships).
 
 You can also lint and plan without running:
 

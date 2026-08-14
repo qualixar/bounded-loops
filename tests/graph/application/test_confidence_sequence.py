@@ -1,14 +1,18 @@
-"""Tests for the PrPl-EB anytime-valid confidence sequence.
+"""Fixed-time empirical-Bernstein interval: arithmetic, and MEASURED coverage.
+
+Not titled "anytime-valid confidence sequence" — that was the eighth surviving instance of a
+claim this project disavows, and a title is what a reader quotes first.
 
 Two categories:
 1. Unit tests on the arithmetic (small, deterministic, no simulation).
 2. A coverage simulation that measures empirical coverage under the correlated-retry
    structure that broke Wilson — the primary validation.
 
-The coverage simulation is the deliverable that matters most: it verifies that
-the stated 95% guarantee holds under the specific failure mode documented in
-gate_metrics.py's independence caveat, and it demonstrates the improvement over
-Wilson by measuring both on identical data.
+The coverage simulation is the deliverable that matters most, and what it measures is precise:
+coverage of the per-run LATENT rate under the failure mode documented in gate_metrics.py's
+independence caveat, with Wilson measured on identical data for comparison. It does NOT verify a 95%
+guarantee for the marginal rate ``bl graph metrics`` prints — that estimand is measured separately
+below and comes out at 0.5850, not 0.95.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ import random
 
 import pytest
 
-from bounded_loops.graph.application.confidence_sequence import prpl_eb_cs
+from bounded_loops.graph.application.confidence_sequence import empirical_bernstein_interval
 
 
 # ---------------------------------------------------------------------------
@@ -28,11 +32,11 @@ from bounded_loops.graph.application.confidence_sequence import prpl_eb_cs
 class TestPrplEbArithmetic:
     def test_empty_observations_return_the_uninformative_interval(self) -> None:
         """No data means anything is possible."""
-        assert prpl_eb_cs([]) == (0.0, 1.0)
+        assert empirical_bernstein_interval([]) == (0.0, 1.0)
 
     def test_single_observation_spans_almost_all_of_zero_one(self) -> None:
         """n=1 gives essentially no information; the interval must be very wide."""
-        low, high = prpl_eb_cs([0.0], alpha=0.05)
+        low, high = empirical_bernstein_interval([0.0], alpha=0.05)
         assert low == 0.0
         assert high > 0.9, f"n=1 should be nearly [0,1], got [{low:.4f}, {high:.4f}]"
 
@@ -44,31 +48,31 @@ class TestPrplEbArithmetic:
             [0.0, 1.0] * 25,
         ]
         for obs in cases:
-            low, high = prpl_eb_cs(obs)
+            low, high = empirical_bernstein_interval(obs)
             assert 0.0 <= low <= high <= 1.0, f"interval escaped [0,1]: [{low}, {high}]"
 
     def test_more_observations_give_a_narrower_interval(self) -> None:
         """Adding observations should tighten the CS for iid data."""
         rng = random.Random(0)
         obs = [1.0 if rng.random() < 0.2 else 0.0 for _ in range(200)]
-        lo10, hi10 = prpl_eb_cs(obs[:10])
-        lo200, hi200 = prpl_eb_cs(obs[:200])
+        lo10, hi10 = empirical_bernstein_interval(obs[:10])
+        lo200, hi200 = empirical_bernstein_interval(obs[:200])
         assert (hi200 - lo200) < (hi10 - lo10), "more data should give a narrower CS"
 
     def test_zero_variance_observations_collapse_near_zero(self) -> None:
         """All 0s: the true mean is 0. With enough data the interval should be tight."""
-        low, high = prpl_eb_cs([0.0] * 200)
+        low, high = empirical_bernstein_interval([0.0] * 200)
         assert low == 0.0
         assert high < 0.15, f"200 zeros: expected tight upper bound, got {high:.4f}"
 
     def test_half_ones_center_straddles_half(self) -> None:
         """Alternating 0,1: mean = 0.5, interval should straddle 0.5."""
         obs = [0.0, 1.0] * 100
-        low, high = prpl_eb_cs(obs)
+        low, high = empirical_bernstein_interval(obs)
         assert low < 0.5 < high
 
     def test_all_ones_upper_bound_is_one(self) -> None:
-        low, high = prpl_eb_cs([1.0] * 50)
+        low, high = empirical_bernstein_interval([1.0] * 50)
         assert high == 1.0
         assert low > 0.8
 
@@ -76,8 +80,8 @@ class TestPrplEbArithmetic:
     def test_smaller_alpha_gives_wider_interval(self, alpha: float) -> None:
         """Smaller alpha (higher confidence) → wider interval."""
         obs = [0.0, 1.0] * 20
-        lo_a, hi_a = prpl_eb_cs(obs, alpha=alpha)
-        lo_b, hi_b = prpl_eb_cs(obs, alpha=0.50)
+        lo_a, hi_a = empirical_bernstein_interval(obs, alpha=alpha)
+        lo_b, hi_b = empirical_bernstein_interval(obs, alpha=0.50)
         assert (hi_a - lo_a) >= (hi_b - lo_b)
 
 
@@ -192,7 +196,7 @@ def _simulate_coverage(
             prefix = observations[:t]
 
             # PrPl-EB at time t
-            lo_cs, hi_cs = prpl_eb_cs(prefix, alpha=cs_alpha)
+            lo_cs, hi_cs = empirical_bernstein_interval(prefix, alpha=cs_alpha)
             if perturb_factor != 1.0 or perturb_shift != 0.0:
                 mid = (lo_cs + hi_cs) / 2.0 + perturb_shift
                 half_w = (hi_cs - lo_cs) / 2.0 * perturb_factor
@@ -354,3 +358,40 @@ class TestCoverageSimulation:
             f"  Params  : n_runs={_N_RUNS}, seq_len={_SEQ_LEN}, rho={_RHO}, "
             f"true_alpha={_TRUE_ALPHA}, cs_alpha={_CS_ALPHA}, seed={_SEED}"
         )
+
+
+def test_the_interval_is_NOT_a_95_percent_interval_for_the_MARGINAL_rate() -> None:
+    """The number a paper would misquote, measured so it cannot be.
+
+    Everything above measures coverage of ``p_run``, the per-run latent rate. The quantity
+    ``bl graph metrics`` prints as the false-accept rate is the MARGINAL rate ``E[p_run]``. Asking the
+    same intervals whether they contain the marginal rate gives **0.5850** — so for the printed
+    quantity this is a 58.5% interval, a 38-point miss rather than a 19-point improvement over
+    Wilson. Found by the P4.5 round-2 audit (Grok 6).
+
+    This test exists so the distinction is a measured number in the suite rather than a caveat in
+    prose, and so anyone tempted to put 96.9% next to α in a paper trips over it first.
+    """
+    rng = random.Random(_SEED)
+    logit_mu = _logit(_TRUE_ALPHA)
+    covered_marginal = 0
+    for _ in range(_N_RUNS):
+        p_run = _sigmoid(rng.gauss(logit_mu, _RHO))
+        observations = [1.0 if rng.random() < p_run else 0.0 for _ in range(_SEQ_LEN)]
+        if all(
+            lo <= _TRUE_ALPHA <= hi
+            for lo, hi in (
+                empirical_bernstein_interval(observations[:t], alpha=_CS_ALPHA) for t in range(1, _SEQ_LEN + 1)
+            )
+        ):
+            covered_marginal += 1
+    marginal_coverage = covered_marginal / _N_RUNS
+
+    assert 0.55 < marginal_coverage < 0.62, (
+        f"marginal coverage {marginal_coverage:.4f} moved; the 0.5850 figure quoted in "
+        "confidence_sequence.py and the CHANGELOG must be re-measured"
+    )
+    prpl_cov, _wilson = _get_coverage()
+    assert prpl_cov - marginal_coverage > 0.30, (
+        "the gap between latent and marginal coverage is the whole point of the caveat"
+    )

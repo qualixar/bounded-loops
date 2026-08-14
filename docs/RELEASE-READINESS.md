@@ -1,7 +1,7 @@
 # Graph Engine — Release Readiness Assessment
 
-**Version:** 0.4.0  
-**Assessment date:** 2026-08-12 (updated post-Slice1/Slice2/Slice3/Slice4 shipping)  
+**Version:** 0.5.0  
+**Assessment date:** 2026-08-14 (updated for the 0.5.0 release: loop/join/publish nodes, the six reference graphs, the embedding surface, and two rounds of dual external audit)  
 **Scope:** `bl graph` subcommand group and supporting application/adapter layers
 
 ---
