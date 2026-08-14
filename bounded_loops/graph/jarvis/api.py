@@ -20,6 +20,7 @@ apologise for.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from bounded_loops.domain.errors import ManifestError
@@ -284,6 +285,189 @@ def _graph_names(workspace: Workspace) -> list[str]:
     )
 
 
+
+# ── running a graph, and handing it back to your agent ───────────────────────
+
+
+def _agents(_payload: Mapping[str, Any]) -> dict:
+    """Which orchestrator CLIs this host can run. INFORMATIONAL — it gates nothing.
+
+    The monitor takes no instructions, so this is not a permission check: it is context. Seeing
+    that `claude` and `codex` are on PATH tells you which agent could be driving the graphs you are
+    looking at, and seeing that none are tells you why nothing is appearing on its own.
+    """
+    from bounded_loops.graph.adapters.preflight.runner_preflight import (
+        default_runner_profiles,
+        preflight_runners,
+    )
+
+    report = preflight_runners(default_runner_profiles())
+    admitted = [
+        {
+            "id": runner.id,
+            "available": bool(runner.available),
+            "version": runner.version,
+            "admission": runner.admission,
+            # Reported because it is the honest part: a binary on PATH proves the binary is on
+            # PATH. It does not prove the CLI is logged in, entitled, or safe headless — the
+            # preflight says so explicitly and so does this.
+            "not_proven": list(runner.claims_not_proven),
+        }
+        for runner in report.runners
+    ]
+    return {
+        "ok": True,
+        "admitted": admitted,
+        "any_available": any(entry["available"] for entry in admitted),
+        "note": (
+            "Informational. This console never sends an instruction to any of these — you do that "
+            "in the agent itself, which composes graphs over MCP."
+        ),
+    }
+
+
+def _execute(payload: Mapping[str, Any]) -> dict:
+    """Preview, then actually run a graph. MUTATING when confirmed.
+
+    `confirm=False` returns what the graph DECLARES it will do — its effects, its ceilings, where
+    it pauses for a human — without touching anything. That preview is not a formality: a browser
+    button that starts real work on someone's machine should show them the irreversible effects
+    first, and "it published something" is a bad way to learn a graph had a publish node.
+
+    `confirm=True` starts the run in a background thread and returns immediately with the run's
+    name. It does not wait: a run takes minutes, an HTTP request should not, and the receipt log is
+    the progress report — the caller opens the event stream on the returned name and watches.
+
+    Unlike the MCP surface, executing here is fine: that server speaks JSON-RPC over stdout, where
+    the execution path's progress output would corrupt the framing. This one speaks HTTP, so the
+    same output simply lands in the terminal where the operator started the monitor.
+    """
+    manifest = _manifest_of(payload)
+    if isinstance(manifest, dict):
+        return manifest
+
+    from bounded_loops import mcp_authoring
+
+    planned = mcp_authoring._plan(manifest)
+    if not planned.get("ok"):
+        return {"ok": False, "refusal": planned.get("refusal"), "started": False}
+
+    effects = sorted({effect for node in planned["nodes"] for effect in node["effects"]})
+    ceilings = [
+        {
+            "node_id": node["node_id"],
+            "max_attempts": node["max_attempts"],
+            "deadline_s": (node["hard_deadline_ms"] or 0) // 1000,
+        }
+        for node in planned["nodes"]
+    ]
+
+    if not payload.get("confirm"):
+        return {
+            "ok": True,
+            "started": False,
+            "plan_id": planned["plan_id"],
+            "effects": effects,
+            "ceilings": ceilings,
+            "pauses_at": planned["pauses_at"],
+            "irreversible": [
+                effect for effect in effects if effect in {"irreversible", "financial"}
+            ],
+            "what_confirming_does": (
+                "Starts this graph on this machine, in the sandbox each node declares. Nodes with "
+                "an irreversible or financial effect cannot be undone by stopping the run."
+            ),
+        }
+
+    from bounded_loops.workspace import discover, ensure, mint_run_directory_name
+
+    workspace = discover()
+    ensure(workspace)
+    run_name = mint_run_directory_name()
+    out_dir = workspace.run_dir(run_name)
+
+    started = _start_run_thread(manifest_text=manifest, out_dir=out_dir)
+    if started is not None:
+        return {"ok": False, "started": False, "error": started}
+    return {
+        "ok": True,
+        "started": True,
+        "run": run_name,
+        "watch": f"/events?run={run_name}",
+        "note": (
+            "Started. Follow it on the event stream — the receipt log is the progress report, and "
+            "only a SUCCEEDED terminal state means the work was verified."
+        ),
+    }
+
+
+def _start_run_thread(*, manifest_text: str, out_dir: Path) -> str | None:
+    """Launch the run in a daemon thread. Returns an error string, or None when it started.
+
+    Setup failures come back synchronously because the caller can still act on them. Failures
+    DURING the run do not: they are recorded in the run's own receipt log, which is the only place
+    a run's outcome is allowed to live.
+    """
+    import threading
+
+    from bounded_loops.graph.graph_composition import execute_graph_run
+
+    def _run() -> None:
+        try:
+            execute_graph_run(
+                manifest_text=manifest_text,
+                manifest_suffix=".yaml",
+                connections_raw=(),
+                node_prompts={},
+                out_dir=out_dir,
+            )
+        except Exception:  # noqa: BLE001 - a thread that raises silently kills the run's record
+            import traceback
+
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                (out_dir / "monitor-error.txt").write_text(
+                    traceback.format_exc(), encoding="utf-8",
+                )
+            except OSError:
+                pass
+
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"cannot create {out_dir}: {exc}"
+    threading.Thread(target=_run, name=f"bl-run-{out_dir.name}", daemon=True).start()
+    return None
+
+
+def _handoff(payload: Mapping[str, Any]) -> dict:
+    """The exact thing to paste into your orchestrator to continue this graph there.
+
+    This console deliberately takes no instructions, so anyone who wants to restructure a graph has
+    to go back to the agent that composes. Leaving them to work out how would be a dead end, so the
+    command is generated rather than described.
+    """
+    name = _safe_name(payload.get("name"))
+    if isinstance(name, dict):
+        return name
+    workspace = discover()
+    path = workspace.graphs_dir / f"{name}.yaml"
+    if not path.is_file():
+        return {"ok": False, "error": f"no saved graph named {name!r} — save it first"}
+    return {
+        "ok": True,
+        "path": str(path),
+        "command": f"bl graph plan {path}",
+        "mcp_tool": f'graph_interview(name="{name}")',
+        "say_to_your_agent": (
+            f"The graph '{name}' is saved at {path}. Read it, run graph_interview on it, ask me "
+            "the questions it says must be asked, then apply my answers with graph_configure."
+        ),
+    }
+
+
+# ── the route table (last, so every handler above is defined) ────────────────
+
 _ROUTES: Mapping[str, Callable[[Mapping[str, Any]], dict]] = {
     "capabilities": _capabilities,
     "forms": _forms,
@@ -299,10 +483,13 @@ _ROUTES: Mapping[str, Callable[[Mapping[str, Any]], dict]] = {
     "graph.read": _graph_read,
     "graph.save": _graph_save,
     "approve": _approve,
+    "agents": _agents,
+    "execute": _execute,
+    "handoff": _handoff,
 }
 
 #: Routes that change something. Everything else must be safe to call on a timer.
-MUTATING_ROUTES = frozenset({"graph.save", "approve"})
+MUTATING_ROUTES = frozenset({"graph.save", "approve", "execute"})
 
 
 def is_mutating(route: str) -> bool:

@@ -218,6 +218,9 @@ def _projection_dict(projection: ArenaProjection) -> dict:
                 "node_id": node.node_id, "kind": node.kind, "state": node.state, "attempt": node.attempt,
                 "required_effects": list(node.required_effects), "isolation": node.isolation,
                 "transport": node.transport, "artifact_digests": list(node.artifact_digests),
+                # The gate's own verdict and words. Every other field says what ran; this says
+                # why it counted as verified, so it is the field a reader should look at first.
+                "gate_passed": node.gate_passed, "gate_reason": node.gate_reason,
             }
             for node in projection.nodes
         ],

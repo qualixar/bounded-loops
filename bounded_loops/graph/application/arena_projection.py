@@ -124,6 +124,12 @@ class ArenaNodeProjection:
     spend_tokens: int = 0
     spend_cost_microunits: int = 0
     spend_complete: bool = True
+    #: The INDEPENDENT gate's own words about this node, read from the receipt that recorded them.
+    #: This is the evidence — every other field describes what ran, this one says why it counted as
+    #: verified. It was persisted from the start (`node.succeeded` carries {"passed", "reason"}) and
+    #: merely absent from the projection, so no surface could show it.
+    gate_passed: bool | None = None
+    gate_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +156,12 @@ class ArenaProjection:
     spend_tokens: int = 0
     spend_cost_microunits: int = 0
     spend_complete: bool = True
+    #: The INDEPENDENT gate's own words about this node, read from the receipt that recorded them.
+    #: This is the evidence — every other field describes what ran, this one says why it counted as
+    #: verified. It was persisted from the start (`node.succeeded` carries {"passed", "reason"}) and
+    #: merely absent from the projection, so no surface could show it.
+    gate_passed: bool | None = None
+    gate_reason: str | None = None
 
 
 def read_arena_projection(
@@ -364,6 +376,7 @@ def _node_projection(
     bindings: dict[str, ResolvedBinding],
     spend: NodeSpend,
 ) -> ArenaNodeProjection:
+    verdict = _gate_verdict(receipt.get("verdict"))
     route = _route(receipt.get("route"))
     transport = receipt.get("transport")
     if transport is not None and (not isinstance(transport, str) or not transport):
@@ -384,6 +397,25 @@ def _node_projection(
         artifact_digests=tuple(artifacts), route=route, transport=transport,
         spend_tokens=spend.tokens, spend_cost_microunits=spend.cost_microunits,
         spend_complete=spend.complete,
+        gate_passed=verdict[0], gate_reason=verdict[1],
+    )
+
+
+def _gate_verdict(value: object) -> tuple[bool | None, str | None]:
+    """The gate's (passed, reason) from a receipt, or (None, None) when it has not decided yet.
+
+    A malformed verdict is treated as absent rather than raised on: this is a read-side surface,
+    and refusing to render a whole run because one node's verdict is odd would hide the other
+    twenty nodes that are fine. `event_payloads` already validates the shape on the WRITE side,
+    which is where a bad verdict should be stopped.
+    """
+    if not isinstance(value, Mapping):
+        return (None, None)
+    passed = value.get("passed")
+    reason = value.get("reason")
+    return (
+        passed if isinstance(passed, bool) else None,
+        reason if isinstance(reason, str) and reason else None,
     )
 
 

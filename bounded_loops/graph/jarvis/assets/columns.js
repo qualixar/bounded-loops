@@ -273,7 +273,10 @@ export function ConfigPanel({
     projNode.state === 'AWAITING_APPROVAL';
 
   const isoKey = projNode?.isolation ?? planNode?.isolation;
-  const capIso = caps?.isolation?.[isoKey];
+  // `caps.isolation` is {tiers:[{level,...}], never_available:[...]} — a LIST, not a map keyed
+  // by tier. Indexing it by name returned undefined for every node, which is why the panel
+  // said "capability data not loaded" even though the capabilities had loaded fine.
+  const capIso = (caps?.isolation?.tiers || []).find(t => t.level === isoKey);
 
   const handleApprove = useCallback(async (decision, confirm) => {
     setApproving(true);
@@ -401,6 +404,29 @@ export function ConfigPanel({
                   </span>
                 </div>
               </div>` : null}
+
+            ${projNode && projNode.gate_passed !== null && projNode.gate_passed !== undefined ? html`
+              <div className="ev-section">
+                <div className="ev-section-title">Independent gate</div>
+                <div className="ev-row">
+                  <span className="ev-key">verdict</span>
+                  <span className=${'ev-val ' + (projNode.gate_passed ? 'ok' : 'err')}>
+                    ${projNode.gate_passed ? 'passed' : 'did NOT pass'}
+                  </span>
+                </div>
+                ${projNode.gate_reason ? html`
+                  <div className="ev-row">
+                    <span className="ev-key">reason</span>
+                    <span className="ev-val mono-sm">${projNode.gate_reason}</span>
+                  </div>` : null}
+              </div>` : (projNode ? html`
+              <div className="ev-section">
+                <div className="ev-section-title">Independent gate</div>
+                <div className="ev-row">
+                  <span className="ev-key">verdict</span>
+                  <span className="ev-val dim">no verdict — the gate has not evaluated this node</span>
+                </div>
+              </div>` : null)}
 
             ${projNode?.artifact_digests?.length > 0 ? html`
               <div className="ev-section">
