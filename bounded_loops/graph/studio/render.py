@@ -18,6 +18,7 @@ from bounded_loops.graph.studio.templates import STARTER_TEMPLATES
 _TEMPLATE_PATH = Path(__file__).with_name("studio_template.html")
 _TEMPLATES_OPEN = '<script id="studio-templates" type="application/json">'
 _SEED_OPEN = '<script id="studio-seed" type="application/json">'
+_CATALOGUE_OPEN = '<script id="studio-catalogue" type="application/json">'
 _CLOSE = "</script>"
 
 
@@ -40,12 +41,16 @@ def render_studio_html(
     seed: Any | None = None,
     *,
     templates: Sequence[dict[str, Any]] = STARTER_TEMPLATES,
+    loop_catalogue: Sequence[dict[str, Any]] | None = None,
     template_html: str | None = None,
 ) -> str:
     """Return a self-contained Graph Studio document.
 
     ``seed`` is an optional authoring-graph mapping to open for editing
     (e.g. reconstructed from an existing manifest); ``None`` starts empty.
+    ``loop_catalogue`` is a list of package descriptors (name, digest, description,
+    keyless) for the Studio's loop package picker; omit or pass ``None`` for no
+    catalogue (the text-input field remains available for manual digest entry).
     """
     document = template_html if template_html is not None else load_template()
     templates_payload = _escape_for_script(
@@ -54,8 +59,15 @@ def render_studio_html(
     seed_payload = _escape_for_script(
         json.dumps(seed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
+    catalogue_payload = _escape_for_script(
+        json.dumps(
+            list(loop_catalogue) if loop_catalogue is not None else [],
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+    )
     document = _inject(document, _TEMPLATES_OPEN, templates_payload)
     document = _inject(document, _SEED_OPEN, seed_payload)
+    document = _inject(document, _CATALOGUE_OPEN, catalogue_payload)
     return document
 
 

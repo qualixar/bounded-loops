@@ -560,3 +560,97 @@ def test_artifacts_skips_symlinked_metadata_entry_and_returns_error(
     assert rc == 2
     err = capsys.readouterr().err
     assert "symlink" in err.lower()
+
+
+# ── --loop-roots flag ──────────────────────────────────────────────────────────
+
+def test_loop_roots_flag_is_registered_on_run_subparser() -> None:
+    """bl graph run --loop-roots <dir> must be accepted by the parser."""
+    import argparse as _ap
+    root = _ap.ArgumentParser()
+    subs = root.add_subparsers()
+    register(subs)
+    args = root.parse_args(["graph", "run", "--loop-roots", "/tmp/loops"])
+    assert args.loop_roots == ["/tmp/loops"]
+
+
+def test_loop_roots_flag_is_registered_on_arena_subparser() -> None:
+    import argparse as _ap
+    root = _ap.ArgumentParser()
+    subs = root.add_subparsers()
+    register(subs)
+    args = root.parse_args(["graph", "arena", "--run", "/tmp/run", "--loop-roots", "/my/loops"])
+    assert args.loop_roots == ["/my/loops"]
+
+
+def test_loop_roots_flag_is_registered_on_studio_subparser() -> None:
+    import argparse as _ap
+    root = _ap.ArgumentParser()
+    subs = root.add_subparsers()
+    register(subs)
+    args = root.parse_args(["graph", "studio", "--loop-roots", "/a", "--loop-roots", "/b"])
+    assert args.loop_roots == ["/a", "/b"]
+
+
+def test_loop_roots_defaults_to_none_when_omitted() -> None:
+    """Omitting --loop-roots must leave args.loop_roots as None (not an empty list)."""
+    import argparse as _ap
+    root = _ap.ArgumentParser()
+    subs = root.add_subparsers()
+    register(subs)
+    args = root.parse_args(["graph", "run"])
+    assert getattr(args, "loop_roots", None) is None
+
+
+def test_compile_only_run_with_loop_roots_accepts_custom_package(tmp_path: Path) -> None:
+    """bl graph run <manifest> (no --execute) succeeds when a loop node names a package
+    in a custom root supplied via --loop-roots."""
+    from bounded_loops.graph.adapters.workers.loop_packages import qualified_package_digest
+    from bounded_loops.graph.loop_node_wiring import _default_loop_roots
+
+    # Pick any one of the shipped packages so we have a real digest.
+    roots = _default_loop_roots()
+    registry_index = {}
+    for root in roots:
+        if root.is_dir():
+            for entry in sorted(root.iterdir()):
+                if (entry / "loop.yaml").is_file():
+                    registry_index[entry] = qualified_package_digest(entry)
+    assert registry_index, "No shipped loop packages found; test cannot run"
+    pkg_dir, digest = next(iter(registry_index.items()))
+
+    # A loop node manifest that names the package we found.
+    manifest = tmp_path / "loop-graph.yaml"
+    manifest.write_text(
+        f"""api_version: bounded-loops.dev/graph/v1
+graph_id: loop-test
+version: 1.0.0
+policies:
+  data_class: internal
+  fail_mode: fail_closed
+nodes:
+  - id: my-loop
+    kind: loop
+    loop_package: "{digest}"
+    inputs:
+      prompt: text
+    outputs:
+      result: text
+    budget:
+      max_attempts: 1
+      max_wallclock_s: 30
+    effects:
+      - read_only
+    isolation: workspace_only
+edges: []
+connection_slots: []
+""",
+        encoding="utf-8",
+    )
+    rc = cmd_graph_run(_ns(
+        manifest=str(manifest),
+        execute=False,
+        connections=None,
+        loop_roots=[str(pkg_dir.parent)],
+    ))
+    assert rc == 0

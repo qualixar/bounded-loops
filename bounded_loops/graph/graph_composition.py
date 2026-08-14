@@ -61,6 +61,7 @@ from bounded_loops.graph.loop_node_wiring import (
     _LoopNodeWorker,
     _UnsupportedNodeWorker,
     _default_loop_roots,
+    _make_upstream_digests_reader,
 )
 from bounded_loops.graph.application.arena_projection import (
     ArenaReadRequest,
@@ -601,6 +602,7 @@ def build_execution_controller(
         ),
         registry=loop_registry,
         run_id=run_id,
+        upstream_digests_fn=_make_upstream_digests_reader(event_log),
     )
 
     controller = GraphRunController(
@@ -665,6 +667,7 @@ def execute_graph_run(
     # The catalog file ``cli_profiles`` was resolved from, recorded on the run so a continuation
     # resolves the same providers. Not derivable from the map itself.
     provider_catalog: Path | None = None,
+    loop_package_roots: tuple[Path, ...] | None = None,
 ) -> int:
     """Compile a user manifest and run its admitted connector nodes for real.
 
@@ -683,7 +686,7 @@ def execute_graph_run(
         graph = _parse_manifest(manifest_text, manifest_suffix)
         snapshot = CompileSnapshot(
             policy_digest=policy_digest,
-            package_digests=admitted_loop_package_digests(),
+            package_digests=admitted_loop_package_digests(loop_package_roots),
             connections=tuple(connections_raw),  # type: ignore[arg-type]
         )
         plan = compile_graph(graph, snapshot)
@@ -746,6 +749,7 @@ def execute_graph_run(
             approval_resolver=approval_resolver,
             run_budget=run_budget,
             price_table=price_table,
+            loop_package_roots=loop_package_roots,
         )
     except GraphValidationError as exc:
         return _fail(json_out, f"execution enforcement refused before run: {exc.message}")

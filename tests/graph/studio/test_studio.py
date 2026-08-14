@@ -106,3 +106,75 @@ def test_cli_refuses_unsupported_extension(tmp_path, capsys):
     rc = cmd_graph_studio(argparse.Namespace(from_manifest=str(src), out=str(tmp_path / "o.html")))
     assert rc == 2
     assert "unsupported" in capsys.readouterr().err
+
+
+# ── loop catalogue ─────────────────────────────────────────────────────────────
+
+def _extract_catalogue_json(html: str) -> list:
+    import re
+    match = re.search(
+        r'<script id="studio-catalogue" type="application/json">(.*?)</script>',
+        html,
+        re.DOTALL,
+    )
+    assert match, "studio-catalogue block not found"
+    return json.loads(match.group(1).strip())
+
+
+def test_render_injects_empty_catalogue_by_default():
+    html = render_studio_html()
+    cat = _extract_catalogue_json(html)
+    assert cat == []
+
+
+def test_render_injects_supplied_catalogue():
+    entries = [
+        {"digest": "sha256:" + "a" * 64, "name": "my-loop", "description": "test", "keyless": False},
+        {"digest": "sha256:" + "b" * 64, "name": "other-loop", "description": "", "keyless": True},
+    ]
+    html = render_studio_html(loop_catalogue=entries)
+    cat = _extract_catalogue_json(html)
+    assert len(cat) == 2
+    names = {e["name"] for e in cat}
+    assert names == {"my-loop", "other-loop"}
+
+
+def test_render_catalogue_escapes_hostile_content():
+    hostile = [{"digest": "sha256:" + "c" * 64, "name": "</script><script>xss", "description": "", "keyless": False}]
+    html = render_studio_html(loop_catalogue=hostile)
+    import re
+    match = re.search(
+        r'<script id="studio-catalogue" type="application/json">(.*?)</script>',
+        html, re.DOTALL,
+    )
+    assert match
+    raw_block = match.group(1)
+    assert "</script><script>" not in raw_block
+    # Round-trip must preserve the value
+    recovered = json.loads(raw_block.strip())
+    assert recovered[0]["name"] == "</script><script>xss"
+
+
+def test_studio_template_has_catalogue_injection_marker():
+    from bounded_loops.graph.studio.render import load_template
+    template = load_template()
+    assert '<script id="studio-catalogue" type="application/json">' in template
+
+
+def test_cli_writes_studio_with_shipped_catalogue(tmp_path, capsys):
+    """The default render includes the shipped loop catalogue (no --loop-roots needed)."""
+    out = tmp_path / "studio.html"
+    rc = cmd_graph_studio(argparse.Namespace(from_manifest=None, out=str(out), loop_roots=None))
+    assert rc == 0
+    html = out.read_text(encoding="utf-8")
+    cat = _extract_catalogue_json(html)
+    # The shipped loops/ directory has 68 packages; at minimum some must be catalogued.
+    assert len(cat) >= 1
+    assert all("digest" in e and "name" in e for e in cat)
+
+
+def test_cli_loop_roots_empty_list_uses_defaults(tmp_path):
+    """Passing loop_roots=[] (argparse default when flag absent) behaves as None."""
+    out = tmp_path / "studio.html"
+    rc = cmd_graph_studio(argparse.Namespace(from_manifest=None, out=str(out), loop_roots=None))
+    assert rc == 0

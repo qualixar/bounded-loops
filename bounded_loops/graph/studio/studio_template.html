@@ -185,6 +185,7 @@
 
 <script id="studio-templates" type="application/json">[]</script>
 <script id="studio-seed" type="application/json">null</script>
+<script id="studio-catalogue" type="application/json">[]</script>
 <script>
 "use strict";
 (function(){
@@ -229,6 +230,8 @@
   function readData(id){try{return JSON.parse(document.getElementById(id).textContent);}catch(e){return null;}}
   var TEMPLATES=readData("studio-templates")||[];
   var SEED=readData("studio-seed");
+  var CATALOGUE=readData("studio-catalogue")||[];
+  var _CAT_BY_DIG={};CATALOGUE.forEach(function(p){if(p.digest)_CAT_BY_DIG[p.digest]=p;});
 
   // ---- tiny DOM helpers (textContent only; there is NO innerHTML sink here) ----
   var _BLOCK_PROP={innerHTML:1,outerHTML:1,insertAdjacentHTML:1,srcdoc:1};
@@ -315,6 +318,24 @@
         placeholder:f.ph||"",spellcheck:false,oninput:function(){nd[f.key]=f.json?tryJson(this.value):this.value;}});}
       b.appendChild(field(f.label,inp));
     });
+    // Loop catalogue picker: shown when kind is loop and the catalogue is non-empty.
+    // Selecting a package auto-fills the loop_package digest. The text input above
+    // still accepts a manual digest for packages not in the shipped catalogue.
+    if(nd.kind==="loop"&&CATALOGUE.length){
+      var curPkg=_CAT_BY_DIG[nd.loop_package||""];
+      var catSel=el("select",{onchange:function(){
+        var p=_CAT_BY_DIG[this.value];if(p){nd.loop_package=p.digest;drawEditor();}
+      }});
+      catSel.appendChild(el("option",{value:"",text:"— pick from "+CATALOGUE.length+" shipped packages —"}));
+      CATALOGUE.forEach(function(p){
+        var lbl=(p.name||"?")+( p.keyless?" ✓ keyless":"")+( p.description?" — "+p.description.slice(0,55):"");
+        var o=el("option",{value:p.digest||"",text:lbl});
+        if(nd.loop_package===p.digest)o.selected=true;
+        catSel.appendChild(o);
+      });
+      b.appendChild(field("Package catalogue ("+CATALOGUE.length+" shipped)",catSel));
+      if(curPkg&&curPkg.description)b.appendChild(el("div",{class:"hint",text:curPkg.description}));
+    }
     // effects
     var checks=el("div",{class:"checks"},EFFECTS.map(function(e){
       var cb=el("input",{type:"checkbox",checked:(nd.effects||[]).indexOf(e.id)>=0,onchange:function(){

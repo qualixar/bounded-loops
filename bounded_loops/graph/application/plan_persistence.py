@@ -25,6 +25,8 @@ from bounded_loops.graph.domain.plan import ExecutionPlan
 
 def load_plan_from_run_dir(
     run_dir: Path,
+    *,
+    package_digests: frozenset[str] = frozenset(),
 ) -> tuple[ExecutionPlan, GraphRunIdentity, dict[str, object]]:
     """Reconstruct plan + identity + raw meta from a persisted run directory.
 
@@ -72,7 +74,7 @@ def load_plan_from_run_dir(
     )
     snapshot = CompileSnapshot(
         policy_digest=policy_digest,
-        package_digests=frozenset(),
+        package_digests=package_digests,
         connections=tuple(raw_connections),  # type: ignore[arg-type]
     )
     plan = compile_graph(graph, snapshot)

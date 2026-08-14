@@ -28,12 +28,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
 
 from bounded_loops.application.loop_bridge import LoopExecutionRequest, wire_loop_for_graph
-from bounded_loops.application.manifest import load as load_manifest
+from bounded_loops.application.manifest import LoopManifest, load as load_manifest
 from bounded_loops.graph.adapters.workers.loop_packages import (
     CONTROLLER_SUBDIR,
     DEFAULT_OUTCOME_FILENAME,
@@ -96,8 +98,11 @@ def run(argv: list[str] | None = None) -> int:
         controller_root=controller_root,
         repair_round=args.repair_round,
     )
-    wired = wire_loop_for_graph(load_manifest(package), request)
+    manifest = load_manifest(package)
+    wired = wire_loop_for_graph(manifest, request)
+    _overlay_inputs(manifest, wired.workspace)
     outcome = wired.run()
+    _copy_loop_outputs(manifest, wired.workspace, Path.cwd())
 
     # The inner ledger is nested BY REFERENCE: its digest travels in the outcome the graph
     # promotes, so the inner chain cannot be rewritten without breaking the node's receipt, and
@@ -116,6 +121,81 @@ def run(argv: list[str] | None = None) -> int:
         json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8",
     )
     return 0
+
+
+def _overlay_inputs(manifest: LoopManifest, workspace: Path) -> None:
+    """Copy declared input artifacts from BL_GRAPH_INPUTS into the loop workspace.
+
+    Each input port declares a POSIX-relative target path inside the workspace.
+    The artifact was materialized at BL_GRAPH_INPUTS/<port.name> by the sandboxed worker.
+    We copy it to workspace/<port.path> so the loop's runner and gate find it there.
+
+    Security: the destination is re-validated with a resolve + is_relative_to check so a
+    traversal in port.path (already caught at manifest load) cannot escape even if the
+    manifest validator were somehow bypassed at runtime.
+    """
+    if not manifest.inputs:
+        return
+    inputs_dir_str = os.environ.get("BL_GRAPH_INPUTS", "")
+    if not inputs_dir_str:
+        for port in manifest.inputs.values():
+            if port.required:
+                raise SystemExit(
+                    f"input port {port.name!r} is required but BL_GRAPH_INPUTS is not set"
+                )
+        return
+    inputs_dir = Path(inputs_dir_str)
+    workspace_abs = workspace.resolve()
+    for port in manifest.inputs.values():
+        source = inputs_dir / port.name
+        if source.is_symlink():
+            # Symlinks from an upstream artifact are UNTRUSTED: a hostile loop could point a
+            # symlink at an arbitrary host path. Reject unconditionally.
+            raise SystemExit(
+                f"input port {port.name!r}: source {source} is a symlink; "
+                "upstream artifacts must be regular files (quarantine_inputs: true enforced)"
+            )
+        if not source.exists():
+            if port.required:
+                raise SystemExit(
+                    f"input port {port.name!r} is required but {source} was not materialized"
+                )
+            continue
+        dest = (workspace_abs / port.path).resolve()
+        # Re-check escape even though _validate_port_path already blocked traversals — defence
+        # in depth, consistent with the "fail CLOSED" contract in the task spec.
+        if not str(dest).startswith(str(workspace_abs) + os.sep) and dest != workspace_abs:
+            raise SystemExit(
+                f"input port {port.name!r}: resolved path {dest} escapes workspace "
+                f"{workspace_abs} — rejected"
+            )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(source), str(dest))
+
+
+def _copy_loop_outputs(manifest: LoopManifest, workspace: Path, cwd: Path) -> None:
+    """Collect declared output files from the workspace into cwd/outputs/<port_name>.
+
+    The sandboxed worker's promote step requires EXACTLY the declared outputs to appear in cwd
+    (BL_GRAPH_OUTPUTS).  Named port files live under cwd/outputs/ so they sort AFTER the primary
+    loop-outcome.json, preserving the invariant that LoopReceiptGate reads digests[0].
+    """
+    if not manifest.outputs:
+        return
+    outputs_dir = cwd / "outputs"
+    outputs_dir.mkdir(exist_ok=True)
+    for port in manifest.outputs.values():
+        source = workspace / port.path
+        if source.is_symlink():
+            raise SystemExit(
+                f"output port {port.name!r}: {source} is a symlink; "
+                "workspace outputs must be regular files"
+            )
+        if not source.exists():
+            raise SystemExit(
+                f"output port {port.name!r}: expected file {source} does not exist after loop run"
+            )
+        shutil.copy2(str(source), str(outputs_dir / port.name))
 
 
 def _digest_of(path: Path) -> str | None:

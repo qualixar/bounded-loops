@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from bounded_loops.graph.adapters.workers.sandboxed_worker import NodeExecutionSpec
+from bounded_loops.graph.application.workspace_promotion import WorkspaceInput
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.plan import PlannedNode
 
@@ -184,6 +185,13 @@ class LoopNodeResolver:
     attempt: int = 1
     repair_round: int = 0
     interpreter: str = sys.executable
+    #: Input artifacts to materialize in BL_GRAPH_INPUTS before the loop process starts.
+    #: Empty by default so fixtures (no declared ports) are unchanged.
+    input_artifacts: tuple[WorkspaceInput, ...] = ()
+    #: Additional declared outputs beyond loop-outcome.json, one per named output port.
+    #: Each item is (relative_path, media_type).  Paths use "outputs/<port_name>" so they
+    #: sort AFTER "loop-outcome.json", preserving the LoopReceiptGate digests[0] invariant.
+    extra_declared_outputs: tuple[tuple[str, str], ...] = ()
 
     def resolve(self, node: PlannedNode) -> NodeExecutionSpec:
         if node.package_digest is None:
@@ -192,6 +200,9 @@ class LoopNodeResolver:
                 "authoring requires loop_package and the compiler carries it into the plan"
             )
         package = self.registry.resolve(node.package_digest)
+        declared: dict[str, str] = {DEFAULT_OUTCOME_FILENAME: "application/json"}
+        for path, media_type in self.extra_declared_outputs:
+            declared[path] = media_type
         return NodeExecutionSpec(
             argv=(
                 self.interpreter, "-I", "-B", "-m", "bounded_loops.graph.loop_node_entry",
@@ -203,5 +214,6 @@ class LoopNodeResolver:
                 "--repair-round", str(self.repair_round),
                 "--outcome", DEFAULT_OUTCOME_FILENAME,
             ),
-            declared_outputs={DEFAULT_OUTCOME_FILENAME: "application/json"},
+            declared_outputs=declared,
+            inputs=self.input_artifacts,
         )

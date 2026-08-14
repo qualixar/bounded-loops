@@ -79,6 +79,11 @@ def _err(msg: str) -> None:
     print(f"error: {msg}", file=sys.stderr)
 
 
+def _parse_loop_roots(raw: list[str] | None) -> "tuple[Path, ...] | None":
+    """Convert an argparse append-list of root dirs to a Path tuple, or None (use defaults)."""
+    return tuple(Path(p) for p in raw) if raw else None
+
+
 # ── handlers ───────────────────────────────────────────────────────────────────
 
 def _resolve_budget(args: argparse.Namespace) -> tuple["RunBudget", "PriceTable"]:
@@ -217,6 +222,7 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
         audit_plan_json=audit_plan_json_text,
         run_budget=run_budget,
         price_table=price_table,
+        loop_package_roots=_parse_loop_roots(getattr(args, "loop_roots", None)),
     )
 
 
@@ -280,7 +286,9 @@ def cmd_graph_run(args: argparse.Namespace) -> int:
     try:
         snapshot = CompileSnapshot(
             policy_digest=_NULL_POLICY_DIGEST,
-            package_digests=admitted_loop_package_digests(),
+            package_digests=admitted_loop_package_digests(
+                _parse_loop_roots(getattr(args, "loop_roots", None))
+            ),
             connections=tuple(connections_raw),  # type: ignore[arg-type]
         )
         plan = compile_graph(graph, snapshot)
@@ -482,6 +490,14 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         ),
     )
     run_p.add_argument("--json", action="store_true", help="Emit JSON output.")
+    run_p.add_argument(
+        "--loop-roots", action="append", dest="loop_roots", default=None, metavar="<dir>",
+        help=(
+            "Directory of loop packages to admit, in addition to the shipped packages (repeatable). "
+            "Packages are resolved BY DIGEST — adding a root makes a package findable; "
+            "it cannot change which bytes a given digest means."
+        ),
+    )
     run_p.set_defaults(func=cmd_graph_run)
 
     from bounded_loops.graph.cli_graph_providers import add_providers_parser
@@ -550,6 +566,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
                          help="Directory written by `bl graph demo`.")
     arena_p.add_argument("--out", default=None, metavar="<file.html>",
                          help="Output HTML path (default: <run>/arena.html).")
+    arena_p.add_argument(
+        "--loop-roots", action="append", dest="loop_roots", default=None, metavar="<dir>",
+        help="Directory of loop packages to search when resolving package names in the Arena (repeatable).",
+    )
     arena_p.set_defaults(func=cmd_graph_arena)
 
     # studio (handler lives in the studio package to keep this file within budget)
@@ -563,6 +583,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
                           help="Open an existing graph for editing (validated first).")
     studio_p.add_argument("--out", default=None, metavar="<file.html>",
                           help="Output HTML path (default: ./graph-studio.html).")
+    studio_p.add_argument(
+        "--loop-roots", action="append", dest="loop_roots", default=None, metavar="<dir>",
+        help="Directory of loop packages to include in the Studio catalogue picker (repeatable).",
+    )
     studio_p.set_defaults(func=cmd_graph_studio)
 
     # console (handler lives in the console package to keep this file within budget)
