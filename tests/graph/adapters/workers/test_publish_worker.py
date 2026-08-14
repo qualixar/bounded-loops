@@ -1,0 +1,312 @@
+"""Exactly-once publish worker and its receipt gate.
+
+Key invariants under test:
+  1. First call fires and records the effect in the ledger.
+  2. A repeat call with the SAME payload is a no-op (already_published).
+  3. A repeat call with a DIFFERENT payload raises GraphIntegrityError (HALT).
+  4. A publish node with no publication_policy fails closed.
+  5. Gate verifies: node_id, plan_id, effect_key derivation, payload_digest reproducibility.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pytest
+
+from bounded_loops.graph.adapters.workers.publish_worker import (
+    LocalPublicationLedger,
+    PublishNodeWorker,
+    PublishReceiptGate,
+    _derive_payload_digest,
+)
+from bounded_loops.graph.application.node_contracts import WorkerResult
+from bounded_loops.graph.domain.artifacts import (
+    ArtifactAccess,
+    ArtifactPolicy,
+    ArtifactRecord,
+    ArtifactRef,
+    ArtifactState,
+)
+from bounded_loops.graph.domain.errors import GraphIntegrityError
+
+ORG = "org-pub"
+PROJECT = "proj-pub"
+RUN_ID = "run-pub-xyz"
+PLAN_ID = "plan-pub-1"
+POLICY = "finance-instruction-v1"
+
+
+# ── plan stubs ────────────────────────────────────────────────────────────────
+
+@dataclass
+class _Plan:
+    plan_id: str = PLAN_ID
+    edges: tuple = field(default_factory=tuple)
+    nodes: tuple = field(default_factory=tuple)
+
+
+@dataclass
+class _Node:
+    node_id: str = "publish-instruction"
+    kind: str = "publish"
+    approval_policy: dict = field(default_factory=lambda: {"publication_policy": POLICY})
+
+
+# ── minimal store stub ────────────────────────────────────────────────────────
+
+class _Handle:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def read(self) -> bytes:
+        return self._data
+
+
+class _Store:
+    """Minimal ArtifactStorePort. Stores blobs by SHA-256 digest."""
+
+    def __init__(self) -> None:
+        self._blobs: dict[str, bytes] = {}
+
+    def put(self, stream, policy: ArtifactPolicy) -> ArtifactRecord:
+        data = stream.read()
+        digest = hashlib.sha256(data).hexdigest()
+        self._blobs[digest] = data
+        ref = ArtifactRef(digest=digest, organization_id=policy.organization_id, project_id=policy.project_id)
+        return ArtifactRecord(
+            ref=ref,
+            digest=digest,
+            media_type=policy.media_type,
+            size=len(data),
+            producer_attempt=policy.producer_attempt,
+            sensitivity=policy.sensitivity,
+            retention_class=policy.retention_class,
+            state=ArtifactState.ACTIVE,
+            tombstone_reason=None,
+        )
+
+    @contextmanager
+    def open(self, ref: ArtifactRef, access):
+        if ref.digest not in self._blobs:
+            raise FileNotFoundError(ref.digest)
+        yield _Handle(self._blobs[ref.digest])
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _make_worker(
+    store: _Store,
+    ledger: LocalPublicationLedger,
+    *,
+    run_id: str = RUN_ID,
+) -> PublishNodeWorker:
+    return PublishNodeWorker(
+        store=store,
+        ledger=ledger,
+        run_id=run_id,
+        organization_id=ORG,
+        project_id=PROJECT,
+    )
+
+
+def _run_worker(
+    store: _Store,
+    ledger: LocalPublicationLedger,
+    *,
+    node_id: str = "publish-instruction",
+    policy: str = POLICY,
+    plan_id: str = PLAN_ID,
+    run_id: str = RUN_ID,
+    attempt: int = 1,
+) -> WorkerResult:
+    node = _Node(node_id=node_id, approval_policy={"publication_policy": policy})
+    plan = _Plan(plan_id=plan_id)
+    worker = _make_worker(store, ledger, run_id=run_id)
+    return worker.execute(plan=plan, node=node, envelope=None, attempt=attempt)
+
+
+def _read_receipt(store: _Store, digest: str) -> dict:
+    with store.open(ArtifactRef(digest, ORG, PROJECT), ArtifactAccess(ORG, PROJECT)) as h:
+        return json.loads(h.read())
+
+
+# ── ledger unit tests ─────────────────────────────────────────────────────────
+
+def test_ledger_first_call_returns_fired(tmp_path: Path):
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    result = ledger.check_and_record("run/plan/node", "digest-abc")
+    assert result == "fired"
+
+
+def test_ledger_same_payload_returns_already_published(tmp_path: Path):
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    ledger.check_and_record("run/plan/node", "digest-abc")
+    result = ledger.check_and_record("run/plan/node", "digest-abc")
+    assert result == "already_published"
+
+
+def test_ledger_different_payload_raises_integrity_error(tmp_path: Path):
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    ledger.check_and_record("run/plan/node", "digest-abc")
+    with pytest.raises(GraphIntegrityError, match="different payload"):
+        ledger.check_and_record("run/plan/node", "digest-DIFFERENT")
+
+
+def test_ledger_distinct_effect_keys_are_independent(tmp_path: Path):
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    assert ledger.check_and_record("run/plan/node-a", "digest-1") == "fired"
+    assert ledger.check_and_record("run/plan/node-b", "digest-2") == "fired"
+
+
+# ── worker tests ──────────────────────────────────────────────────────────────
+
+def test_worker_produces_one_artifact_digest(tmp_path: Path):
+    store = _Store()
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    result = _run_worker(store, ledger)
+    assert len(result.output_artifact_digests) == 1
+
+
+def test_worker_receipt_outcome_is_fired_on_first_attempt(tmp_path: Path):
+    store = _Store()
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    result = _run_worker(store, ledger)
+    receipt = _read_receipt(store, result.output_artifact_digests[0])
+    assert receipt["outcome"] == "fired"
+
+
+def test_same_payload_second_attempt_is_noop(tmp_path: Path):
+    """Second attempt with the same (run_id, plan_id, node_id, policy) → already_published, no error."""
+    store = _Store()
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    result_1 = _run_worker(store, ledger, attempt=1)
+    result_2 = _run_worker(store, ledger, attempt=2)
+
+    receipt_1 = _read_receipt(store, result_1.output_artifact_digests[0])
+    receipt_2 = _read_receipt(store, result_2.output_artifact_digests[0])
+    assert receipt_1["outcome"] == "fired"
+    assert receipt_2["outcome"] == "already_published"
+
+
+def test_divergent_payload_second_attempt_halts(tmp_path: Path):
+    """Changing publication_policy mid-run must HALT — the effect cannot fire twice with different content."""
+    store = _Store()
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    # First attempt fires with policy v1.
+    _run_worker(store, ledger, policy="finance-instruction-v1", attempt=1)
+    # A hypothetical second run with a different policy against the same (run, plan, node) must HALT.
+    with pytest.raises(GraphIntegrityError, match="different payload"):
+        _run_worker(store, ledger, policy="finance-instruction-v2", attempt=2)
+
+
+def test_worker_fails_closed_on_missing_policy(tmp_path: Path):
+    """A publish node whose publication_policy is None or empty must fail closed."""
+    store = _Store()
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    with pytest.raises(GraphIntegrityError, match="no publication_policy"):
+        node = _Node(node_id="publish-instruction", approval_policy={"publication_policy": ""})
+        plan = _Plan()
+        worker = _make_worker(store, ledger)
+        worker.execute(plan=plan, node=node, envelope=None, attempt=1)
+
+
+def test_worker_receipt_encodes_effect_key(tmp_path: Path):
+    store = _Store()
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    result = _run_worker(store, ledger)
+    receipt = _read_receipt(store, result.output_artifact_digests[0])
+    expected_key = f"{RUN_ID}/{PLAN_ID}/publish-instruction"
+    assert receipt["effect_key"] == expected_key
+
+
+def test_worker_receipt_payload_digest_is_reproducible(tmp_path: Path):
+    store = _Store()
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    result = _run_worker(store, ledger)
+    receipt = _read_receipt(store, result.output_artifact_digests[0])
+    expected_digest = _derive_payload_digest(
+        publication_policy=POLICY, plan_id=PLAN_ID, node_id="publish-instruction",
+    )
+    assert receipt["payload_digest"] == expected_digest
+
+
+# ── gate tests ────────────────────────────────────────────────────────────────
+
+def _make_gate(store: _Store, *, run_id: str = RUN_ID) -> PublishReceiptGate:
+    return PublishReceiptGate(store, run_id=run_id, organization_id=ORG, project_id=PROJECT)
+
+
+def test_gate_accepts_correct_receipt(tmp_path: Path):
+    store = _Store()
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    node = _Node()
+    plan = _Plan()
+    worker = _make_worker(store, ledger)
+    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1)
+
+    gate = _make_gate(store)
+    verdict = gate.evaluate(plan=plan, node=node, result=result)
+    assert verdict.passed, f"gate rejected a valid receipt: {verdict.reason}"
+
+
+def test_gate_rejects_wrong_node_id(tmp_path: Path):
+    store = _Store()
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    node = _Node(node_id="publish-instruction")
+    plan = _Plan()
+    worker = _make_worker(store, ledger)
+    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1)
+
+    # Gate evaluates a different node — must not accept the receipt.
+    impersonator = _Node(node_id="publish-other")
+    gate = _make_gate(store)
+    verdict = gate.evaluate(plan=plan, node=impersonator, result=result)
+    assert not verdict.passed
+    assert "publish-other" in verdict.reason or "publish-instruction" in verdict.reason
+
+
+def test_gate_rejects_wrong_effect_key(tmp_path: Path):
+    """Effect key must derive from run_id / plan_id / node_id — a gate with a different run_id must reject."""
+    store = _Store()
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    # Worker wrote receipt with RUN_ID.
+    node = _Node()
+    plan = _Plan()
+    worker = _make_worker(store, ledger, run_id=RUN_ID)
+    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1)
+
+    # Gate holds a DIFFERENT run_id — its expected effect_key doesn't match.
+    gate = _make_gate(store, run_id="run-DIFFERENT")
+    verdict = gate.evaluate(plan=plan, node=node, result=result)
+    assert not verdict.passed
+    assert "effect_key" in verdict.reason
+
+
+def test_gate_rejects_tampered_payload_digest(tmp_path: Path):
+    """Gate recomputes the digest from the plan; a tampered receipt must not pass."""
+    store = _Store()
+    ledger = LocalPublicationLedger(tmp_path / "ledger.json")
+    node = _Node()
+    plan = _Plan()
+    worker = _make_worker(store, ledger)
+    result = worker.execute(plan=plan, node=node, envelope=None, attempt=1)
+
+    # Gate evaluates the same node but with a DIFFERENT publication_policy in approval_policy.
+    # The gate recomputes the digest from this different policy and it won't match the receipt.
+    tampered_node = _Node(node_id=node.node_id, approval_policy={"publication_policy": "wrong-policy"})
+    gate = _make_gate(store)
+    verdict = gate.evaluate(plan=plan, node=tampered_node, result=result)
+    assert not verdict.passed
+    assert "payload_digest" in verdict.reason
+
+
+def test_gate_rejects_empty_result(tmp_path: Path):
+    gate = _make_gate(_Store())
+    verdict = gate.evaluate(plan=_Plan(), node=_Node(), result=WorkerResult(()))
+    assert not verdict.passed
+    assert "no receipt" in verdict.reason

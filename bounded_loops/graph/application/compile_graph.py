@@ -271,6 +271,11 @@ def _planned_node(
         "required": node.kind is NodeKind.APPROVAL,
         "required_role": node.details.get("required_role"),
     }
+    # publication_policy reaches the worker through the policy map so the portable graph does not
+    # carry the deployment's resolution logic — the same graph publishes under different rules in
+    # different deployments. Added only when present, same convention as repair fields below.
+    if node.kind is NodeKind.PUBLISH:
+        approval["publication_policy"] = node.details.get("publication_policy")
     # Repair reaches the runtime through the node policy map, because the controller and the replay
     # verifier both need it and neither holds the manifest. Added ONLY when declared, so a graph
     # without repair serialises byte-identically and keeps its plan_id — and therefore keeps every

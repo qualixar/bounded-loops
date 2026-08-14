@@ -1,9 +1,12 @@
-"""Wiring for ``kind: loop`` nodes: package roots, the worker, and kind-based dispatch.
+"""Wiring for non-connector node kinds: package roots, workers, gates, and kind-based dispatch.
 
 Extracted from ``graph_composition`` when that module crossed the 800-line cap. It holds the pieces
-that make a loop node runnable and nothing else: where packages are found, the worker that delegates
-to the real sandboxed one, and the two dispatchers that route a node to the worker and gate for its
-kind.
+that make loop, join, and publish nodes runnable: where packages are found, the workers and gates
+for each kind, and ``build_kind_dispatchers`` — the single assembly function
+``build_execution_controller`` calls instead of constructing the dispatchers inline.
+
+``_is_nontransport_kind`` identifies node kinds that skip the connector-transport preflight check;
+``_NONTRANSPORT_KINDS`` is its backing set for fast membership tests.
 """
 
 from __future__ import annotations
@@ -13,22 +16,43 @@ from pathlib import Path
 from typing import Callable
 
 from bounded_loops.application.manifest import LoopManifest, load as load_manifest
+from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
 from bounded_loops.graph.adapters.workers.acceptance_gate import StructuralAcceptanceGate
+from bounded_loops.graph.adapters.workers.join_worker import JoinNodeWorker, JoinReceiptGate
 from bounded_loops.graph.adapters.workers.loop_packages import (
     DEFAULT_OUTCOME_FILENAME,
     LoopNodeResolver,
     LoopPackageRegistry,
 )
 from bounded_loops.graph.adapters.workers.loop_receipt_gate import LoopReceiptGate
+from bounded_loops.graph.adapters.workers.publish_worker import (
+    LocalPublicationLedger,
+    PublishNodeWorker,
+    PublishReceiptGate,
+)
 from bounded_loops.graph.adapters.workers.sandboxed_worker import SandboxedNodeWorker
 from bounded_loops.graph.application.execution_policy import ExecutionEnvelope
-from bounded_loops.graph.application.graph_ports import EventLogPort
+from bounded_loops.graph.application.graph_ports import ArtifactStorePort, EventLogPort
 from bounded_loops.graph.application.node_contracts import GateVerdict, WorkerResult
 from bounded_loops.graph.application.workspace_promotion import WorkspaceInput
 from bounded_loops.graph.domain.artifacts import ArtifactRef
 from bounded_loops.graph.domain.authoring import NodeKind
 from bounded_loops.graph.domain.errors import GraphIntegrityError
+from bounded_loops.graph.domain.events import GraphRunIdentity
 from bounded_loops.graph.domain.plan import ExecutionPlan, PlannedEdge, PlannedNode
+
+#: Node kinds that have their own workers and skip the connector-transport preflight check.
+_NONTRANSPORT_KINDS = frozenset({
+    NodeKind.APPROVAL.value,
+    NodeKind.LOOP.value,
+    NodeKind.JOIN.value,
+    NodeKind.PUBLISH.value,
+})
+
+
+def _is_nontransport_kind(kind: str) -> bool:
+    """True for node kinds that run without a connector transport."""
+    return kind in _NONTRANSPORT_KINDS
 
 
 def _make_upstream_digests_reader(
@@ -237,14 +261,23 @@ class _KindDispatchWorker:
     """Route each node to the worker for its kind; fail closed for kinds with no worker."""
 
     loop_worker: _LoopNodeWorker
+    join_worker: JoinNodeWorker
+    publish_worker: PublishNodeWorker
     fallback: _UnsupportedNodeWorker
 
     def execute(
         self, *, plan: ExecutionPlan, node: PlannedNode, envelope: ExecutionEnvelope,
         attempt: int,
     ) -> WorkerResult:
-        worker = self.loop_worker if node.kind == NodeKind.LOOP.value else self.fallback
-        return worker.execute(plan=plan, node=node, envelope=envelope, attempt=attempt)
+        if node.kind == NodeKind.LOOP.value:
+            return self.loop_worker.execute(plan=plan, node=node, envelope=envelope, attempt=attempt)
+        if node.kind == NodeKind.JOIN.value:
+            return self.join_worker.execute(plan=plan, node=node, envelope=envelope, attempt=attempt)
+        if node.kind == NodeKind.PUBLISH.value:
+            return self.publish_worker.execute(
+                plan=plan, node=node, envelope=envelope, attempt=attempt,
+            )
+        return self.fallback.execute(plan=plan, node=node, envelope=envelope, attempt=attempt)
 
 
 @dataclass(frozen=True)
@@ -255,17 +288,91 @@ class _KindDispatchGate:
     contains its own independent gate, so re-running that check here would make one object both
     producer and judge. ``StructuralAcceptanceGate`` would also pass any non-empty UTF-8 artifact,
     which a loop outcome recording ``HALT`` trivially is — so using it for loop nodes would accept
-    a loop that never converged.
+    a loop that never converged. Join and publish nodes carry causal receipts that similarly require
+    their own evidence-verifying gates rather than the generic structural check.
     """
 
     loop_gate: LoopReceiptGate
+    join_gate: JoinReceiptGate
+    publish_gate: PublishReceiptGate
     fallback: StructuralAcceptanceGate
 
     def evaluate(
         self, *, plan: ExecutionPlan, node: PlannedNode, result: WorkerResult,
     ) -> GateVerdict:
-        gate = self.loop_gate if node.kind == NodeKind.LOOP.value else self.fallback
-        return gate.evaluate(plan=plan, node=node, result=result)
+        if node.kind == NodeKind.LOOP.value:
+            return self.loop_gate.evaluate(plan=plan, node=node, result=result)
+        if node.kind == NodeKind.JOIN.value:
+            return self.join_gate.evaluate(plan=plan, node=node, result=result)
+        if node.kind == NodeKind.PUBLISH.value:
+            return self.publish_gate.evaluate(plan=plan, node=node, result=result)
+        return self.fallback.evaluate(plan=plan, node=node, result=result)
+
+
+def build_kind_dispatchers(
+    *,
+    store: ArtifactStorePort,
+    event_log: EventLogPort,
+    identity: GraphRunIdentity,
+    out_dir: Path,
+    caps: PlatformCapabilities,
+    loop_package_roots: tuple[Path, ...] | None,
+    organization_id: str,
+    project_id: str,
+    run_id: str,
+) -> tuple[_KindDispatchWorker, _KindDispatchGate]:
+    """Assemble the kind-dispatch worker+gate pair for all locally runnable node kinds.
+
+    Called once per controller assembly from ``build_execution_controller``.  Moving
+    this construction out of ``graph_composition`` keeps that module under the 800-line
+    cap and groups all kind-specific wiring in one place.
+    """
+    loop_registry = LoopPackageRegistry(roots=loop_package_roots or _default_loop_roots())
+    loop_worker = _LoopNodeWorker(
+        sandboxed=SandboxedNodeWorker(
+            identity=identity,
+            artifact_store=store,
+            # Replaced per attempt by _LoopNodeWorker; this placeholder is never resolved through.
+            resolver=LoopNodeResolver(registry=loop_registry, run_id=run_id),
+            capabilities=caps,
+            workspace_root=out_dir / "work",
+            organization_id=organization_id,
+            project_id=project_id,
+        ),
+        registry=loop_registry,
+        run_id=run_id,
+        upstream_digests_fn=_make_upstream_digests_reader(event_log),
+    )
+    join_worker = JoinNodeWorker(
+        store=store, organization_id=organization_id, project_id=project_id,
+    )
+    ledger = LocalPublicationLedger(out_dir / "published-effects.json")
+    publish_worker = PublishNodeWorker(
+        store=store, ledger=ledger, run_id=run_id,
+        organization_id=organization_id, project_id=project_id,
+    )
+    return (
+        _KindDispatchWorker(
+            loop_worker=loop_worker,
+            join_worker=join_worker,
+            publish_worker=publish_worker,
+            fallback=_UnsupportedNodeWorker(),
+        ),
+        _KindDispatchGate(
+            loop_gate=LoopReceiptGate(
+                store, organization_id=organization_id, project_id=project_id,
+            ),
+            join_gate=JoinReceiptGate(
+                store, organization_id=organization_id, project_id=project_id,
+            ),
+            publish_gate=PublishReceiptGate(
+                store, run_id=run_id, organization_id=organization_id, project_id=project_id,
+            ),
+            fallback=StructuralAcceptanceGate(
+                store, organization_id=organization_id, project_id=project_id,
+            ),
+        ),
+    )
 
 
 def admitted_loop_package_digests(roots: tuple[Path, ...] | None = None) -> frozenset[str]:

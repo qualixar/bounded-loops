@@ -37,6 +37,24 @@ _EFFECT_MINIMUM = {
 # selects OPEN — never an arbitrary node.
 _LOCAL_CLI_TRANSPORT = "local_cli"
 
+# Kinds whose SHIPPED worker runs in-process and opens no socket, so a declared network effect is a
+# semantic marker (a publish records that an external write was authorised) rather than actual
+# egress. Narrowed to ``publish`` alone: ``approval`` and ``join`` declare no effects at all, so they
+# never reach the network branch, and listing them implied a broader carve-out than exists.
+#
+# **This is a TRUST ASSUMPTION about the shipped worker, not a proof.** The engine cannot show that
+# an in-process worker refrains from opening a socket — Python can do it regardless of the envelope.
+# The exemption is therefore paired with the ``binding_id is None`` guard below, so a publish node
+# that IS bound to a transport still has to satisfy the allowlist, and it is recorded as an audit
+# item rather than presented as enforcement.
+#
+# The reason this is narrow rather than convenient: ``NETWORK_EFFECTS`` is documented in
+# ``authoring.py`` as the single source of truth for every network-posture decision across three
+# layers. Exempting by KIND severs the declaration from the enforcement it exists to trigger — the
+# day a real network-publishing worker ships, a publish node would silently keep the DENY envelope
+# it was granted here.
+_NONTRANSPORT_KIND_VALUES: frozenset[str] = frozenset({"publish"})
+
 
 class NetworkMode(str, Enum):
     DENY = "deny"
@@ -188,6 +206,13 @@ def _validate_network(node: PlannedNode, envelope: ExecutionEnvelope) -> None:
         return
     needs_network = bool(node.required_effects & NETWORK_EFFECTS)
     if needs_network:
+        # A publish node with NO binding is run by the in-process worker, which opens no socket, so
+        # its declared network effect is an authorisation marker rather than egress. The
+        # ``binding_id is None`` half of this is the part that is actually CHECKED: bind a publish
+        # node to a transport and it must satisfy the allowlist like anything else, so the exemption
+        # cannot follow the node into a deployment that gave it a real connection.
+        if node.kind in _NONTRANSPORT_KIND_VALUES and node.binding_id is None:
+            return
         if envelope.network_mode is not NetworkMode.ALLOWLIST or not destinations:
             raise GraphValidationError("execution_network", "/envelope/network_destinations", "network effects require a specific network allowlist")
         return

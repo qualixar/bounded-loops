@@ -83,6 +83,7 @@ class _Resolver:
 def _node(level=IsolationLevel.CONTAINER_RESTRICTED, effects=(Effect.WORKSPACE_WRITE,)):
     return types.SimpleNamespace(
         node_id="probe",
+        kind="loop",
         binding_id=None,
         required_effects=frozenset(effects),
         isolation=level,

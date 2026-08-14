@@ -197,8 +197,8 @@ def _validate_request(request: ApprovalRequest) -> None:
     for value in (request.graph_digest, request.plan_digest, request.evidence_digest):
         _digest(value, "/request")
     _instant(request.expires_at, "/request/expires_at")
-    if not request.requested_effects or not all(isinstance(effect, Effect) for effect in request.requested_effects):
-        raise GraphValidationError("approval_request", "/request/requested_effects", "approval effects must be declared")
+    if not all(isinstance(effect, Effect) for effect in request.requested_effects):
+        raise GraphValidationError("approval_request", "/request/requested_effects", "approval effects must be valid Effect values")
 
 
 def _validate_decision(decision: ApprovalDecision, now: datetime) -> None:

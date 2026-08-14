@@ -64,6 +64,7 @@ from bounded_loops.graph.graph_run_report import (
 from bounded_loops.graph.cli_graph_providers import _catalog_path
 from bounded_loops.graph.graph_runtime_facade import LocalGraphRuntimeFacade
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
+from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
 
@@ -124,7 +125,9 @@ def _load_identity_and_facade(
     # already-validated view (dual-audit convergence MINOR — removes a redundant TOCTOU).
     resolved = run_dir.resolve()
     try:
-        _plan, identity, _meta = load_plan_from_run_dir(resolved)
+        _plan, identity, _meta = load_plan_from_run_dir(
+            resolved, package_digests=admitted_loop_package_digests(),
+        )
     except (FileNotFoundError, ValueError, GraphValidationError) as exc:
         _err(f"graph approve: cannot reconstruct plan — {exc}")
         return None, None

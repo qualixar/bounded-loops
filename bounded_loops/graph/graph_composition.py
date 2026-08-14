@@ -47,21 +47,10 @@ from bounded_loops.graph.adapters.enforcement.egress_posture import EgressPostur
 from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
 from bounded_loops.graph.adapters.persistence.artifact_verifier import LocalArtifactVerifier
 from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
-from bounded_loops.graph.adapters.workers.acceptance_gate import StructuralAcceptanceGate
-from bounded_loops.graph.adapters.workers.loop_packages import (
-    LoopNodeResolver,
-    LoopPackageRegistry,
-)
-from bounded_loops.graph.adapters.workers.loop_receipt_gate import LoopReceiptGate
-from bounded_loops.graph.adapters.workers.sandboxed_worker import SandboxedNodeWorker
 from bounded_loops.graph.loop_node_wiring import (
     admitted_loop_package_digests,
-    _KindDispatchGate,
-    _KindDispatchWorker,
-    _LoopNodeWorker,
-    _UnsupportedNodeWorker,
-    _default_loop_roots,
-    _make_upstream_digests_reader,
+    build_kind_dispatchers,
+    _is_nontransport_kind,
 )
 from bounded_loops.graph.application.arena_projection import (
     ArenaReadRequest,
@@ -83,7 +72,7 @@ from bounded_loops.graph.application.execution_policy import (
     NetworkMode,
     network_mode_for_node,
 )
-from bounded_loops.graph.domain.authoring import AuthoringGraphSpec, IsolationLevel, NodeKind, _NULL_POLICY_DIGEST
+from bounded_loops.graph.domain.authoring import AuthoringGraphSpec, IsolationLevel, _NULL_POLICY_DIGEST
 from bounded_loops.graph.application.approval_ledger import build_durable_approval_resolver
 from bounded_loops.graph.application.run_graph import GraphRunController, is_egress_node
 from bounded_loops.graph.application.node_spend import RunBudget
@@ -364,28 +353,16 @@ def _preflight(
       before the first attempt.
     * https nodes: allowed ONLY when a matching ``AdmittedConnectionRecord`` is present;
       fails closed if none supplied — never silently skips or fabricates a grant.
-    * Approval checkpoints: ALLOWED (Slice 1) — the controller pauses the run at an
-      unapproved approval node (AWAITING_APPROVAL) rather than refusing it outright;
-      ``execute_graph_run`` wires a durable approval resolver so ``bl graph approve``
-      can later resume past it. An approval node has no connection binding, so it is
-      excluded from the "admitted connector node" check below rather than folded into
-      it — it is not a connector node at all, it is a human gate.
-    * ``kind: loop`` nodes: ALLOWED — they bind no connection and run a digest-pinned package
-      inside the node's own sandbox, so the transport question does not apply to them.
+    * Approval checkpoints: ALLOWED — controller pauses at an unapproved gate (AWAITING_APPROVAL).
+    * ``kind: loop`` / ``kind: join`` / ``kind: publish``: ALLOWED — these have their own workers
+      installed via ``build_kind_dispatchers`` and bind no connector transport.
     * All other nodes (unbound, sandboxed tool, etc.): refused with a clear message.
     """
     admitted = admitted_connections or {}
     for node in plan.nodes:
-        if node.kind == NodeKind.APPROVAL.value:
-            continue
-        if node.kind == NodeKind.LOOP.value:
-            # A loop node is not a connector node and never binds a connection: its worker runs a
-            # digest-pinned loop package inside the node's own sandbox, so it needs no transport and
-            # no credential. Excluded here for the same reason an approval node is — the check below
-            # asks which TRANSPORT a node was admitted for, and that question does not apply.
-            #
-            # Compile has already refused a loop node whose package digest is not resolvable on this
-            # host, so reaching this point means the bytes exist and hash correctly.
+        if _is_nontransport_kind(node.kind):
+            # Approval, loop, join, and publish have dedicated workers — the transport
+            # check below does not apply. Compile has already verified runnability.
             continue
         if not is_egress_node(plan, node, _ALL_EXECUTOR_TRANSPORTS):
             return (
@@ -438,7 +415,7 @@ def _refuse_unrunnable_providers(
     except (GraphIntegrityError, GraphValidationError):
         completed = set()  # an unreadable log is the replay's problem to report, not this check's
     for node in plan.nodes:
-        if node.kind == NodeKind.APPROVAL.value or node.node_id in completed:
+        if node.node_id in completed or _is_nontransport_kind(node.kind):
             continue
         unknown_provider = unknown_local_cli_provider(plan, node, cli_profiles)
         if unknown_provider is not None:
@@ -504,6 +481,10 @@ def build_execution_controller(
     )
     for node in plan.nodes:
         if node.node_id in egress_node_ids:
+            continue
+        # Nontransport kinds (approval, join, publish) are in-process workers — no subprocess is
+        # sandboxed — so platform capability enforcement does not apply to them.
+        if _is_nontransport_kind(node.kind):
             continue
         ok, reason = caps.can_enforce(node.isolation, network_mode_for_node(node))
         if not ok:
@@ -581,42 +562,18 @@ def build_execution_controller(
     else:
         connector_worker = local_cli_worker
 
-    # ── controller ───────────────────────────────────────────────────────────
-    # ── kind: loop nodes ─────────────────────────────────────────────────────
-    # `loop_package` was a required digest-shaped field that nothing resolved and nothing
-    # re-checked, so a loop node ran whatever its connector binding pointed at. The sandboxed
-    # worker applies isolation by WRAPPING argv and a child of a wrapped process inherits the
-    # profile, so running the loop engine as that child is what puts the loop's own runner and
-    # gate under this node's isolation -- the thing LegacyLoopWorker refused to fake.
-    loop_registry = LoopPackageRegistry(roots=loop_package_roots or _default_loop_roots())
-    loop_worker = _LoopNodeWorker(
-        sandboxed=SandboxedNodeWorker(
-            identity=identity,
-            artifact_store=store,
-            # Replaced per attempt by _LoopNodeWorker; this placeholder is never resolved through.
-            resolver=LoopNodeResolver(registry=loop_registry, run_id=run_id),
-            capabilities=caps,
-            workspace_root=out_dir / "work",
-            organization_id=organization_id,
-            project_id=project_id,
-        ),
-        registry=loop_registry,
-        run_id=run_id,
-        upstream_digests_fn=_make_upstream_digests_reader(event_log),
+    # ── kind workers and gates (loop, join, publish) ──────────────────────────
+    kind_worker, kind_gate = build_kind_dispatchers(
+        store=store, event_log=event_log, identity=identity, out_dir=out_dir,
+        caps=caps, loop_package_roots=loop_package_roots,
+        organization_id=organization_id, project_id=project_id, run_id=run_id,
     )
 
     controller = GraphRunController(
         plan=plan,
         event_log=event_log,
-        worker=_KindDispatchWorker(loop_worker=loop_worker, fallback=_UnsupportedNodeWorker()),
-        gate=_KindDispatchGate(
-            loop_gate=LoopReceiptGate(
-                store, organization_id=organization_id, project_id=project_id,
-            ),
-            fallback=StructuralAcceptanceGate(
-                store, organization_id=organization_id, project_id=project_id,
-            ),
-        ),
+        worker=kind_worker,
+        gate=kind_gate,
         artifact_verifier=LocalArtifactVerifier(store),
         execution_policy=_build_policy(plan, egress_transports, admitted, local_cli_decision=local_cli_decision),
         execution_enforcer=enforcer,

@@ -109,6 +109,7 @@ from bounded_loops.graph.graph_composition import (
     _ALL_EXECUTOR_TRANSPORTS,
     build_execution_controller,
 )
+from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
 from bounded_loops.graph.application.run_graph import is_egress_node
 from bounded_loops.graph.domain.approvals import ApprovalDecision, ApprovalRequest
@@ -326,7 +327,9 @@ class LocalGraphRuntimeFacade:
                 f"run directory '{run_dir}' does not exist or is not a directory"
             )
         try:
-            load_plan_from_run_dir(resolved)
+            load_plan_from_run_dir(
+                resolved, package_digests=admitted_loop_package_digests(),
+            )
         except FileNotFoundError as exc:
             raise GraphIntegrityError(f"'{run_dir}' is not a run directory: {exc}") from exc
         except (ValueError, OSError, GraphValidationError) as exc:
@@ -550,7 +553,9 @@ class LocalGraphRuntimeFacade:
         """Load plan + identity from the persisted run dir; raise ``GraphIntegrityError`` on any failure."""
         run_dir = self._run_dir(request)
         try:
-            return load_plan_from_run_dir(run_dir)
+            return load_plan_from_run_dir(
+                run_dir, package_digests=admitted_loop_package_digests(),
+            )
         except FileNotFoundError as exc:
             raise GraphIntegrityError(
                 f"run not found: {request.organization_id}/{request.project_id}/{request.run_id}"

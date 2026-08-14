@@ -35,27 +35,27 @@ No shipped loop carries a `customer`, `personal-projects` or `marketing` `role:`
 graphs are assembled from `legal`, `operations` and `engineering` packages — see the reasoning below
 on why the domain belongs to the graph.
 
-## Current limitation — read before you try to run one
+## Running a graph end to end
 
-**These graphs lint and compile. They do not execute end to end yet.**
+All six reference graphs run end to end, keyless, with no spend:
 
-`bl graph run --execute` runs admitted `local_cli` / `https` connector nodes, `approval` checkpoints,
-and — as of 0.5.0 — `kind: loop` nodes. It does **not** yet run `join` or `publish` nodes: neither has
-a worker, so preflight refuses them.
+```bash
+bl graph run graphs/finance-payment-assurance/graph.yaml --execute --out /tmp/bl-run
+# PAUSED — awaiting human decision on: approve-finance
 
+bl graph approve --run /tmp/bl-run --node approve-finance --decision approved
+# run_state: SUCCEEDED
 ```
-node 'join-checks' (kind join) is not an admitted connector node
-```
 
-That is a fail-closed refusal, not a silent skip. What you can do today:
+The full skeleton exercises: three parallel `kind: loop` checks → `kind: join` (causality gate) →
+`kind: approval` (HITL checkpoint) → `kind: publish` (exactly-once effect ledger).
+
+You can also lint and plan without running:
 
 ```bash
 bl graph lint graphs/finance-payment-assurance/graph.yaml    # validates the DAG
 bl graph plan graphs/finance-payment-assurance/graph.yaml    # compiles to an execution plan
 ```
-
-A single-loop-node graph **does** run today, sandboxed and keyless — see
-[docs/graph-quickstart.md](../docs/graph-quickstart.md).
 
 ## Why the domain is a property of the graph, not the loop
 
