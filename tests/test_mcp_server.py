@@ -7,9 +7,8 @@ type(fn) is a plain function, no wrapper, no .fn attribute).
 """
 import tempfile
 
-import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
 from bounded_loops import mcp_server
 from bounded_loops.application.loop_audit import LoopAuditResult
@@ -17,13 +16,20 @@ from bounded_loops.domain.models import Status, Outcome, Rung
 from bounded_loops.domain.errors import ManifestError
 
 
-@pytest.fixture(autouse=True)
-def _clear_previewed_state():
-    """_previewed is module-level session state — reset between tests so
-    one test's preview can't leak into another's confirm=True check."""
-    mcp_server._previewed.clear()
-    yield
-    mcp_server._previewed.clear()
+def _confirm(loop_dir, **kwargs):
+    """Preview `loop_dir`, then confirm with the token that preview issued.
+
+    There is no state-clearing fixture here any more, and that absence is the point: the
+    handshake used to live in a module-level dict that leaked between tests unless scrubbed.
+    A signed token carries its own proof, so nothing is shared and nothing needs resetting.
+    """
+    preview = mcp_server.bl_run(loop_dir=str(loop_dir), confirm=False, **kwargs)
+    return mcp_server.bl_run(
+        loop_dir=str(loop_dir),
+        confirm=True,
+        confirm_token=preview.get("confirm_token", ""),
+        **kwargs,
+    )
 
 
 # ── bl_list ──────────────────────────────────────────────────────────────────
@@ -165,24 +171,26 @@ def test_bl_run_confirm_false_returns_preview_not_running_anything(tmp_path):
     assert result["status"] == "not_confirmed"
     assert result["preview"]["gate"] == "pytest -q"
     mock_wire.assert_not_called()   # the actual proof: nothing was ever wired/run
-    # The recorded preview is now the FULL run signature (runner+gate+iter),
-    # not the gate string alone — so a later confirm can't swap the runner.
-    assert mcp_server._previewed[str(tmp_path.resolve())] == \
-        mcp_server._run_signature(fake_manifest, None, None, None)
+    # The preview hands back a token covering the FULL run signature (runner+gate+iter+
+    # agent_cmd+cassette), not the gate string alone — so a later confirm cannot swap the
+    # runner and ride in on a preview of something tamer.
+    token = result["confirm_token"]
+    signature = mcp_server._run_signature(fake_manifest, None, None, None)
+    assert mcp_server._confirm_token_error(token, signature) is None
 
 
 # ── bl_run: confirm=True WITHOUT a prior preview is REJECTED (the actual gate) ─
 
 def test_bl_run_confirm_true_without_prior_preview_is_rejected(tmp_path):
-    """The core fix: confirm=True alone is not enough. No confirm=False
-    call ever happened for this path in this session — must be refused."""
+    """The core gate: confirm=True alone is not enough. No preview was ever issued for these
+    arguments, so there is no token to present and the call must be refused."""
     (tmp_path / "loop.yaml").write_text("name: t\n")
     fake_manifest = _make_runnable_manifest()
     with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
          patch("bounded_loops.mcp_server.wire") as mock_wire:
         result = mcp_server.bl_run(str(tmp_path), confirm=True)
     assert result["status"] == "not_confirmed"
-    assert "no matching preview" in result["error"]
+    assert "confirm_token" in result["error"]
     mock_wire.assert_not_called()
 
 
@@ -259,8 +267,7 @@ def test_bl_run_confirm_true_matching_preview_done_path(tmp_path):
     )
     with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
          patch("bounded_loops.mcp_server.wire", return_value=fake_use_case):
-        mcp_server.bl_run(str(tmp_path), confirm=False)   # populates _previewed
-        result = mcp_server.bl_run(str(tmp_path), confirm=True)
+        result = _confirm(tmp_path)
     assert result["status"] == "DONE"
     assert result["laps"] == 1
 
@@ -280,8 +287,7 @@ def test_bl_run_with_run_id_writes_metadata(tmp_path):
          patch("bounded_loops.mcp_server.wire", return_value=fake_use_case), \
          patch("bounded_loops.mcp_server.begin_run") as mock_begin, \
          patch("bounded_loops.mcp_server.write_run_metadata") as mock_metadata:
-        mcp_server.bl_run(str(tmp_path), confirm=False, run_id="r1")
-        result = mcp_server.bl_run(str(tmp_path), confirm=True, run_id="r1")
+        result = _confirm(tmp_path, run_id="r1")
     assert result["status"] == "DONE"
     assert result["run_id"] == "r1"
     mock_begin.assert_called_once_with(
@@ -308,8 +314,7 @@ def test_bl_run_confirm_true_matching_preview_records_trust(tmp_path):
     with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
          patch("bounded_loops.mcp_server.wire", return_value=fake_use_case), \
          patch("bounded_loops.mcp_server.record_trust") as mock_record_trust:
-        mcp_server.bl_run(str(tmp_path), confirm=False)   # populates _previewed
-        result = mcp_server.bl_run(str(tmp_path), confirm=True)
+        result = _confirm(tmp_path)
     assert result["status"] == "DONE"
     mock_record_trust.assert_called_once_with(tmp_path, "pytest -q")
 
@@ -343,8 +348,7 @@ def test_bl_run_confirm_true_manifest_error_from_wire(tmp_path):
     with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
          patch("bounded_loops.mcp_server.wire",
                side_effect=ManifestError("Unknown gate.kind 'bad'")):
-        mcp_server.bl_run(str(tmp_path), confirm=False)
-        result = mcp_server.bl_run(str(tmp_path), confirm=True)
+        result = _confirm(tmp_path)
     assert result["status"] == "error"
     assert result["error_type"] == "ManifestError"
 
@@ -357,8 +361,7 @@ def test_bl_run_confirm_true_unexpected_exception(tmp_path):
     fake_use_case.run.side_effect = RuntimeError("agent subprocess crashed")
     with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
          patch("bounded_loops.mcp_server.wire", return_value=fake_use_case):
-        mcp_server.bl_run(str(tmp_path), confirm=False)
-        result = mcp_server.bl_run(str(tmp_path), confirm=True)
+        result = _confirm(tmp_path)
     assert result["status"] == "error"
     assert result["error_type"] == "unexpected"
 
@@ -382,8 +385,7 @@ def test_bl_run_l2_without_require_approval_false_is_refused_before_wiring(tmp_p
     fake_manifest = _make_runnable_manifest(rung=Rung.L2, require_approval=None)
     with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
          patch("bounded_loops.mcp_server.wire") as mock_wire:
-        mcp_server.bl_run(str(tmp_path), confirm=False)
-        result = mcp_server.bl_run(str(tmp_path), confirm=True)
+        result = _confirm(tmp_path)
     assert result["status"] == "error"
     assert result["error_type"] == "RequiresInteractiveApproval"
     mock_wire.assert_not_called()
@@ -402,8 +404,7 @@ def test_bl_run_l2_with_require_approval_false_explicit_override_runs(tmp_path):
     )
     with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
          patch("bounded_loops.mcp_server.wire", return_value=fake_use_case) as mock_wire:
-        mcp_server.bl_run(str(tmp_path), confirm=False)
-        result = mcp_server.bl_run(str(tmp_path), confirm=True)
+        result = _confirm(tmp_path)
     assert result["status"] == "DONE"
     mock_wire.assert_called_once()
 
@@ -412,44 +413,26 @@ def test_bl_run_l2_with_require_approval_false_explicit_override_runs(tmp_path):
 
 # ── L-3: per-session _previewed scoping ──────────────────────────────────────
 
-def _make_ctx(session_obj=None):
-    """Build a minimal Context-like mock that bl_run can use for session-keying.
+# ── what the confirm token guarantees, and what it deliberately does not ─────
+#
+# These replaced four tests of a session-keyed model that could not work. The old model tried
+# to make a preview confirmable only by the session that requested it, keyed on `ctx.session`
+# in a WeakKeyDictionary. MCP 2.0 builds a `ServerSession` per REQUEST, so that key never
+# matched twice and no confirm ever succeeded; the fallback for a missing session was a
+# process-global dict in which every caller could confirm every other caller's preview.
+#
+# The token is a BEARER credential and this is a real trade, stated plainly: anyone holding it
+# can confirm. What bounds the damage is scope, not secrecy — it authorizes exactly one
+# executable identity, for fifteen minutes, in one process. Holding a token for `pytest -q`
+# buys the ability to run `pytest -q`, which the holder was already shown.
 
-    Note: the session must be an object that supports weak references (any
-    regular Python class instance does; plain object() does not). MagicMock()
-    works fine here and matches the type the real SDK session object would
-    be at runtime.
+
+def test_the_ctx_argument_no_longer_decides_whether_a_confirm_is_honoured(tmp_path):
+    """The gate must not depend on session identity again, in either direction.
+
+    Passing two unrelated `ctx` objects across preview and confirm has to be irrelevant now:
+    if it still mattered, the per-request-session bug would still be live.
     """
-    ctx = MagicMock()
-    ctx.session = session_obj if session_obj is not None else MagicMock()
-    return ctx
-
-
-def test_bl_run_session_a_preview_not_confirmable_by_session_b(tmp_path):
-    """L-3 fix proof: session A's preview must be invisible to session B.
-    Session B calling confirm=True (without its own preview) must be rejected
-    even if session A previewed the exact same loop with matching arguments.
-    """
-    (tmp_path / "loop.yaml").write_text("name: t\n")
-    fake_manifest = _make_runnable_manifest()
-
-    ctx_a = _make_ctx()   # distinct session objects
-    ctx_b = _make_ctx()   # a different session
-
-    with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
-         patch("bounded_loops.mcp_server.wire") as mock_wire:
-        # Session A previews
-        mcp_server.bl_run(str(tmp_path), confirm=False, ctx=ctx_a)
-        # Session B tries to confirm without its own preview — must be rejected
-        result = mcp_server.bl_run(str(tmp_path), confirm=True, ctx=ctx_b)
-
-    assert result["status"] == "not_confirmed"
-    assert "no matching preview" in result["error"]
-    mock_wire.assert_not_called()
-
-
-def test_bl_run_same_session_preview_then_confirm_succeeds(tmp_path):
-    """L-3 fix: the same session object correctly threads preview to confirm."""
     (tmp_path / "loop.yaml").write_text("name: t\n")
     fake_manifest = _make_runnable_manifest()
     fake_manifest.loop_dir = tmp_path
@@ -458,46 +441,65 @@ def test_bl_run_same_session_preview_then_confirm_succeeds(tmp_path):
         status=MagicMock(value="DONE"), reason="gate-passed", laps=1,
         ledger_path=tmp_path / ".ledger.jsonl",
     )
-    ctx = _make_ctx()   # same session for both calls
 
     with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
          patch("bounded_loops.mcp_server.wire", return_value=fake_use_case):
-        mcp_server.bl_run(str(tmp_path), confirm=False, ctx=ctx)
-        result = mcp_server.bl_run(str(tmp_path), confirm=True, ctx=ctx)
+        preview = mcp_server.bl_run(str(tmp_path), confirm=False, ctx=MagicMock())
+        result = mcp_server.bl_run(
+            str(tmp_path),
+            confirm=True,
+            confirm_token=preview["confirm_token"],
+            ctx=MagicMock(),   # a completely different "session"
+        )
 
-    assert result["status"] == "DONE"
+    assert result["status"] == "DONE", (
+        f"the confirm was refused across two ctx objects: {result}. Session identity is "
+        "back in the gate, and MCP 2.0 makes it a different object every request."
+    )
 
 
-def test_bl_run_no_ctx_falls_back_to_shared_previewed(tmp_path):
-    """When ctx is not supplied (direct call / tests), the shared _previewed dict
-    is used — existing test behaviour is preserved unchanged."""
+def test_no_module_level_preview_state_survives_a_call(tmp_path):
+    """There must be nothing left for one caller's preview to leak into another's confirm.
+
+    The previous design needed an autouse fixture to scrub a module-level dict between tests.
+    A test suite that has to clean up global state between cases is describing a product that
+    shares it between callers.
+    """
     (tmp_path / "loop.yaml").write_text("name: t\n")
     fake_manifest = _make_runnable_manifest()
 
     with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest):
-        mcp_server.bl_run(str(tmp_path), confirm=False)  # no ctx — legacy path
-    # The recorded preview must land in the shared _previewed dict
-    assert str(tmp_path.resolve()) in mcp_server._previewed
+        mcp_server.bl_run(str(tmp_path), confirm=False)
+
+    assert not hasattr(mcp_server, "_previewed")
+    assert not hasattr(mcp_server, "_previewed_by_session")
 
 
-def test_session_state_logs_warning_on_bad_ctx(tmp_path, caplog):
-    """L-3 / CRIT-2: when ctx.session raises (bad mock / integration gap),
-    _session_state falls back to the shared dict AND emits a logging.WARNING
-    so the regression is observable in production logs rather than invisible."""
-    import logging
+def test_a_token_is_scoped_to_ONE_run_identity(tmp_path):
+    """The bound on a leaked token: it buys the previewed run and nothing else."""
+    signature = "gate=pytest -q|runner=stub"
+    token = mcp_server._issue_confirm_token(signature)
 
-    ctx = MagicMock()
-    # Simulate ctx.session raising ValueError (the real SDK raises this when
-    # request_context is None, e.g. in a misconfigured integration).
-    type(ctx).session = PropertyMock(side_effect=ValueError("no request context"))
+    assert mcp_server._confirm_token_error(token, signature) is None
+    assert mcp_server._confirm_token_error(token, "gate=rm -rf /|runner=shell") is not None
 
-    with caplog.at_level(logging.WARNING, logger="bounded_loops.mcp_server"):
-        result = mcp_server._session_state(ctx)
 
-    # Must fall back to shared dict (not raise)
-    assert result is mcp_server._previewed
-    # Must emit a warning naming the module so ops can filter on it
-    assert any("bounded-loops-mcp" in r.message for r in caplog.records)
+def test_a_token_from_ANOTHER_process_is_worthless(tmp_path):
+    """Tokens are signed with a per-process secret, so one server cannot authorize another.
+
+    A token pasted out of yesterday's transcript into today's server has to be dead: the
+    preview it refers to was shown by a process that no longer exists, against a loop.yaml
+    nobody has re-read.
+    """
+    signature = "gate=pytest -q"
+    token = mcp_server._issue_confirm_token(signature)
+
+    original_secret = mcp_server._HANDSHAKE_SECRET
+    try:
+        mcp_server._HANDSHAKE_SECRET = b"a different process's secret ..."
+        assert mcp_server._confirm_token_error(token, signature) is not None
+    finally:
+        mcp_server._HANDSHAKE_SECRET = original_secret
 
 
 def test_server_survives_multiple_sequential_tool_calls(tmp_path):
@@ -603,7 +605,11 @@ def test_bl_run_unexpected_exception_returns_error_dict(tmp_path):
     with patch("bounded_loops.mcp_server.manifest_load", return_value=fake_manifest), \
          patch("bounded_loops.mcp_server.wire", return_value=crashing_use_case), \
          patch("bounded_loops.mcp_server.record_trust"):
-        result = mcp_server.bl_run(str(fake_manifest.loop_dir), confirm=True)
+        result = mcp_server.bl_run(
+            str(fake_manifest.loop_dir),
+            confirm=True,
+            confirm_token=preview_result["confirm_token"],
+        )
 
     assert result["status"] == "error"
     assert result["error_type"] == "unexpected"

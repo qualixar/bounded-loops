@@ -281,8 +281,8 @@ Available MCP tools when `bounded-loops-mcp` is connected:
 | `bl_show(loop_dir=...)` | Inspect runner, gate, bounds, risk tags, production readiness |
 | `bl_gates()` | List gate kinds and dependency availability on this host |
 | `bl_audit_loops(dirs=[...])` | Audit loop examples for production readiness |
-| `bl_run(loop_dir=..., confirm=false)` | Preview: show runner, gate, command — do not execute |
-| `bl_run(loop_dir=..., confirm=true)` | Execute only after a matching preview |
+| `bl_run(loop_dir=..., confirm=false)` | Preview: show runner, gate, command — do not execute. Returns a `confirm_token` |
+| `bl_run(loop_dir=..., confirm=true, confirm_token=...)` | Execute. The token from the preview is required |
 
 ### Graph tools
 
@@ -294,8 +294,11 @@ Available MCP tools when `bounded-loops-mcp` is connected:
 | `graph_approve(run=..., node_id=..., decision=...)` | Record a human decision on a paused node. `confirm=false` previews |
 | `graph_metrics(run=...)` | What the independent gate actually achieved on a run, with spend per node |
 
-The server refuses `bl_run(confirm=true)` without a matching preview. This is a
-safety feature, not a bug.
+The server refuses `bl_run(confirm=true)` without the `confirm_token` that the
+preview returned. This is a safety feature, not a bug. The token is signed over
+the exact run you previewed — gate command, runner, iteration cap, and a hash of
+the loop's files — so editing `loop.yaml` between preview and confirm invalidates
+it. Preview again; do not try to work around it.
 
 ### CLI fallback
 

@@ -72,11 +72,18 @@ staying put.
 | `bl_run` | yes | Run a loop (requires a `confirm=false` preview first) |
 | `bl_runs` | none | List persisted run metadata for a loop directory |
 
-**`bl_run` safety model**: `confirm=false` returns a preview and records it in the
-server session.  `confirm=true` executes only if the gate command, runner kind, iteration cap,
-and content hash all match the preview recorded for this session.  A loop that would require
-interactive approval (L2/L3 without `require_approval: false` in `bounds.yaml`) is refused
-before execution — there is no interactive terminal over MCP.
+**`bl_run` safety model**: `confirm=false` returns a preview plus a `confirm_token`.
+`confirm=true` requires that token, and executes only if the gate command, runner kind,
+iteration cap, agent_cmd, cassette, and a content hash of the loop's files all match what the
+token was issued for.  The token is an HMAC signed with a per-process secret and expires after
+15 minutes, so it cannot be replayed against a restarted server or reused after the manifest
+changes.  A loop that would require interactive approval (L2/L3 without `require_approval:
+false` in `bounds.yaml`) is refused before execution — there is no interactive terminal over
+MCP.
+
+What the handshake proves is narrower than it may appear: the caller was shown this exact
+preview by this server, recently.  It does not prove a human read it — no tool call can.  The
+human gate is the rung refusal above.
 
 ### MCP resources and prompts
 

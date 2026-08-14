@@ -24,6 +24,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from bounded_loops.domain.errors import ManifestError
+from bounded_loops.graph.domain.errors import GraphError
 from bounded_loops.graph.monitor import api
 from bounded_loops.graph.live.posture import _LOOPBACK_HOST, LoopbackHandler, LoopbackServer
 from bounded_loops.graph.live.sse_server import stream_projection_snapshots
@@ -49,7 +50,14 @@ _MAX_API_BODY_BYTES = 512 * 1024 + 8 * 1024  # a manifest, plus room for the res
 
 def _asset_bytes(relative: str) -> bytes:
     """Read one packaged asset. `relative` comes from `_ASSETS`, never from a request."""
-    resource = files("bounded_loops.graph.monitor").joinpath("assets", *relative.split("/"))
+    # The allowlist one frame up is what makes this safe, and that is the problem with leaving
+    # it implicit: this function will happily join `..` if a later edit ever calls it with a
+    # computed name. Cheap to make the invariant enforce itself rather than depend on every
+    # future caller remembering it.
+    segments = relative.split("/")
+    if any(segment in ("", ".", "..") for segment in segments):
+        raise ValueError(f"refusing to read a traversing asset path: {relative!r}")
+    resource = files("bounded_loops.graph.monitor").joinpath("assets", *segments)
     return resource.read_bytes()
 
 
@@ -162,7 +170,12 @@ class MonitorHandler(LoopbackHandler):
         try:
             _workspace, run_dir = mcp_authoring._resolve_run(run_name)
             facade, payload = mcp_authoring._facade_and_payload(run_dir)
-        except (ManifestError, OSError, ValueError) as exc:
+        except (ManifestError, GraphError, OSError, ValueError) as exc:
+            # GraphError belongs here because a corrupt run is exactly the case a watcher hits.
+            # Without it, GraphIntegrityError — raised when a run's controller-events.jsonl is
+            # a symlink, say — escaped this handler: the browser got a closed socket with no
+            # status at all and the operator got a traceback on the terminal running `bl
+            # monitor`. A refusal the UI cannot render is indistinguishable from a crash.
             self._send_plain(HTTPStatus_NOT_FOUND_OR_BAD(exc), f"cannot watch that run — {exc}")
             return
 

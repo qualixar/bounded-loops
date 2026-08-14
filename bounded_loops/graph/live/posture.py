@@ -166,6 +166,20 @@ class LoopbackHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Pragma", "no-cache")
+        # The page carried neither of these while the SSE response carried X-Frame-Options,
+        # which is backwards: the page is the surface holding the token and the controls.
+        # Framing it is how a local page in another tab gets a clickjacked Approve.
+        self.send_header("X-Frame-Options", "DENY")
+        # Everything this UI loads is packaged and same-origin — React and htm are vendored,
+        # there are no outbound links and no CDN. So the policy can be closed rather than
+        # merely tidy. 'unsafe-inline' for style is the one concession: the app sets inline
+        # style attributes for the DAG layout, which are computed, not author-controlled text.
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self'; font-src 'self'; "
+            "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        )
 
     def _send_sse_data(self, json_payload: str) -> bool:
         """Write one SSE event. Returns False when the connection is already broken.

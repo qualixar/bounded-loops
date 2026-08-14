@@ -47,14 +47,18 @@ def handle(route: str, payload: Mapping[str, Any] | None = None) -> dict:
     """Dispatch one API call. Returns `{"ok": bool, ...}` and never raises for user input."""
     handler = _ROUTES.get(route)
     if handler is None:
-        return {"ok": False, "error": f"no such route: {route}"}
+        return {"ok": False, "error": f"no such route: {route}", "mutating": False}
     body = payload or {}
+    # Stamped on every response, including errors, so a caller can tell a route that could
+    # have changed something from one that could not — and so MUTATING_ROUTES is read by the
+    # server rather than sitting inert next to the route table looking authoritative.
+    stamp = {"mutating": is_mutating(route)}
     try:
-        return handler(body)
+        return {**handler(body), **stamp}
     except ManifestError as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": str(exc), **stamp}
     except Exception as exc:  # noqa: BLE001 - a UI must get an error, never a dropped connection
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}", **stamp}
 
 
 # ── read-only routes ─────────────────────────────────────────────────────────
@@ -212,11 +216,18 @@ def _graph_save(payload: Mapping[str, Any]) -> dict:
 
     workspace = discover()
     ensure(workspace)
-    target = (workspace.graphs_dir / f"{name}.yaml").resolve()
+    named = workspace.graphs_dir / f"{name}.yaml"
+    # Ask whether the NAME is a link before resolving it. Resolving first and then calling
+    # is_symlink() on the result can only ever answer False — the resolved path IS the target,
+    # so the link has already been followed by the time the question is asked. That ordering
+    # made this check dead code: `linksave.yaml -> auditsave.yaml` reported saved:true and
+    # silently overwrote auditsave.yaml. is_relative_to did not catch it either, because a
+    # link inside graphs/ resolves inside graphs/.
+    if named.is_symlink():
+        return {"ok": False, "error": f"{named.name} is a symlink; refusing to write through it"}
+    target = named.resolve()
     if not target.is_relative_to(workspace.graphs_dir.resolve()):
         return {"ok": False, "error": "refusing to write outside the workspace"}
-    if target.is_symlink():
-        return {"ok": False, "error": f"{target.name} is a symlink; refusing to write through it"}
     target.write_text(manifest, encoding="utf-8")
     return {"ok": True, "saved": True, "path": str(target), "name": name}
 
@@ -241,7 +252,7 @@ def _approve(payload: Mapping[str, Any]) -> dict:
             request,
             node_id=str(node_id),
             decision=str(decision),
-            confirm=bool(payload.get("confirm", False)),
+            confirm=requires_true_confirm(payload.get("confirm")),
         ),
     )
 
@@ -367,7 +378,7 @@ def _execute(payload: Mapping[str, Any]) -> dict:
         for node in planned["nodes"]
     ]
 
-    if not payload.get("confirm"):
+    if not requires_true_confirm(payload.get("confirm")):
         return {
             "ok": True,
             "started": False,
@@ -494,8 +505,30 @@ _ROUTES: Mapping[str, Callable[[Mapping[str, Any]], dict]] = {
 }
 
 #: Routes that change something. Everything else must be safe to call on a timer.
+#:
+#: This is a DECLARATION, not the access gate — every POST already needs the loopback token
+#: and a same-origin header before it reaches `handle`, and each writer gates its own confirm.
+#: It used to be neither: nothing in the server read it, so a frozenset that looked
+#: security-relevant was in fact inert, and the first person to add a fourth writer would have
+#: had nothing tell them to update it.
+#:
+#: It is now read on every dispatch (below) and checked against reality by
+#: `tests/graph/monitor/test_api_contract.py`, which fails if a route that touches disk is
+#: missing from this set.
 MUTATING_ROUTES = frozenset({"graph.save", "approve", "execute"})
 
 
 def is_mutating(route: str) -> bool:
+    """Whether calling `route` can change state. Stamped onto every response."""
     return route in MUTATING_ROUTES
+
+
+def requires_true_confirm(value: object) -> bool:
+    """Exactly `True` — not merely truthy.
+
+    `if not payload.get("confirm")` accepted any truthy JSON value, so the STRING "false"
+    started a run: a frontend bug or a hand-written client that stringified its booleans would
+    execute something the operator had only asked to preview. Nothing about "the caller sent
+    us the word false" should read as consent.
+    """
+    return value is True

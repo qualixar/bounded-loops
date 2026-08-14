@@ -12,9 +12,16 @@ user says "just run it":
    Show the user: runner command, gate kind, max_attempts, max_wallclock_s,
    risk tags, and production_ready status. If the loop is not production-ready,
    say so and wait for explicit confirmation before proceeding.
+   **Keep the `confirm_token` from this response.** You need it in step 2.
 
 2. **Execute** — only after the user confirms ("yes", "run it", "go", etc.),
-   call `bl_run(loop_dir="$ARGUMENTS", confirm=true)`.
+   call `bl_run(loop_dir="$ARGUMENTS", confirm=true, confirm_token="<the token
+   from step 1>")`.
+
+The token is required and expires after 15 minutes. It is bound to the exact
+arguments you previewed, so if you change the runner, gate, or iteration cap
+between the two calls it stops working — preview again rather than trying to
+force it through.
 
 Report the terminal status exactly as returned — DONE, HALT, ERROR, PAUSE, or
 KILLED. DONE is the only success status. All others require investigation:

@@ -26,13 +26,20 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import json
 import tomllib
 from importlib.metadata import version as installed_version
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: A real loop from this repo, used to prove the confirm handshake end to end. It has to be one
+#: that actually completes: a fixture whose gate cannot run would make the handshake test pass
+#: for the wrong reason, which is the failure mode this whole file exists to catch.
+HANDSHAKE_LOOP = str(REPO_ROOT / "loops" / "a11y")
 
 #: The protocol revision this release targets. Bumping the SDK past this should be a decision,
 #: not a surprise discovered in production — a client negotiating an unexpected revision is how
@@ -106,20 +113,31 @@ def test_the_decorators_accept_the_KEYWORDS_this_engine_passes() -> None:
     assert callable(server.tool)
 
 
-def test_Context_still_exposes_session_because_the_confirm_GATE_depends_on_it() -> None:
-    """`_session_state` keys per-connection preview state on `ctx.session`.
+def test_the_confirm_handshake_does_NOT_depend_on_session_identity() -> None:
+    """The bug this file exists to never repeat.
 
-    MCP 2.0 removed `Context.client_id` and changed `Context.log`. Had it removed `session`,
-    `_session_state` would have fallen through to its shared-dict fallback on every call and
-    silently dropped MCP session isolation — one client could confirm another's preview. It
-    fails safe rather than open, but it would stop being isolation, so this is asserted
-    directly rather than assumed from a migration guide.
+    The handshake used to key preview state on `ctx.session` in a WeakKeyDictionary. In MCP
+    2.0 a `ServerSession` is constructed PER REQUEST, so the preview landed under one key and
+    the confirm looked under another: `bl_run(confirm=True)` could not succeed through any MCP
+    host, ever. The tool's core function was dead on the shipped transport.
+
+    What made it survive review is the useful part. The test guarding it asserted that
+    `Context.session` still EXISTED — which was true, and irrelevant. Existence was never the
+    property the handshake needed; stability across two calls was, and nothing checked it.
+
+    So this asserts the fix instead of the old assumption: session identity is unstable, and
+    the handshake must not care.
     """
-    from mcp.server.mcpserver import Context
+    from bounded_loops import mcp_server
 
-    assert "session" in dir(Context), (
-        "Context.session is gone. Before adapting, read `_session_state` in mcp_server.py: "
-        "the confirm gate's per-session isolation is built on this attribute."
+    assert not hasattr(mcp_server, "_session_state"), (
+        "_session_state is back. Session-keyed preview state cannot work on MCP 2.0 — "
+        "ServerSession is per-request. Use the signed confirm token instead."
+    )
+    signature = inspect.signature(mcp_server.bl_run)
+    assert "confirm_token" in signature.parameters, (
+        "bl_run lost its confirm_token parameter — the handshake has no way to prove a "
+        "preview happened."
     )
 
 
@@ -186,6 +204,52 @@ def _negotiate(mode: str) -> tuple[str, int]:
     return asyncio.run(_go())
 
 
+def _tool_surface(mode: str) -> dict[str, Any]:
+    """Every tool name mapped to its input schema, as a real client of `mode` sees it."""
+    from mcp.client import Client
+    from mcp.client._memory import InMemoryTransport
+
+    from bounded_loops import mcp_server
+
+    async def _go() -> dict[str, Any]:
+        async with Client(InMemoryTransport(mcp_server.mcp), mode=mode) as client:
+            result = await client.list_tools()
+            return {tool.name: tool.input_schema for tool in result.tools}
+
+    return asyncio.run(_go())
+
+
+def _tool_text(result: Any) -> str:
+    """The text of a tool result.
+
+    The SDK types content as a union of five shapes; every tool in this server answers with
+    TextContent. Narrowing here rather than at each call site keeps the assertion in one place
+    instead of teaching mypy the same thing three times.
+    """
+    block = result.content[0]
+    text = getattr(block, "text", None)
+    assert isinstance(text, str), f"expected a text content block, got {type(block).__name__}"
+    return text
+
+
+def _call_bl_run(client_mode: str, calls: list[dict]) -> list[dict]:
+    """Make `calls` to bl_run on ONE connection; return each parsed response."""
+    from mcp.client import Client
+    from mcp.client._memory import InMemoryTransport
+
+    from bounded_loops import mcp_server
+
+    async def _go() -> list[dict]:
+        out: list[dict] = []
+        async with Client(InMemoryTransport(mcp_server.mcp), mode=client_mode) as client:
+            for arguments in calls:
+                result = await client.call_tool("bl_run", arguments)
+                out.append(json.loads(_tool_text(result)))
+        return out
+
+    return asyncio.run(_go())
+
+
 def test_a_MODERN_client_negotiates_the_2026_revision() -> None:
     """The actual claim "bounded-loops is on MCP 2.0", tested rather than asserted in a CHANGELOG."""
     revision, tool_count = _negotiate("auto")
@@ -218,11 +282,126 @@ def test_both_eras_see_exactly_the_SAME_tools() -> None:
     with the client's protocol era, `bl_capabilities` would be telling different hosts different
     truths about the same engine.
     """
-    _modern_revision, modern_count = _negotiate("auto")
-    _legacy_revision, legacy_count = _negotiate("legacy")
+    modern = _tool_surface("auto")
+    legacy = _tool_surface("legacy")
 
-    assert modern_count == legacy_count, (
-        f"the modern client sees {modern_count} tools and the legacy client {legacy_count}"
+    # Names, not just how many. Counting alone would pass a regression that dropped
+    # graph_approve and added a placeholder to keep the total at 22 — the count stays honest
+    # while the capability a host depends on has silently vanished.
+    assert set(modern) == set(legacy), (
+        "the two protocol eras expose different tools; "
+        f"modern-only={sorted(set(modern) - set(legacy))}, "
+        f"legacy-only={sorted(set(legacy) - set(modern))}"
+    )
+    # And the same SHAPE, because a tool that keeps its name while losing a required
+    # parameter is a different tool wearing the old label.
+    divergent = sorted(name for name in modern if modern[name] != legacy[name])
+    assert not divergent, f"same tool name, different input schema per era: {divergent}"
+
+
+# ── the handshake, over a real client ────────────────────────────────────────
+#
+# Everything above tests that the server is REACHABLE on both eras. None of it tests that its
+# main tool can actually DO anything, which is how `bl_run(confirm=True)` shipped in a state
+# where it could never succeed: the surface was perfect and the function was dead.
+
+
+@pytest.mark.parametrize("client_mode", ["auto", "legacy"])
+def test_preview_then_confirm_actually_RUNS_the_loop(client_mode: str) -> None:
+    """Two calls on one connection must be able to execute a loop. They could not.
+
+    Session-keyed preview state met MCP 2.0's per-request `ServerSession` and every confirm
+    came back "no matching preview" — on both protocol eras, for every host. Parametrised
+    because a handshake that works on one era and not the other is the same defect wearing a
+    smaller hat.
+    """
+    preview, confirmed = _preview_then_confirm(client_mode)
+
+    assert preview["status"] == "not_confirmed", "the preview call should not execute"
+    assert preview.get("confirm_token"), "the preview handed back no confirm_token to use"
+    assert confirmed["status"] != "not_confirmed", (
+        f"confirm was refused after a valid preview: {confirmed.get('error')!r}. "
+        "The handshake is unusable, so this tool cannot run a loop from any MCP host."
+    )
+    assert confirmed["status"] == "DONE", f"expected DONE, got {confirmed}"
+
+
+def _preview_then_confirm(client_mode: str) -> tuple[dict, dict]:
+    """Preview, then confirm with the token that preview issued."""
+    from mcp.client import Client
+    from mcp.client._memory import InMemoryTransport
+
+    from bounded_loops import mcp_server
+
+    async def _go() -> tuple[dict, dict]:
+        async with Client(InMemoryTransport(mcp_server.mcp), mode=client_mode) as client:
+            first = await client.call_tool(
+                "bl_run", {"loop_dir": HANDSHAKE_LOOP, "confirm": False}
+            )
+            preview = json.loads(_tool_text(first))
+            second = await client.call_tool(
+                "bl_run",
+                {
+                    "loop_dir": HANDSHAKE_LOOP,
+                    "confirm": True,
+                    "confirm_token": preview.get("confirm_token", ""),
+                },
+            )
+            return preview, json.loads(_tool_text(second))
+
+    return asyncio.run(_go())
+
+
+def test_confirm_without_a_token_is_REFUSED() -> None:
+    """The gate has to still be a gate. A usable handshake that anyone can skip is worse than
+    a broken one, because it looks like it works."""
+    (naked,) = _call_bl_run("auto", [{"loop_dir": HANDSHAKE_LOOP, "confirm": True}])
+
+    assert naked["status"] == "not_confirmed", (
+        f"confirm=True executed with no preview and no token: {naked}"
+    )
+    assert "confirm_token" in str(naked.get("error", "")), (
+        f"refused, but the reason does not tell the caller what to do: {naked.get('error')!r}"
+    )
+
+
+def test_a_token_does_NOT_authorize_a_DIFFERENT_run() -> None:
+    """The TOCTOU case: preview something safe, then execute something else with that token.
+
+    The token is an HMAC over the run's full executable identity, so changing the gate after
+    previewing invalidates it. Without this the handshake would prove only that the caller
+    previewed SOMETHING, which is not a trust decision about what actually executes.
+    """
+    from bounded_loops import mcp_server
+
+    preview, _ = _preview_then_confirm("auto")
+    token = preview["confirm_token"]
+
+    swapped = mcp_server.bl_run(
+        loop_dir=HANDSHAKE_LOOP,
+        confirm=True,
+        gate_override="echo definitely-not-what-was-previewed",
+        confirm_token=token,
+    )
+
+    assert swapped["status"] == "not_confirmed", (
+        f"a token issued for one gate authorized a different one: {swapped}"
+    )
+
+
+def test_an_EXPIRED_token_is_refused() -> None:
+    """A token found later in a transcript or a log must already be dead."""
+    from bounded_loops import mcp_server
+
+    stale = mcp_server._issue_confirm_token("some-signature")
+    issued_at, _, digest = stale.partition(".")
+    aged = f"{int(issued_at) - mcp_server._CONFIRM_TOKEN_TTL_SECONDS - 60}.{digest}"
+
+    assert mcp_server._confirm_token_error(aged, "some-signature") is not None, (
+        "an expired token was accepted"
+    )
+    assert mcp_server._confirm_token_error(stale, "some-signature") is None, (
+        "a fresh token for the same signature was rejected"
     )
 
 

@@ -557,3 +557,73 @@ def test_a_change_missing_a_pointer_or_value_is_refused(saved_graph: str) -> Non
     for change in malformed:
         result = mcp_authoring._configure(name=saved_graph, changes=[change], confirm=True)
         assert result["ok"] is False
+
+
+# ── graph.save must not write through a symlink ──────────────────────────────
+
+
+def test_graph_save_REFUSES_to_write_through_an_in_workspace_symlink(
+    tmp_path: Path, monkeypatch, reference_manifest: str,
+) -> None:
+    """Found independently by two auditors, and dead code before that.
+
+    `_graph_save` resolved the target and THEN asked whether it was a symlink — a question
+    that can only answer False once the link has been followed. So `evil.yaml -> real.yaml`
+    reported `saved: true` for `evil` while silently replacing `real`, and the workspace
+    boundary check could not catch it because a link inside graphs/ resolves inside graphs/.
+
+    That is the product's core defect class showing up on the write path: a receipt attesting
+    to something the filesystem does not support.
+    """
+    monkeypatch.setenv("BOUNDED_LOOPS_WORKSPACE", str(tmp_path / "project"))
+    from bounded_loops.graph.monitor import api
+    from bounded_loops.workspace import discover, ensure
+
+    workspace = discover()
+    ensure(workspace)
+
+    trusted = workspace.graphs_dir / "trusted.yaml"
+    trusted.write_text("graph_id: the-operators-own-graph\n", encoding="utf-8")
+    (workspace.graphs_dir / "alias.yaml").symlink_to(trusted)
+
+    result = api.handle("graph.save", {"name": "alias", "manifest": reference_manifest})
+
+    assert result["ok"] is False, f"a symlinked name was written through: {result}"
+    assert "symlink" in result["error"]
+    assert trusted.read_text(encoding="utf-8") == "graph_id: the-operators-own-graph\n", (
+        "the operator's graph was overwritten through an alias"
+    )
+
+
+def test_graph_save_still_refuses_a_symlink_pointing_OUTSIDE_the_workspace(
+    tmp_path: Path, monkeypatch, reference_manifest: str,
+) -> None:
+    """The case that always worked. Kept so fixing the ordering did not trade one for the other."""
+    monkeypatch.setenv("BOUNDED_LOOPS_WORKSPACE", str(tmp_path / "project"))
+    from bounded_loops.graph.monitor import api
+    from bounded_loops.workspace import discover, ensure
+
+    workspace = discover()
+    ensure(workspace)
+
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("untouched\n", encoding="utf-8")
+    (workspace.graphs_dir / "escape.yaml").symlink_to(outside)
+
+    result = api.handle("graph.save", {"name": "escape", "manifest": reference_manifest})
+
+    assert result["ok"] is False
+    assert outside.read_text(encoding="utf-8") == "untouched\n"
+
+
+def test_graph_save_writes_a_plain_new_name(
+    tmp_path: Path, monkeypatch, reference_manifest: str,
+) -> None:
+    """The refusals above must not have made saving impossible."""
+    monkeypatch.setenv("BOUNDED_LOOPS_WORKSPACE", str(tmp_path / "project"))
+    from bounded_loops.graph.monitor import api
+
+    result = api.handle("graph.save", {"name": "ordinary", "manifest": reference_manifest})
+
+    assert result["ok"] is True and result["saved"] is True
+    assert Path(result["path"]).read_text(encoding="utf-8") == reference_manifest

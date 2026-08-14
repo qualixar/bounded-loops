@@ -7,7 +7,7 @@ this module translates MCP tool calls into calls against the engine, and
 translates Outcome/ManifestError results back into MCP-tool-shaped dicts.
 
 SAFETY: bl_run's `confirm` parameter is a REAL, server-side-enforced gate,
-not a rubber stamp — see the module-level `_previewed` dict and
+not a rubber stamp — see `_issue_confirm_token` and
 `bl_run`'s docstring. This module also refuses
 to run any loop that would require interactive approval (rung L2/L3
 without an explicit `bounds.require_approval: false`) BEFORE ever calling
@@ -18,8 +18,11 @@ JSON-RPC framing.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
-import weakref
+import secrets
+import time
 from pathlib import Path
 
 try:
@@ -47,75 +50,83 @@ from bounded_loops.trust_store import _content_hash, record_trust
 mcp = MCPServer("bounded-loops")
 _log = logging.getLogger(__name__)
 
-# Module-level, per-server-process session state: maps an
-# absolute loop_dir string to the exact gate-command string most recently
-# shown to a confirm=False preview call for that path, in THIS server
-# process's lifetime. Not persisted across server restarts — that's fine,
-# a fresh server means a fresh trust decision is required again anyway.
-#
-# L-3 fix: two dicts instead of one:
-#   _previewed — shared fallback for callers that don't supply a session
-#                context (direct calls, tests, CLI wrappers). Used when
-#                ctx=None.
-#   _previewed_by_session — per-MCP-session preview state.  The key is the
-#                MCP session object (stable across all calls in one
-#                client connection). WeakKeyDictionary ensures the entry is
-#                GC'd automatically when a session ends, with no manual
-#                cleanup required.
-#
-# Why this matters: with a single global dict, concurrent MCP sessions
-# (e.g. Claude Code + another client both connected) share preview state
-# keyed only by loop path. Session A's preview could be confirmed by
-# session B — or B's preview overwrites A's, causing A's confirm to fail
-# with a confusing "no matching preview" error on a loop A did preview.
-_previewed: dict[str, str] = {}
-_previewed_by_session: weakref.WeakKeyDictionary[object, dict[str, str]] = (
-    weakref.WeakKeyDictionary()
-)
+#: Signs confirm tokens. Generated per server process, never persisted, never logged.
+#: A preview issued by a previous process cannot be confirmed against this one — correct,
+#: because that preview was shown to a different server's caller.
+_HANDSHAKE_SECRET = secrets.token_bytes(32)
+
+#: How long a preview stays confirmable. Long enough for a human to read the preview and
+#: decide; short enough that a token found later in a transcript is already dead.
+_CONFIRM_TOKEN_TTL_SECONDS = 900
 
 
-def _session_state(ctx: "Context | None") -> dict[str, str]:
-    """Return the preview dict scoped to this session (or the shared fallback).
+def _issue_confirm_token(run_sig: str) -> str:
+    """Proof that THIS process previewed exactly this executable identity, just now.
 
-    When ctx is supplied by the SDK (a real MCP client call), returns a
-    per-session dict keyed by the session object — invisible to other
-    concurrent sessions.  When ctx is None (direct test calls, CLI wrappers)
-    returns the shared _previewed dict, preserving existing behaviour.
+    Why a token and not server-side session state: the state approach was broken and could
+    not be repaired in place. It keyed previews on the MCP session object, and in MCP 2.0 a
+    `ServerSession` is built PER REQUEST — so the preview landed under one key and the
+    confirm looked under another, and `bl_run(confirm=True)` could never succeed through any
+    MCP host. The fallback for a missing session was worse: a process-global dict, in which
+    one client could confirm what a different client had previewed.
 
-    MCP 2.0 CAVEAT — this is why `main()` names its transport explicitly. The 2026-07-28
-    revision made the protocol stateless by default, so on a stateless HTTP transport the
-    object behind `ctx.session` is not guaranteed to outlive one request. If it does not, a
-    `confirm=False` preview lands in one dict and the `confirm=True` call looks in another,
-    finds no matching preview, and REFUSES to run. That is the correct direction to fail — a
-    lost handshake must never become an unpreviewed execution — but it would be an unusable
-    server, which is why this one ships over stdio, where the connection is long-lived and the
-    session object is stable for its whole life. Moving this server to stateless HTTP means
-    first giving the handshake durable state (`Context.request_state`, or the receipt log);
-    it is not a transport flag.
+    A signed token has neither failure. It carries its own proof, so it does not care whether
+    the transport is stdio, HTTP, stateless, or pooled, and there is no shared mutable state
+    for a second caller to reach into.
+
+    What it proves is precise, and narrower than it looks: the caller was handed a preview of
+    this exact signature by this process, recently. It does NOT prove a human read that
+    preview — nothing on this wire can. The human gate is `_approval_required`, which refuses
+    higher-rung loops outright.
     """
-    if ctx is None:
-        return _previewed
-    try:
-        session = ctx.session  # stable object for the lifetime of a connection
-    except (AttributeError, ValueError):
-        # ctx.session raises ValueError if request_context is None (e.g. a
-        # mock or test double that didn't wire a real request context).
-        # Fall back to the shared dict rather than crashing — fail-open is the
-        # right call here (do not abort a live session over preview-state lookup).
-        # The warning makes the regression observable in production logs so an
-        # integration problem with the MCP request context is not silently invisible.
-        _log.warning(
-            "bounded-loops-mcp: _session_state could not resolve ctx.session "
-            "(ctx type=%s); falling back to process-global preview dict — "
-            "MCP session isolation is inactive for this call. If this appears "
-            "in production logs, check that the MCP request context is "
-            "properly wired.",
-            type(ctx).__name__,
+    issued_at = int(time.time())
+    digest = hmac.new(
+        _HANDSHAKE_SECRET, f"{issued_at}:{run_sig}".encode(), hashlib.sha256
+    ).hexdigest()
+    return f"{issued_at}.{digest}"
+
+
+def _confirm_token_error(token: str | None, run_sig: str) -> str | None:
+    """None when the token authorizes this exact run, else why it does not.
+
+    Every rejection is the same refusal to the caller; the distinct strings exist so an
+    operator reading them can tell "you skipped the preview" from "you took too long" from
+    "you changed an argument after previewing", which are three different mistakes.
+    """
+    if not token or not isinstance(token, str):
+        return (
+            "no confirm_token — call with confirm=false first, then pass the "
+            "confirm_token from that response back with confirm=true"
         )
-        return _previewed
-    if session not in _previewed_by_session:
-        _previewed_by_session[session] = {}
-    return _previewed_by_session[session]
+    issued_text, _, digest = token.partition(".")
+    if not digest:
+        return "malformed confirm_token"
+    try:
+        issued_at = int(issued_text)
+    except ValueError:
+        return "malformed confirm_token"
+
+    expected = hmac.new(
+        _HANDSHAKE_SECRET, f"{issued_at}:{run_sig}".encode(), hashlib.sha256
+    ).hexdigest()
+    # compare_digest, not ==, so a wrong token cannot be discovered a byte at a time.
+    if not hmac.compare_digest(digest, expected):
+        return (
+            "confirm_token does not match these arguments — it was issued for a "
+            "different run. Preview again with confirm=false."
+        )
+
+    age = int(time.time()) - issued_at
+    if age > _CONFIRM_TOKEN_TTL_SECONDS:
+        return (
+            f"confirm_token expired ({age}s old, limit {_CONFIRM_TOKEN_TTL_SECONDS}s) — "
+            "preview again with confirm=false"
+        )
+    if age < -60:
+        # Clock moved backwards, or a token was minted for the future. Neither is a preview
+        # this process issued a moment ago, which is the only thing the token may attest to.
+        return "confirm_token is not yet valid — preview again with confirm=false"
+    return None
 
 
 def _resolve_gate_preview(manifest, gate_override: str | None) -> str:
@@ -350,6 +361,7 @@ def bl_run(
     max_iterations: int | None = None,
     run_id: str | None = None,
     resume: bool = False,
+    confirm_token: str | None = None,
     ctx: "Context | None" = None,
 ) -> dict:
     """
@@ -357,16 +369,22 @@ def bl_run(
     RunLoopUseCase.run). Exit-code semantics from the CLI are
     translated into a status field here instead.
 
-    SAFETY: a loop's gate.run / runner.agent_cmd is arbitrary
-    shell code sourced from loop.yaml. confirm=False returns a preview and
-    RECORDS it in this server process's _previewed state. confirm=True is
-    REJECTED unless the CURRENT gate command for this exact loop_dir
-    matches what was most recently previewed for it in this session —
-    closing both "confirm=True on the very first call, no preview ever
-    shown" and the TOCTOU gap where the manifest could change between a
-    preview and a later execution. A caller cannot skip straight to
-    confirm=True and get a free pass; it must have genuinely previewed
-    THIS exact command first.
+    SAFETY: a loop's gate.run / runner.agent_cmd is arbitrary shell code sourced from
+    loop.yaml, so running one is a trust decision. Two calls are required:
+
+        1. confirm=False           -> {"preview": {...}, "confirm_token": "..."}
+        2. confirm=True, confirm_token=<that token>
+
+    The token is an HMAC over the run's full executable identity (gate command, runner kind,
+    agent_cmd, cassette, iteration cap, run_id, resume), signed with a secret this process
+    generated at startup. So it closes both "confirm=True on the very first call, no preview
+    ever shown" and the TOCTOU gap where the manifest changes between preview and execution:
+    edit loop.yaml in between and the identity changes, the token no longer verifies, and the
+    run is refused. Tokens expire after 15 minutes and die with the process.
+
+    What this does NOT prove is that a HUMAN read the preview — no tool call can establish
+    that. It proves the caller was shown this exact preview by this server, recently. The
+    human gate is separate and stricter: see the rung refusal below.
 
     SAFETY: loops that would require interactive
     approval (rung L2/L3 without an explicit bounds.require_approval:
@@ -381,24 +399,23 @@ def bl_run(
 
     Args:
         loop_dir: path to a loop folder containing loop.yaml.
-        confirm: must be true, AND must match a prior confirm=False
-            preview of the identical gate command for this loop_dir in
-            this session, to actually execute; otherwise returns a
+        confirm: must be true, AND accompanied by the confirm_token from a preview of
+            these exact arguments, to actually execute; otherwise returns a
             preview/refusal instead.
         runner: optional override for manifest.runner_kind.
         gate_override: optional shell command replacing the loop's gate.
         max_iterations: optional override for bounds.max_iterations.
         run_id: optional persistent run id for resumable workspace and ledger.
         resume: continue an existing persistent run selected by run_id.
+        confirm_token: the token returned by the confirm=False preview of these
+            same arguments. Required when confirm is true.
 
     Returns (confirm=False):
-        {"status": "not_confirmed", "preview": {"loop": str, "runner": str,
-         "gate": str}}
-    Returns (confirm=True but no matching prior preview, or the manifest
-             changed since it was last previewed):
-        {"status": "not_confirmed", "error": "no matching preview — call "
-         "with confirm=false first, then confirm=true with the exact same "
-         "arguments", "preview": {"loop": str, "runner": str, "gate": str}}
+        {"status": "not_confirmed", "preview": {...}, "confirm_token": str}
+    Returns (confirm=True with a missing, mismatched, or expired token — including
+             when the manifest changed since it was previewed):
+        {"status": "not_confirmed", "error": str, "preview": {...},
+         "confirm_token": str}
     Returns (confirm=True, would require interactive approval):
         {"status": "error", "error_type": "RequiresInteractiveApproval",
          "message": str}
@@ -420,7 +437,6 @@ def bl_run(
     except ManifestError as e:
         return {"status": "error", "error_type": "ManifestError", "message": str(e)}
 
-    path_key = str(path)
     gate_preview = _resolve_gate_preview(manifest, gate_override)
     run_sig = _run_signature(manifest, runner, gate_override, max_iterations, run_id, resume)
     preview = {
@@ -434,15 +450,22 @@ def bl_run(
     }
 
     if not confirm:
-        _session_state(ctx)[path_key] = run_sig
-        return {"status": "not_confirmed", "preview": preview}
-
-    if _session_state(ctx).get(path_key) != run_sig:
         return {
             "status": "not_confirmed",
-            "error": "no matching preview — call with confirm=false first, "
-                     "then confirm=true with the exact same arguments",
             "preview": preview,
+            "confirm_token": _issue_confirm_token(run_sig),
+        }
+
+    token_error = _confirm_token_error(confirm_token, run_sig)
+    if token_error is not None:
+        return {
+            "status": "not_confirmed",
+            "error": token_error,
+            "preview": preview,
+            # A fresh token, so a caller that previewed correctly but tripped the TTL can
+            # retry without a second round trip. Handing one back is not a bypass: this
+            # response IS a preview, which is the only thing a token attests to.
+            "confirm_token": _issue_confirm_token(run_sig),
         }
 
     if _approval_required(manifest.rung, manifest.bounds):
@@ -538,8 +561,12 @@ def main() -> None:
     The transport is named explicitly even though `stdio` is the SDK default. MCP 2.0 made the
     protocol stateless-by-default and moved transport selection from the constructor onto
     `run()`; a default that moves with the spec is not something a security-relevant handshake
-    should inherit silently. See `_session_state` for why this server specifically cares which
-    transport it is on.
+    should inherit silently.
+
+    The handshake itself no longer depends on which transport this is: `_issue_confirm_token`
+    carries its own proof, so it behaves identically on stdio, HTTP, stateless, or pooled.
+    That was not true of the session-keyed state it replaced, which worked on exactly zero of
+    them once MCP 2.0 made `ServerSession` per-request.
     """
     mcp.run(transport="stdio")
 

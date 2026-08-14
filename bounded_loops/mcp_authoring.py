@@ -595,8 +595,16 @@ def runs() -> dict:
         return {"ok": False, "error": str(exc)}
     if not workspace.runs_dir.is_dir():
         return {"ok": True, "workspace": str(workspace.root), "runs": []}
+    # `is_dir()` follows symlinks, so a planted `runs/anything -> /etc` used to be advertised
+    # as a run. Clicking it then failed deeper in, with a refusal written for a corrupt run
+    # rather than for a thing that was never a run. Excluded here so the list only ever names
+    # what the rest of this module will agree to open.
     names = sorted(
-        (entry.name for entry in workspace.runs_dir.iterdir() if entry.is_dir()),
+        (
+            entry.name
+            for entry in workspace.runs_dir.iterdir()
+            if entry.is_dir() and not entry.is_symlink()
+        ),
         reverse=True,
     )
     return {"ok": True, "workspace": str(workspace.root), "runs": names}
