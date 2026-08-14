@@ -111,6 +111,7 @@ from bounded_loops.graph.graph_composition import (
 )
 from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
+from bounded_loops.graph.application.repair_rounds import gated_effects_for_approval
 from bounded_loops.graph.application.run_graph import is_egress_node
 from bounded_loops.graph.domain.approvals import ApprovalDecision, ApprovalRequest
 from bounded_loops.graph.domain.authoring import NodeKind
@@ -655,7 +656,7 @@ class LocalGraphRuntimeFacade:
             node_id=node_id,
             attempt=1,
             evidence_digest=evidence_digest,
-            requested_effects=frozenset(node.required_effects),
+            requested_effects=gated_effects_for_approval(plan, node_id),
             required_role=required_role,
             nonce=nonce,
             expires_at=expires_at,
@@ -692,7 +693,7 @@ class LocalGraphRuntimeFacade:
             node_id=node_id,
             attempt=1,
             evidence_digest=evidence_digest,
-            requested_effects=frozenset(node.required_effects),
+            requested_effects=gated_effects_for_approval(plan, node_id),
             resource_version=current_version,
         )
 

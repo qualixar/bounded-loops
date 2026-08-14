@@ -40,6 +40,7 @@ from __future__ import annotations
 from typing import Mapping, Protocol
 
 from bounded_loops.graph.application.failure_policy import MAY_CONTINUE_AFTER
+from bounded_loops.graph.domain.authoring import Effect
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import NodeFailureCause, StoredGraphEvent
 from bounded_loops.graph.domain.plan import ExecutionPlan
@@ -69,6 +70,24 @@ def descendants(plan: ExecutionPlan, target: str) -> frozenset[str]:
                 seen.add(child)
                 frontier.append(child)
     return frozenset(seen)
+
+
+def gated_effects_for_approval(plan: ExecutionPlan, approval_node_id: str) -> frozenset[Effect]:
+    """Union of effects of all nodes reachable from *approval_node_id*, excluding itself.
+
+    Uses REACHABILITY — a safe over-approximation: the human authorising this gate is informed
+    about every effect downstream, never fewer. For a two-approval chain (A→X→B→Y), A's set
+    includes X, B and Y effects; B's includes only Y effects.
+    """
+    reachable = descendants(plan, approval_node_id)
+    nodes_by_id = {n.node_id: n for n in plan.nodes}
+    result: frozenset[Effect] = frozenset()
+    for node_id in reachable:
+        if node_id != approval_node_id:
+            node = nodes_by_id.get(node_id)
+            if node is not None:
+                result = result | node.required_effects
+    return result
 
 
 def repair_targets(plan: ExecutionPlan) -> Mapping[str, str]:
