@@ -537,7 +537,10 @@ def test_open_console_run_fails_closed_if_identity_reload_fails_after_open(
 
     import bounded_loops.graph.console.server as server_module
 
-    def _always_fails(path: Path) -> None:
+    def _always_fails(path: Path, **_kwargs: object) -> None:
+        # **kwargs because the real loader takes `package_digests`. A double that only accepts
+        # what the caller happened to pass on the day it was written starts raising TypeError
+        # the moment a keyword is added — which reads as the production code being broken.
         raise ValueError("simulated post-open identity reload failure")
 
     monkeypatch.setattr(server_module, "load_plan_from_run_dir", _always_fails)

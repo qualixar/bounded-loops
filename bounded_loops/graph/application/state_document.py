@@ -152,7 +152,21 @@ def _next_actions(p: ArenaProjection) -> str:
             "the run sooner — the same command either way."
         )
     if p.run_state == "SUCCEEDED":
-        return "## Next actions\n\nRun complete — all nodes succeeded."
+        # SUCCEEDED is a claim about the RUN, not about every node in it. A graph that took its
+        # success edges leaves the repair branch SKIPPED and still succeeds — correctly. Saying
+        # "all nodes succeeded" there contradicted the node table printed directly above, which
+        # already showed the skip. A reader who trusts the summary over the table walks away
+        # believing a repair loop ran that never did.
+        skipped = [node.node_id for node in p.nodes if node.state == "SKIPPED"]
+        if not skipped:
+            return "## Next actions\n\nRun complete — every node succeeded."
+        listed = ", ".join(_cell(node_id) for node_id in skipped)
+        noun = "branch was" if len(skipped) == 1 else "branches were"
+        return (
+            "## Next actions\n\n"
+            f"Run complete. Every node that ran succeeded; {len(skipped)} {noun} not taken: "
+            f"{listed}."
+        )
     if p.run_state == "FAILED":
         failed = [node.node_id for node in p.nodes if node.state == "FAILED"]
         detail = f" at: {', '.join(_cell(node_id) for node_id in failed)}." if failed else "."

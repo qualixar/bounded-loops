@@ -29,6 +29,7 @@ from bounded_loops.graph.application.gate_metrics import (
     false_reject_rate_cs,
 )
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
+from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import StoredGraphEvent
 
@@ -122,7 +123,9 @@ def load_receipts(run_dir: Path) -> Sequence[StoredGraphEvent]:
     through a function that prints: this server speaks JSON-RPC over stdout, and a stray line of
     human text corrupts the transport. One loader, two readers.
     """
-    _plan, identity = load_plan_from_run_dir(run_dir)[:2]
+    _plan, identity = load_plan_from_run_dir(
+        run_dir, package_digests=admitted_loop_package_digests(),
+    )[:2]
     log_path = run_dir / "controller-events.jsonl"
     if not log_path.is_file():
         # ``GraphEventLog.__init__`` touches the file, so simply constructing one CREATED an

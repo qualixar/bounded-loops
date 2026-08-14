@@ -204,18 +204,27 @@ def _spend_questions(nodes: Sequence[Mapping[str, Any]]) -> list[Question]:
         raw_budget = node.get("budget")
         budget: Mapping[str, Any] = raw_budget if isinstance(raw_budget, Mapping) else {}
         node_id = str(node.get("id", f"#{index}"))
-        if not _can_spend(node):
-            continue
-        if budget.get("max_tokens") is None and budget.get("max_cost_microunits") is None:
+        # Two independent questions live in this loop and must not share a gate. "What may this
+        # cost?" applies only where usage is metered; "is repeating this effect safe?" applies
+        # wherever the node reaches outside, metered or not. They were behind one `continue`,
+        # so narrowing the spend predicate silently swallowed a HIGH must-ask about retrying an
+        # irreversible effect — caught by its own test, which is the only reason it is not in
+        # this release.
+        if _can_spend(node) and (
+            budget.get("max_tokens") is None and budget.get("max_cost_microunits") is None
+        ):
             questions.append(
                 Question(
                     key=f"spend:{node_id}",
                     node_id=node_id,
                     ask=f"How much should '{node_id}' be allowed to spend before it stops?",
                     why=(
-                        "With no token or cost ceiling the node has none, and a run that goes wrong "
-                        "keeps going. When a ceiling is reached the run PAUSES rather than failing, "
-                        "so you can raise it deliberately and resume."
+                        "With no token or cost ceiling the node has none, and a run that goes "
+                        "wrong keeps going. This node reports its usage through a connection "
+                        "slot, so when a ceiling is reached the run PAUSES rather than failing "
+                        "and you can raise it deliberately and resume. A node whose worker "
+                        "cannot report usage is not asked this, because a ceiling it could "
+                        "never measure would fail the run instead of pausing it."
                     ),
                     pointer=f"/nodes/{index}/budget",
                     default="no ceiling",
@@ -249,17 +258,21 @@ def _spend_questions(nodes: Sequence[Mapping[str, Any]]) -> list[Question]:
 
 
 def _can_spend(node: Mapping[str, Any]) -> bool:
-    """Whether this node can incur spend at all.
+    """Whether this node's spend can be METERED — which is a stricter question than whether it
+    can have consequences.
 
-    A node with no connection slot and no network-bearing effect runs locally and costs nothing —
-    the shipped keyless graphs are entirely made of these. Asking such a node for a token ceiling
-    is noise, and noise buries the HIGH questions underneath it.
+    Only a connection slot routes to a provider that reports usage, so only a slot-bound node
+    can have a ceiling that ever fires. This used to also return True for any network-bearing
+    effect, and that conflated two different things: `external_write` says the node changes
+    something outside, not that it consumes tokens. Writing a file costs nothing.
+
+    The consequence was not cosmetic. `publish-instruction` on every shipped reference graph
+    declares `external_write` and binds no slot, so the interview asked it for a ceiling — and
+    setting one turns a working keyless graph into `node.failed / budget_unmeasurable`, because
+    the runtime correctly refuses a budget no worker can report. The single question the
+    interview asked about these graphs was one whose only answer broke them.
     """
-    if node.get("connection_slot"):
-        return True
-    effects = node.get("effects")
-    declared = {str(value) for value in effects} if isinstance(effects, list) else set()
-    return bool(declared & _EFFECTFUL)
+    return bool(node.get("connection_slot"))
 
 
 def _failure_questions(

@@ -84,12 +84,41 @@ def test_a_retrying_node_that_reaches_outside_is_a_MUST_ASK() -> None:
     assert "retry:publish" in interview_document(_BARE_DRAFT)["must_ask"]
 
 
-def test_spend_is_asked_only_where_spend_can_HAPPEN() -> None:
-    """A keyless local node costs nothing; asking it for a token ceiling buries the real questions."""
+def test_spend_is_asked_only_where_spend_can_be_METERED() -> None:
+    """Asking for a ceiling the runtime cannot measure does not protect the run — it breaks it.
+
+    This test previously asserted the opposite, that `external_write` was enough to ask. It is
+    not: an effect describes consequences, not token consumption, and a node with no connection
+    slot has no provider reporting usage. Setting a ceiling on one makes the runtime fail the
+    node with `budget_unmeasurable` — correctly, since a budget nothing can measure would never
+    fire — so the interview's only question about the shipped keyless graphs was one whose only
+    answer turned a working graph into a failed run.
+    """
     keys = {q.key for q in interview(_BARE_DRAFT)}
 
-    assert "spend:publish" in keys, "a node with a network-bearing effect can spend"
+    assert "spend:publish" not in keys, (
+        "a node with an effect but no connection slot has no metered worker; a ceiling here "
+        "fails the run rather than pausing it"
+    )
     assert "spend:check" not in keys, "a node with no effects and no slot cannot spend"
+
+
+def test_a_slot_bound_node_IS_asked_for_a_ceiling() -> None:
+    """The narrower predicate must not have silenced the question everywhere."""
+    draft = json.loads(json.dumps(_BARE_DRAFT))
+    draft["connection_slots"] = [{"name": "model", "purpose": "reasoning"}]
+    for node in draft["nodes"]:
+        if node["id"] == "publish":
+            node["connection_slot"] = "model"
+
+    keys = {q.key for q in interview(draft)}
+
+    assert "spend:publish" in keys, "a slot-bound node reports usage and must be asked"
+    question = next(q for q in interview(draft) if q.key == "spend:publish")
+    assert "PAUSES" in question.why
+    assert "cannot report usage is not asked this" in question.why, (
+        "the question promises a pause without saying when that promise holds"
+    )
 
 
 def test_repair_without_a_budget_is_a_MUST_ASK() -> None:

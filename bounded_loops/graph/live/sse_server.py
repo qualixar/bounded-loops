@@ -45,6 +45,7 @@ from bounded_loops.graph.application.arena_projection import (
     ArenaReadRequest,
 )
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
+from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.graph.arena.render import render_arena_html
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
@@ -83,7 +84,9 @@ def open_watch_run(
     except (GraphIntegrityError, GraphValidationError) as exc:
         raise WatchOpenError(str(exc)) from exc
     try:
-        _plan, identity, _meta = load_plan_from_run_dir(run_dir.resolve())
+        _plan, identity, _meta = load_plan_from_run_dir(
+            run_dir.resolve(), package_digests=admitted_loop_package_digests(),
+        )
     except (FileNotFoundError, ValueError, GraphValidationError) as exc:
         raise WatchOpenError(str(exc)) from exc
     return identity, facade

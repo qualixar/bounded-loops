@@ -317,10 +317,18 @@
     statusExplain: strongTrust ? "An independent check confirmed the result."
       : (demo ? "A stand-in gate approved this (demonstration)."
               : "Recorded as passed by a separate gate (unverified local view)."),
-    sub: strongTrust ? "Every green stage was confirmed by an independent check, not by the agent itself."
+    sub: strongTrust ? "Stages marked as checked were confirmed by an independent gate, not by the agent itself."
       : (demo ? "This is a demonstration — stages were approved by a stand-in gate, not a real independent check."
               : "Local view — stage results come from receipts but are not verified here."),
   };
+  // How many succeeded nodes an independent gate actually judged. Said plainly because
+  // "every green stage was confirmed" was false on any graph with a human approval or a join:
+  // those succeed with no verdict in the log, and claiming otherwise is the exact overclaim
+  // this engine exists to make impossible.
+  var gateJudged=(D.nodes||[]).filter(function(n){return n.gate_passed===true;}).length;
+  var succeededUnjudged=(D.nodes||[]).filter(function(n){
+    return n.state==="SUCCEEDED" && (n.gate_passed===null||n.gate_passed===undefined);
+  }).length;
 
   // ---- hero ----
   var runS=st(D.run_state);
@@ -355,13 +363,27 @@
     wavesEl.appendChild(w);
   });
 
+  // TRUE only when an independent gate actually recorded a pass for this node. null means the
+  // gate never judged it — a human approval, a join, a skipped branch — which is not the same
+  // as passing and must never be drawn as if it were.
+  function gatePassed(n){ return n.gate_passed === true; }
+  function gateVerdictText(n){
+    if(n.gate_passed === true) return TRUST.statusExplain;
+    if(n.gate_passed === false) return "A separate gate recorded this as NOT passing.";
+    return "No gate verdict — no independent check evaluated this node.";
+  }
+
   function nodeCard(n){
     var s=st(n.state);
     var el=document.createElement("div"); el.className="node"; el.tabIndex=0; el.setAttribute("role","button");
     el.setAttribute("aria-label",n.node_id+" — "+s.w); el.dataset.id=n.node_id;
     el.style.setProperty("--sc",s.c); el.style.setProperty("--scb",s.b);
     var pulse=(n.state==="RUNNING"||n.state==="STARTING")?" pulse":"";
-    var verified = n.state==="SUCCEEDED" ? '<div class="verified"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v5c0 4.6-3 7.6-7 9-4-1.4-7-4.4-7-9V6l7-3Z" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>'+esc(TRUST.badge)+'</span></div>' : "";
+    // Keyed on the GATE VERDICT, not on the node's state. Those are different facts and this
+    // read them as one: an approval node succeeds by a human holding it, with no verdict in
+    // the log at all, and the badge still claimed "an independent check confirmed the result".
+    // gate_passed is already in this payload; columns.js in the monitor reads it correctly.
+    var verified = gatePassed(n) ? '<div class="verified"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v5c0 4.6-3 7.6-7 9-4-1.4-7-4.4-7-9V6l7-3Z" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>'+esc(TRUST.badge)+'</span></div>' : "";
     var effs=(n.required_effects||[]).map(function(e){return EFFECT[e]||e;}).join(" · ")||"—";
     var arts=(n.artifact_digests||[]).length;
     el.innerHTML =
@@ -455,7 +477,7 @@
     document.getElementById("dtitle").textContent=friendly(n.node_id);
     var route = n.route ? (n.route[0]+" · "+n.route[1]+" ("+n.route[2]+")"+(n.route[3]?" · fallback":"")) : null;
     var body=
-      field("Status",'<span style="color:'+s.c+';font-weight:650">'+esc(s.w)+'</span>'+(n.attempt>1?' · attempt '+esc(String(n.attempt)):""),n.state==="SUCCEEDED"?TRUST.statusExplain:s.d)+
+      field("Status",'<span style="color:'+s.c+';font-weight:650">'+esc(s.w)+'</span>'+(n.attempt>1?' · attempt '+esc(String(n.attempt)):""),n.state==="SUCCEEDED"?gateVerdictText(n):s.d)+
       (n.state==="SUCCEEDED"?'<div class="verified" style="margin-bottom:17px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v5c0 4.6-3 7.6-7 9-4-1.4-7-4.4-7-9V6l7-3Z" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>'+esc(TRUST.drawer)+'</span></div>':"")+
       field("What it may do",esc((n.required_effects||[]).map(function(e){return EFFECT[e]||e;}).join(" · ")||"—"),"The only actions this stage is authorized to take.")+
       field("Isolation",esc(ISO[n.isolation]||n.isolation),"How strongly the stage is contained while it runs.")+

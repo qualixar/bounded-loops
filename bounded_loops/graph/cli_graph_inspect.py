@@ -29,6 +29,7 @@ from bounded_loops.graph.application.validate_graph import (
 )
 from bounded_loops.graph.domain.authoring import _NULL_POLICY_DIGEST
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
+from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.graph.domain.errors import GraphValidationError
 
 
@@ -204,7 +205,9 @@ def cmd_graph_status(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        plan, identity, run_meta = load_plan_from_run_dir(run_dir)
+        plan, identity, run_meta = load_plan_from_run_dir(
+            run_dir, package_digests=admitted_loop_package_digests(),
+        )
     except (FileNotFoundError, ValueError, GraphValidationError) as exc:
         _err(f"graph status: cannot reconstruct plan — {exc}")
         return 2

@@ -41,6 +41,7 @@ from bounded_loops.graph.application.arena_projection import ArenaProjection, Ar
 from bounded_loops.graph.graph_run_report import _awaiting_approval_nodes
 from bounded_loops.graph.graph_runtime_facade import LocalGraphRuntimeFacade
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
+from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.graph.console.rendering import render_console_page
 from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 from bounded_loops.graph.domain.events import GraphRunIdentity
@@ -80,7 +81,9 @@ def open_console_run(run_dir: Path) -> tuple[GraphRunIdentity, LocalGraphRuntime
     # safe — mirrors cli_graph_approve._load_identity_and_facade's own resolve-after-
     # validate discipline (never re-derive identity from the un-resolved caller path).
     try:
-        _plan, identity, _meta = load_plan_from_run_dir(run_dir.resolve())
+        _plan, identity, _meta = load_plan_from_run_dir(
+            run_dir.resolve(), package_digests=admitted_loop_package_digests(),
+        )
     except (FileNotFoundError, ValueError, GraphValidationError) as exc:
         raise ConsoleOpenError(str(exc)) from exc
     return identity, facade

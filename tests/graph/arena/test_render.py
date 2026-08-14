@@ -200,3 +200,60 @@ def test_a_loop_node_with_no_receipt_says_so_rather_than_showing_a_bare_badge():
     # And the package line must not claim those bytes executed.
     assert "pins the exact bytes that ran" not in html
     assert "compiled against" in html
+
+
+# ── the trust badge must follow the VERDICT, not the state ───────────────────
+
+
+def test_the_arena_never_gates_its_trust_badge_on_STATE_alone() -> None:
+    """A SUCCEEDED node is not necessarily a gate-passed node.
+
+    An approval node succeeds because a human held it; a join succeeds because its branches
+    did. Neither has a gate verdict in the log — `gate_passed` is null. The badge used to be
+    `n.state==="SUCCEEDED" ? <shield> : ""`, so every one of those rendered "Gate passed" and
+    "An independent check confirmed the result" over a node no gate ever judged.
+
+    That is the exact claim this engine exists to make impossible, told by its own UI.
+    """
+    from pathlib import Path
+
+    template = (
+        Path(__file__).resolve().parents[3]
+        / "bounded_loops" / "graph" / "arena" / "arena_template.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'var verified = n.state==="SUCCEEDED"' not in template, (
+        "the trust badge is keyed on node state again; it must read gate_passed"
+    )
+    assert "function gatePassed(n){ return n.gate_passed === true; }" in template, (
+        "the gatePassed predicate is gone — the badge has nothing verdict-aware to consult"
+    )
+    assert "var verified = gatePassed(n)" in template
+
+
+def test_a_succeeded_node_with_NO_verdict_is_rendered_without_a_badge(tmp_path) -> None:
+    """The end-to-end shape, through the real renderer.
+
+    Rendering is a string substitution over a JSON payload, so this asserts the payload the
+    page will read: a null gate_passed has to survive into the document, because the page
+    cannot distinguish "no verdict" from "not passed" if the field never arrives.
+    """
+    from bounded_loops.graph.arena.render import render_arena_html
+
+    html = render_arena_html({
+        "run_id": "r1", "run_state": "SUCCEEDED", "edges": [],
+        "nodes": [
+            {"node_id": "checked", "kind": "loop", "state": "SUCCEEDED",
+             "artifact_digests": [], "gate_passed": True},
+            {"node_id": "held", "kind": "approval", "state": "SUCCEEDED",
+             "artifact_digests": [], "gate_passed": None},
+        ],
+    })
+
+    # The null has to survive into the document. The page cannot tell "no verdict" from "not
+    # passed" if the field never arrives — and a missing field would read as neither, which is
+    # how the badge ended up guessing from state in the first place.
+    assert '"gate_passed":null' in html.replace(" ", ""), (
+        "a node with no gate verdict did not reach the page as null"
+    )
+    assert '"gate_passed":true' in html.replace(" ", "")
