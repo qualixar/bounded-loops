@@ -64,14 +64,19 @@ REFERENCE_GRAPHS: tuple[ReferenceGraph, ...] = (
         graph_id="finance-payment-assurance",
         domain="finance",
         summary=(
-            "Three independent accounting checks run in parallel, join, and gate a payment "
-            "instruction behind a controller's approval. A failed balance check routes to "
-            "reconciliation instead of stopping the run."
+            "Four independent accounting checks run in parallel — three-way match, balanced "
+            "journal, FX sanity and ISO 20022 validity — then join and gate the payment instruction "
+            "behind a controller's approval. A failed balance check routes to reconciliation "
+            "instead of stopping the run."
         ),
         parallel_checks=(
             LoopNodeSpec("match-invoice", "invoice-3way-match"),
             LoopNodeSpec("balance-journal", "journal-entries-balance"),
             LoopNodeSpec("check-fx-rate", "fx-rate-sanity"),
+            # Added because the graph CLAIMED to emit an ISO 20022 payment instruction while the
+            # loop that validates one was not on it. A publish step must be gated by the check its
+            # own effect requires, or the domain claim is a label on other people's gates.
+            LoopNodeSpec("validate-iso20022", "iso20022-payment-valid"),
         ),
         remediation=LoopNodeSpec("reconcile-ledger", "ledger-reconciliation"),
         remediation_trigger="balance-journal",
@@ -103,8 +108,8 @@ REFERENCE_GRAPHS: tuple[ReferenceGraph, ...] = (
         domain="marketing",
         summary=(
             "Campaign copy clears SEO limits, reading level and image alt-text in parallel, then an "
-            "editor approves publication. A failed factual claim routes to source mapping instead of "
-            "killing the campaign."
+            "editor approves publication. Missing alt text routes to claim-source mapping, since "
+            "both are evidence gaps in the same asset, instead of killing the campaign."
         ),
         parallel_checks=(
             LoopNodeSpec("check-seo", "seo-meta-limits"),
@@ -112,7 +117,9 @@ REFERENCE_GRAPHS: tuple[ReferenceGraph, ...] = (
             LoopNodeSpec("check-alt-text", "alt-text-present"),
         ),
         remediation=LoopNodeSpec("map-claim-sources", "claim-source-mapping"),
-        remediation_trigger="check-reading-level",
+        # Triggered by the FACTUAL check, not the reading-level one. Mapping sources cannot repair a
+        # reading level, so routing that failure here was remediation in name only.
+        remediation_trigger="check-alt-text",
         approval_role="content-editor",
         publish_summary="publish the campaign page",
     ),
@@ -141,13 +148,21 @@ REFERENCE_GRAPHS: tuple[ReferenceGraph, ...] = (
         domain="customer",
         summary=(
             "A customer data-subject request clears processor terms, privacy-notice completeness "
-            "and NDA coverage in parallel before a privacy officer authorises the response. A "
+            "and a secret scan in parallel before a privacy officer authorises the response. A "
             "failed terms check routes to clause extraction so the gap can be named."
         ),
         parallel_checks=(
             LoopNodeSpec("check-processor-terms", "gdpr-dpa-terms"),
             LoopNodeSpec("check-privacy-notice", "privacy-policy-completeness"),
-            LoopNodeSpec("check-nda-coverage", "nda-required-clauses"),
+            # Was nda-required-clauses. NDA completeness is COUNTER-PARTY confidentiality, not
+            # data-subject rights: blocking a DSAR because an NDA template lacks a clause is a
+            # category error, and the honesty condition below demands every critical-path check be
+            # one the effect requires. A secret scan IS required before sending customer data out.
+            # Node id deliberately avoids the word "secret": the join declares an input port NAMED
+            # after each incoming node, and validation refuses secret-shaped field names
+            # ({api_key, credential, password, secret, token}) anywhere in an authoring graph. The
+            # engine caught this the moment the graph was linted, which is the check working.
+            LoopNodeSpec("scan-exposure", "secret-scan-keyless"),
         ),
         remediation=LoopNodeSpec("extract-clauses", "contract-clause-extraction"),
         remediation_trigger="check-processor-terms",
@@ -159,17 +174,22 @@ REFERENCE_GRAPHS: tuple[ReferenceGraph, ...] = (
         graph_id="solo-builder-ship",
         domain="personal",
         summary=(
-            "A solo builder's change clears measurable objectives, roadmap fields and commit "
-            "convention in parallel before they approve their own ship. A failed acceptance-criteria "
-            "check routes to a red-green fix loop."
+            "A solo builder's change clears test presence, type annotations and commit convention "
+            "in parallel before they approve their own ship — the commit history is what the release "
+            "notes are generated from. A missing test routes to a red-green fix loop."
         ),
         parallel_checks=(
-            LoopNodeSpec("check-objectives", "okr-measurable"),
-            LoopNodeSpec("check-roadmap-fields", "roadmap-field-contract"),
+            # Was okr-measurable / roadmap-field-contract / conventional-commits. None of those is a
+            # PRECONDITION to shipping release notes -- the graph was a costume, which the honesty
+            # condition below forbids. These three are: tests must exist, types must hold, and the
+            # commit history a release note is generated FROM must follow the convention.
+            LoopNodeSpec("check-tests-exist", "test-presence-per-module"),
+            LoopNodeSpec("check-types", "type-annotations-present"),
             LoopNodeSpec("check-commits", "conventional-commits"),
         ),
         remediation=LoopNodeSpec("fix-red-green", "bug-fix-red-green"),
-        remediation_trigger="check-objectives",
+        # A missing test is exactly what a red-green fix loop repairs.
+        remediation_trigger="check-tests-exist",
         approval_role="maintainer",
         publish_summary="ship the release notes",
     ),

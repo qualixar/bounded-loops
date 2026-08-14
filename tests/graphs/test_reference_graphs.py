@@ -8,6 +8,8 @@ regenerates the files.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -116,3 +118,40 @@ def test_every_pinned_package_is_stub_keyless(definition):
         assert (manifest.get("runner") or {}).get("default") == "stub", (
             f"{spec.package} is not stub-keyless"
         )
+
+
+@pytest.mark.external_tool
+@pytest.mark.parametrize("definition", REFERENCE_GRAPHS, ids=lambda d: d.slug)
+def test_every_reference_graph_actually_RUNS_to_a_terminal_state(definition, tmp_path):
+    """The test the suite did not have, and its absence was a finding.
+
+    The checks above verify renderer byte-equality, digest pins, stub-keyless packages and DAG
+    shape — and never execute a graph. `graphs/README.md` claimed all six run end to end, so the
+    claim rested on one graph having been run by hand while six were asserted. An external auditor
+    ran them and reported exactly that: "They run. The test does not."
+
+    Every graph here pauses at its approval node, because approval-before-irreversible-effect is
+    the property these graphs exist to demonstrate. Reaching AWAITING_APPROVAL therefore IS the
+    terminal state under test; `tests/graph/test_cli_graph_approve.py` covers resumption past it.
+    """
+    import subprocess
+
+    out = tmp_path / "run"
+    env = {
+        **os.environ, "TMPDIR": "/tmp",
+        "BOUNDED_LOOPS_TRUST_STORE": str(tmp_path / "trust"),
+    }
+    result = subprocess.run(
+        [sys.executable, "-m", "bounded_loops.cli", "graph", "run", "--execute",
+         str(_manifest_path(definition.slug)), "--out", str(out)],
+        cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=900,
+    )
+
+    # Exit 0 with a pause, or exit 3 (AWAITING_APPROVAL) — both are healthy; a crash is not.
+    assert result.returncode in (0, 3), (
+        f"{definition.slug} did not run:\n{result.stdout[-3000:]}\n{result.stderr[-3000:]}"
+    )
+    combined = result.stdout + result.stderr
+    assert "awaiting human decision" in combined or "AWAITING_APPROVAL" in combined, combined[-2000:]
+    # Every loop node reached SUCCEEDED, so the shipped packages really did pass their own gates.
+    assert "FAILED" not in combined, f"{definition.slug} had a failing node:\n{combined[-3000:]}"
