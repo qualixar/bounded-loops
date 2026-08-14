@@ -365,12 +365,21 @@ def test_runs_are_listed_newest_first(tmp_path: Path, monkeypatch) -> None:
     assert result["runs"] == ["20260814T120000Z-bbbbbb", "20260101T000000Z-aaaaaa"]
 
 
-def test_the_subject_is_never_empty_even_in_a_nameless_environment(monkeypatch) -> None:
-    """An approval attributed to "" is an approval attributed to nobody."""
-    monkeypatch.setattr("getpass.getuser", lambda: (_ for _ in ()).throw(OSError("no name")))
-    monkeypatch.delenv("USER", raising=False)
+def test_the_read_subject_is_the_RUNS_OWN_organization_not_the_os_user() -> None:
+    """Replaces a test of a helper that no longer exists, and pins the reason it went away.
 
-    assert mcp_authoring._subject() == "local-user"
+    `_subject()` returned the OS user, which read well ("the receipt names the person") and broke
+    every read: `SameTenantArenaAuthorizer` authorizes only when `subject_id == organization_id`.
+    The subject now comes from the run's identity, and the honest consequence — that an approval
+    receipt names the ORGANIZATION rather than a person — is documented rather than papered over.
+    """
+    import inspect
+
+    source = inspect.getsource(mcp_authoring._facade_and_payload)
+    assert '"subject_id": identity.organization_id' in source
+    assert not hasattr(mcp_authoring, "_subject"), "the misleading helper is back"
+    # The limitation must stay stated where the next reader will find it.
+    assert "not the person" in source or "not a named person" in source or "the tenant" in source
 
 
 def test_every_tool_result_survives_a_json_round_trip(reference_manifest: str) -> None:
@@ -384,3 +393,46 @@ def test_every_tool_result_survives_a_json_round_trip(reference_manifest: str) -
         mcp_authoring.runs(),
     ):
         assert json.loads(json.dumps(result)) == result
+
+
+# ── the gap that let a broken read path ship ─────────────────────────────────
+
+
+def test_a_run_the_ENGINE_produced_can_actually_be_READ(tmp_path: Path, monkeypatch) -> None:
+    """Every test above checked a REFUSAL. None checked a success, and the success was broken.
+
+    `for_run_dir` defaults to `SameTenantArenaAuthorizer`, which authorizes a read only when
+    `subject_id == organization_id`. This surface passed the OS user, so every read of every real
+    run raised "Arena reader is unauthorized" — and no test noticed, because the suite proved
+    traversal was refused and a missing run errored, and never once opened a run that existed.
+
+    So this runs the engine and reads the result back.
+    """
+    import os
+    import subprocess
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("BOUNDED_LOOPS_WORKSPACE", str(project))
+    completed = subprocess.run(
+        ["uv", "run", "bl", "graph", "run", "--execute"],
+        cwd=REPO_ROOT,
+        env={**os.environ, "BOUNDED_LOOPS_WORKSPACE": str(project), "TMPDIR": "/tmp"},
+        capture_output=True, text=True, timeout=300,
+    )
+    runs_dir = project / ".bounded-loops" / "runs"
+    if completed.returncode != 0 or not runs_dir.is_dir():
+        pytest.skip(f"the engine could not run here: {completed.stderr[-300:]}")
+
+    listed = mcp_authoring.runs()
+    assert listed["ok"] is True
+    assert len(listed["runs"]) == 1
+
+    status = mcp_authoring._with_run(listed["runs"][0], mcp_authoring._status_payload)
+    assert status["ok"] is True, f"reading a real run failed: {status.get('error')}"
+    assert status["projection"]["run_state"] == "SUCCEEDED"
+    assert status["projection"]["nodes"], "a projection with no nodes is not a projection"
+
+    markdown = mcp_authoring._with_run(listed["runs"][0], mcp_authoring._state_md_payload)
+    assert markdown["ok"] is True
+    assert "SUCCEEDED" in markdown["markdown"]

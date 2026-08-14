@@ -121,6 +121,12 @@ html, body {
 .col-graph-body::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 3px; }
 
 /* ── command / transcript ────────────────────────────────────────────────── */
+/* Fixed input band above the scrollable transcript */
+.cmd-wrap-outer {
+  flex: none; padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
 .cmd-wrap { display: flex; flex-direction: column; gap: 8px; flex: none; }
 .cmd-input-row { display: flex; gap: 6px; }
 .cmd-input {
@@ -273,3 +279,50 @@ html, body {
 .tag.err  { border-color: rgba(255,107,136,.3); color: var(--danger); background: rgba(255,107,136,.07); }
 
 .divider { border: none; border-top: 1px solid var(--line); margin: 8px 0; }
+
+/* utility: col-body no padding/gap override */
+.col-body-plain { flex: 1; overflow-y: auto; overflow-x: hidden; }
+.col-body-plain::-webkit-scrollbar { width: 5px; }
+.col-body-plain::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 3px; }
+
+/* graph label dimmed */
+.graph-section-hdr { font-size: 10px; color: var(--ink-dim); font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em; padding: 4px 0 2px; }
+
+/* checkbox label */
+.check-label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+
+/* field hint */
+.field-hint { font-weight: 400; color: var(--ink-lo); }
+
+/* center-message */
+.center-msg { padding: 30px 0; text-align: center; }
+
+/* left col inner body */
+.left-inner { display: flex; flex-direction: column; gap: 0; }
+
+/* compose button */
+.btn-compose { margin-top: 6px; }
+
+/* save row */
+.save-row { margin-top: 6px; }
+
+/* tiny text for monospace IDs */
+.tiny-mono { font-family: var(--mono); font-size: 10px; color: var(--ink-lo); margin-left: auto; }
+
+/* approve hint */
+.approve-hint { font-size: 10px; margin: 4px 0; }
+
+/* artifact entry */
+.artifact-val { font-size: 10px; }
+
+/* inline select in header */
+.hdr-select {
+  background: var(--surf2); color: var(--ink); border: 1px solid var(--line2);
+  border-radius: 4px; padding: 4px 8px; font: inherit; font-size: 12px; cursor: pointer;
+}
+/* inline small select in col header */
+.col-hdr-select {
+  background: var(--surf2); color: var(--ink); border: 1px solid var(--line2);
+  border-radius: 4px; padding: 3px 6px; font: inherit; font-size: 11px; cursor: pointer;
+}

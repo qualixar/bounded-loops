@@ -19,14 +19,13 @@ resolves it through `Workspace.run_dir`, which validates it. Accepting a path fr
 argument would make this surface a read primitive over the whole filesystem; `../../../etc` is a
 run id the validator rejects.
 
-The subject identity for an approval comes from the OS user running this server, never from a tool
-argument. A model can say which run and which decision; it can never claim to be someone.
+The subject identity is derived from the run itself, never from a tool argument — a model can say
+which run and which decision, and can never claim to be someone. See `_facade_and_payload` for
+what that means for approval attribution, which is weaker than it should be and says so.
 """
 
 from __future__ import annotations
 
-import getpass
-import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -166,10 +165,12 @@ def register(mcp: object) -> None:
         MUTATING, and gated: with `confirm=False` this returns a preview of exactly what it would
         record and changes nothing. Call again with `confirm=True` to record it.
 
-        `decision` is 'approved' or 'rejected'. WHO approved is NOT yours to state — the subject
-        is taken from the account running this server, because the receipt has to name the actor
-        who really granted the authority. An approval authorizes only the effects the node
-        declares; one declaring no effects authorizes nothing."""
+        `decision` is 'approved' or 'rejected'. WHO approved is NOT yours to state: the subject is
+        derived from the run, never from your arguments, so a model cannot attribute a decision to
+        someone. Be aware of what the receipt therefore records — on a local run the actor is the
+        run's ORGANIZATION, not a named person, which is the same attribution `bl graph approve`
+        produces. An approval authorizes only the effects the node declares; one declaring no
+        effects authorizes nothing."""
         return _mutate(
             run,
             lambda facade, payload: _graph_approve_handler(
@@ -407,19 +408,6 @@ def _fill_node(raw: Mapping[str, Any]) -> dict[str, Any]:
 # ── run inspection ───────────────────────────────────────────────────────────
 
 
-def _subject() -> str:
-    """The authenticated subject for this server: the OS user running it.
-
-    NOT a tool parameter, and deliberately so. A model may say which run and which decision; it
-    may never claim to be a different actor, because the receipt of an approval has to name who
-    really granted it.
-    """
-    try:
-        return getpass.getuser()
-    except Exception:  # noqa: BLE001 - a nameless environment still gets a stable label
-        return os.environ.get("USER") or "local-user"
-
-
 def _resolve_run(name: str) -> tuple[Workspace, Path]:
     """The run directory for `name` inside this project's workspace.
 
@@ -454,8 +442,18 @@ def _facade_and_payload(run_dir: Path) -> tuple[Any, dict]:
     `.bounded-loops/runs/<name>/` directly. Reconstructing the hosted path math was removed in
     0.4.0 after both auditors called it public-contract debt; this does not bring it back.
 
-    The identity comes from the run's own `run-meta.json`, and the subject from the OS user. A
-    model supplies neither.
+    The subject is the run's own organization id, NOT the OS user — and that is load-bearing
+    rather than lazy. `for_run_dir` defaults to `SameTenantArenaAuthorizer`, which authorizes a
+    read only when `subject_id == organization_id`; passing the OS user here refused EVERY read of
+    EVERY run, which is how this was found. `bl graph status` has always passed the organization
+    id for the same reason.
+
+    Consequence worth stating plainly, because it is a real limitation and not a detail:
+    `_authorize_mutation` uses that same arena authorizer, so an approval recorded through this
+    surface carries `actor_id: "<organization>"` — the tenant, not the person. `bl graph approve`
+    has the same property today. A receipt that names an organization as the approver is weaker
+    evidence than one naming a human, and closing that gap needs a real local-identity concept
+    rather than a different string here.
     """
     from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
     from bounded_loops.graph.graph_runtime_facade import LocalGraphRuntimeFacade
@@ -466,7 +464,7 @@ def _facade_and_payload(run_dir: Path) -> tuple[Any, dict]:
         run_dir.resolve(), package_digests=admitted_loop_package_digests(),
     )
     payload = {
-        "subject_id": _subject(),
+        "subject_id": identity.organization_id,
         "organization_id": identity.organization_id,
         "project_id": identity.project_id,
         "run_id": identity.run_id,
