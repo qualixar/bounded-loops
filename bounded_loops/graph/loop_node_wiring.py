@@ -50,10 +50,33 @@ _NONTRANSPORT_KINDS = frozenset({
     NodeKind.PUBLISH.value,
 })
 
+#: Node kinds that run entirely IN THIS PROCESS, so there is no sandbox to enforce and the
+#: platform isolation preflight does not apply to them.
+#:
+#: Deliberately not `_NONTRANSPORT_KINDS`. The two answer different questions — "does this node
+#: need a connector transport?" and "does this node get sandboxed?" — and LOOP is exactly where
+#: they diverge: a loop node needs no transport, but it DOES launch a sandboxed subprocess.
+#:
+#: Sharing one predicate meant the pre-run isolation gate skipped loop nodes, so a loop
+#: declaring an isolation tier this host cannot deliver was planned, confirmed, and STARTED,
+#: then failed at the node with `environment_denied` — while the capability report said such a
+#: node "is REFUSED before the run starts". Isolation was never downgraded; the claim about
+#: WHEN it is refused was simply false.
+_IN_PROCESS_KINDS = frozenset({
+    NodeKind.APPROVAL.value,
+    NodeKind.JOIN.value,
+    NodeKind.PUBLISH.value,
+})
+
 
 def _is_nontransport_kind(kind: str) -> bool:
     """True for node kinds that run without a connector transport."""
     return kind in _NONTRANSPORT_KINDS
+
+
+def _is_in_process_kind(kind: str) -> bool:
+    """True for node kinds with no sandboxed subprocess to enforce isolation on."""
+    return kind in _IN_PROCESS_KINDS
 
 
 def _make_upstream_digests_reader(

@@ -50,6 +50,7 @@ from bounded_loops.graph.adapters.persistence.event_log import GraphEventLog
 from bounded_loops.graph.loop_node_wiring import (
     admitted_loop_package_digests,
     build_kind_dispatchers,
+    _is_in_process_kind,
     _is_nontransport_kind,
 )
 from bounded_loops.graph.application.arena_projection import (
@@ -487,9 +488,12 @@ def build_execution_controller(
     for node in plan.nodes:
         if node.node_id in egress_node_ids:
             continue
-        # Nontransport kinds (approval, join, publish) are in-process workers — no subprocess is
-        # sandboxed — so platform capability enforcement does not apply to them.
-        if _is_nontransport_kind(node.kind):
+        # Approval, join and publish run in this process — there is no sandboxed subprocess for
+        # platform capability enforcement to apply to. LOOP is deliberately NOT exempt: it does
+        # launch a sandboxed subprocess, and using the transport predicate here (which does
+        # exempt it) let a loop declaring an undeliverable isolation tier start, then fail at
+        # the node — while the capability report promised refusal before the run starts.
+        if _is_in_process_kind(node.kind):
             continue
         ok, reason = caps.can_enforce(node.isolation, network_mode_for_node(node))
         if not ok:
@@ -723,6 +727,21 @@ def execute_graph_run(
     # stream")` (dual-audit MAJOR — M1 in the Grok audit). The actionable fix is
     # `bl graph approve`, not a second `run`, so say so instead of letting the
     # exception escape as an uncaught traceback.
+    # BEFORE the work, not after. Everything persisted here describes the PLAN, which is fully
+    # known now, and it is what every other surface needs to reconstruct the run: run-meta.json,
+    # plan.json, the manifest. Writing it afterwards meant that killing the process mid-run —
+    # Ctrl-C on `bl monitor`, whose execute route runs this on a daemon thread, or any crash —
+    # left a hash-valid receipt log that NOTHING could open. `bl graph status` and `bl graph
+    # resume` both answered "run-meta.json not found", so the receipts describing real work
+    # already done were unreadable by the tool that wrote them.
+    #
+    # There is no ordering argument for the old position: these files are not evidence of the
+    # run's outcome, they are the key to reading it.
+    persist_run_dir(
+        out_dir, plan, manifest_text, connections_raw, identity,
+        mode=mode_label, audit_plan_json=audit_plan_json,
+        provider_catalog=provider_catalog, fail_mode=graph.policies.fail_mode,
+    )
     try:
         projection = controller.run()
     except GraphIntegrityError as exc:
@@ -739,11 +758,6 @@ def execute_graph_run(
                 f"approved|rejected` — {exc}",
             )
         return _fail(json_out, f"run integrity failure — {exc}")
-    persist_run_dir(
-        out_dir, plan, manifest_text, connections_raw, identity,
-        mode=mode_label, audit_plan_json=audit_plan_json,
-        provider_catalog=provider_catalog, fail_mode=graph.policies.fail_mode,
-    )
     arena = read_arena_projection(
         plan,
         event_log,
