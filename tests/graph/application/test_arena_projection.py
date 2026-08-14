@@ -310,3 +310,141 @@ def test_arena_projection_rejects_a_non_approval_node_awaiting_approval(tmp_path
 
     with pytest.raises(GraphIntegrityError, match="non-approval"):
         _read(plan, store)
+
+
+# ── the gate verdict: the one field that says WHY a node counted as done ─────
+#
+# Mutation testing found this uncovered. Inverting `passed`, fabricating a verdict for a node
+# that had none, and dropping `reason` entirely all left the suite green — nine tests asserting
+# lifecycle and DAG causality, none asserting the verdict. That is the product's central claim
+# going unchecked: every other field says what ran, this one says why it counted as verified.
+
+
+def _run_with_verdict(tmp_path, verdict: object, *, omit: bool = False):
+    """One node through the worker path, carrying `verdict` on its success receipt."""
+    plan = _plan()
+    store = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+    head = "0" * 64
+    head = _append(store, head, "run.created", "created", {"state": "PENDING"})
+    head = _append(store, head, "run.started", "started", {"state": "RUNNING"})
+    for event_type, key, state in (
+        ("node.ready", "ready", "READY"),
+        ("node.starting", "starting", "STARTING"),
+        ("node.running", "running", "RUNNING"),
+        ("node.gating", "gating", "GATING"),
+    ):
+        head = _append(store, head, event_type, key, {
+            "node_id": "research", "state": state, "attempt": 1,
+        })
+    succeeded: dict[str, object] = {
+        "node_id": "research", "state": "SUCCEEDED", "attempt": 1, "artifact_digests": [],
+    }
+    if not omit:
+        succeeded["verdict"] = verdict
+    head = _append(store, head, "node.succeeded", "succeeded", succeeded)
+    head = _append(store, head, "node.ready", "review-ready", {
+        "node_id": "review", "state": "READY", "attempt": 1,
+    })
+    head = _append(store, head, "node.awaiting_approval", "review-awaiting", {
+        "node_id": "review", "state": "AWAITING_APPROVAL", "attempt": 1,
+    })
+    head = _append(store, head, "node.succeeded", "review-succeeded", {
+        "node_id": "review", "state": "SUCCEEDED", "attempt": 1, "artifact_digests": [],
+    })
+    _append(store, head, "run.succeeded", "done", {"state": "SUCCEEDED"})
+    arena = _read(plan, store)
+    return {node.node_id: node for node in arena.nodes}
+
+
+def test_a_PASSING_gate_verdict_reaches_the_projection_unchanged(tmp_path):
+    nodes = _run_with_verdict(tmp_path, {"passed": True, "reason": "gate-passed: 12 tests"})
+
+    assert nodes["research"].gate_passed is True
+    assert nodes["research"].gate_reason == "gate-passed: 12 tests"
+
+
+def test_a_FAILING_gate_verdict_is_not_reported_as_passing(tmp_path):
+    """The inversion mutant, through the failure path.
+
+    The write side refuses a `passed: False` verdict on a `node.succeeded` receipt — a receipt
+    cannot contradict its own terminal state — so a failing verdict has to ride on node.failed.
+    """
+    plan = _plan()
+    store = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+    head = "0" * 64
+    head = _append(store, head, "run.created", "created", {"state": "PENDING"})
+    head = _append(store, head, "run.started", "started", {"state": "RUNNING"})
+    for event_type, key, state in (
+        ("node.ready", "ready", "READY"),
+        ("node.starting", "starting", "STARTING"),
+        ("node.running", "running", "RUNNING"),
+        ("node.gating", "gating", "GATING"),
+    ):
+        head = _append(store, head, event_type, key, {
+            "node_id": "research", "state": state, "attempt": 1,
+        })
+    head = _append(store, head, "node.failed", "failed", {
+        "node_id": "research", "state": "FAILED", "attempt": 1,
+        "reason": "the independent gate rejected this attempt",
+        "cause": "gate_rejected",
+        "verdict": {"passed": False, "reason": "missing evidence digest"},
+    })
+    _append(store, head, "run.failed", "done", {"state": "FAILED"})
+
+    arena = _read(plan, store)
+    research = next(node for node in arena.nodes if node.node_id == "research")
+
+    assert research.gate_passed is False, "a gate that did NOT pass is projected as passed"
+    # The reason is the only explanation an auditor gets for a rejection; dropping it left
+    # the suite green, and without it a rejection is unreviewable.
+    assert research.gate_reason == "missing evidence digest"
+
+
+def test_a_node_with_NO_verdict_is_projected_as_undecided_not_as_passed(tmp_path):
+    """The fabrication mutant, and the real case behind it.
+
+    An approval node succeeds because a human held it — the gate never ran, and the receipt
+    carries no verdict. Returning True here would let every surface paint "independently
+    verified" over a node nothing independent ever looked at.
+    """
+    nodes = _run_with_verdict(tmp_path, None, omit=True)
+
+    assert nodes["research"].gate_passed is None
+    assert nodes["research"].gate_reason is None
+    # And the approval node, which never goes through a gate at all:
+    assert nodes["review"].gate_passed is None, (
+        "an approval node has no gate verdict; projecting one invents evidence"
+    )
+
+
+@pytest.mark.parametrize("malformed", [
+    {"passed": "true", "reason": "stringly typed"},
+    {"passed": 1, "reason": "an int is not a bool"},
+    {"reason": "no passed key at all"},
+    {"passed": True, "reason": ""},
+    "not a mapping",
+    [],
+    None,
+])
+def test_a_MALFORMED_verdict_is_read_as_absent_never_as_a_pass(malformed):
+    """Read-side leniency must fail toward "we do not know", never toward "it passed".
+
+    Tested directly rather than through the log, because the WRITE side refuses every one of
+    these — which is correct, and is also why this function only ever sees them from a receipt
+    file that was corrupted or written by an older version. `1` and `"true"` are the dangerous
+    inputs: both truthy, so a coercing implementation turns a corrupt receipt into a green
+    badge.
+    """
+    from bounded_loops.graph.application.arena_projection import _gate_verdict
+
+    passed, _reason = _gate_verdict(malformed)
+
+    assert passed is not True, f"a malformed verdict {malformed!r} was read as a gate pass"
+
+
+def test_the_read_side_verdict_helper_passes_through_a_WELL_FORMED_verdict():
+    """The negative tests above would all pass against a function that returned None forever."""
+    from bounded_loops.graph.application.arena_projection import _gate_verdict
+
+    assert _gate_verdict({"passed": True, "reason": "ok"}) == (True, "ok")
+    assert _gate_verdict({"passed": False, "reason": "nope"}) == (False, "nope")

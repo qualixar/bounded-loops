@@ -14,6 +14,12 @@ import pytest
 
 from bounded_loops.graph.monitor import api
 
+#: A real shipped graph, read as CONTENT. Passing its PATH is refused as an absolute_path —
+#: which is how the first version of the string-"false" test below passed for the wrong reason.
+_REFERENCE_GRAPH = (
+    Path(__file__).resolve().parents[3] / "graphs" / "customer-data-request" / "graph.yaml"
+)
+
 #: Routes that write to disk or start work. Derived by reading each handler, not by copying
 #: MUTATING_ROUTES — a test that restates the value it is checking proves nothing.
 ROUTES_THAT_CHANGE_SOMETHING = {"graph.save", "approve", "execute"}
@@ -77,12 +83,71 @@ def test_the_boolean_true_still_confirms() -> None:
 def test_a_string_false_does_not_START_a_run(tmp_path: Path, monkeypatch) -> None:
     """The end-to-end shape of the bug, on the route that actually executes work."""
     monkeypatch.setenv("BOUNDED_LOOPS_WORKSPACE", str(tmp_path / "project"))
-    manifest = str(
-        Path(__file__).resolve().parents[3] / "graphs" / "customer-data-request" / "graph.yaml"
-    )
+    manifest = _REFERENCE_GRAPH.read_text(encoding="utf-8")
+
+    preview = api.handle("execute", {"manifest": manifest, "confirm": False})
+    assert preview["ok"] is True, f"the reference graph did not even compile: {preview}"
 
     result = api.handle("execute", {"manifest": manifest, "confirm": "false"})
 
     assert result.get("started") is not True, (
         f"the string 'false' started a run: {result}"
     )
+
+
+# ── the execute route, which nothing exercised ───────────────────────────────
+#
+# Mutation testing found this route entirely uncovered: inverting its confirm check so that
+# `confirm=false` STARTED the run and `confirm=true` previewed it left the suite green, as did
+# deleting the refusal branch so a malformed manifest crashed with a KeyError instead of being
+# refused. The route that starts real work on someone's machine had no test.
+
+@pytest.fixture
+def workspace(tmp_path: Path, monkeypatch) -> Path:
+    monkeypatch.setenv("BOUNDED_LOOPS_WORKSPACE", str(tmp_path / "project"))
+    return tmp_path / "project"
+
+
+def test_execute_without_confirm_PREVIEWS_and_starts_nothing(workspace: Path) -> None:
+    result = api.handle("execute", {"manifest": _REFERENCE_GRAPH.read_text(encoding="utf-8"), "confirm": False})
+
+    assert result["ok"] is True
+    assert result["started"] is False, "a preview started the run"
+    # The preview has to carry the things a person needs before pressing go. A preview that
+    # omits the irreversible effects is not a preview, it is a delay.
+    assert "effects" in result and "ceilings" in result and "pauses_at" in result
+    assert "irreversible" in result
+    assert not (workspace / "runs").exists() or not list((workspace / "runs").iterdir()), (
+        "a preview created a run directory"
+    )
+
+
+def test_execute_REFUSES_a_manifest_the_compiler_rejects(workspace: Path) -> None:
+    """And refuses it as a refusal, not as a crash.
+
+    Deleting this branch made the next line raise KeyError('nodes'), which the generic handler
+    turned into {"ok": false, "error": "KeyError: 'nodes'"} — indistinguishable to a caller
+    from an internal fault, and one refactor away from starting an invalid plan.
+    """
+    result = api.handle("execute", {"manifest": "nodes: not-a-list\n", "confirm": False})
+
+    assert result["ok"] is False
+    assert result["started"] is False
+    assert "KeyError" not in str(result.get("error", "")), (
+        f"a refused manifest surfaced as a crash: {result}"
+    )
+    assert result.get("refusal") is not None or result.get("error"), (
+        "a refused manifest produced neither a refusal nor an error"
+    )
+
+
+def test_execute_reports_the_CEILINGS_including_the_ones_that_are_unset(workspace: Path) -> None:
+    """An absent ceiling is the most important thing on the confirm screen, so it has to arrive
+    as an explicit None rather than being dropped from the payload."""
+    result = api.handle("execute", {"manifest": _REFERENCE_GRAPH.read_text(encoding="utf-8"), "confirm": False})
+
+    assert result["ceilings"], "no ceilings were reported at all"
+    for ceiling in result["ceilings"]:
+        assert "max_tokens" in ceiling, "an unset token ceiling was omitted rather than sent"
+        assert "max_cost_microunits" in ceiling
+        assert "max_attempts" in ceiling and "deadline_s" in ceiling

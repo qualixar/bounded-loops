@@ -413,10 +413,13 @@ def _gate_verdict(value: object) -> tuple[bool | None, str | None]:
         return (None, None)
     passed = value.get("passed")
     reason = value.get("reason")
-    return (
-        passed if isinstance(passed, bool) else None,
-        reason if isinstance(reason, str) and reason else None,
-    )
+    # Both halves or neither. The fields were read independently, so a verdict with a real
+    # boolean and a blank reason came back as "passed, no explanation" — a green badge with
+    # nothing behind it. The write side refuses that shape outright, so seeing it means the
+    # receipt is corrupt, and one corrupt field is enough to distrust the whole verdict.
+    if not isinstance(passed, bool) or not isinstance(reason, str) or not reason:
+        return (None, None)
+    return (passed, reason)
 
 
 def _budget_pause(receipts: tuple[StoredGraphEvent, ...]) -> dict[str, object] | None:
