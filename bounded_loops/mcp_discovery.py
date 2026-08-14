@@ -20,7 +20,10 @@ score as semantic judgement will pick the wrong loop and blame the engine.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Callable, Mapping
+
+from bounded_loops.domain.errors import ManifestError
 
 from bounded_loops.graph.adapters.enforcement.snapshot import platform_snapshot
 from bounded_loops.graph.application.capability_report import capability_report
@@ -122,14 +125,51 @@ def catalog(
         entry
         for entry in entries
         if _matches_filters(entry, role, gate_kind, bool(keyless))
+        # `_matches_filters` takes a two-state `keyless_only` flag, so it cannot express
+        # "only loops that DO need a key" — `False` and `None` both arrive as False and mean
+        # "no filter". Rather than change that shared CLI helper's contract, the third state is
+        # applied here: an explicit `keyless=False` means show me the ones needing credentials.
+        and (keyless is not False or not entry["keyless"])
     ]
     return {
         "total_discovered": len(entries),
         "returned": len(selected),
         "filters": {"role": role, "gate_kind": gate_kind, "keyless": keyless},
-        "loops": selected,
+        "loops": [_with_package_digest(entry) for entry in selected],
         "unreadable": [entry["name"] for entry in selected if entry["error"] is not None],
     }
+
+
+def _with_package_digest(entry: dict[str, Any]) -> dict[str, Any]:
+    """Add `loop_package`, the value a graph's `kind: loop` node must carry.
+
+    Why the catalog and not a separate tool: composing a graph is `bl_catalog` → pick loops →
+    write the manifest, and a required field that needs a second, differently-named call is a
+    field that gets guessed. Before this, nothing on any surface returned a digest — the engine
+    computed them internally and the reference-graph regeneration script had its own copy — so
+    an orchestrator writing a loop node had exactly two moves, invent a hex string or leave a
+    placeholder. `bl graph digest <dir>` is the same value for the CLI path.
+
+    Deliberately NOT cached. A digest is a claim about current content; serving a remembered one
+    after the package changed would defeat the check the compiler performs with it. Digesting all
+    68 shipped packages measures ~150ms total, which is not worth trading correctness for.
+    """
+    if entry.get("error") is not None or not entry.get("path"):
+        # Nothing to digest, and an entry that failed to load must not gain a field that makes
+        # it look usable.
+        return entry
+
+    from bounded_loops.graph.adapters.workers.loop_packages import qualified_package_digest
+
+    try:
+        digest: str | None = qualified_package_digest(Path(entry["path"]))
+        reason = None
+    except (OSError, ValueError, ManifestError) as exc:
+        # Report the failure in the field itself. A silently absent digest reads as "this loop
+        # has none", which is not a thing that exists.
+        digest, reason = None, f"cannot digest this package — {exc}"
+
+    return {**entry, "loop_package": digest, "loop_package_error": reason}
 
 
 def search_loops(task_description: str, *, limit: int = 8) -> dict[str, Any]:

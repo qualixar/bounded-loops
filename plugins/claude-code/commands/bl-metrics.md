@@ -8,7 +8,7 @@ identified by $ARGUMENTS.
 
 Steps:
 
-1. Call `bl_graph_metrics(run_id="$ARGUMENTS")`.
+1. Call `graph_metrics(run="$ARGUMENTS")`.
 
 2. Present the results in a table with columns:
    node_id | status | tokens_in | tokens_out | cost_microunits | wallclock_s

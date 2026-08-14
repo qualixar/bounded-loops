@@ -8,7 +8,7 @@ by $ARGUMENTS.
 
 Steps:
 
-1. Call `bl_graph_status(run_id="$ARGUMENTS")`.
+1. Call `graph_status(run="$ARGUMENTS")`.
 
 2. Report the exact terminal state using these mappings — do not paraphrase:
 

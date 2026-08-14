@@ -48,6 +48,7 @@ from bounded_loops.graph.domain.errors import GraphValidationError
 # `bl graph approve`, `bl graph demo`, and any existing imports resolve unchanged.
 # DEMO_MANIFEST_YAML and DEMO_CONNECTIONS_LIST are re-exported for the same reason.
 from bounded_loops.graph.cli_graph_artifacts import cmd_graph_artifacts
+from bounded_loops.graph.cli_graph_digest import cmd_graph_digest
 from bounded_loops.graph.cli_graph_approve import cmd_graph_approve
 from bounded_loops.graph.cli_graph_demo import (
     DEMO_CONNECTIONS_LIST,  # noqa: F401 — re-exported for test backward-compat (ARCH-05)
@@ -424,6 +425,27 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
                           help="Directory written by `bl graph demo`.")
     status_p.add_argument("--json", action="store_true", help="Emit JSON output.")
     status_p.set_defaults(func=cmd_graph_status)
+
+    # digest
+    digest_p = graph_subs.add_parser(
+        "digest",
+        help="Print the content digest of a loop package, for a graph's loop_package field.",
+        description=(
+            "Every `kind: loop` node must name its loop package by content digest, so the graph "
+            "records WHICH version of the loop ran and the compiler refuses a package that has "
+            "changed underneath it. This prints that digest.\n\n"
+            "It exists because there was no way to obtain one. The digest was computed inside the "
+            "engine and by the script that regenerates the shipped reference graphs, but no "
+            "command or tool exposed it — so anyone authoring a loop node had a required field "
+            "they could not fill, and the only options were to guess (the compiler refuses it, "
+            "and a plausible wrong digest is worse than an obvious one) or to leave a placeholder."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    digest_p.add_argument("package", metavar="<loop-dir>",
+                          help="Directory containing the loop package's loop.yaml.")
+    digest_p.add_argument("--json", action="store_true", help="Emit JSON output.")
+    digest_p.set_defaults(func=cmd_graph_digest)
 
     # artifacts
     artifacts_p = graph_subs.add_parser(

@@ -30,6 +30,7 @@ HOSTS = ("claude-code", "codex", "antigravity")
 # bl-run already exists; all others are new in U2.
 REQUIRED_COMMANDS = [
     "bl-graph",
+    "bl-configure",
     "bl-status",
     "bl-approve",
     "bl-metrics",
@@ -262,21 +263,8 @@ def test_the_stop_hook_is_wired_for_every_host(host: str) -> None:
     )
 
 
-def test_every_command_the_SKILL_names_actually_exists() -> None:
-    """A skill that tells a host to run a command we do not ship sends it in a circle.
-
-    An audit found two: `python3 -m bounded_loops.graph.cli_graph_capabilities` (no such module)
-    and `bl graph digest` (no such action) — the second offered as the way to get the one field a
-    host model must never invent, which is the worst place to be wrong.
-    """
-    import importlib.util
-    import re
-
-    skill = (SHARED_DIR / "skills" / "bounded-loops" / "SKILL.md").read_text(encoding="utf-8")
-
-    for module in set(re.findall(r"python3? -m (bounded_loops[\w.]*)", skill)):
-        assert importlib.util.find_spec(module) is not None, f"SKILL.md names missing module {module}"
-
+def _real_cli_surface() -> tuple[set[str], set[str]]:
+    """Every `bl` command and every `bl graph` action the shipped parser actually resolves."""
     from bounded_loops.cli import _build_parser
 
     parser = _build_parser()
@@ -294,9 +282,76 @@ def test_every_command_the_SKILL_names_actually_exists() -> None:
             sub_choices = getattr(sub, "choices", None)
             if isinstance(sub_choices, dict):
                 graph_actions |= set(sub_choices)
+    return top_level, graph_actions
 
-    for named in set(re.findall(r"`bl ([a-z-]+)(?: ([a-z-]+))?", skill)):
-        command, sub = named
-        assert command in top_level, f"SKILL.md names `bl {command}`, which does not exist"
+
+def _pack_documents() -> list[tuple[str, str]]:
+    """Every file in the host pack that can instruct a model to run something.
+
+    The skill is not the only one, which is how this gap survived: the checked-only-SKILL.md
+    version of this test passed while `bounded-loops-composer.md` told models to run
+    `bl graph digest`, a command that did not exist at the time — offered, of all things, as the
+    way to obtain the one field the same file forbids inventing. Commands and agents are prompts
+    too, and a prompt naming a missing command is a model sent in a circle.
+    """
+    documents: list[tuple[str, str]] = [
+        (
+            "skills/bounded-loops/SKILL.md",
+            (SHARED_DIR / "skills" / "bounded-loops" / "SKILL.md").read_text(encoding="utf-8"),
+        ),
+    ]
+    for folder in ("commands", "agents"):
+        for path in sorted((SHARED_DIR / folder).glob("*.md")):
+            documents.append((f"{folder}/{path.name}", path.read_text(encoding="utf-8")))
+    return documents
+
+
+@pytest.mark.parametrize("relative,text", _pack_documents(), ids=lambda v: v if isinstance(v, str) and "/" in v else "")
+def test_every_command_the_HOST_PACK_names_actually_exists(relative: str, text: str) -> None:
+    """No shipped prompt may name a command, action, or module we do not ship."""
+    import importlib.util
+    import re
+
+    for module in set(re.findall(r"python3? -m (bounded_loops[\w.]*)", text)):
+        assert importlib.util.find_spec(module) is not None, (
+            f"{relative} names missing module {module}"
+        )
+
+    top_level, graph_actions = _real_cli_surface()
+
+    for command, sub in set(re.findall(r"`bl ([a-z-]+)(?: ([a-z-]+))?", text)):
+        assert command in top_level, f"{relative} names `bl {command}`, which does not exist"
         if command == "graph" and sub:
-            assert sub in graph_actions, f"SKILL.md names `bl graph {sub}`, which does not exist"
+            assert sub in graph_actions, (
+                f"{relative} names `bl graph {sub}`, which does not exist"
+            )
+
+
+def test_every_MCP_TOOL_the_host_pack_names_is_registered() -> None:
+    """The other half of the same failure, for the surface the pack actually drives.
+
+    A prompt naming `graph_interview` when nothing registers it fails the same way a missing CLI
+    action does, but more quietly: the model calls a tool that is not there and improvises.
+    """
+    import asyncio
+    import re
+
+    from bounded_loops import mcp_server
+
+    registered = {tool.name for tool in asyncio.run(mcp_server.mcp.list_tools())}
+
+    # A tool reference is a name followed by "(" — that is how the pack writes calls, e.g.
+    # `graph_status(run=...)`. Requiring the paren is what separates a call from a schema FIELD
+    # of a similar shape: `graph_package` is the sha256 field on a `subgraph` node, and an
+    # earlier version of this pattern reported it as a missing tool. A guard that flags the
+    # schema is a guard people learn to ignore.
+    pattern = re.compile(r"`?\b(bl_[a-z_]+|graph_[a-z_]+)\(")
+    missing: list[str] = []
+    for relative, text in _pack_documents():
+        for name in pattern.findall(text):
+            if name not in registered:
+                missing.append(f"{relative}: {name}")
+
+    assert not missing, (
+        "the host pack names MCP tools that are not registered:\n  " + "\n  ".join(sorted(set(missing)))
+    )

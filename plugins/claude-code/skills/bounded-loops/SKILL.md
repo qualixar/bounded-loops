@@ -288,11 +288,11 @@ Available MCP tools when `bounded-loops-mcp` is connected:
 
 | Tool | What it does |
 |---|---|
-| `bl_graph(task=...)` | Compose a graph manifest from a task description, lint it, and show the plan — stops before execution |
-| `bl_graph_compile(manifest=...)` | Compile a manifest to an execution plan |
-| `bl_graph_status(run_id=...)` | Show the current state of a graph run from receipts |
-| `bl_graph_approve(run_id=..., node_id=...)` | Approve a node in AWAITING_APPROVAL state |
-| `bl_graph_metrics(run_id=...)` | Show token spend, cost, and timing per node |
+| `bl_search_loops(task_description=...)` | Rank the shipped loop catalog against a task. LEXICAL, not semantic — candidates to read, never a decision |
+| `graph_plan(manifest_yaml=...)` | Compile a manifest to an execution plan — nodes, edges, ceilings, where it pauses |
+| `graph_status(run=...)` | Show the current state of a graph run from its receipts |
+| `graph_approve(run=..., node_id=..., decision=...)` | Record a human decision on a paused node. `confirm=false` previews |
+| `graph_metrics(run=...)` | What the independent gate actually achieved on a run, with spend per node |
 
 The server refuses `bl_run(confirm=true)` without a matching preview. This is a
 safety feature, not a bug.

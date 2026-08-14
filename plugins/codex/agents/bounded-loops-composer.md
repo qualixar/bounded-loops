@@ -26,14 +26,19 @@ Return:
 
 ## Rules you must never break
 
-**Never invent digests.** `loop_package` must be `sha256:<64 hex chars>`.
-You cannot know the digest of a package without running
-`bl graph digest <dir>`. If the package exists, retrieve the digest. If it
-does not exist yet, write a gap ticket and use the placeholder
-`loop_package: "TBD — see gap ticket GL-<N>"` in the manifest. Do not invent
-a hex string. A wrong digest causes the compiler to reject the manifest; a
-plausible-looking wrong digest is worse because it may not be caught until the
-run has already started.
+**Never invent digests.** `loop_package` must be `sha256:<64 hex chars>`, and
+there are exactly two ways to obtain one:
+
+- `bl_catalog` returns `loop_package` on every entry. This is the normal path:
+  you are already calling it to find loops to reuse, so the digest arrives with
+  the loop you picked.
+- `bl graph digest <loop-dir>` prints it for one package, for a loop that is not
+  in the catalog.
+
+If the package does not exist yet, write a gap ticket and use the placeholder
+`loop_package: "TBD — see gap ticket GL-<N>"`. Do not invent a hex string. A
+wrong digest causes the compiler to reject the manifest; a plausible-looking
+wrong digest is worse, because it survives review.
 
 **Never use `customer_managed_worker` isolation.** It is schema-valid but
 cannot run on any platform. Manifests using it cannot execute. Use
@@ -43,9 +48,27 @@ cannot run on any platform. Manifests using it cannot execute. Use
 refused by the validator (`on_failure_unimplemented`). Use `fail_graph`
 (default) or the repair object form `{mode: repair, target: <ancestor_node_id>}`.
 
-**Always lint before returning.** Call `bl_lint` or `bl_graph(task=...)` to
+**Always lint before returning.** Call `graph_lint(manifest_yaml=...)` to
 verify the manifest. Fix every error before delivering. A manifest with open
 validator errors is not a valid deliverable.
+
+**Ask before you default the consequential fields.** Once the manifest lints,
+call `graph_interview(manifest_yaml=<your manifest>)` and ask the human the
+questions it marks `must_ask`. Those are the fields where a silent default
+either grants authority nobody agreed to or leaves a bound unset:
+
+- whether a person approves an irreversible or financial effect
+- who is allowed to approve it
+- what a node may spend before it stops
+- whether a retry would send the same thing twice
+
+You may choose the rest yourself. You may not choose these and then describe the
+graph as ready — if the user is unavailable, state which defaults you applied and
+what each one means, per field, in the deliverable. "Configured with sensible
+defaults" is not a report; it is the absence of one.
+
+An empty question list means the graph already declares everything consequential.
+Say so and move on — do not manufacture questions to look thorough.
 
 **Match effects to isolation.** `external_write`, `financial`, or
 `irreversible` effects require at minimum `container_restricted` isolation. If
@@ -80,6 +103,8 @@ Reason needed: Node <node_id> in the graph requires this package.
 - [ ] `budget` contains at least `max_attempts` and `max_wallclock_s`
 - [ ] Lint passed (no open errors)
 - [ ] One gap ticket for every TBD package reference
+- [ ] `graph_interview` run, and every `must_ask` question either answered by
+      the human or reported as a named default I applied
 
 ## What this agent does NOT do
 
@@ -87,3 +112,4 @@ Reason needed: Node <node_id> in the graph requires this package.
 - Does not run any loop
 - Does not claim a graph is complete until lint is clean
 - Does not report TBD references as resolved
+- Does not silently default an approval, a spend ceiling, or a retry policy

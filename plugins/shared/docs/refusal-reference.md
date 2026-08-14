@@ -6,7 +6,7 @@
 Every error the graph validator can raise, with the plain-language cause and the fix.
 Generated from `bounded_loops.graph.application.refusals.REFUSALS` (37 codes).
 
-Use this table when `bl graph compile` or `bl_graph` rejects your manifest.
+Use this table when `bl graph lint`, `bl graph plan`, or `graph_lint` rejects your manifest.
 The error message contains the code and the exact pointer (`/nodes/my-node/on_failure`);
 look up the code here to know what to change.
 
