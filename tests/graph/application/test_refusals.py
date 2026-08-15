@@ -52,6 +52,13 @@ def test_the_extraction_actually_finds_something() -> None:
 
 
 def test_every_entry_gives_a_fix_not_just_a_diagnosis() -> None:
+    # Proven non-empty first: "every entry has a fix" is trivially true of no entries, and this
+    # walks whatever the table holds.
+    assert len(REFUSALS) >= 5, (
+        f"only {len(REFUSALS)} refusal(s) in the table; a guard that iterates it passes on an "
+        "empty table without reading a single message"
+    )
+
     for code, refusal in REFUSALS.items():
         assert refusal.code == code, f"{code} keyed under the wrong code"
         assert refusal.summary.endswith("."), code

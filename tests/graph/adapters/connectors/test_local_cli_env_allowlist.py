@@ -125,6 +125,13 @@ def test_shipped_profiles_grant_nothing_by_default() -> None:
     """No shipped profile may pre-grant a variable: a grant is an operator decision."""
     from bounded_loops.graph.adapters.connectors.local_cli_worker import CLI_PROFILES
 
+    # Proven non-empty first: this is a security guard over whatever the profile table holds, and
+    # an empty table would satisfy "no profile pre-grants a variable" without examining one.
+    assert len(CLI_PROFILES) >= 5, (
+        f"only {len(CLI_PROFILES)} CLI profile(s) shipped; this guard inspects the table, so an "
+        "empty one would pass it while checking nothing"
+    )
+
     for name, profile in CLI_PROFILES.items():
         assert profile.env_grant == (), f"{name} ships with a pre-granted variable"
 

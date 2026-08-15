@@ -106,6 +106,14 @@ def test_no_discovery_tool_accepts_anything_secret_shaped() -> None:
     # this question everywhere else in the engine, so it is the authority here too.
     from bounded_loops.graph.application.validate_graph import _SECRET_WORDS
 
+    # Proven non-empty first. With `mcp_discovery.register` stubbed to a no-op this passed —
+    # reporting that no discovery tool is secret-shaped, on the strength of there being no
+    # discovery tools. The loop below can only be as strong as the registry it walks.
+    assert len(captured) >= 2, (
+        f"only {len(captured)} discovery tool(s) captured; a credential-channel guard over an "
+        "empty registry passes without inspecting a single parameter"
+    )
+
     for name, fn in captured.items():
         parameters = fn.__code__.co_varnames[: fn.__code__.co_argcount]
         for parameter in parameters:

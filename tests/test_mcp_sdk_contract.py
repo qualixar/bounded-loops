@@ -449,7 +449,11 @@ def test_NOTHING_in_this_repo_imports_the_module_2x_DELETED() -> None:
     exempt = {Path("bounded_loops/mcp_server.py"), Path(__file__).relative_to(REPO_ROOT)}
     offenders: list[str] = []
 
-    for path in sorted([*REPO_ROOT.glob("bounded_loops/**/*.py"), *REPO_ROOT.glob("tests/**/*.py")]):
+    # Proven non-empty first: every assertion below is satisfied by the empty case, so a scan
+    # that found nothing would pass this while inspecting nothing.
+    _scanned = sorted([*REPO_ROOT.glob("bounded_loops/**/*.py"), *REPO_ROOT.glob("tests/**/*.py")])
+    assert len(_scanned) >= 200, f"only {len(_scanned)} file(s) scanned; the walk found nothing"
+    for path in _scanned:
         relative = path.relative_to(REPO_ROOT)
         if relative in exempt:
             continue
@@ -473,7 +477,11 @@ def test_no_test_skips_itself_on_an_MCP_IMPORT() -> None:
     """
     offenders: list[str] = []
 
-    for path in sorted(REPO_ROOT.glob("tests/**/*.py")):
+    # Proven non-empty first: every assertion below is satisfied by the empty case, so a scan
+    # that found nothing would pass this while inspecting nothing.
+    _scanned = sorted(REPO_ROOT.glob("tests/**/*.py"))
+    assert len(_scanned) >= 100, f"only {len(_scanned)} test file(s) scanned; walk found nothing"
+    for path in _scanned:
         if path == Path(__file__):
             continue
         relative = path.relative_to(REPO_ROOT)

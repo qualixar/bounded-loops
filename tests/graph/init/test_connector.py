@@ -85,7 +85,20 @@ def test_describe_byok_pointer_never_contains_a_credential_assignment_with_a_rea
     # The only "export FOO=" example in the text must be an obvious placeholder,
     # never something that looks like a real credential.
     text = describe_byok_pointer()
+
+    examined = 0
     for line in text.splitlines():
         if "export" in line and "=" in line:
+            examined += 1
             _, _, value = line.partition("=")
             assert value.strip().startswith("...") or value.strip() == ""
+
+    # The filter is the whole test, so it has to be shown to select something. If the pointer text
+    # were reworded to drop the `export FOO=...` form — or emptied — every assertion above would be
+    # skipped and this security guard would report that no credential-shaped value is present,
+    # having looked at no values at all.
+    assert examined >= 1, (
+        "describe_byok_pointer() shows no `export NAME=` line, so this guard inspected nothing. "
+        "Either the pointer stopped demonstrating the env-var form, or the filter no longer "
+        "matches it — both make the check vacuous rather than passing."
+    )

@@ -50,7 +50,11 @@ def _calls_missing_the_keyword(path: Path) -> list[int]:
 
 def test_every_caller_admits_the_installed_loop_packages() -> None:
     offenders: list[str] = []
-    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+    # Proven non-empty first: every assertion below is satisfied by the empty case, so a scan
+    # that found nothing would pass this while inspecting nothing.
+    _scanned = sorted(PACKAGE_ROOT.rglob("*.py"))
+    assert len(_scanned) >= 50, f"only {len(_scanned)} module(s) scanned; the walk found nothing"
+    for path in _scanned:
         for line in _calls_missing_the_keyword(path):
             offenders.append(f"{path.relative_to(REPO_ROOT)}:{line}")
 

@@ -35,12 +35,29 @@ def _corpus() -> list[tier2.Tier2Mutant]:
 # ── what an author is shown ──────────────────────────────────────────────────
 
 
+def _loops_with_a_checker() -> list[tuple[Path, Path]]:
+    """(loop, checker) pairs. The unit of this claim is a CHECKER, so it is the unit parametrised.
+
+    Parametrising over loops instead made two dozen cases no-ops: a `jsonschema` or `pytest` loop
+    ships no `seed/check_*.py`, so the body looped over an empty glob and asserted nothing. That is
+    correct per loop — a loop with no checker has none to leak — and invisible in aggregate, which
+    is the problem. If the glob ever stopped matching, every remaining case would join them and the
+    suite would report no leaks after reading no bytes.
+
+    Pairing makes the count real: pytest reports how many checkers were actually examined, and a
+    collapse to zero is a collection error rather than a green run.
+    """
+    return [
+        (loop_dir, checker)
+        for loop_dir in sorted(p.parent for p in _CATALOG.glob("*/loop.yaml"))
+        for checker in sorted(loop_dir.glob("seed/check_*.py"))
+    ]
+
+
 @pytest.mark.parametrize(
-    "loop_dir",
-    sorted(p.parent for p in _CATALOG.glob("*/loop.yaml")),
-    ids=lambda p: p.name,
+    "loop_dir,checker", _loops_with_a_checker(), ids=lambda v: v.name if isinstance(v, Path) else ""
 )
-def test_the_authoring_prompt_never_contains_a_checker(loop_dir: Path) -> None:
+def test_the_authoring_prompt_never_contains_a_checker(loop_dir: Path, checker: Path) -> None:
     """The prompt is built from `PROMPT.md` and `README.md`. Neither may leak the implementation.
 
     Checked against the real catalog rather than the builder's source, because the leak that
@@ -48,20 +65,42 @@ def test_the_authoring_prompt_never_contains_a_checker(loop_dir: Path) -> None:
     would prevent, and which would hand the author exactly what is meant to be withheld.
     """
     prompt = tier2.authoring_prompt(loop_dir)
+    body = checker.read_text(encoding="utf-8")
 
-    for checker in sorted(loop_dir.glob("seed/check_*.py")):
-        body = checker.read_text(encoding="utf-8")
-        # Any substantial verbatim run from the checker appearing in the prompt is a leak. Compared
-        # by stripped code lines so that a shared sentence of prose does not read as one.
-        code_lines = [
-            line.strip() for line in body.splitlines()
-            if line.strip() and not line.strip().startswith(("#", '"""', "'''"))
-        ]
-        leaked = [line for line in code_lines if len(line) > 30 and line in prompt]
-        assert not leaked, (
-            f"{loop_dir.name}: {checker.name} appears inside the authoring prompt:\n  "
-            + "\n  ".join(leaked[:3])
-        )
+    # Any substantial verbatim run from the checker appearing in the prompt is a leak. Compared
+    # by stripped code lines so that a shared sentence of prose does not read as one.
+    code_lines = [
+        line.strip() for line in body.splitlines()
+        if line.strip() and not line.strip().startswith(("#", '"""', "'''"))
+    ]
+    leaked = [line for line in code_lines if len(line) > 30 and line in prompt]
+    assert not leaked, (
+        f"{loop_dir.name}: {checker.name} appears inside the authoring prompt:\n  "
+        + "\n  ".join(leaked[:3])
+    )
+
+
+def test_the_leak_check_actually_examines_checkers_somewhere_in_the_catalog() -> None:
+    """The per-loop test above is a no-op for any loop with no `seed/check_*.py`, and that is
+    correct — a loop with no checker has none to leak.
+
+    It stops being correct as a whole-catalog claim. Two dozen loops use `jsonschema` or `pytest`
+    gates and ship no checker file, so most of the parametrised cases assert nothing, and if the
+    glob pattern ever stopped matching, every remaining case would join them silently. The suite
+    would stay green while the leak check examined zero bytes.
+
+    So the coverage is asserted once, at the level where it means something.
+    """
+    with_checkers = [
+        loop_dir for loop_dir in sorted(p.parent for p in _CATALOG.glob("*/loop.yaml"))
+        if any(loop_dir.glob("seed/check_*.py"))
+    ]
+
+    assert len(with_checkers) >= 30, (
+        f"only {len(with_checkers)} loop(s) ship a checker the leak test can examine. Either the "
+        "catalog changed shape or `seed/check_*.py` no longer matches, and the per-loop test above "
+        "is now passing on loops it never opens."
+    )
 
 
 def test_the_prompt_digest_changes_when_the_inputs_change(tmp_path: Path) -> None:

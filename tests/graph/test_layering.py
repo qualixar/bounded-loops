@@ -197,16 +197,36 @@ def test_the_local_tenant_sentinels_are_declared_exactly_once() -> None:
     """``local-org`` / ``local-project`` / ``graph-run`` are single-tenant defaults for the local
     CLI. They were declared twice — in ``cli_graph`` and in ``graph_composition``'s function
     defaults — agreeing by luck. Two copies of an identity default is a silent divergence waiting
-    for whichever one someone edits."""
+    for whichever one someone edits.
+
+    **Named "exactly once" and only ever checked "not more than once".** Deleting a sentinel
+    outright satisfied every assertion below — zero declarations is not two declarations — so the
+    ONCE half is now asserted as well. A source-scanning test also passes when the scan finds no
+    source, so the module list is proven non-empty before anything is concluded from it.
+    """
     literals = ('"local-org"', '"local-project"', '"graph-run"')
     sites: dict[str, list[str]] = {literal: [] for literal in literals}
-    for name, path in _modules(_ROOT):
+    modules = list(_modules(_ROOT))
+
+    assert len(modules) >= 20, (
+        f"only {len(modules)} module(s) discovered; this test reads source text, so an empty scan "
+        "would report every sentinel as correctly placed without opening a file"
+    )
+
+    for name, path in modules:
         text = path.read_text(encoding="utf-8")
         for literal in literals:
             if literal in text:
                 sites[literal].append(name)
 
     allowed = {"bounded_loops.graph.graph_composition"}
+
+    missing = [literal for literal, found in sites.items() if not any(n in allowed for n in found)]
+    assert missing == [], (
+        f"{missing} is declared NOWHERE in {sorted(allowed)}. The sentinel was removed or renamed, "
+        "and every 'not declared elsewhere' assertion below is satisfied vacuously by its absence."
+    )
+
     for literal, found in sites.items():
         unexpected = [name for name in found if name not in allowed]
         # The BYOK request builder carries its own documented per-record defaults; it is the one

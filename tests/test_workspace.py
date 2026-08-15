@@ -264,7 +264,12 @@ def test_no_production_code_READS_the_index(tmp_path: Path) -> None:
     package = Path(workspace_module.__file__).parent
     offenders: list[str] = []
 
-    for source_file in sorted(package.rglob("*.py")):
+    # Proven non-empty first: every assertion below is satisfied by the empty case, so a scan
+    # that found nothing would pass this while inspecting nothing.
+    _scanned = sorted(package.rglob("*.py"))
+    assert len(_scanned) >= 50, f"only {len(_scanned)} module(s) scanned; the walk found nothing"
+
+    for source_file in _scanned:
         tree = ast.parse(source_file.read_text(encoding="utf-8"), filename=str(source_file))
         for node in ast.walk(tree):
             # The property's own definition is the one legitimate occurrence.

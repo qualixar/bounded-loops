@@ -306,25 +306,85 @@ def _pack_documents() -> list[tuple[str, str]]:
     return documents
 
 
-@pytest.mark.parametrize("relative,text", _pack_documents(), ids=lambda v: v if isinstance(v, str) and "/" in v else "")
-def test_every_command_the_HOST_PACK_names_actually_exists(relative: str, text: str) -> None:
-    """No shipped prompt may name a command, action, or module we do not ship."""
-    import importlib.util
+def test_the_pack_documents_actually_name_commands_to_check() -> None:
+    """The tests below are parametrised over a regex extraction, and an extraction that finds
+    nothing yields an empty parameter set — which pytest reports as SKIPPED, not failed.
+
+    So the shape of the silence changed rather than disappearing when those tests were restructured:
+    if the docs were reworded away from the backticked ```bl <command>`` form, or the pattern
+    drifted, the checks would vanish from the run with a skip nobody reads. This converts that into
+    a failure.
+
+    The floor is 3 because that is what the packs name today — `bl capabilities`, `bl gates`,
+    `bl graph`. It is a floor, not an expectation: adding commands only moves it up. Guessing 5
+    here failed on the real catalog, which is the correct outcome for a guessed number and the
+    reason it is now written down with its source.
+    """
     import re
 
-    for module in set(re.findall(r"python3? -m (bounded_loops[\w.]*)", text)):
-        assert importlib.util.find_spec(module) is not None, (
-            f"{relative} names missing module {module}"
-        )
+    found: set[str] = set()
+    for _relative, text in _pack_documents():
+        found.update(command for command, _sub in re.findall(r"`bl ([a-z-]+)(?: ([a-z-]+))?", text))
 
+    assert len(found) >= 3, (
+        f"the shipped prompts name only {sorted(found)}; the extraction that drives the "
+        "per-command checks is selecting almost nothing, so those checks are being skipped rather "
+        "than examining commands"
+    )
+
+
+def _named_commands() -> list[tuple[str, str, str]]:
+    """(document, command, sub) for every `bl ...` the packs name. The unit of the claim.
+
+    Parametrised over EXTRACTED COMMANDS rather than over documents, because a document that names
+    none produced a case which looped over an empty regex match and asserted nothing. Per document
+    that is correct; in aggregate it hid the possibility that the pattern matched nothing anywhere,
+    in which case the suite reported no missing commands after extracting no commands.
+
+    Now the case count is the command count: if extraction collapses, collection collapses with it.
+    """
+    import re
+
+    found: list[tuple[str, str, str]] = []
+    for relative, text in _pack_documents():
+        for command, sub in sorted(set(re.findall(r"`bl ([a-z-]+)(?: ([a-z-]+))?", text))):
+            found.append((relative, command, sub))
+    return found
+
+
+def _named_modules() -> list[tuple[str, str]]:
+    """(document, module) for every `python -m bounded_loops...` the packs name."""
+    import re
+
+    return [
+        (relative, module)
+        for relative, text in _pack_documents()
+        for module in sorted(set(re.findall(r"python3? -m (bounded_loops[\w.]*)", text)))
+    ]
+
+
+@pytest.mark.parametrize("relative,module", _named_modules(), ids=lambda v: v)
+def test_every_MODULE_the_HOST_PACK_names_actually_exists(relative: str, module: str) -> None:
+    """No shipped prompt may name a module we do not ship."""
+    import importlib.util
+
+    assert importlib.util.find_spec(module) is not None, (
+        f"{relative} names missing module {module}"
+    )
+
+
+@pytest.mark.parametrize(
+    "relative,command,sub", _named_commands(), ids=lambda v: v if isinstance(v, str) else ""
+)
+def test_every_command_the_HOST_PACK_names_actually_exists(
+    relative: str, command: str, sub: str
+) -> None:
+    """No shipped prompt may name a command or action we do not ship."""
     top_level, graph_actions = _real_cli_surface()
 
-    for command, sub in set(re.findall(r"`bl ([a-z-]+)(?: ([a-z-]+))?", text)):
-        assert command in top_level, f"{relative} names `bl {command}`, which does not exist"
-        if command == "graph" and sub:
-            assert sub in graph_actions, (
-                f"{relative} names `bl graph {sub}`, which does not exist"
-            )
+    assert command in top_level, f"{relative} names `bl {command}`, which does not exist"
+    if command == "graph" and sub:
+        assert sub in graph_actions, f"{relative} names `bl graph {sub}`, which does not exist"
 
 
 def test_every_MCP_TOOL_the_host_pack_names_is_registered() -> None:
@@ -347,11 +407,22 @@ def test_every_MCP_TOOL_the_host_pack_names_is_registered() -> None:
     # schema is a guard people learn to ignore.
     pattern = re.compile(r"`?\b(bl_[a-z_]+|graph_[a-z_]+)\(")
     missing: list[str] = []
+    examined: set[str] = set()
     for relative, text in _pack_documents():
         for name in pattern.findall(text):
+            examined.add(name)
             if name not in registered:
                 missing.append(f"{relative}: {name}")
 
+    # The extraction has to be shown to extract. `missing` is accumulated inside the loop and
+    # asserted empty outside it, so a pattern that matched NOTHING would leave it empty and this
+    # would report that the pack names no unregistered tool — having found no tool references at
+    # all. That is the same vacuity as a gate passing an emptied artifact, in the accumulate-then-
+    # assert-empty shape, and it is the shape that hides best: the assertion looks unconditional.
+    assert len(examined) >= 6, (
+        f"the pack references only {sorted(examined)}; the pattern that drives this check is "
+        "matching almost nothing, so `missing` is empty because nothing was inspected"
+    )
     assert not missing, (
         "the host pack names MCP tools that are not registered:\n  " + "\n  ".join(sorted(set(missing)))
     )

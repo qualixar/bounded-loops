@@ -514,12 +514,23 @@ def test_credential_never_stored_in_request_document_or_artifact(
 
     # Scan every file in the run directory and artifact store for the secret.
     secret_bytes = fake_api_key.encode()
+    scanned = 0
     for path in out.rglob("*"):
         if path.is_file():
+            scanned += 1
             content = path.read_bytes()
             assert secret_bytes not in content, (
                 f"secret key found in run-dir file {path.relative_to(out)}"
             )
+
+    # The scan has to be shown to have scanned. Every assertion above lives inside the loop, so a
+    # run directory that came out empty — a path change, a run that wrote nowhere — would satisfy
+    # "the credential is not stored anywhere" by there being nowhere. A leak guard that reads no
+    # bytes is not a leak guard.
+    assert scanned >= 3, (
+        f"only {scanned} file(s) found under {out}; this asserts a credential is absent from the "
+        "run directory, and an empty directory passes that without opening a file"
+    )
 
 
 # ── test 4: admitted_connections from_mapping rejects secret-shaped key names ─

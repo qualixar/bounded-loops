@@ -73,9 +73,16 @@ def _module_ids(module: Path) -> str:
 @pytest.mark.parametrize("module", _MODULES, ids=_module_ids)
 def test_the_generator_never_imports_anything_gate_related(module: Path) -> None:
     """A gate reached by import is a gate the generator can be shaped around."""
+    tree = _tree(module)
+
+    # An AST walk over an empty module finds no forbidden import and proves nothing about it. The
+    # assertion below is satisfied by emptiness, so the thing being walked is checked to exist
+    # first — the same discipline the mutant corpus applies to a gate handed an emptied artifact.
+    assert tree.body, f"{_module_ids(module)} parsed to an empty tree; this walk examined nothing"
+
     offenders: list[str] = []
 
-    for node in ast.walk(_tree(module)):
+    for node in ast.walk(tree):
         names: list[str] = []
         if isinstance(node, ast.Import):
             names = [alias.name for alias in node.names]
@@ -157,9 +164,12 @@ def test_the_generator_reads_only_the_forbid_list_from_a_manifest(module: Path) 
     Detected by looking for subscript/`get` access with a manifest-ish key. Crude by design: a
     false positive here costs one comment, and a false negative costs the corpus its credibility.
     """
+    tree = _tree(module)
+    assert tree.body, f"{_module_ids(module)} parsed to an empty tree; this walk examined nothing"
+
     offenders: list[str] = []
 
-    for node in ast.walk(_tree(module)):
+    for node in ast.walk(tree):
         key: str | None = None
         if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
             key = node.slice.value if isinstance(node.slice.value, str) else None
@@ -219,6 +229,13 @@ def test_every_module_is_classified_as_generator_or_runner() -> None:
     all_modules = {path.name for path in _PACKAGE.rglob("*.py")}
     generator_modules = {path.name for path in _MODULES}
 
+    # `generator | runner == all` holds trivially when all three are empty, and an empty `_MODULES`
+    # would also silently reduce every parametrised blindness check above to zero cases — which
+    # pytest reports as a SKIP, not a failure. The floor makes the collapse a failure here.
+    assert len(all_modules) >= 5, (
+        f"only {sorted(all_modules)} found in {_PACKAGE.name}; the blindness checks are "
+        "parametrised over this set, so an empty one removes them from the run silently"
+    )
     assert generator_modules | _RUNNER_MODULES == all_modules
     assert not (generator_modules & _RUNNER_MODULES), "a module cannot be both"
     assert len(_RUNNER_MODULES) == 1, (

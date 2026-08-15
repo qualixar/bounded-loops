@@ -201,10 +201,24 @@ def test_a_shipped_package_digests_the_SAME_as_a_fresh_CLONE_would():
     if not (REPO_ROOT / ".git").exists():
         pytest.skip("not a git checkout; tracked-vs-local cannot be distinguished")
     tracked_by_pkg: dict[str, set[str]] = {}
-    for line in subprocess.run(
-        ["git", "ls-files", "-z", "loops"],
-        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60, check=True,
-    ).stdout.split("\0"):
+    tracked_lines = [
+        line
+        for line in subprocess.run(
+            ["git", "ls-files", "-z", "loops"],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=60, check=True,
+        ).stdout.split("\0")
+        if line
+    ]
+
+    # Proven non-empty first: everything below compares tracked files against what a clone would
+    # materialise, and `git ls-files` returning nothing — wrong cwd, a rename, a checkout without
+    # the catalog — would make every comparison trivially agree.
+    assert len(tracked_lines) >= 200, (
+        f"git ls-files reported only {len(tracked_lines)} tracked path(s) under loops/; the "
+        "comparison below is between two empty sets and proves nothing"
+    )
+
+    for line in tracked_lines:
         if not line:
             continue
         package, _, relative = line.partition("/")

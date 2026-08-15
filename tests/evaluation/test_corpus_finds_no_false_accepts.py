@@ -205,6 +205,16 @@ def test_the_unshipped_package_exclusions_match_reality() -> None:
     """
     from importlib.metadata import PackageNotFoundError, version
 
+    # Proven non-empty first. `assert not installed_but_excluded` is satisfied by an empty
+    # exclusion table, so emptying that table would make this guard report agreement with an
+    # environment it never queried — while every loop it used to exclude silently rejoined or
+    # left α. Written the day the guard itself was written, and flagged by the repository's own
+    # anti-vacuity check on the same afternoon.
+    assert len(harness._RUNNER_NEEDS_UNSHIPPED_PACKAGE) >= 4, (
+        f"only {len(harness._RUNNER_NEEDS_UNSHIPPED_PACKAGE)} loop(s) declared as needing an "
+        "unshipped package; this guard walks that table, so an empty one passes it vacuously"
+    )
+
     installed_but_excluded: list[str] = []
     for loop_name, package in harness._RUNNER_NEEDS_UNSHIPPED_PACKAGE.items():
         try:

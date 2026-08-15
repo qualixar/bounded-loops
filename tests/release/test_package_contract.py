@@ -227,10 +227,13 @@ def test_release_metadata_uses_the_canonical_catalog_count_and_version() -> None
 
 def test_public_docs_have_no_orphan_course_section_references() -> None:
     offenders: list[str] = []
+    examined = 0
+
     for root in (REPO_ROOT / "loops", REPO_ROOT / "docs"):
         for path in root.rglob("*"):
             if path.suffix not in {".md", ".sh", ".yaml"} or not path.is_file():
                 continue
+            examined += 1
             text = path.read_text(encoding="utf-8")
             lowered = text.lower()
             if (
@@ -239,7 +242,17 @@ def test_public_docs_have_no_orphan_course_section_references() -> None:
                 or "from the loop engineering course" in lowered
             ):
                 offenders.append(str(path.relative_to(REPO_ROOT)))
-    assert offenders == []
+
+    # The scan has to be shown to have scanned. `offenders == []` is satisfied by an empty walk —
+    # a moved directory, a suffix filter that stops matching — and would report the docs clean
+    # after reading none of them.
+    assert examined >= 100, (
+        f"only {examined} document(s) examined under loops/ and docs/; an empty walk satisfies "
+        "the assertion below without opening a file"
+    )
+    assert offenders == [], (
+        "public docs reference a course section that is not shipped:\n  " + "\n  ".join(offenders)
+    )
 
 
 def test_readme_images_are_ABSOLUTE_because_pypi_cannot_resolve_relative_ones() -> None:

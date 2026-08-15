@@ -80,6 +80,15 @@ def test_every_authoring_tool_is_registered() -> None:
 #: gating it fails the test below rather than shipping.
 _MUTATING = {"graph_approve", "graph_resume", "graph_configure"}
 
+#: Fewest authoring tools that can plausibly be registered. Every guard in this file that LOOPS
+#: over the registry asserts this first.
+#:
+#: Found by stubbing `mcp_authoring.register` to a no-op and re-running: three guards still passed,
+#: including two security ones — "no tool accepts a subject identity" and "no tool takes a
+#: filesystem path". Both were reporting a property of the empty set. A guard that iterates what a
+#: function produced is only as strong as its proof that the function produced something.
+_AUTHORING_TOOL_FLOOR = len(_MUTATING) + 1
+
 
 def test_every_MUTATING_tool_is_gated_by_a_confirm_argument() -> None:
     """`confirm` defaults to False on every side-effecting tool.
@@ -133,6 +142,15 @@ def test_NO_tool_accepts_a_subject_identity_argument() -> None:
     recorder = _RecordingMcp()
     mcp_authoring.register(recorder)
 
+    # Proven non-empty first, because everything below is a loop over what registration produced.
+    # With `register` stubbed to a no-op this passed — a security guard reporting that no tool
+    # accepts a subject identity, on the strength of there being no tools. Same vacuity the mutant
+    # corpus hunts in gates, in the test suite that checks the gates.
+    assert len(recorder.functions) >= _AUTHORING_TOOL_FLOOR, (
+        f"only {len(recorder.functions)} authoring tool(s) registered; this guard inspects what "
+        "registration produced, so an empty registry would pass it while checking nothing"
+    )
+
     for name, fn in recorder.functions.items():
         parameters = fn.__code__.co_varnames[: fn.__code__.co_argcount]
         for parameter in parameters:
@@ -144,6 +162,11 @@ def test_no_tool_takes_a_filesystem_path_for_a_run() -> None:
     """A run is addressed by NAME so the validator can refuse a traversal."""
     recorder = _RecordingMcp()
     mcp_authoring.register(recorder)
+
+    assert len(recorder.functions) >= _AUTHORING_TOOL_FLOOR, (
+        f"only {len(recorder.functions)} authoring tool(s) registered; a traversal guard over an "
+        "empty registry passes without examining anything"
+    )
 
     for name, fn in recorder.functions.items():
         parameters = fn.__code__.co_varnames[: fn.__code__.co_argcount]
