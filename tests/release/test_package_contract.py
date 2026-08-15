@@ -68,9 +68,23 @@ def test_readme_puts_verified_quick_start_above_the_fold() -> None:
     # capability matrix, the corrected `kind: loop` isolation claim, F13's catalog-is-not-in-the-wheel
     # note) each required words that make a claim narrower rather than louder, and the honest
     # capability matrix trades brevity for accuracy on purpose. The guard exists to stop a README
-    # ballooning into documentation; it does that at 2300, and cutting a qualifier to hit a round
-    # number is the wrong direction for a project whose selling point is not overclaiming.
-    assert len(readme.split()) <= 2300
+    # ballooning into documentation; cutting a qualifier to hit a round number is the wrong
+    # direction for a project whose selling point is not overclaiming.
+    #
+    # Raised again to 3000 for 0.6.0, for three additions rather than a general loosening:
+    #
+    #   1. A screenshots section. This release ships a UI, and a README that describes one
+    #      without showing it is asking the reader to take it on faith.
+    #   2. `bl monitor` itself, which had no mention anywhere despite being the headline
+    #      feature. The depth lives in docs/monitor.md; the README carries the summary.
+    #   3. The confirm-token handshake. That contract CHANGED in 0.6.0 — a caller passing
+    #      confirm=true without a token is now refused — so omitting it strands every reader
+    #      who integrated against 0.5.
+    #
+    # The intent of the guard is "do not turn the README into the documentation", and each of
+    # these links OUT to docs rather than inlining them. If the next increase cannot name its
+    # additions this specifically, trim instead of raising.
+    assert len(readme.split()) <= 3000
     assert "actions/workflows/ci.yml/badge.svg" in readme
     assert "tests-678_passing" not in readme
 

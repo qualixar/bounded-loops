@@ -27,6 +27,51 @@ the loop.
 
 ---
 
+## See it working
+
+Every screenshot below is a real run of a shipped reference graph on a laptop, with no
+credential and no network. Nothing is mocked or staged.
+
+```bash
+bl graph run --execute graphs/solo-builder-ship/graph.yaml
+bl monitor                 # opens on 127.0.0.1, loopback only, one-time token
+```
+
+### The monitor
+
+`bl monitor` is a local web UI over the same run directory the CLI reads. It holds no state
+of its own — close it and nothing is lost, because the receipt log was always the truth.
+
+![The bounded-loops monitor showing a completed seven-node graph run](assets/screenshots/monitor-dag.png)
+
+### What the engine actually recorded
+
+Click a node and you get what the receipts say, not a summary of them: the isolation tier the
+OS really enforced, the independent gate's own verdict **and its reason**, and the artifact
+digest.
+
+![Node detail showing enforced isolation controls, the gate verdict, and the artifact digest](assets/screenshots/monitor-node-detail.png)
+
+### A human gate, and what saying yes releases
+
+An approval node declares no effects of its own, so "approve this" reads as harmless right up
+until the publish it lets through. The confirm panel names the effects downstream of the gate
+and flags the ones stopping the run will not take back.
+
+Note the gate line: **"no verdict — the gate has not evaluated this node."** A human hold is
+not a gate pass, and the UI says so rather than painting a green check.
+
+![The approval panel naming external_write as an effect that cannot be undone](assets/screenshots/monitor-approval-preview.png)
+
+### A shareable report
+
+`bl graph arena --run <dir>` writes one self-contained HTML file. No server, no network, no
+build step — send it to someone who was not there.
+
+![The Arena report for a completed run](assets/screenshots/arena-report.png)
+
+---
+
 ## What this is
 
 **A bounded loop** is a single agent task driven to a verified finish. A worker
@@ -42,6 +87,11 @@ holds whether you run one task or fifty.
 
 **Loops are not only graph substrate.** Someone with one gated task gets full
 value from a loop in ten minutes, never touching the graph engine.
+
+**Four surfaces, one truth.** The CLI, the monitor, the MCP server and the Arena report are all
+drivers over the same run directory; none holds state the log lacks. Close any of them mid-run
+and lose nothing. When two of them disagreed — in 0.6, in five places — that was the bug, and
+the log was the arbiter.
 
 ---
 
@@ -132,6 +182,30 @@ bl graph run --execute manifest.yaml \
 
 Full instructions for creating `manifest.yaml`, `connections.json`, and
 `inputs.json` are in [docs/graph-quickstart.md](docs/graph-quickstart.md).
+
+---
+
+## Watching a run: `bl monitor`
+
+```bash
+bl monitor          # 127.0.0.1 only, ephemeral per-invocation token, opens your browser
+```
+
+A local web UI over the run directory — live DAG, per-node evidence, spend, and the approval
+controls. It detects which agent CLIs you already have logged in and lists your runs; it never
+asks for a credential of its own.
+
+![The monitor's workspace rail listing detected orchestrators and runs](assets/screenshots/monitor-workspace.png)
+
+It is a **view**, not a service. Loopback bind, a token per invocation that never touches disk,
+and a same-origin requirement on every data route — so a page in another tab cannot drive it
+even if it had the token. Kill it mid-run and nothing is lost.
+
+It also declines to over-report. A node the gate never evaluated reads "no verdict" rather than
+showing a pass, and approving a gate tells you which downstream effects it releases and which
+of those stopping the run will not take back.
+
+Full posture, limits, and how to read the panels: [docs/monitor.md](docs/monitor.md).
 
 ---
 
@@ -320,6 +394,26 @@ audit, run-history — over the composition root. The graph MCP shim
 (`graph_status` / `graph_resume` / `graph_approve`) mounts onto a deployment's own
 server via a runtime facade; subject identity binds to the MCP session, never an LLM
 tool argument.
+
+**MCP 2.0** (SDK `2.0.0`, protocol revision `2026-07-28`). Clients on the 2025-era handshake
+are still served from the same process, and a test asserts both eras see the same tools with
+the same schemas — a capability that exists on one revision and not the other is a capability
+nobody can rely on.
+
+**Running a loop takes two calls, and the second needs a token from the first.**
+
+```
+bl_run(loop_dir=…, confirm=false)                    → {preview: {...}, confirm_token: "…"}
+bl_run(loop_dir=…, confirm=true, confirm_token=…)    → runs
+```
+
+The token is an HMAC over the run's full executable identity — gate command, runner,
+`agent_cmd`, cassette, iteration cap, and a content hash of the loop's files — signed with a
+secret generated at server start and valid for 15 minutes. Edit `loop.yaml` between the two
+calls and it stops verifying, which is the point: the thing you approved is the thing that
+runs. What it proves is narrower than it looks, and worth stating plainly — the caller was
+shown this exact preview by this server, recently. It does not prove a human read it. The
+human gate is the rung refusal, which turns down L2/L3 loops outright.
 
 **Provider plugins are a boundary, not a sandbox.** A plugin is arbitrary code in this
 process and can monkey-patch the worker. The narrower guarantee worth stating exactly:

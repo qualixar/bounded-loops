@@ -14,6 +14,12 @@ and product overview.
   inspect with `bl graph arena` and `bl graph status`, and run the built-in
   native-sandbox demo.
 
+- **[monitor.md](./monitor.md)** — `bl monitor`, the local web UI over a run
+  directory: what it is and is not (a view, never a service), the exact security
+  posture (loopback bind, per-invocation token, same-origin requirement, CSP)
+  and its stated limits, how to read the panels without over-reading them, and
+  starting a run from the UI.
+
 - **[graph-capabilities.md](./graph-capabilities.md)** — honest capabilities
   and boundaries: what ships (compiler, Local-CLI and BYOK/HTTPS connectors,
   native-sandbox demo, Arena, memory spine, egress broker, cross-model audit

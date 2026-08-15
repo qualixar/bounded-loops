@@ -1,8 +1,25 @@
 # Graph Engine — Release Readiness Assessment
 
-**Version:** 0.5.0  
-**Assessment date:** 2026-08-14 (updated for the 0.5.0 release: loop/join/publish nodes, the six reference graphs, the embedding surface, and two rounds of dual external audit)  
+**Version:** 0.6.0  
+**Assessment date:** 2026-08-15 (updated for the 0.6.0 release: MCP 2.0, `bl monitor`, and a
+third round of dual external audit — five focused passes per auditor)  
 **Scope:** `bl graph` subcommand group and supporting application/adapter layers
+
+**What the third audit round changed, and why it belongs in a readiness document.** Eight HIGH
+findings survived independent verification. One was that `bl_run(confirm=true)` could not
+execute over MCP at all: the preview/confirm handshake keyed on a session object that MCP 2.0
+rebuilds per request. The tool's primary function was unreachable on its shipped transport,
+and the test guarding it asserted that `Context.session` existed — which was true, and was
+never the property the handshake needed.
+
+Five of the remaining seven were surfaces asserting more than the receipt log supported: a
+gate-pass badge on nodes no gate had judged, "all nodes succeeded" printed above a table
+showing a skipped branch, a publish reported as undoable, an approval preview that never named
+what approving released, and `bl graph status` refusing runs it had just watched succeed.
+
+The pattern is worth stating for anyone assessing this engine: none of these were failures of
+the execution core. The receipts were right every time. What drifted were the things that
+read them.
 
 ---
 
