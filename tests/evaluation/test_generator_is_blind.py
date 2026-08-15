@@ -106,15 +106,43 @@ def test_the_generator_never_executes_anything(module: Path) -> None:
     assert not offenders, f"{_module_ids(module)} executes code:\n  " + "\n  ".join(offenders)
 
 
+def _docstring_nodes(tree: ast.Module) -> set[int]:
+    """`id()` of every docstring constant, so prose can be excluded from path checks."""
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+            if isinstance(first.value.value, str):
+                found.add(id(first.value))
+    return found
+
+
 @pytest.mark.parametrize("module", _MODULES, ids=_module_ids)
 def test_the_generator_never_reads_a_checker_file(module: Path) -> None:
-    """`check_*.py` is the implementation the corpus is measuring. Reading it is the whole bias."""
+    """`check_*.py` is the implementation the corpus is measuring. Reading it is the whole bias.
+
+    Docstrings and multi-line prose are exempt, and the exemption is narrow on purpose. This guard
+    fired on `tier2.py` for a docstring that says the checker IS withheld — flagging the
+    documentation of the very property it enforces. Writing down what is excluded is the behaviour
+    we want; only a literal that could be USED as a path is evidence of reading one, and a path
+    does not contain spaces or newlines.
+    """
+    tree = _tree(module)
+    docstrings = _docstring_nodes(tree)
+
     offenders = [
         f"line {node.lineno}: {node.value!r}"
-        for node in ast.walk(_tree(module))
+        for node in ast.walk(tree)
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
-        and ("check_" in node.value or node.value.endswith(".py") and "check" in node.value)
+        and id(node) not in docstrings
+        and not any(character in node.value for character in " \n\t")
+        and ("check_" in node.value or (node.value.endswith(".py") and "check" in node.value))
     ]
 
     assert not offenders, (
