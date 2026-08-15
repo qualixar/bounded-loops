@@ -1,6 +1,6 @@
 {
   "name": "bounded-loops",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Run agent loops with independent gates, explicit bounds, and auditable receipts.",
   "author": {
     "name": "Varun Pratap Bhardwaj",

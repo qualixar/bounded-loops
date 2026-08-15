@@ -28,11 +28,20 @@ def test_preflight_json_reports_observation_without_claiming_admission(capsys):
 # ── top-level CLI contract ───────────────────────────────────────────────────
 
 def test_version_flag_reports_release_version(capsys):
+    """Asserted against the package's own version rather than a literal.
+
+    A hardcoded string here means every release breaks a test that is not describing a defect,
+    and the fix is to edit the expectation — which trains people to edit expectations. The
+    release contract test is what pins the version to pyproject; this one only has to prove
+    `--version` reports it.
+    """
+    from bounded_loops import __version__
+
     with pytest.raises(SystemExit) as exc_info:
         main(["--version"])
 
     assert exc_info.value.code == 0
-    assert capsys.readouterr().out.strip() == "bl 0.5.1"
+    assert capsys.readouterr().out.strip() == f"bl {__version__}"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

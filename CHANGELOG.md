@@ -5,7 +5,103 @@ All notable changes to bounded-loops are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-15
+
+Two independent auditors went through this release end to end, five focused passes each. Eight
+HIGH findings survived verification; all eight are fixed below, along with everything they found
+at MEDIUM and LOW. Every fix carries a test that was checked by re-introducing the bug.
+
+### Fixed — the MCP server
+
+- **`bl_run(confirm=true)` could never execute.** The preview→confirm handshake keyed its state
+  on the MCP session object, and MCP 2.0 builds a new `ServerSession` for every request — so the
+  preview landed under one key and the confirm looked under another. Every confirm came back
+  "no matching preview", from every host, on both protocol eras. The tool's core function was
+  unreachable on the transport it ships over.
+
+  The handshake is now a signed token: `confirm=false` returns a `confirm_token`, and
+  `confirm=true` requires it. It is an HMAC over the run's full executable identity — gate
+  command, runner, agent_cmd, cassette, iteration cap, run_id, resume, and a content hash of the
+  loop's files — signed with a per-process secret and valid for 15 minutes. It works identically
+  on stdio, HTTP, stateless or pooled, and it closes the old fallback path in which one client
+  could confirm another client's preview.
+
+  **This changes the tool contract.** A caller that passes `confirm=true` without a token is
+  refused, and told what to do. Nothing that worked before stops working, because nothing
+  worked before.
+
+### Fixed — surfaces that claimed more than the receipts support
+
+- **`bl graph status` and `bl graph metrics` refused runs they had just watched succeed**, with
+  "package digest is not admitted". Four reload sites passed no admitted loop packages, and that
+  parameter defaults to the empty set, so forgetting it produced a confident wrong answer rather
+  than an error. An AST check now fails the build if any caller omits it.
+- **STATE.md ended a run with "all nodes succeeded"** while the node table printed directly above
+  it showed a SKIPPED branch. It now says how many branches were not taken, and names them.
+- **The Arena drew "Gate passed — an independent check confirmed the result" on any SUCCEEDED
+  node.** An approval node succeeds because a human held it, with no gate verdict in the log at
+  all. The badge now reads the verdict it was already being handed.
+- **The confirm screen listed only `irreversible` and `financial` as effects that cannot be
+  undone**, so a graph whose publish node declares `external_write` — every shipped publish graph
+  — showed an empty list under a sentence about work that cannot be undone. Both this and the
+  configuration interview now take the set from the domain.
+- **An approval preview said only "approved approval node 'gate'".** Approving a gate releases
+  everything downstream of it, which is what the recorded grant has always contained. The preview
+  now names those effects and flags the irreversible ones, and the monitor renders them.
+- **A loop declaring an isolation tier this host cannot deliver was started anyway**, then failed
+  at the node — while `bl_capabilities` promised refusal before the run starts. The pre-run gate
+  had exempted loop nodes using the connector-transport predicate; a loop needs no transport
+  while very much running in a sandbox.
+- **The Seatbelt probe checked whether `sandbox-exec` is executable**, which is vacuously true
+  inside a nested sandbox where applying a profile fails. It now applies one and reads the exit
+  status.
+
+### Fixed — durability and safety
+
+- **A run killed mid-flight left receipts nothing could open.** `run-meta.json`, `plan.json` and
+  the manifest were written after the work finished, so a hard kill — including Ctrl-C on
+  `bl monitor`, whose execute route runs on a daemon thread — produced a hash-valid log that
+  every surface refused. Those files describe the plan, not the outcome, so they are now written
+  before the first node runs.
+- **`graph.save` wrote through a symlink.** It resolved the path and then asked whether it was a
+  symlink, a question that can only answer False once the link has been followed. An alias inside
+  the workspace silently overwrote the file it pointed at while reporting the alias was saved.
+- **The string `"false"` counted as confirmation** and started runs. Confirmation now requires
+  the boolean.
+- **Two confirms in the same second could mint the same run directory**, and `exist_ok=True`
+  swallowed it: both callers were told the run started, and both then watched the first run's
+  receipts.
+- **Symlinked directories were advertised as runs**, and the refusal to open one escaped as a
+  closed socket plus a traceback on the operator's terminal.
+- Monitor pages now carry a Content-Security-Policy and `X-Frame-Options: DENY`.
+
+### Fixed — the host pack
+
+- **Every shipped command named MCP tools that were never registered** — `bl_graph_status` for
+  `graph_status`, and wrong parameter names throughout. The contract test only read `SKILL.md`,
+  so the primary product path was broken and nothing said so. All corrected, and the test now
+  checks every command and agent against the live registry.
+- **`bl graph digest` did not exist** although the composer agent instructed models to run it to
+  obtain the one field they are forbidden to invent. It exists, and `bl_catalog` now carries the
+  digest too.
+
+### Changed
+
+- **MCP 2.0.** `mcp>=2,<3`, protocol revision `2026-07-28`, with 2025-era clients still served
+  from the same process. The 1.x line went maintenance-only, and `mcp.server.fastmcp` — which the
+  old pin depended on — no longer exists.
+- **Jarvis is now the bounded-loops monitor.** `bl monitor` is unchanged; the package moved.
+
 ### Added
+
+- `bl graph digest <loop-dir>` — the content digest a loop node must reference.
+- `/bl-configure` — walks a saved graph's interview and applies the answers.
+- `scripts/sync_host_pack.py` — mirrors the canonical host pack to all three hosts. The contract
+  test told developers to run this for some time before it existed.
+- Approval receipts now record **who** decided, not only which tenant, with the source of that
+  name and an explicit note that it is not authenticated on a local run.
+
+### Added — the project home and the monitor (built for this release)
 
 - **`.bounded-loops/` is now a project home.** `bl init` creates it; `bl where` prints the
   resolved workspace and, more usefully, *why* that one was chosen. It holds `config.toml`,
