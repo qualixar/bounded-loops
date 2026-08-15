@@ -130,22 +130,32 @@ def test_the_published_baseline_is_not_printed_beside_an_uncomputable_precision(
     assert guard < baseline_line, "the baseline must sit inside a reportable-precision guard"
 
 
-def test_the_interval_label_claims_measured_coverage_and_not_anytime_validity() -> None:
-    """The interval is a fixed-time empirical-Bernstein interval with MEASURED coverage — not an
-    anytime-valid confidence sequence. The label must say so precisely. The former
-    'nominal-95% iid (UNCALIBRATED)' label described a Wilson interval whose measured coverage under
-    the shipped simulated regime was 77.5%; that label is gone."""
+def test_the_interval_label_names_both_the_guarantee_and_the_ESTIMAND() -> None:
+    """The label must match what the reported estimator actually delivers — no more, no less.
+
+    This assertion has now been inverted once, deliberately. It used to forbid the string
+    "anytime-valid", because the reported radius was the fixed-time one and the claim would have
+    been false. #38 replaced the estimator with the stitched sequence, so the same guard now
+    REQUIRES the phrase. Inverting it rather than deleting it keeps the protection pointing in
+    whichever direction is currently the lie: a silent revert of `_rate_cs` to the fixed-time radius
+    fails here as well as in `test_reported_interval_estimand.py`.
+
+    The estimand half is the newer half and the more important one. A guarantee level without an
+    estimand is how 96.9% ended up beside a quantity it was not the coverage of.
+    """
     from bounded_loops.graph.application.gate_metrics import Interval, Rate
     from bounded_loops.graph.cli_graph_metrics import _rate_text
 
     printed = _rate_text("false-accept rate", Rate(1, 20, 0.05, Interval(0.01, 0.24)))
 
-    assert "95% CI" not in printed, "CI implies a fixed-time guarantee this does not carry"
-    assert "UNCALIBRATED" not in printed, "coverage has now been measured; the old label is gone"
-    # The label must claim MEASURED coverage and nothing stronger. The radius is the fixed-time
-    # empirical-Bernstein form with no stitching term, so simultaneous validity over all n is
-    # UNPROVEN here -- and a label asserting it would be the same class of error as the "95% CI"
-    # this project already stopped printing. Tracked as task #38.
-    assert "anytime-valid" not in printed, "unproven for this radius: no stitching term"
-    assert "COVERAGE-MEASURED" in printed, "say what was established, not what was hoped"
-    assert "emp-Bernstein" in printed, "the method must be named so a reader can look it up"
+    assert "95% CI" not in printed, "bare 'CI' implies a fixed-n guarantee and names no estimand"
+    assert "UNCALIBRATED" not in printed, "coverage has been measured; the old label is gone"
+    assert "COVERAGE-MEASURED" not in printed, (
+        "that label belonged to the fixed-time radius, whose validity was measured-not-proven. "
+        "The stitched sequence carries the guarantee outright; keeping the hedge would understate it"
+    )
+    assert "anytime-valid" in printed, "the reported estimator IS a confidence sequence — say so"
+    assert "for-log-mean" in printed, (
+        "the estimand must be named beside the level: this brackets the mean over the attempts in "
+        "the log, NOT the population rate (marginal coverage runs 0.83-1.00 by regime)"
+    )

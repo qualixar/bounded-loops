@@ -47,18 +47,17 @@ def _rate_text(label: str, rate: Rate) -> str:
             f"(too few to support a rate; the counts are real)"
         )
     assert rate.interval is not None
-    # Empirical-Bernstein with a predictable plug-in. Labelled by what has been MEASURED
-    # (96.9% coverage under simulated correlated retries with optional stopping), NOT by the
-    # simultaneous-validity theorem -- the radius carries no stitching term, so that theorem
-    # is unverified here. See confidence_sequence.py and the COVERAGE-MEASURED note.
-    # Replaces the former "nominal-95% iid (UNCALIBRATED)" Wilson label whose measured
-    # coverage under the same simulated regime was 77.5%. The two sentences that used to close this
-    # comment claimed the interval "is valid under optional stopping and makes no independence
-    # assumption" -- the guarantee the three lines above deny. Vestigial Wilson-era text that the
-    # relabelling prepended to rather than replaced, and a comment a reviewer would quote as intent.
+    # An anytime-valid confidence sequence (stitched PrPl-EB). The label names the ESTIMAND, not
+    # just the level, because the failure mode here is a coverage figure quoted against the wrong
+    # quantity -- this line used to read "emp-Bernstein 95% (COVERAGE-MEASURED)", where the measured
+    # coverage belonged to a per-run latent rate and the number printed beside it was the pooled
+    # one. "for-log-mean" is four characters of prevention.
+    # Predecessors, both retired: the fixed-time emp-Bernstein radius (not valid under the optional
+    # stopping a live run performs), and before that a "nominal-95% iid" Wilson label whose measured
+    # coverage under the same simulated regime was 77.5%.
     return (
         f"  {label:<24} {rate.value:.4f}  [{rate.interval.low:.4f}, {rate.interval.high:.4f}] "
-        f"emp-Bernstein 95% (COVERAGE-MEASURED)   from {rate.numerator}/{rate.denominator}"
+        f"anytime-valid 95% for-log-mean   from {rate.numerator}/{rate.denominator}"
     )
 
 
@@ -79,10 +78,12 @@ def _rate_dict(rate: Rate, *, method: str) -> dict[str, object]:
             else {"low": rate.interval.low, "high": rate.interval.high}
         ),
         "interval_method": method,
-        # The interval brackets the POOLED rate over the receipts it was computed from. The measured
-        # 96.9% coverage figure quoted elsewhere is coverage of a per-run LATENT rate, which is a
-        # different quantity: on the same simulation, coverage of the marginal rate was 0.5850.
-        "interval_estimand": "pooled rate over these receipts",
+        # The estimand, spelled out, because a machine consumer cannot read the caveat prose. The
+        # anytime-valid sequence brackets the average false-accept propensity of the attempts IN
+        # THIS LOG (measured coverage 1.0000 across every simulated regime). Coverage of the
+        # POPULATION marginal rate is a different question answered by a different number, ranging
+        # 0.83-1.00 with the count of independent nodes pooled and their heterogeneity.
+        "interval_estimand": "mean over the attempts in this log (not the population rate)",
         "reported": rate.reportable,
     }
 
@@ -147,6 +148,22 @@ def metrics_document(
     """
     if receipts is None:
         receipts = load_receipts(run_dir)
+    # The intervals the TEXT output prints. Keyed by what they ARE, not by the method that produced
+    # them last release: this block held fixed-time empirical-Bernstein radii until the anytime-valid
+    # sequence replaced them, and a key named for a retired method is how a consumer ends up quoting
+    # the wrong guarantee. `empirical_bernstein` is kept below as a deprecated alias to the same
+    # object so existing scripts keep reading — every `interval_method` inside self-describes.
+    intervals = {
+        "false_accept_rate": _rate_dict(
+            false_accept_rate_cs(receipts), method="anytime_valid_prpl_eb",
+        ),
+        "false_rejection_rate": _rate_dict(
+            false_reject_rate_cs(receipts), method="anytime_valid_prpl_eb",
+        ),
+        "blocked_precision": _rate_dict(
+            blocked_precision_cs(receipts), method="anytime_valid_prpl_eb",
+        ),
+    }
     return {
         "run": str(run_dir),
         "overall": _confusion_dict(confusion(receipts)),
@@ -154,18 +171,8 @@ def metrics_document(
             str(key): _confusion_dict(value)
             for key, value in confusion_by_attempt(receipts).items()
         },
-        # The intervals the TEXT output prints — the empirical-Bernstein ones.
-        "empirical_bernstein": {
-            "false_accept_rate": _rate_dict(
-                false_accept_rate_cs(receipts), method="empirical_bernstein_fixed_time",
-            ),
-            "false_rejection_rate": _rate_dict(
-                false_reject_rate_cs(receipts), method="empirical_bernstein_fixed_time",
-            ),
-            "blocked_precision": _rate_dict(
-                blocked_precision_cs(receipts), method="empirical_bernstein_fixed_time",
-            ),
-        },
+        "anytime_valid": intervals,
+        "empirical_bernstein": intervals,  # DEPRECATED alias — removed in a future major
         "advisory_blocked_precision_baseline": ADVISORY_BLOCKED_PRECISION_BASELINE,
         "independence_caveat": INDEPENDENCE_CAVEAT,
     }

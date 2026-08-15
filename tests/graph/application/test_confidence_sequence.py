@@ -10,9 +10,14 @@ Two categories:
 
 The coverage simulation is the deliverable that matters most, and what it measures is precise:
 coverage of the per-run LATENT rate under the failure mode documented in gate_metrics.py's
-independence caveat, with Wilson measured on identical data for comparison. It does NOT verify a 95%
-guarantee for the marginal rate ``bl graph metrics`` prints — that estimand is measured separately
-below and comes out at 0.5850, not 0.95.
+independence caveat, with Wilson measured on identical data for comparison.
+
+**Scope, since this file no longer covers the reported estimator.** Every sequence simulated here
+carries ONE latent propensity — a run with a single node. ``bl graph metrics`` reports the
+anytime-valid sequence over attempts pooled across MANY nodes, and the estimand question that raises
+is measured in ``test_reported_interval_estimand.py``. The 0.5850 marginal figure below is therefore
+the single-node corner of a surface, not a general result about the product's output; it was quoted
+as the latter until #38.
 """
 
 from __future__ import annotations
@@ -363,14 +368,23 @@ class TestCoverageSimulation:
 def test_the_interval_is_NOT_a_95_percent_interval_for_the_MARGINAL_rate() -> None:
     """The number a paper would misquote, measured so it cannot be.
 
-    Everything above measures coverage of ``p_run``, the per-run latent rate. The quantity
-    ``bl graph metrics`` prints as the false-accept rate is the MARGINAL rate ``E[p_run]``. Asking the
-    same intervals whether they contain the marginal rate gives **0.5850** — so for the printed
-    quantity this is a 58.5% interval, a 38-point miss rather than a 19-point improvement over
-    Wilson. Found by the P4.5 round-2 audit (Grok 6).
+    Everything above measures coverage of ``p_run``, the per-run latent rate. Asking the same
+    FIXED-TIME intervals whether they contain the MARGINAL rate ``E[p_run]`` gives **0.5850** on a
+    single-latent sequence — a 38-point miss rather than a 19-point improvement over Wilson. Found by
+    the P4.5 round-2 audit (Grok 6).
 
-    This test exists so the distinction is a measured number in the suite rather than a caveat in
-    prose, and so anyone tempted to put 96.9% next to α in a paper trips over it first.
+    Two scope corrections since, both from #38, and the test is kept because the trap it guards is
+    real in either case:
+
+    1. ``bl graph metrics`` no longer prints an interval from this estimator. It reports the
+       anytime-valid sequence, whose marginal coverage on this same one-node shape is 0.8333.
+    2. 0.5850 is the ONE-NODE corner. Pool six independent nodes and fixed-time marginal coverage
+       rises to 0.8450; pool thirty and it reaches 0.9783. Quoting 0.5850 as the product's marginal
+       coverage would be the same error in the opposite direction — see
+       ``test_reported_interval_estimand.py``.
+
+    It exists so the estimand distinction is a measured number in the suite rather than a caveat in
+    prose, and so anyone tempted to put a coverage figure next to α trips over it first.
     """
     rng = random.Random(_SEED)
     logit_mu = _logit(_TRUE_ALPHA)

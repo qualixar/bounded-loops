@@ -5,6 +5,49 @@ All notable changes to bounded-loops are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **`bl graph metrics` now reports an anytime-valid confidence sequence.** The stitched PrPl-EB
+  sequence had been implemented and tested since 0.6.0 and was called by nothing: every published
+  interval came from the fixed-time empirical-Bernstein radius, which is not valid under the
+  optional stopping a live run performs by construction. Watching a run means peeking after every
+  observation, and that is precisely what the old radius did not survive.
+
+  Measured on the pooled multi-node sequence the product actually builds, the replacement gains 12
+  to 23 coverage points at every regime simulated.
+
+- **Every interval now names its ESTIMAND, not just its level.** The text label reads
+  `anytime-valid 95% for-log-mean`, the JSON carries `interval_estimand`, and
+  `INDEPENDENCE_CAVEAT` states it in prose. What the sequence brackets is the mean false-accept
+  propensity of the attempts **in this log** — the right quantity for auditing a receipt stream —
+  and *not* the population rate of a future workload.
+
+  This distinction was previously carried as a caveat and got quoted away from it. Measured
+  coverage of the log mean is 1.0000 across every regime; coverage of the population marginal rate
+  is a different number ranging 0.83–1.00 with the count of independent nodes pooled and their
+  heterogeneity.
+
+- **JSON: the interval block is now `anytime_valid`.** `empirical_bernstein` remains as a
+  deprecated alias to the same object and will be removed in a future major. A key named for a
+  retired method is how a consumer ends up quoting the wrong guarantee.
+
+### Fixed
+
+- **The 0.5850 marginal-coverage figure was a corner case presented as a general result.** It is
+  the value for a sequence carrying a *single* latent propensity — a run with one node — while the
+  product pools attempts across many. On six nodes the same estimator reaches 0.8450, on thirty
+  0.9783. The figure was accurate and its scope was not, which is the same defect class as the
+  gate bugs fixed in 0.6.2.
+
+### Notes
+
+- Two guard tests that forbade the string "anytime-valid" were **inverted rather than deleted**:
+  they now require it. They existed to stop a false claim, and the direction of the possible lie
+  has reversed, not disappeared.
+- `pytest -m provider_smoke` collects **zero tests**. The marker is defined and documented as
+  contacting a real provider account, and nothing carries it. Recorded here because the gap is
+  real and is not closed by this release.
+
 ## [0.6.3] — 2026-08-15
 
 ### Fixed

@@ -24,22 +24,31 @@ settled on: unmeasurable is not zero, and the honest output of an unmeasurable q
 in twelve attempts", which is compatible with a true rate near 25%. So every rate carries an
 interval, never a bare estimate: a point estimate understates uncertainty infinitely.
 
-**Which interval, and what is actually known about it.** The reported figures use the FIXED-TIME
-empirical-Bernstein radius (``confidence_sequence.empirical_bernstein_interval``). It is NOT an
-anytime-valid confidence sequence — the radius carries no stitching term — and what is known about it
-is MEASURED, not proven: 96.9% coverage of a per-run latent rate under a simulated correlated-retry
-regime, against 77.5% for Wilson on the same data. Coverage of the MARGINAL rate these functions
-return is a different estimand and measures 0.5850 on that simulation, so the interval must not be
-described as a 95% interval for the rate printed beside it. ``INDEPENDENCE_CAVEAT`` travels with
-every number, including through the CLI and the JSON.
+**Which interval, and what is actually known about it.** The reported figures use the
+ANYTIME-VALID confidence sequence (``confidence_sequence.anytime_valid_interval``) — a stitched
+PrPl-EB boundary whose guarantee holds simultaneously over every ``n``, so an operator watching a
+live run may peek after every observation without inflating error. Until this release the module
+reported the FIXED-TIME radius while the anytime construction sat implemented and called by
+nothing two files away: green tests on dead code, and the CLI printing the weaker number. On every
+simulated regime the anytime sequence dominates the radius it replaced by 12 to 23 coverage points.
+
+**Name the estimand, or the number misleads.** What the sequence brackets is μ̄_n, the average
+false-accept propensity of the attempts *actually in this log* — the right quantity for an audit of
+what happened, and not a forecast of a future workload. Measured coverage of μ̄_n is 1.0000 across
+every regime simulated, under perturbation controls sharp enough to collapse it to 0.04 at a 0.3×
+radius. It is **not** a 95% interval for the population MARGINAL rate: that coverage depends on how
+many independent nodes the log pools over (0.8333 at one, 0.9717 at six, 0.9983 at thirty) and on
+how heterogeneous they are (1.0000 at ρ=0.5, 0.8267 at ρ=3.5). The 0.5850 figure this module used
+to quote is the single-node corner of that surface, stated as though it were the general case.
+``INDEPENDENCE_CAVEAT`` travels with every number, including through the CLI and the JSON.
 
 The Wilson score interval it replaced is still computed and still emitted under
 ``interval_method: "wilson_uncalibrated"``, for continuity and for comparison. Wilson assumes
 independent Bernoulli trials; attempts in one run are not independent, because retries of a node
 share its worker, prompt and failure mode, and correlation makes an iid interval too NARROW. That is
 also why ``confusion_by_attempt`` remains the most interpretable figure: within a single attempt index
-there is at most one observation per node. A genuinely cluster-aware, anytime-valid interval is P5
-work (``confseq`` was verified UNUSABLE on py>=3.11).
+there is at most one observation per node. The cluster-aware, anytime-valid interval that was P5 work
+is now the reported one (``confseq`` was verified UNUSABLE on py>=3.11, so it is implemented here).
 
 Nothing here reads a store, a clock, or an adapter: receipts in, numbers out. That makes every figure
 reproducible from an archived log by anyone, which is the property a reviewer will want.
@@ -51,7 +60,7 @@ from dataclasses import dataclass
 import math
 from typing import Mapping, Sequence
 
-from bounded_loops.graph.application.confidence_sequence import empirical_bernstein_interval
+from bounded_loops.graph.application.confidence_sequence import anytime_valid_interval
 from bounded_loops.graph.domain.events import NodeFailureCause, StoredGraphEvent
 
 #: Below this many labelled attempts, a rate is reported as ``None`` rather than computed. Ten is
@@ -75,21 +84,22 @@ _FAILED = "node.failed"
 #: Printed next to every interval, and not optional. The interval method and its validity conditions
 #: must travel with the number — the artefact most likely to be misquoted is a CI without its context.
 INDEPENDENCE_CAVEAT = (
-    "The reported interval is empirical-Bernstein with a predictable plug-in. Its coverage under "
-    "correlated retries with optional stopping was MEASURED at 96.9% by simulation, against 77.5% "
-    "for Wilson on the same data. It is NOT yet an anytime-valid confidence sequence: the radius "
-    "carries no stitching term, so simultaneous validity over all n is unproven here. "
-    # The four sentences deleted here asserted that "the 95% guarantee holds simultaneously for all
-    # sample sizes and under optional stopping" — the exact claim the sentence above denies. They
-    # were vestigial Wilson-era text left behind when the relabelling prepended the honest wording
-    # instead of replacing the paragraph. This string prints beside EVERY number and ships as JSON
-    # `independence_caveat`, so a quoter could splice the retracted half on its own and cite a
-    # guarantee the code disavows two sentences earlier.
-    "The MEASURED figure is coverage of the per-run latent rate under a simulated correlated-retry "
-    "regime, which is a DIFFERENT ESTIMAND from the marginal false-accept rate reported above — so "
-    "it must not be quoted as 'alpha coverage'. This replaces the Wilson interval, whose measured coverage "
-    "under the same simulated regime was 77.5% (not 95%). The per-attempt-index slices remain the most "
-    "interpretable figures — within attempt index k there is at most one observation per node."
+    "The reported interval is an ANYTIME-VALID confidence sequence: a stitched PrPl-EB boundary "
+    "whose guarantee holds simultaneously over ALL sample sizes, so peeking after every "
+    "observation does not inflate error. That is the property a live run needs, and the one the "
+    "fixed-time radius this replaced did not have — measured, the replacement gains 12 to 23 "
+    "coverage points at every regime simulated. "
+    # Every sentence below names its estimand. The failure this string exists to prevent is a
+    # coverage figure quoted without one: the previous version carried 96.9% (per-run latent) two
+    # clauses away from a marginal rate, and 0.5850 (marginal, single-node) described as though it
+    # were general. Both were true numbers about quantities other than the one printed beside them.
+    "ESTIMAND — the sequence brackets the average false-accept propensity of the attempts IN THIS "
+    "LOG, not the population rate of a future workload. Measured coverage of that quantity is "
+    "1.0000 across every simulated regime. Measured coverage of the population MARGINAL rate is a "
+    "DIFFERENT number that ranges 0.83 to 1.00 with the count of independent nodes pooled and "
+    "their heterogeneity. Never quote a coverage figure without naming which of the two it is. "
+    "The per-attempt-index slices remain the most interpretable figures — within attempt index k "
+    "there is at most one observation per node."
 )
 
 
@@ -97,15 +107,16 @@ INDEPENDENCE_CAVEAT = (
 class Interval:
     """A two-sided interval for a proportion. The METHOD is not carried here — see the caller.
 
-    Deliberately method-agnostic: ``*_cs`` functions fill it from the empirical-Bernstein radius,
-    ``Confusion.*_rate`` from Wilson, and the CLI labels which is which
+    Deliberately method-agnostic: ``*_cs`` functions fill it from the anytime-valid confidence
+    sequence, ``Confusion.*_rate`` from Wilson, and the CLI labels which is which
     (``interval_method``). This type used to say "a two-sided Wilson score interval", which stopped
     being true when the empirical-Bernstein interval became the reported figure — a stale name on the
-    type every number flows through.
+    type every number flows through, and the reason the name lives at the caller now.
 
-    **Read ``INDEPENDENCE_CAVEAT`` before quoting one of these.** Neither method is an anytime-valid
-    confidence sequence here, and for Wilson the independence assumption is violated in the
-    unflattering direction: correlation makes an iid interval too narrow, so it understates
+    **Read ``INDEPENDENCE_CAVEAT`` before quoting one of these**, because the two methods carry
+    different guarantees and the type cannot tell you which you are holding. The ``*_cs`` interval is
+    anytime-valid for μ̄_n. Wilson is neither: its independence assumption is violated in the
+    unflattering direction, since correlation makes an iid interval too narrow, so it understates
     uncertainty rather than overstating it.
     """
 
@@ -426,30 +437,39 @@ def _bp_observations(
 
 
 def _rate_cs(observations: list[float]) -> Rate:
-    """Build a Rate using the empirical-Bernstein interval instead of Wilson."""
+    """Build a Rate using the ANYTIME-VALID confidence sequence rather than Wilson.
+
+    The observations arrive in a deterministic order (see ``_fa_observations``), which is what makes
+    a sequence meaningful here: the guarantee is over the trajectory, so the trajectory must be
+    reproducible from the log rather than depending on dict iteration order.
+    """
     n = len(observations)
     numerator = int(sum(observations))
     if n < MINIMUM_LABELLED_FOR_A_RATE:
         return Rate(numerator, n, None, None)
     mu = numerator / n
-    low, high = empirical_bernstein_interval(observations, alpha=0.05)
+    low, high = anytime_valid_interval(observations, alpha=0.05)
     return Rate(numerator, n, mu, Interval(low, high))
 
 
 def false_accept_rate_cs(receipts: Sequence[StoredGraphEvent]) -> Rate:
-    """α — false-accept rate with an empirical-Bernstein interval (coverage measured, not proven).
+    """α — false-accept rate with an anytime-valid confidence sequence.
 
     Replaces the Wilson-based ``Confusion.false_accept_rate()``, whose independence assumption the
-    retry data violates. The radius is the FIXED-TIME empirical-Bernstein form and carries no
-    stitching term, so this is **not** a confidence sequence and simultaneous validity over all
-    sample sizes does not follow from it. What is known is measured: 96.9% coverage of the per-run
-    latent rate under the simulated correlated-retry regime, against Wilson's 77.5%. Coverage of the
-    MARGINAL rate this function returns is a separate estimand that those figures do not measure.
+    retry data violates, and — as of this release — the fixed-time empirical-Bernstein radius, which
+    is not valid under the optional stopping a live run performs by construction.
 
-    An earlier version of this docstring said "the CS is valid under optional stopping and without
-    the independence assumption" — a theorem this module's own ``INDEPENDENCE_CAVEAT`` disavows
-    twelve lines above, and the eighth surviving instance of that claim to be found. It is the kind
-    of sentence a paper quotes.
+    **The interval covers μ̄_n, the average false-accept propensity of the attempts in this log**
+    (measured coverage 1.0000 across every simulated regime). The *value* returned beside it is the
+    pooled point estimate. Coverage of the population MARGINAL rate is a different question with a
+    different answer (0.83–1.00 depending on how many independent nodes are pooled and how
+    heterogeneous they are) — see ``INDEPENDENCE_CAVEAT``, and name the estimand whenever a coverage
+    figure is quoted.
+
+    Two claims were removed from this docstring across earlier releases: that the fixed-time radius
+    was "valid under optional stopping" (it was not, and the module said so twelve lines above), and
+    that 96.9% was a coverage figure for the rate printed beside it (it was coverage of a different
+    estimand). Both are the kind of sentence a paper quotes.
     """
     verdicts = _gate_verdicts(receipts)
     labels = _labels(receipts)
@@ -457,14 +477,14 @@ def false_accept_rate_cs(receipts: Sequence[StoredGraphEvent]) -> Rate:
 
 
 def false_reject_rate_cs(receipts: Sequence[StoredGraphEvent]) -> Rate:
-    """False-reject rate with an empirical-Bernstein interval (coverage measured, not proven)."""
+    """False-reject rate with an anytime-valid confidence sequence. See ``INDEPENDENCE_CAVEAT``."""
     verdicts = _gate_verdicts(receipts)
     labels = _labels(receipts)
     return _rate_cs(_fr_observations(verdicts, labels))
 
 
 def blocked_precision_cs(receipts: Sequence[StoredGraphEvent]) -> Rate:
-    """Blocked precision with an empirical-Bernstein interval (coverage measured, not proven)."""
+    """Blocked precision with an anytime-valid confidence sequence. See ``INDEPENDENCE_CAVEAT``."""
     verdicts = _gate_verdicts(receipts)
     labels = _labels(receipts)
     return _rate_cs(_bp_observations(verdicts, labels))

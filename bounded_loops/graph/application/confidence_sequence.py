@@ -1,9 +1,18 @@
-"""Fixed-time empirical-Bernstein interval for a bounded [0, 1] random variable.
+"""Interval estimators for the mean of a bounded [0, 1] random variable. **Two, not one.**
 
-NOT anytime-valid — see the ``empirical_bernstein_interval`` docstring. The title said "Anytime-valid confidence
-sequence" and the first paragraph said "Implements ... PrPl-EB", both of which overstate what the
-arithmetic below delivers: this is the CLOSED-FORM FIXED-TIME bound, without the stitching term a
-confidence sequence needs.
+| Function | Guarantee | Used by |
+|---|---|---|
+| ``anytime_valid_interval`` | valid simultaneously over ALL n | **everything that reports a number** |
+| ``empirical_bernstein_interval`` | fixed-time only, no stitching term | tests, as the control |
+
+Read that table before quoting either. The two differ by the stitching term, they differ by 12–23
+measured coverage points, and only one of them survives the optional stopping a live run performs by
+construction — an operator watching a run IS peeking after every observation.
+
+The reported figures used the fixed-time function until this release, while the anytime one sat
+implemented, tested, and called by nothing. That is worth stating rather than quietly correcting:
+its tests were green the whole time, so the suite read as though the guarantee were in force. Green
+tests on unreached code are the most convincing wrong signal a repository can emit.
 
 The radius is taken from the empirical-Bernstein bound in:
 
@@ -89,9 +98,8 @@ def empirical_bernstein_interval(
     **77.5%**.  ``tests/graph/application/test_confidence_sequence.py`` is that measurement.
 
     WHAT THE MEASUREMENT IS OF: coverage of the per-run LATENT rate ``p_run``, not of the marginal
-    rate ``E[p_run]`` that ``bl graph metrics`` reports as the false-accept rate. Two different
-    estimands. The 19-point gap over Wilson is a statement about ``p_run`` and must not be quoted as
-    an improvement in α coverage.
+    rate ``E[p_run]``. Two different estimands. The 19-point gap over Wilson is a statement about
+    ``p_run`` and must not be quoted as an improvement in α coverage.
 
     AND THE NUMBER THAT MAKES THAT CONCRETE, because "different estimand" reads as a technicality
     until someone measures it. On the same 4000-run simulation, asking whether each interval contained
@@ -100,10 +108,21 @@ def empirical_bernstein_interval(
         coverage of p_run          0.9690
         coverage of marginal α     0.5850
 
-    So the interval is a 58.5% interval for the quantity the CLI labels, not a 95% one — a 38-point
-    MISS, not a 19-point improvement. Found by the P4.5 round-2 audit (Grok 6) and reproduced here.
-    A paper that wants a coverage number for the printed false-accept rate must measure THAT
-    estimand and publish THAT number; 96.9% is not it.
+    A 38-point MISS against the marginal, not a 19-point improvement. Found by the P4.5 round-2 audit
+    (Grok 6) and reproduced here.
+
+    **TWO SCOPE CORRECTIONS, both from #38, because this passage was over-read twice.**
+
+    First: ``bl graph metrics`` no longer reports an interval from this function at all. It reports
+    ``anytime_valid_interval``. Sentences here that used to say "the quantity the CLI labels" were
+    describing a wiring that no longer exists.
+
+    Second, and the sharper one: **0.5850 is the single-node corner**, not a general figure. Every
+    sequence in this simulation carries ONE latent propensity — a run with one node. Pool several
+    independent nodes, as the real product does, and this same estimator's marginal coverage rises
+    to 0.8450 at six nodes and 0.9783 at thirty. Quoting 0.5850 as "the interval's marginal coverage"
+    would be the same estimand error the paragraph above warns about, committed in the other
+    direction. ``tests/graph/application/test_reported_interval_estimand.py`` measures the surface.
 
     HOW STRICT THE MEASUREMENT IS, measured rather than asserted. The suite perturbs the interval in
     two independent ways and requires coverage to fall below the 0.94 threshold for each: a 20%
@@ -121,10 +140,10 @@ def empirical_bernstein_interval(
 
     NOT ESTABLISHED: that this is an anytime-valid confidence sequence.  The radius below is the
     fixed-time empirical-Bernstein form and carries **no stitching term** (no ``log log n``), so
-    simultaneous validity over all ``n`` does not follow from it.  A genuine PrPl-EB confidence
-    sequence needs either a stitched boundary (Howard et al. 2021) or numerical inversion of the
-    e-process.  Until that lands, this function's output must NOT be described as anytime-valid, and
-    the CLI label says ``emp-Bernstein 95% (COVERAGE-MEASURED)`` for exactly that reason.
+    simultaneous validity over all ``n`` does not follow from it.  That gap is why
+    ``anytime_valid_interval`` exists and why it, not this, is what the CLI now reports; this
+    function survives as the control that makes the comparison measurable.  Its output must never be
+    described as anytime-valid.
 
     The distinction matters because the whole point of replacing Wilson was optional stopping.  A
     measured 96.9% is real evidence and is better than a nominal interval whose coverage was 77.5%,
@@ -231,6 +250,28 @@ def anytime_valid_interval(
     the quantity anytime-validity bounds. The same test applies that measure to the fixed-time
     interval, which fails it. A coverage check at a single fixed n cannot tell the two apart,
     which is how a fixed-time bound gets described as a sequence in the first place.
+
+    **WHICH mean, though.** ``gate_metrics`` pools observations across nodes, and different nodes
+    have different latent false-accept propensities, so the conditional mean is not constant along
+    the pooled sequence. Measured on a simulation with that structure (nodes × attempts, logit-normal
+    propensities), checking at every n:
+
+        estimand                                          anytime    fixed-time
+        μ̄_n, mean propensity of the observed attempts      1.0000        0.9590
+        population MARGINAL rate, 1 node pooled            0.8333        0.6067
+        population MARGINAL rate, 6 nodes pooled           0.9717        0.8450
+        population MARGINAL rate, 30 nodes pooled          0.9983        0.9783
+        population MARGINAL rate, ρ=3.5 (heterogeneous)    0.8267        0.6000
+
+    So: **anytime-valid for μ̄_n**, the mean over the attempts actually in the log — which is the
+    quantity an audit of a receipt stream is asking about. NOT a 95% interval for the population
+    rate in general; that coverage climbs with the number of independent nodes pooled and falls with
+    their heterogeneity. The 0.5850 marginal figure quoted elsewhere in this repository is the
+    single-node corner of that surface and was stated as though it were the general case.
+
+    The μ̄_n row is 1.0000 because the sequence is conservative there, not because the check is
+    vacuous: shrinking the radius to 0.6× drops it to 0.14–0.35 and to 0.3× drops it to 0.00–0.10,
+    and translating the centre by +0.10 drops it to 0.44–0.58. Both controls are in the suite.
 
     Returns (lower, upper), clipped to [0, 1]. An empty sequence returns the whole interval,
     which is the honest answer for no evidence.

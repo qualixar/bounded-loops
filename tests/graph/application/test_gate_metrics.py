@@ -260,20 +260,29 @@ def test_a_confusion_with_no_labels_at_all_is_honest_about_it() -> None:
 class TestTheIntervalCaveat:
     """The interval method and its validity conditions must travel with every printed number."""
 
-    def test_the_caveat_identifies_the_method_and_references_measured_wilson_failure(self) -> None:
-        """The caveat must name the method, state that coverage was MEASURED rather than proven, and
-        cite the Wilson failure so a reader who pulls just this number understands the replacement.
+    def test_the_caveat_names_the_method_the_guarantee_and_the_ESTIMAND(self) -> None:
+        """The caveat travels with every number, so it must describe the CURRENT estimator exactly.
 
-        It must also say plainly that anytime validity is NOT established: the radius is the
-        fixed-time empirical-Bernstein form with no stitching term."""
+        Inverted at #38, deliberately, in step with the CLI label guard: this used to require the
+        phrase "NOT yet an anytime-valid", because the reported radius was the fixed-time one. The
+        stitched sequence is now what ships, so requiring the disclaimer would pin a false modesty
+        — and a caveat that understates the guarantee is still a caveat that misdescribes it.
+
+        The estimand assertions are the ones that matter most. Both historical failures here were
+        coverage figures quoted against the wrong quantity, in opposite directions: 96.9% (per-run
+        latent) beside a pooled rate, and 0.5850 (marginal, one node) presented as general.
+        """
         from bounded_loops.graph.application.gate_metrics import INDEPENDENCE_CAVEAT
 
-        assert "empirical-Bernstein" in INDEPENDENCE_CAVEAT
-        assert "MEASURED" in INDEPENDENCE_CAVEAT
-        assert "NOT yet an anytime-valid" in INDEPENDENCE_CAVEAT
-        # The Wilson coverage figure this replaced. Was "31" (from a P1 reviewer's simulation whose
-        # parameters were never recorded); now the figure the shipped seeded test reproduces.
-        assert "77.5" in INDEPENDENCE_CAVEAT
+        assert "ANYTIME-VALID" in INDEPENDENCE_CAVEAT
+        assert "ESTIMAND" in INDEPENDENCE_CAVEAT
+        assert "IN THIS LOG" in INDEPENDENCE_CAVEAT, "the estimand must be stated, not implied"
+        assert "MARGINAL" in INDEPENDENCE_CAVEAT, "and distinguished from the one it is not"
+        assert "Never quote a coverage figure without naming which" in INDEPENDENCE_CAVEAT
+        # No bare coverage number may appear without its estimand in the same sentence. These two
+        # are the specific figures that escaped before, and neither belongs in this string now.
+        assert "96.9" not in INDEPENDENCE_CAVEAT
+        assert "0.5850" not in INDEPENDENCE_CAVEAT
 
     def test_the_cli_prints_the_caveat_whenever_it_prints_an_interval(self, tmp_path, capsys) -> None:
         """Wired so the caveat cannot be dropped while the numbers stay — the failure mode being that
