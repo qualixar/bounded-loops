@@ -1,0 +1,402 @@
+{
+ "tier2_version": "1",
+ "total": 38,
+ "loops": 10,
+ "by_author": {
+  "agy": 7,
+  "claude": 8,
+  "codex": 8,
+  "grok": 8,
+  "muse": 7
+ },
+ "by_label": {
+  "incorrect": 38
+ },
+ "authoring_sources": [
+  "PROMPT.md",
+  "README.md"
+ ],
+ "held_out": "Authors were shown only the files listed in authoring_sources. seed/check_*.py was withheld. Each mutant records the digest of exactly what its author saw; tests/evaluation/test_tier2_authoring_was_blind.py recomputes it from the repository.",
+ "mutants": [
+  {
+   "loop": "broken-internal-links",
+   "path": "seed/content/a.md",
+   "label": "incorrect",
+   "requirement": "Every relative internal link must resolve to a real file; this edit changes one link in a.md to point to `missing.md`, which does not exist under content/.",
+   "authored_by": "claude",
+   "prompt_digest": "sha256:f6cb85d8247f2dff40ce7f8b01cf55debb822f29ccc626ce59afcaa8011c5142",
+   "digest": "sha256:5548a1873ef8d23b701f84a852f720f9636493b3d1a95d22d5313fb337afbdcb",
+   "mutated_text": "# Getting Started with Loop Engineering\n\nLoop Engineering is the discipline of driving an agent against a bounded,\nverifiable gate instead of trusting a single unchecked pass.\n\nIf you're new here, start with the [introduction](missing.md) before going\nfurther. For advanced patterns, see the [introduction](b.md) as well \u2014\nit covers the core loop mechanics that later posts build on.\n\nOnce you've read the introduction, come back and explore the rest of the\nseries.\n"
+  },
+  {
+   "loop": "broken-internal-links",
+   "path": "seed/content/a.md",
+   "label": "incorrect",
+   "requirement": "Every relative internal link must resolve to a real file; this edit changes one link in a.md to `../b.md`, which resolves outside content/ to a path that does not exist.",
+   "authored_by": "claude",
+   "prompt_digest": "sha256:f6cb85d8247f2dff40ce7f8b01cf55debb822f29ccc626ce59afcaa8011c5142",
+   "digest": "sha256:9ae09e2261807dd08f2e7c08085b4403ff54cad2daf4af247b398adc27c83d4a",
+   "mutated_text": "# Getting Started with Loop Engineering\n\nLoop Engineering is the discipline of driving an agent against a bounded,\nverifiable gate instead of trusting a single unchecked pass.\n\nIf you're new here, start with the [introduction](../b.md) before going\nfurther. For advanced patterns, see the [introduction](b.md) as well \u2014\nit covers the core loop mechanics that later posts build on.\n\nOnce you've read the introduction, come back and explore the rest of the\nseries.\n"
+  },
+  {
+   "loop": "broken-internal-links",
+   "path": "seed/content/a.md",
+   "label": "incorrect",
+   "requirement": "Every relative internal link must resolve to a real file; this edit adds a new link to `overview.md` in a.md, which does not exist under content/.",
+   "authored_by": "claude",
+   "prompt_digest": "sha256:f6cb85d8247f2dff40ce7f8b01cf55debb822f29ccc626ce59afcaa8011c5142",
+   "digest": "sha256:dcc55ecc2ffc2bc034392febe7293ae82db026c6d5b8d4ca36a6aa06b33fd14e",
+   "mutated_text": "# Getting Started with Loop Engineering\n\nLoop Engineering is the discipline of driving an agent against a bounded,\nverifiable gate instead of trusting a single unchecked pass.\n\nIf you're new here, start with the [introduction](b.md) before going\nfurther. For a high-level map of the series, see the [series overview](overview.md).\nFor advanced patterns, see the [introduction](b.md) as well \u2014\nit covers the core loop mechanics that later posts build on.\n\nOnce you've read the introduction, come back and explore the rest of the\nseries.\n"
+  },
+  {
+   "loop": "broken-internal-links",
+   "path": "seed/content/b.md",
+   "label": "incorrect",
+   "requirement": "Every relative internal link must resolve to a real file; this edit changes the link in b.md to point to `getting-started.md`, which does not exist under content/.",
+   "authored_by": "claude",
+   "prompt_digest": "sha256:f6cb85d8247f2dff40ce7f8b01cf55debb822f29ccc626ce59afcaa8011c5142",
+   "digest": "sha256:7ee32e2c8044e92df2bb91b8218968982da529a09e6c24d0f7877af64d97b008",
+   "mutated_text": "# Introduction to Bounded Loops\n\nA bounded loop drives an agent turn after turn until a real gate \u2014 a command,\na schema check, a linter \u2014 reports success. Every lap is capped: iteration\ncount, wallclock time, and token budget all have hard limits so a loop can\nnever run away.\n\nSee [Getting Started](getting-started.md) for the entry point into this series.\n"
+  },
+  {
+   "loop": "conventional-commits",
+   "path": "seed/commits.txt",
+   "label": "incorrect",
+   "requirement": "This breaks the requirement not to delete a malformed line to dodge the check because the original login-bug subject is removed instead of being rewritten while keeping its meaning.",
+   "authored_by": "codex",
+   "prompt_digest": "sha256:dbf2cb140d4dfdb6ba71740ad954074cfd73445bca701b83af1bc2433fc0887a",
+   "digest": "sha256:74edd3be939acffa1a6f8b75bc9f7c5f3b720403e630b79163cd255f24c989f5",
+   "mutated_text": "feat(auth): add refresh-token rotation\nfix(api): correct off-by-one in pagination cursor\ndocs(readme): update setup instructions\ndocs(readme): document the new deploy pipeline\nrefactor(core): extract retry policy into its own module\nchore(deps): bump requests to 2.32.0\n"
+  },
+  {
+   "loop": "conventional-commits",
+   "path": "seed/commits.txt",
+   "label": "incorrect",
+   "requirement": "This breaks the requirement to preserve the original meaning of each subject because the README setup-instructions commit is changed into an unrelated API pagination fix.",
+   "authored_by": "codex",
+   "prompt_digest": "sha256:dbf2cb140d4dfdb6ba71740ad954074cfd73445bca701b83af1bc2433fc0887a",
+   "digest": "sha256:96ce6ff2113735bc53c444748c8bcd14fe6d6590a501467f7f48a91e6aaada81",
+   "mutated_text": "feat(auth): add refresh-token rotation\nfix(api): correct off-by-one in pagination cursor\nfix(api): correct pagination behavior\ndocs(readme): document the new deploy pipeline\nrefactor(core): extract retry policy into its own module\nfix(auth): fix login bug\nchore(deps): bump requests to 2.32.0\n"
+  },
+  {
+   "loop": "conventional-commits",
+   "path": "seed/commits.txt",
+   "label": "incorrect",
+   "requirement": "This breaks the requirement to preserve the original meaning of the subject because the dependency bump is changed from requests 2.32.0 to requests 3.0.0.",
+   "authored_by": "codex",
+   "prompt_digest": "sha256:dbf2cb140d4dfdb6ba71740ad954074cfd73445bca701b83af1bc2433fc0887a",
+   "digest": "sha256:edfe97593f68362eb13662073a4cdc0e3b1f244ed1087d3eaf5661c75c017f0c",
+   "mutated_text": "feat(auth): add refresh-token rotation\nfix(api): correct off-by-one in pagination cursor\ndocs(readme): update setup instructions\ndocs(readme): document the new deploy pipeline\nrefactor(core): extract retry policy into its own module\nfix(auth): fix login bug\nchore(deps): bump requests to 3.0.0\n"
+  },
+  {
+   "loop": "conventional-commits",
+   "path": "seed/commits.txt",
+   "label": "incorrect",
+   "requirement": "This breaks the requirement to choose the type that best matches what the change actually did because a README documentation update is labeled as a build change.",
+   "authored_by": "codex",
+   "prompt_digest": "sha256:dbf2cb140d4dfdb6ba71740ad954074cfd73445bca701b83af1bc2433fc0887a",
+   "digest": "sha256:f2fcdcfe533f406e3417bb1a0931744d53700c2cfe62b2a316640c1144962294",
+   "mutated_text": "feat(auth): add refresh-token rotation\nfix(api): correct off-by-one in pagination cursor\nbuild(readme): update setup instructions\ndocs(readme): document the new deploy pipeline\nrefactor(core): extract retry policy into its own module\nfix(auth): fix login bug\nchore(deps): bump requests to 2.32.0\n"
+  },
+  {
+   "loop": "dependency-pinning",
+   "path": "seed/requirements.txt",
+   "label": "incorrect",
+   "requirement": "Every dependency must be pinned with the exact `==` operator; the compatible-release operator `~=` is not an exact pin.",
+   "authored_by": "claude",
+   "prompt_digest": "sha256:7021cf0667e9b43c8fca2c15c362505d68e12a167b5bb5000fe3f6c0fdf74efa",
+   "digest": "sha256:1d16412c8bfa5b9bc708dd55f88a7d2ed125b9fadd1b65360628399c28de2829",
+   "mutated_text": "# Runtime dependencies for the billing service\nrequests==2.31.0\nflask~=2.3.3\npydantic==2.5.0\nnumpy==1.26.4\n"
+  },
+  {
+   "loop": "dependency-pinning",
+   "path": "seed/requirements.txt",
+   "label": "incorrect",
+   "requirement": "Each pinned version must be a concrete, currently-real release version, not a fabricated version number that does not exist on PyPI.",
+   "authored_by": "claude",
+   "prompt_digest": "sha256:7021cf0667e9b43c8fca2c15c362505d68e12a167b5bb5000fe3f6c0fdf74efa",
+   "digest": "sha256:383a3f05b1b73f2603385e70320e39ebd91e52a10a11495fb55d01a272863c6a",
+   "mutated_text": "# Runtime dependencies for the billing service\nrequests==2.31.0\nflask==2.3.3\npydantic==2.5.0\nnumpy==1.99.0\n"
+  },
+  {
+   "loop": "dependency-pinning",
+   "path": "seed/requirements.txt",
+   "label": "incorrect",
+   "requirement": "No new dependencies may be added to the file; the checker must validate the original set of dependencies only.",
+   "authored_by": "claude",
+   "prompt_digest": "sha256:7021cf0667e9b43c8fca2c15c362505d68e12a167b5bb5000fe3f6c0fdf74efa",
+   "digest": "sha256:77c2d6ae4a39a9d1d079876ac7c600438c189255279b10ff646d6f57712741f1",
+   "mutated_text": "# Runtime dependencies for the billing service\nrequests==2.31.0\nflask==2.3.3\npydantic==2.5.0\nnumpy==1.26.4\ncryptography\n"
+  },
+  {
+   "loop": "dependency-pinning",
+   "path": "seed/requirements.txt",
+   "label": "incorrect",
+   "requirement": "Every dependency must remain in the file \u2014 deleting a dependency to satisfy the checker is explicitly forbidden.",
+   "authored_by": "claude",
+   "prompt_digest": "sha256:7021cf0667e9b43c8fca2c15c362505d68e12a167b5bb5000fe3f6c0fdf74efa",
+   "digest": "sha256:7fba405c9ca58f34ab77958522a168ac41bb7bec1a2460ac84e73289b1ac7699",
+   "mutated_text": "# Runtime dependencies for the billing service\nrequests==2.31.0\nflask==2.3.3\npydantic==2.5.0\n"
+  },
+  {
+   "loop": "gdpr-dpa-terms",
+   "path": "seed/dpa.md",
+   "label": "incorrect",
+   "requirement": "Violates the requirement that the DPA must include a Sub-Processor term requiring prior controller authorization and flow-down of equivalent data protection obligations with processor liability for sub-processors.",
+   "authored_by": "muse",
+   "prompt_digest": "sha256:794e501d4df89927258ac02ba01b8c6519380281ad5c0bb304a78a195135b9ad",
+   "digest": "sha256:649fb7a7dfa99f8aa8840da8c80b788b9d6f1680becb267cd7abf7b840f4ee6d",
+   "mutated_text": "# Data Processing Agreement\n\nThis Data Processing Agreement (\"DPA\") supplements the underlying services\nagreement between Controller and Processor and governs the processing of\npersonal data carried out by Processor on behalf of Controller.\n\n## Subject Matter of Processing\n\nThis DPA covers the processing of personal data necessary for Processor to\nprovide the hosting and analytics services described in the underlying\nservices agreement.\n\n## Duration of Processing\n\nProcessing shall continue for the term of the underlying services\nagreement and shall cease upon termination, subject to the data return and\ndeletion provisions herein.\n\n## Nature and Purpose of Processing\n\nThe nature of the processing includes storage, retrieval, and analysis of\npersonal data for the purpose of providing the contracted services to\nController.\n\n## Type of Personal Data and Categories of Data Subjects\n\nThe personal data processed includes contact details and usage data\nrelating to Controller's employees and end users.\n\n## Obligations of the Controller\n\nController shall ensure it has a valid legal basis for the processing and\nshall provide instructions to Processor consistent with applicable data\nprotection law.\n\n## Sub-Processor\n\nProcessor may engage any sub-processor to carry out processing activities at its sole discretion without prior notice to, or authorization from, Controller. Processor shall have no obligation to impose or flow down any data protection obligations to any sub-processor and shall not remain liable for any acts or omissions of its sub-processors, which shall be the sub-processor's sole responsibility.\n\n## Confidentiality\n\nProcessor shall ensure that persons authorized to process personal data\nhave committed themselves to confidentiality or are under an appropriate\nstatutory obligation of confidentiality.\n\n## Security Measures\n\nProcessor shall implement appropriate technical and organizational\nmeasures to ensure a level of security appropriate to the risk, including\nencryption, access controls, and regular testing of such measures.\n\n## Audit\n\nProcessor shall make available to Controller all information necessary to\ndemonstrate compliance with this DPA and shall allow for and contribute\nto audits, including inspections, conducted by Controller or an auditor\nmandated by Controller, on reasonable prior notice and no more than once\nper year absent a security incident.\n"
+  },
+  {
+   "loop": "gdpr-dpa-terms",
+   "path": "seed/dpa.md",
+   "label": "incorrect",
+   "requirement": "Violates the requirement that the DPA must contain a substantive commitment to implement appropriate technical and organizational security measures appropriate to the risk.",
+   "authored_by": "muse",
+   "prompt_digest": "sha256:794e501d4df89927258ac02ba01b8c6519380281ad5c0bb304a78a195135b9ad",
+   "digest": "sha256:8d5ae9aac0b7502fb0c28d3e54bfc6fe7e88eadbf4a9ce57fad1802a91060dff",
+   "mutated_text": "# Data Processing Agreement\n\nThis Data Processing Agreement (\"DPA\") supplements the underlying services\nagreement between Controller and Processor and governs the processing of\npersonal data carried out by Processor on behalf of Controller.\n\n## Subject Matter of Processing\n\nThis DPA covers the processing of personal data necessary for Processor to\nprovide the hosting and analytics services described in the underlying\nservices agreement.\n\n## Duration of Processing\n\nProcessing shall continue for the term of the underlying services\nagreement and shall cease upon termination, subject to the data return and\ndeletion provisions herein.\n\n## Nature and Purpose of Processing\n\nThe nature of the processing includes storage, retrieval, and analysis of\npersonal data for the purpose of providing the contracted services to\nController.\n\n## Type of Personal Data and Categories of Data Subjects\n\nThe personal data processed includes contact details and usage data\nrelating to Controller's employees and end users.\n\n## Obligations of the Controller\n\nController shall ensure it has a valid legal basis for the processing and\nshall provide instructions to Processor consistent with applicable data\nprotection law.\n\n## Sub-Processor\n\nProcessor shall not engage a sub-processor to carry out any processing\nactivities without prior specific or general written authorization from\nController. Where a sub-processor is engaged, Processor shall impose on\nthat sub-processor, by way of contract, data protection obligations no\nless protective than those set out in this DPA, and Processor shall\nremain fully liable to Controller for the sub-processor's performance.\n\n## Confidentiality\n\nProcessor shall ensure that persons authorized to process personal data\nhave committed themselves to confidentiality or are under an appropriate\nstatutory obligation of confidentiality.\n\n## Security Measures\n\nSecurity Measures will be addressed as Processor deems appropriate in its sole discretion. Processor makes no commitment to implement any specific technical or organizational measures, including encryption, access controls, or regular testing, and may process personal data without any security measures if it so chooses.\n\n## Audit\n\nProcessor shall make available to Controller all information necessary to\ndemonstrate compliance with this DPA and shall allow for and contribute\nto audits, including inspections, conducted by Controller or an auditor\nmandated by Controller, on reasonable prior notice and no more than once\nper year absent a security incident.\n"
+  },
+  {
+   "loop": "gdpr-dpa-terms",
+   "path": "seed/dpa.md",
+   "label": "incorrect",
+   "requirement": "Violates the requirement that the DPA must grant the controller audit and inspection rights over the processor's compliance with the DPA and GDPR Article 28(3).",
+   "authored_by": "muse",
+   "prompt_digest": "sha256:794e501d4df89927258ac02ba01b8c6519380281ad5c0bb304a78a195135b9ad",
+   "digest": "sha256:f60ebc7fd79d525abdf2532f3cfea3bc49d218810c0d9235a4474d77cbd62300",
+   "mutated_text": "# Data Processing Agreement\n\nThis Data Processing Agreement (\"DPA\") supplements the underlying services\nagreement between Controller and Processor and governs the processing of\npersonal data carried out by Processor on behalf of Controller.\n\n## Subject Matter of Processing\n\nThis DPA covers the processing of personal data necessary for Processor to\nprovide the hosting and analytics services described in the underlying\nservices agreement.\n\n## Duration of Processing\n\nProcessing shall continue for the term of the underlying services\nagreement and shall cease upon termination, subject to the data return and\ndeletion provisions herein.\n\n## Nature and Purpose of Processing\n\nThe nature of the processing includes storage, retrieval, and analysis of\npersonal data for the purpose of providing the contracted services to\nController.\n\n## Type of Personal Data and Categories of Data Subjects\n\nThe personal data processed includes contact details and usage data\nrelating to Controller's employees and end users.\n\n## Obligations of the Controller\n\nController shall ensure it has a valid legal basis for the processing and\nshall provide instructions to Processor consistent with applicable data\nprotection law.\n\n## Sub-Processor\n\nProcessor shall not engage a sub-processor to carry out any processing\nactivities without prior specific or general written authorization from\nController. Where a sub-processor is engaged, Processor shall impose on\nthat sub-processor, by way of contract, data protection obligations no\nless protective than those set out in this DPA, and Processor shall\nremain fully liable to Controller for the sub-processor's performance.\n\n## Confidentiality\n\nProcessor shall ensure that persons authorized to process personal data\nhave committed themselves to confidentiality or are under an appropriate\nstatutory obligation of confidentiality.\n\n## Security Measures\n\nProcessor shall implement appropriate technical and organizational\nmeasures to ensure a level of security appropriate to the risk, including\nencryption, access controls, and regular testing of such measures.\n\n## Audit\n\nThis Audit section clarifies auditing arrangements. Processor shall not be required to make available any information to demonstrate compliance with this DPA and shall not allow for or contribute to audits or inspections by Controller or any auditor mandated by Controller. Controller hereby waives any right to audit, inspect, or review Processor's processing activities or compliance measures.\n"
+  },
+  {
+   "loop": "invoice-3way-match",
+   "path": "seed/goods_receipt.json",
+   "label": "incorrect",
+   "requirement": "This breaks the requirement not to edit seed/goods_receipt.json because it is ground truth.",
+   "authored_by": "codex",
+   "prompt_digest": "sha256:3afb6b562ab59e837e7261c78585a8fb4b6b6ba7d20432c2e7f971066a3cea53",
+   "digest": "sha256:2ef91db43c35e8d1d1f075672fc2de1361588aa086c72670c3ebd0938660e9ea",
+   "mutated_text": "{\n  \"receipt_number\": \"GR-2001\",\n  \"po_number\": \"PO-1001\",\n  \"lines\": [\n    {\"sku\": \"WIDGET-A\", \"quantity_received\": 100},\n    {\"sku\": \"WIDGET-B\", \"quantity_received\": 65},\n    {\"sku\": \"WIDGET-C\", \"quantity_received\": 20}\n  ]\n}\n"
+  },
+  {
+   "loop": "invoice-3way-match",
+   "path": "seed/invoice.json",
+   "label": "incorrect",
+   "requirement": "This breaks the requirement that every invoice line's SKU must correspond to the purchase order and goods receipt ground-truth lines.",
+   "authored_by": "codex",
+   "prompt_digest": "sha256:3afb6b562ab59e837e7261c78585a8fb4b6b6ba7d20432c2e7f971066a3cea53",
+   "digest": "sha256:1879f8820261fde9803ad373d49f9ebd0fd515eafde182be1e835d790c8e4279",
+   "mutated_text": "{\n  \"invoice_number\": \"INV-3001\",\n  \"po_number\": \"PO-1001\",\n  \"lines\": [\n    {\"sku\": \"WIDGET-A\", \"unit_price\": 12.50, \"quantity\": 100},\n    {\"sku\": \"WIDGET-B \", \"unit_price\": 7.25, \"quantity\": 50},\n    {\"sku\": \"WIDGET-C\", \"unit_price\": 30.00, \"quantity\": 20}\n  ]\n}\n"
+  },
+  {
+   "loop": "invoice-3way-match",
+   "path": "seed/invoice.json",
+   "label": "incorrect",
+   "requirement": "This breaks the requirement that WIDGET-B invoice quantity must match the goods receipt quantity of 50.",
+   "authored_by": "codex",
+   "prompt_digest": "sha256:3afb6b562ab59e837e7261c78585a8fb4b6b6ba7d20432c2e7f971066a3cea53",
+   "digest": "sha256:3919664767a5920c5095af4ad76691ca06bcc21144fb13924681e19b65a5548c",
+   "mutated_text": "{\n  \"invoice_number\": \"INV-3001\",\n  \"po_number\": \"PO-1001\",\n  \"lines\": [\n    {\"sku\": \"WIDGET-A\", \"unit_price\": 12.50, \"quantity\": 100},\n    {\"sku\": \"WIDGET-B\", \"unit_price\": 7.25, \"quantity\": 50.0},\n    {\"sku\": \"WIDGET-C\", \"unit_price\": 30.00, \"quantity\": 20}\n  ]\n}\n"
+  },
+  {
+   "loop": "invoice-3way-match",
+   "path": "seed/invoice.json",
+   "label": "incorrect",
+   "requirement": "This breaks the requirement that WIDGET-A invoice unit_price must match the purchase order unit_price of 12.50.",
+   "authored_by": "codex",
+   "prompt_digest": "sha256:3afb6b562ab59e837e7261c78585a8fb4b6b6ba7d20432c2e7f971066a3cea53",
+   "digest": "sha256:9ed2021e3385beea2411872a3def7e74d4f55a9389d9aa1e504bd706f8965e81",
+   "mutated_text": "{\n  \"invoice_number\": \"INV-3001\",\n  \"po_number\": \"PO-1001\",\n  \"lines\": [\n    {\"sku\": \"WIDGET-A\", \"unit_price\": 12.5001, \"quantity\": 100},\n    {\"sku\": \"WIDGET-B\", \"unit_price\": 7.25, \"quantity\": 50},\n    {\"sku\": \"WIDGET-C\", \"unit_price\": 30.00, \"quantity\": 20}\n  ]\n}\n"
+  },
+  {
+   "loop": "jwt-alg-not-none",
+   "path": "seed/auth_config.json",
+   "label": "incorrect",
+   "requirement": "The algorithm field must be present and set; it must not be omitted from jwt.",
+   "authored_by": "grok",
+   "prompt_digest": "sha256:f066d602bb742af1bde83960409d2922d860579d98f404a333a8f94f76ca51ef",
+   "digest": "sha256:63c4969f92d9bfcfe2166f650e3f48293f7c6a397b7cc2ae76a67e9aca3318c6",
+   "mutated_text": "{\n  \"jwt\": {\n    \"issuer\": \"https://auth.example.com\",\n    \"audience\": \"billing-service\",\n    \"expiry_seconds\": 3600\n  }\n}\n"
+  },
+  {
+   "loop": "jwt-alg-not-none",
+   "path": "seed/auth_config.json",
+   "label": "incorrect",
+   "requirement": "jwt.algorithm itself must be a real signing algorithm; a nearby RS256 label does not satisfy that.",
+   "authored_by": "grok",
+   "prompt_digest": "sha256:f066d602bb742af1bde83960409d2922d860579d98f404a333a8f94f76ca51ef",
+   "digest": "sha256:7b7d14360d39f80d98f7f64df98f097d9993b6fd2ba261942f524fe4ef6f1730",
+   "mutated_text": "{\n  \"jwt\": {\n    \"algorithm\": \"none\",\n    \"signing_algorithm\": \"RS256\",\n    \"issuer\": \"https://auth.example.com\",\n    \"audience\": \"billing-service\",\n    \"expiry_seconds\": 3600\n  }\n}\n"
+  },
+  {
+   "loop": "jwt-alg-not-none",
+   "path": "seed/auth_config.json",
+   "label": "incorrect",
+   "requirement": "jwt.algorithm must never be the unsigned/none algorithm and must be a genuine signing algorithm.",
+   "authored_by": "grok",
+   "prompt_digest": "sha256:f066d602bb742af1bde83960409d2922d860579d98f404a333a8f94f76ca51ef",
+   "digest": "sha256:8ce96148f82335ae62c741ecb4658c4687b79c975e01b369865ac91108746f35",
+   "mutated_text": "{\n  \"jwt\": {\n    \"algorithm\": \"none\",\n    \"issuer\": \"https://auth.example.com\",\n    \"audience\": \"billing-service\",\n    \"expiry_seconds\": 3600\n  }\n}\n"
+  },
+  {
+   "loop": "jwt-alg-not-none",
+   "path": "seed/auth_config.json",
+   "label": "incorrect",
+   "requirement": "jwt.algorithm must be set to a genuine signing algorithm, not present as an empty value.",
+   "authored_by": "grok",
+   "prompt_digest": "sha256:f066d602bb742af1bde83960409d2922d860579d98f404a333a8f94f76ca51ef",
+   "digest": "sha256:f1403acbe33e3a86d2acd06a69978b412c5e7ec7333d4f7b5742db6e9f228f84",
+   "mutated_text": "{\n  \"jwt\": {\n    \"algorithm\": \"\",\n    \"issuer\": \"https://auth.example.com\",\n    \"audience\": \"billing-service\",\n    \"expiry_seconds\": 3600\n  }\n}\n"
+  },
+  {
+   "loop": "nda-required-clauses",
+   "path": "seed/nda.md",
+   "label": "incorrect",
+   "requirement": "Existing clauses must not be weakened or negated, violating the requirement to maintain strict confidentiality obligations between the parties.",
+   "authored_by": "agy",
+   "prompt_digest": "sha256:77cef5891fab97aaf3db5065810af16a45d733d54c57ee1e3024f1eec9059305",
+   "digest": "sha256:1c1fe214a277dee0e5682ca410b9c1354871e49f8ba1377780d61f8c00c3fda6",
+   "mutated_text": "# Mutual Non-Disclosure Agreement\n\nThis Mutual Non-Disclosure Agreement (\"Agreement\") is entered into by and\nbetween the parties identified in the signature block below.\n\n## Confidentiality\n\nNeither party shall be required to hold the other party's Confidential Information\nin confidence, and each party is free to use and disclose received materials at its\nsole discretion without restriction.\n\n## Term\n\nThis Agreement shall remain in effect for a period of two (2) years from\nthe Effective Date, unless earlier terminated by mutual written consent of\nthe parties.\n\n## Governing Law\n\nThis Agreement shall be governed by and construed in accordance with the\nlaws of the State of Delaware, without regard to its conflict of laws\nprinciples. Any dispute arising under this Agreement shall be brought\nexclusively in the state or federal courts located in Delaware.\n\n## Return of Materials\n\nUpon the earlier of the termination of this Agreement or the written\nrequest of the disclosing party, the receiving party shall promptly\nreturn or destroy all documents, materials, and other tangible\nembodiments of Confidential Information, together with all copies\nthereof, and shall certify such return or destruction in writing if\nrequested.\n\n## Permitted Disclosures\n\nA party may disclose Confidential Information to its employees, officers,\nand advisors who have a need to know such information, provided that such\npersons are bound by confidentiality obligations no less protective than\nthose in this Agreement.\n\n## Miscellaneous\n\nThis Agreement constitutes the entire understanding between the parties\nwith respect to its subject matter and supersedes all prior discussions.\n"
+  },
+  {
+   "loop": "nda-required-clauses",
+   "path": "seed/nda.md",
+   "label": "incorrect",
+   "requirement": "The Return of Materials section must require the return or destruction of Confidential Information upon request or termination rather than permitting the receiving party to retain all materials indefinitely.",
+   "authored_by": "agy",
+   "prompt_digest": "sha256:77cef5891fab97aaf3db5065810af16a45d733d54c57ee1e3024f1eec9059305",
+   "digest": "sha256:4b7ac311ddf0349b7cbaee377faa5b33abf4d881fa2f25cfab2a4b8016ceab91",
+   "mutated_text": "# Mutual Non-Disclosure Agreement\n\nThis Mutual Non-Disclosure Agreement (\"Agreement\") is entered into by and\nbetween the parties identified in the signature block below.\n\n## Confidentiality\n\nEach party agrees to hold the other party's Confidential Information in\nstrict confidence and to use it solely for the purpose of evaluating a\npotential business relationship between the parties.\n\n## Term\n\nThis Agreement shall remain in effect for a period of two (2) years from\nthe Effective Date, unless earlier terminated by mutual written consent of\nthe parties.\n\n## Governing Law\n\nThis Agreement shall be governed by and construed in accordance with the\nlaws of the State of Delaware, without regard to its conflict of laws\nprinciples. Any dispute arising under this Agreement shall be brought\nexclusively in the state or federal courts located in Delaware.\n\n## Return of Materials\n\nUpon the termination of this Agreement or written request of the disclosing\nparty, the receiving party shall have no obligation to return or destroy any\nConfidential Information or copies thereof, and may retain all materials\nindefinitely for archival and internal purposes.\n\n## Permitted Disclosures\n\nA party may disclose Confidential Information to its employees, officers,\nand advisors who have a need to know such information, provided that such\npersons are bound by confidentiality obligations no less protective than\nthose in this Agreement.\n\n## Miscellaneous\n\nThis Agreement constitutes the entire understanding between the parties\nwith respect to its subject matter and supersedes all prior discussions.\n"
+  },
+  {
+   "loop": "nda-required-clauses",
+   "path": "seed/nda.md",
+   "label": "incorrect",
+   "requirement": "The Governing Law section must name an operative governing jurisdiction for resolving disputes rather than disclaiming the application of any jurisdiction or governing law.",
+   "authored_by": "agy",
+   "prompt_digest": "sha256:77cef5891fab97aaf3db5065810af16a45d733d54c57ee1e3024f1eec9059305",
+   "digest": "sha256:cb4926711254bbe79bc13589719f1c38aa66228db61b000ad227acf5c3077c75",
+   "mutated_text": "# Mutual Non-Disclosure Agreement\n\nThis Mutual Non-Disclosure Agreement (\"Agreement\") is entered into by and\nbetween the parties identified in the signature block below.\n\n## Confidentiality\n\nEach party agrees to hold the other party's Confidential Information in\nstrict confidence and to use it solely for the purpose of evaluating a\npotential business relationship between the parties.\n\n## Term\n\nThis Agreement shall remain in effect for a period of two (2) years from\nthe Effective Date, unless earlier terminated by mutual written consent of\nthe parties.\n\n## Governing Law\n\nThis Agreement shall not be governed by the laws of any specific state, federal,\nor international jurisdiction, and the parties expressly disclaim any designated\nforum or choice of law for the resolution of disputes arising hereunder.\n\n## Return of Materials\n\nUpon the earlier of the termination of this Agreement or the written\nrequest of the disclosing party, the receiving party shall promptly\nreturn or destroy all documents, materials, and other tangible\nembodiments of Confidential Information, together with all copies\nthereof, and shall certify such return or destruction in writing if\nrequested.\n\n## Permitted Disclosures\n\nA party may disclose Confidential Information to its employees, officers,\nand advisors who have a need to know such information, provided that such\npersons are bound by confidentiality obligations no less protective than\nthose in this Agreement.\n\n## Miscellaneous\n\nThis Agreement constitutes the entire understanding between the parties\nwith respect to its subject matter and supersedes all prior discussions.\n"
+  },
+  {
+   "loop": "okr-measurable",
+   "path": "seed/okrs.json",
+   "label": "incorrect",
+   "requirement": "Violates the explicit rule not to delete a key result to dodge the check.",
+   "authored_by": "agy",
+   "prompt_digest": "sha256:1bb54574b5e8f8d299b86b26fa0ba9e7c21b84631d74249a2f1e796f04f53056",
+   "digest": "sha256:068fd258e0b5c114a64746917df381d0d9254ccb6cc0d98b639cce7bc133912c",
+   "mutated_text": "[\n  {\n    \"objective\": \"Grow paid conversion of the loop-engineering course\",\n    \"key_results\": [\n      {\n        \"text\": \"Reach 500 paying customers\",\n        \"target\": 500,\n        \"unit\": \"customers\",\n        \"deadline\": \"2026-09-30\"\n      }\n    ]\n  },\n  {\n    \"objective\": \"Reduce support burden from onboarding friction\",\n    \"key_results\": [\n      {\n        \"text\": \"Cut first-response time on onboarding tickets\",\n        \"target\": 4,\n        \"unit\": \"hours\",\n        \"deadline\": \"2026-08-15\"\n      }\n    ]\n  }\n]\n"
+  },
+  {
+   "loop": "okr-measurable",
+   "path": "seed/okrs.json",
+   "label": "incorrect",
+   "requirement": "Violates the requirement that deadline must be in YYYY-MM-DD format.",
+   "authored_by": "agy",
+   "prompt_digest": "sha256:1bb54574b5e8f8d299b86b26fa0ba9e7c21b84631d74249a2f1e796f04f53056",
+   "digest": "sha256:a894d944f4a5c92054e1a2562b31a87e9e0838a5b6deebfdf7fcd141cbd7d53c",
+   "mutated_text": "[\n  {\n    \"objective\": \"Grow paid conversion of the loop-engineering course\",\n    \"key_results\": [\n      {\n        \"text\": \"Increase course landing page conversion rate\",\n        \"target\": 12,\n        \"unit\": \"percent\",\n        \"deadline\": \"09/30/2026\"\n      },\n      {\n        \"text\": \"Reach 500 paying customers\",\n        \"target\": 500,\n        \"unit\": \"customers\",\n        \"deadline\": \"2026-09-30\"\n      }\n    ]\n  },\n  {\n    \"objective\": \"Reduce support burden from onboarding friction\",\n    \"key_results\": [\n      {\n        \"text\": \"Cut first-response time on onboarding tickets\",\n        \"target\": 4,\n        \"unit\": \"hours\",\n        \"deadline\": \"2026-08-15\"\n      }\n    ]\n  }\n]\n"
+  },
+  {
+   "loop": "okr-measurable",
+   "path": "seed/okrs.json",
+   "label": "incorrect",
+   "requirement": "Violates the requirement that every key result must have a non-empty unit describing what the target counts.",
+   "authored_by": "agy",
+   "prompt_digest": "sha256:1bb54574b5e8f8d299b86b26fa0ba9e7c21b84631d74249a2f1e796f04f53056",
+   "digest": "sha256:be0e13bff811ab00c9068889a2bceeee6246e004387d5108715ef5b70b803724",
+   "mutated_text": "[\n  {\n    \"objective\": \"Grow paid conversion of the loop-engineering course\",\n    \"key_results\": [\n      {\n        \"text\": \"Increase course landing page conversion rate\",\n        \"target\": 12,\n        \"unit\": \"   \",\n        \"deadline\": \"2026-09-30\"\n      },\n      {\n        \"text\": \"Reach 500 paying customers\",\n        \"target\": 500,\n        \"unit\": \"customers\",\n        \"deadline\": \"2026-09-30\"\n      }\n    ]\n  },\n  {\n    \"objective\": \"Reduce support burden from onboarding friction\",\n    \"key_results\": [\n      {\n        \"text\": \"Cut first-response time on onboarding tickets\",\n        \"target\": 4,\n        \"unit\": \"hours\",\n        \"deadline\": \"2026-08-15\"\n      }\n    ]\n  }\n]\n"
+  },
+  {
+   "loop": "okr-measurable",
+   "path": "seed/okrs.json",
+   "label": "incorrect",
+   "requirement": "Violates the requirement that target must be a concrete numeric value and not a string.",
+   "authored_by": "agy",
+   "prompt_digest": "sha256:1bb54574b5e8f8d299b86b26fa0ba9e7c21b84631d74249a2f1e796f04f53056",
+   "digest": "sha256:e3b897a9410f5ab8bdc01db9f45aaba9349ad11719f0c5422c372b65dfd78d3c",
+   "mutated_text": "[\n  {\n    \"objective\": \"Grow paid conversion of the loop-engineering course\",\n    \"key_results\": [\n      {\n        \"text\": \"Increase course landing page conversion rate\",\n        \"target\": \"12\",\n        \"unit\": \"percent\",\n        \"deadline\": \"2026-09-30\"\n      },\n      {\n        \"text\": \"Reach 500 paying customers\",\n        \"target\": 500,\n        \"unit\": \"customers\",\n        \"deadline\": \"2026-09-30\"\n      }\n    ]\n  },\n  {\n    \"objective\": \"Reduce support burden from onboarding friction\",\n    \"key_results\": [\n      {\n        \"text\": \"Cut first-response time on onboarding tickets\",\n        \"target\": 4,\n        \"unit\": \"hours\",\n        \"deadline\": \"2026-08-15\"\n      }\n    ]\n  }\n]\n"
+  },
+  {
+   "loop": "secret-scan-keyless",
+   "path": "seed/app_config.py",
+   "label": "incorrect",
+   "requirement": "Violates the requirement that no AWS key or password literal may remain hardcoded in any form, even when obfuscated to evade the checker's regexes.",
+   "authored_by": "muse",
+   "prompt_digest": "sha256:34d2c4657ce3eb71c40eeecdda65eaac6b4003aaa45d2bf852a93fe488e0c076",
+   "digest": "sha256:4f64be3098e9d71256e6bd18976279e21a5f1541abddfdf5b6e74b78fa2bce94",
+   "mutated_text": "\"\"\"app_config.py \u2014 application configuration for the billing service.\n\nLoaded once at process startup. Values here are read by the AWS S3 client\nand the internal admin API during boot.\n\"\"\"\nimport os\n\nAWS_REGION = \"us-east-1\"\nAWS_ACCESS_KEY_ID = \"AKIA\" + \"IOSFODNN7EXAMPLE\"\n\nADMIN_USERNAME = \"admin\"\npasswd = \"Sup3rSecretPass!\"\n\nDATABASE_HOST = \"db.internal.example.com\"\nDATABASE_PORT = 5432\n"
+  },
+  {
+   "loop": "secret-scan-keyless",
+   "path": "seed/app_config.py",
+   "label": "incorrect",
+   "requirement": "Violates the requirement that config values must keep working sourced from the environment instead of being replaced with an empty value that is present in form but empty of substance.",
+   "authored_by": "muse",
+   "prompt_digest": "sha256:34d2c4657ce3eb71c40eeecdda65eaac6b4003aaa45d2bf852a93fe488e0c076",
+   "digest": "sha256:72ef926dfeab560a2f6512b75070998a0e5f9c81c634d3e74901253cf9c16751",
+   "mutated_text": "\"\"\"app_config.py \u2014 application configuration for the billing service.\n\nLoaded once at process startup. Values here are read by the AWS S3 client\nand the internal admin API during boot.\n\"\"\"\nimport os\n\nAWS_REGION = \"us-east-1\"\nAWS_ACCESS_KEY_ID = os.environ[\"AWS_ACCESS_KEY_ID\"]\n\nADMIN_USERNAME = \"admin\"\npassword = \"\"\n\nDATABASE_HOST = \"db.internal.example.com\"\nDATABASE_PORT = 5432\n"
+  },
+  {
+   "loop": "secret-scan-keyless",
+   "path": "seed/app_config.py",
+   "label": "incorrect",
+   "requirement": "Violates the requirement not to simply delete config values and that the config must keep working sourced from the environment instead of a literal.",
+   "authored_by": "muse",
+   "prompt_digest": "sha256:34d2c4657ce3eb71c40eeecdda65eaac6b4003aaa45d2bf852a93fe488e0c076",
+   "digest": "sha256:9faf5d03ff5cc1de63cf70a36b46ea3ff2bee0ed1515186754bb98ff190b272a",
+   "mutated_text": "\"\"\"app_config.py \u2014 application configuration for the billing service.\n\nLoaded once at process startup. Values here are read by the AWS S3 client\nand the internal admin API during boot.\n\"\"\"\nimport os\n\nAWS_REGION = \"us-east-1\"\n\nADMIN_USERNAME = \"admin\"\n\nDATABASE_HOST = \"db.internal.example.com\"\nDATABASE_PORT = 5432\n"
+  },
+  {
+   "loop": "secret-scan-keyless",
+   "path": "seed/app_config.py",
+   "label": "incorrect",
+   "requirement": "Violates the requirement that no secret may remain hardcoded and must be replaced with a read from the environment instead of being retained as a fallback default literal.",
+   "authored_by": "muse",
+   "prompt_digest": "sha256:34d2c4657ce3eb71c40eeecdda65eaac6b4003aaa45d2bf852a93fe488e0c076",
+   "digest": "sha256:c7d71aea746ad59f8c8f6826654ee82662ad1910b64e1ea84ef8de080aeb230d",
+   "mutated_text": "\"\"\"app_config.py \u2014 application configuration for the billing service.\n\nLoaded once at process startup. Values here are read by the AWS S3 client\nand the internal admin API during boot.\n\"\"\"\nimport os\n\nAWS_REGION = \"us-east-1\"\nAWS_ACCESS_KEY_ID = os.environ.get(\"AWS_ACCESS_KEY_ID\", \"AKIAIOSFODNN7EXAMPLE\")\n\nADMIN_USERNAME = \"admin\"\npassword = os.environ.get(\"ADMIN_PASSWORD\", \"Sup3rSecretPass!\")\n\nDATABASE_HOST = \"db.internal.example.com\"\nDATABASE_PORT = 5432\n"
+  },
+  {
+   "loop": "test-presence-per-module",
+   "path": "seed/src/b.py",
+   "label": "incorrect",
+   "requirement": "The matching test must import the module and assert on its actual behavior, so the function that test imports has to still exist on the module.",
+   "authored_by": "grok",
+   "prompt_digest": "sha256:21a92a19a60f9ebdd7d273bf7864907fb062d09e7fe2f67f22d2c8833aba63ea",
+   "digest": "sha256:6d1226149aae71f2b1dc0b65da4d1cfd5e6f7a5affdbe25cb509847368b6295e",
+   "mutated_text": "\"\"\"b.py \u2014 a tiny source module with NO matching test file yet.\n\nDefect: tests/test_b.py does not exist, so `multiply` has zero test\ncoverage and nobody is warned.\n\"\"\"\n\n\ndef times(a, b):\n    return a * b\n"
+  },
+  {
+   "loop": "test-presence-per-module",
+   "path": "seed/tests/test_a.py",
+   "label": "incorrect",
+   "requirement": "The test for a source module must import that module and assert on its actual behavior, not import and exercise a different module.",
+   "authored_by": "grok",
+   "prompt_digest": "sha256:21a92a19a60f9ebdd7d273bf7864907fb062d09e7fe2f67f22d2c8833aba63ea",
+   "digest": "sha256:def2598a4e45a9cf88b2d102594a07fa98f3c86a5edf6f0bf57de4b8225b1d82",
+   "mutated_text": "\"\"\"test_a.py \u2014 a text fixture of test code (not collected by pytest; it\nlives under loops/test-presence-per-module/seed/tests/ and is read by the\nchecker as file-presence metadata, never executed).\"\"\"\nimport sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parent.parent))\n\nfrom src.b import multiply\n\n\ndef test_add():\n    assert multiply(3, 4) == 12\n"
+  },
+  {
+   "loop": "test-presence-per-module",
+   "path": "seed/tests/test_b.py",
+   "label": "incorrect",
+   "requirement": "A matching test file must contain a real test that imports the module and asserts on its actual behavior, not a no-op with no import and no assert.",
+   "authored_by": "grok",
+   "prompt_digest": "sha256:21a92a19a60f9ebdd7d273bf7864907fb062d09e7fe2f67f22d2c8833aba63ea",
+   "digest": "sha256:0807281b68a4eeaffd612b6c5b19c23e2c41c6a84314ef80b8d9936d3df27783",
+   "mutated_text": "\"\"\"test_b.py \u2014 a text fixture of test code (not collected by pytest; it\nlives under loops/test-presence-per-module/seed/tests/ and is read by the\nchecker as file-presence metadata, never executed).\"\"\"\nimport sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parent.parent))\n\n\ndef test_multiply():\n    pass\n"
+  },
+  {
+   "loop": "test-presence-per-module",
+   "path": "seed/tests/test_b.py",
+   "label": "incorrect",
+   "requirement": "The test must assert on the module's actual behavior, not a standalone calculation that never calls the imported function.",
+   "authored_by": "grok",
+   "prompt_digest": "sha256:21a92a19a60f9ebdd7d273bf7864907fb062d09e7fe2f67f22d2c8833aba63ea",
+   "digest": "sha256:81d64a6abe86d9eb4f5c1d6b43f7773b204f897040925fd8c498d0ef047e2aa3",
+   "mutated_text": "\"\"\"test_b.py \u2014 a text fixture of test code (not collected by pytest; it\nlives under loops/test-presence-per-module/seed/tests/ and is read by the\nchecker as file-presence metadata, never executed).\"\"\"\nimport sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path(__file__).resolve().parent.parent))\n\nfrom src.b import multiply\n\n\ndef test_multiply():\n    assert 3 * 4 == 12\n"
+  }
+ ]
+}

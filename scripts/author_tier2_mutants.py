@@ -4,8 +4,14 @@
     python scripts/author_tier2_mutants.py --cli claude --loops dependency-pinning,a11y
 
 Each CLI sees `bounded_loops.evaluation.tier2.authoring_prompt(loop)` — the loop's stated purpose
-and nothing else — plus the current text of the artifact it may edit. It never sees
+and nothing else — plus the CONVERGED text of every artifact its gate judges. It never sees
 `seed/check_*.py`, and the digest of what it DID see is recorded on every mutant it produces.
+
+**The loop is converged first, and that is not an optimisation.** Mutants are materialised onto the
+converged baseline, so an author shown the pristine `seed/` would be editing a document that no
+longer exists — one that fails its own gate by design. Every "meaning-preserving" edit would then
+carry the seed's original defect into a file the gate rejects, and the corpus would record a false
+reject that is really this script having handed over the wrong text.
 
 **Why the output contract is strict JSON.** A mutant that cannot be parsed cannot be reviewed, and
 a lenient parser is how a half-understood reply becomes a corpus entry nobody checked. Anything
@@ -26,11 +32,12 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from bounded_loops.evaluation import corpus, tier2  # noqa: E402
+from bounded_loops.evaluation import corpus, harness, tier2  # noqa: E402
 from bounded_loops.graph.adapters.connectors.local_cli_worker import (  # noqa: E402
     CLI_PROFILES,
     build_cli_argv,
@@ -38,10 +45,10 @@ from bounded_loops.graph.adapters.connectors.local_cli_worker import (  # noqa: 
 
 _OUTPUT_CONTRACT = """
 
---- THE ARTIFACT YOU MAY EDIT ---
-path: {path}
+--- THE ARTIFACTS YOU MAY EDIT ---
+These are the CURRENT, CORRECT contents. They already satisfy the stated purpose.
 
-{content}
+{artifacts}
 
 --- WHAT TO RETURN ---
 Return ONLY a JSON array. No prose, no code fences. Each element:
@@ -49,12 +56,16 @@ Return ONLY a JSON array. No prose, no code fences. Each element:
   {{
     "label": "incorrect",
     "requirement": "one sentence naming the requirement of the stated purpose this breaks",
-    "mutated_text": "the COMPLETE new contents of the file"
+    "path": "one of the paths listed above, exactly as written",
+    "mutated_text": "the COMPLETE new contents of THAT file"
   }}
 
 Write 2 to 4 edits. Prefer violations that a careless automated check would miss: a clause that
 says the opposite of what is required, a value that looks right and is not, a required element
 that is present in form but empty of substance.
+
+When several files are shown, the most valuable edits break a requirement that holds BETWEEN them —
+a reference to something that no longer exists, a total that no longer agrees with its parts.
 
 Use "label": "correct" only for an edit you are certain preserves every requirement.
 """
@@ -117,20 +128,53 @@ def _extract_json_array(raw: str) -> list[dict]:
     return []
 
 
-def author_for_loop(loop_dir: Path, cli: str, *, timeout_s: int) -> list[tier2.Tier2Mutant]:
-    """Ask one CLI for mutants against one loop's largest mutable artifact."""
-    relatives = corpus.mutable_artifacts(loop_dir)
-    if not relatives:
-        return []
-    relative = max(relatives, key=lambda r: (loop_dir / r).stat().st_size)
-    try:
-        content = (loop_dir / relative).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return []
+def judged_artifacts(loop_dir: Path, baseline: Path) -> dict[str, str]:
+    """`{relative path: CONVERGED contents}` for every artifact this loop's gate actually reads.
 
-    prompt = tier2.authoring_prompt(loop_dir) + _OUTPUT_CONTRACT.format(
-        path=relative, content=content,
+    **Converged, not seeded, and that distinction is the whole validity of the tier.** A mutant is
+    materialised onto the converged baseline, so an author shown the pristine `seed/` would be
+    editing text that no longer exists — and every edit they called meaning-preserving would carry
+    the seed's original defect into a file the gate then rejects, recording a false reject that is
+    really the harness handing over the wrong document. The seed fails its own gate by design; that
+    is what makes a loop demonstrate something, and it is what makes it useless as authoring input.
+
+    **Every judged artifact, not the largest one.** Tier 1's stated limit is that it cannot express
+    a violation of the relation BETWEEN artifacts, which is exactly why the multi-artifact loops
+    fall to Tier 2. Showing one file reproduces the limitation the tier exists to lift.
+
+    Restricting to what the gate reads is harness-side scoping, not a leak: it decides which file
+    the author is handed, never what any checker looks for inside it, and the digest still records
+    the prompt they saw.
+    """
+    found: dict[str, str] = {}
+    for relative in corpus.mutable_artifacts(loop_dir, content_root=baseline):
+        if not harness.judges_artifact(loop_dir, relative):
+            continue
+        try:
+            found[relative] = (baseline / relative).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+    return found
+
+
+def author_for_loop(loop_dir: Path, cli: str, *, timeout_s: int) -> list[tier2.Tier2Mutant]:
+    """Converge the loop, then ask one CLI for mutants against what the gate actually judges."""
+    with tempfile.TemporaryDirectory(prefix="bl-t2-author-") as scratch:
+        baseline = harness.establish_baseline(loop_dir, into=Path(scratch) / loop_dir.name)
+        if baseline is None:
+            raise RuntimeError(
+                "did not converge, or its gate rejects its own converged artifact — there is no "
+                "correct document to author a violation against"
+            )
+        artifacts = judged_artifacts(loop_dir, baseline)
+
+    if not artifacts:
+        raise RuntimeError("gate judges no mutable artifact")
+
+    rendered = "\n\n".join(
+        f"--- path: {path} ---\n{content}" for path, content in sorted(artifacts.items())
     )
+    prompt = tier2.authoring_prompt(loop_dir) + _OUTPUT_CONTRACT.format(artifacts=rendered)
     digest = tier2.authoring_prompt_digest(loop_dir)
 
     reply = _ask(cli, prompt, timeout_s)
@@ -141,15 +185,21 @@ def author_for_loop(loop_dir: Path, cli: str, *, timeout_s: int) -> list[tier2.T
         mutated = record.get("mutated_text")
         requirement = record.get("requirement", "")
         label = record.get("label", "")
+        path = record.get("path") or (next(iter(artifacts)) if len(artifacts) == 1 else None)
+
         if not isinstance(mutated, str) or not isinstance(requirement, str):
             continue
-        if mutated == content:
+        if path not in artifacts:
+            # A path nobody was shown cannot be checked against what the author saw, and would be
+            # written into the workspace on trust.
+            continue
+        if mutated == artifacts[path]:
             # A no-op carrying an INCORRECT label is a guaranteed false accept and a fabricated
             # result. Dropped rather than recorded.
             continue
         try:
             mutants.append(tier2.Tier2Mutant(
-                loop=loop_dir.name, path=relative, mutated_text=mutated,
+                loop=loop_dir.name, path=path, mutated_text=mutated,
                 label=label, requirement=requirement,
                 authored_by=cli, prompt_digest=digest,
             ))

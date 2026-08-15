@@ -15,7 +15,7 @@ connection_slots: []
 nodes:
   - id: check-tests-exist
     kind: loop
-    loop_package: "sha256:e7bf9fe103886a2c7e48292d94e0fc01053003656051134522d2899dc9c8485a"
+    loop_package: "sha256:87f21eab3aa6b37e5999950bd274bedeb7fa8567d07e39e2ff9b430354050f40"
     inputs: {}
     outputs:
       verdict: internal
@@ -37,7 +37,7 @@ nodes:
     isolation: process_restricted
   - id: check-commits
     kind: loop
-    loop_package: "sha256:526fff87005d304577bf1b1691187f996fb6af92b2a62484e3ed2855cf92c0c2"
+    loop_package: "sha256:f6edfcc99f6749db6688ccce81dd4e67366ff2d1797bb8e3180cc92bd5e0b55d"
     inputs: {}
     outputs:
       verdict: internal

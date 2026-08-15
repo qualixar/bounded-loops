@@ -43,6 +43,19 @@ def _is_vague(kr: dict) -> list[str]:
     return reasons
 
 
+#: How many objectives and key results this file shipped with. PROMPT.md: "Do not delete a key
+#: result to dodge the check — fix it so it is genuinely measurable."
+#:
+#: Nothing checked that. "Every key result carries a numeric target, a unit and a deadline" is
+#: satisfied by removing the ones that do not, and a held-out mutant authored from the stated
+#: purpose did exactly that. The existing guard catches an EMPTY list; this catches the cheaper
+#: evasion of deleting the one item that was failing.
+#:
+#: Counts, not text: the key results are SUPPOSED to be rewritten, that is the task.
+SEEDED_OBJECTIVES = 2
+SEEDED_KEY_RESULTS = 3
+
+
 def check(okrs_path: str) -> int:
     try:
         data = json.loads(Path(okrs_path).read_text(encoding="utf-8"))
@@ -53,6 +66,15 @@ def check(okrs_path: str) -> int:
     if not isinstance(data, list) or not data:
         print("check_okrs: expected a non-empty JSON list of objectives", file=sys.stderr)
         return 1  # the worker owns this artifact: a REJECT, not an inability to run
+
+    total_key_results = sum(len(o.get("key_results", []) or []) for o in data)
+    if len(data) < SEEDED_OBJECTIVES or total_key_results < SEEDED_KEY_RESULTS:
+        print(
+            f"check_okrs: {len(data)} objective(s) and {total_key_results} key result(s) remain "
+            f"of {SEEDED_OBJECTIVES} and {SEEDED_KEY_RESULTS}. Make a vague key result measurable; "
+            "deleting it is not making it measurable."
+        )
+        return 1
 
     violations: list[str] = []
     for objective in data:

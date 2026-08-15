@@ -26,14 +26,14 @@ _PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 #: — the shape a leaked config file actually takes — was never scanned.
 #: A QUOTED key anywhere on a line — the dict / JSON shape, `{"password": "hunter2"}`.
 _QUOTED_KEY_RE = re.compile(
-    r"""(?i)['"](password|api_key|secret)['"]\s*:\s*['"]([^'"\n]+)['"]"""
+    r"""(?i)['"](password|passwd|pwd|api_key|apikey|secret|secret_key|access_key)['"]\s*:\s*['"]([^'"\n]+)['"]"""
 )
 
 #: A BARE key at the start of a line — the YAML shape, `password: hunter2`. Anchored to line
 #: start on purpose: unanchored, it would match the `password` in `def f(password: str)` and
 #: report every type annotation as a leaked credential.
 _YAML_KEY_RE = re.compile(
-    r"""(?im)^\s*(password|api_key|secret)\s*:\s*"""
+    r"""(?im)^\s*(password|passwd|pwd|api_key|apikey|secret|secret_key|access_key)\s*:\s*"""
     r"""(?:['"]([^'"\n]+)['"]|([^\s'"#][^\n#]*?))\s*(?:#.*)?$"""
 )
 
@@ -42,10 +42,67 @@ _NOT_A_SECRET = frozenset({"str", "int", "bool", "none", "null", "~", "{}", "[]"
 
 _ASSIGNMENT_RE = re.compile(
     r"(?im)^\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?"
-    r"(password|api_key|secret)\s*=\s*"
+    r"(password|passwd|pwd|api_key|apikey|secret|secret_key|access_key)\s*=\s*"
     r"""(['"])(?P<value>[^'"]+)\2\s*(?:#.*)?$"""
 )
 
+
+
+#: `"AKIA" + "IOSFODNN7EXAMPLE"` is the same credential as `"AKIAIOSFODNN7EXAMPLE"`, and no regex
+#: over raw source sees it. A held-out mutant authored from the stated purpose used exactly that,
+#: alongside renaming `password` to `passwd` — two evasions in one edit, both of which left the
+#: secret sitting in the file in plain text.
+_CONCATENATION_RE = re.compile(r"""(['"])([^'"\n]*)\1\s*\+\s*(['"])([^'"\n]*)\3""")
+
+
+def _collapse_concatenations(text: str) -> str:
+    """Fold adjacent string literals so a split credential scans as one.
+
+    Applied repeatedly because a three-way split folds one join at a time. Bounded rather than
+    `while True`: a pathological file must not be able to hang the gate.
+    """
+    for _ in range(10):
+        folded = _CONCATENATION_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{m.group(4)}{m.group(1)}", text)
+        if folded == text:
+            break
+        text = folded
+    return text
+
+
+#: The config values `app_config.py` shipped with. PROMPT.md: "Do not simply delete the config
+#: values or the whole file — the config must keep working, sourced from the environment instead
+#: of a literal."
+#:
+#: **Scoped to this loop's own artifact, and that scoping is the point.** The negative requirement
+#: this file mostly enforces — "no hardcoded secret" — is genuinely satisfied by an empty file, and
+#: a generic vacuity guard was added and reverted within the hour for exactly that reason (see the
+#: note at the end of `check`). What PROMPT.md adds is a separate POSITIVE requirement about ONE
+#: named file: those two settings must still be there, read from the environment.
+#:
+#: So this does not make the scanner stricter. `check_secrets.py` remains a general secret scanner
+#: for any file handed to it, and the 0.6.2 pin that passes `def f(password: str) -> None:` still
+#: passes. Only the loop's own config carries the preservation claim, because only it is the
+#: subject of that sentence in PROMPT.md.
+_LOOP_CONFIG_FILENAME = "app_config.py"
+_SEEDED_CONFIG = ("AWS_ACCESS_KEY_ID", "password")
+_FROM_ENVIRONMENT_RE = re.compile(r"os\s*\.\s*(?:environ|getenv)")
+
+
+def _config_regressions(path: Path, text: str) -> list[str]:
+    """Seeded config values that were deleted or blanked instead of moved to the environment."""
+    if path.name != _LOOP_CONFIG_FILENAME or path.parent.name != "seed":
+        return []
+
+    problems: list[str] = []
+    for name in _SEEDED_CONFIG:
+        assignment = re.search(rf"(?m)^\s*{re.escape(name)}\s*=\s*(.+?)\s*(?:#.*)?$", text)
+        if assignment is None:
+            problems.append(f"{name} was deleted; the config must keep working, not disappear")
+        elif not _FROM_ENVIRONMENT_RE.search(assignment.group(1)):
+            problems.append(
+                f"{name} is assigned {assignment.group(1)!r}, not read from the environment"
+            )
+    return problems
 
 
 def check(path: str) -> int:
@@ -55,6 +112,7 @@ def check(path: str) -> int:
         print(f"check_secrets: cannot run: {exc}", file=sys.stderr)
         return 2
 
+    text = _collapse_concatenations(text)
     findings: list[str] = []
 
     for match in _AWS_KEY_RE.finditer(text):
@@ -81,6 +139,13 @@ def check(path: str) -> int:
         print(f"check_secrets: {len(findings)} hardcoded secret(s) found:")
         for f in findings:
             print(f"  - {f}")
+        return 1
+
+    regressions = _config_regressions(Path(path), text)
+    if regressions:
+        print(f"check_secrets: {len(regressions)} config value(s) removed rather than relocated:")
+        for problem in regressions:
+            print(f"  - {problem}")
         return 1
 
     # NO vacuity guard here, deliberately — one was added and reverted the same hour.

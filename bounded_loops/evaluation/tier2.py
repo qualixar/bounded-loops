@@ -166,6 +166,49 @@ class Tier2Mutant:
         }
 
 
+#: Mutants an author labelled INCORRECT that the gate is RIGHT to accept. Keyed by content digest.
+#:
+#: Tier 1 recorded three of these out of fifty-one, and the lesson was that a corpus must be able
+#: to be wrong about itself. Tier 2 makes it likelier, not less: a model asked to violate a stated
+#: purpose can assert a violation that is not one, and it writes a confident justification either
+#: way. Every one here was checked by reading the mutated text, never by observing the verdict.
+MUTANT_IS_MISLABELLED: dict[str, str] = {
+    "sha256:3919664767a5920c5095af4ad76691ca06bcc21144fb13924681e19b65a5548c": (
+        "invoice-3way-match: changes the invoice quantity from 50 to 50.0 and claims it no longer "
+        "matches the goods receipt's 50. It does match — JSON does not distinguish the two, and "
+        "50 == 50.0. The gate was right. Taking the label on trust would have meant 'fixing' a "
+        "correct finance gate to reject a float."
+    ),
+}
+
+#: Mutants whose requirement is real and NO gate of this loop's class can check.
+#:
+#: **Empty, and it stayed empty only because the first four entries were wrong.** Four mutants were
+#: filed here and all four were mechanically checkable:
+#:
+#: * "preserve the original meaning of the subject" — the rewrite has to keep the original's
+#:   content words, and one that substitutes an unrelated change keeps none.
+#: * "choose the type that best matches what the change did" — Conventional Commits reserves
+#:   `docs` for documentation-only changes, so a readme edit typed `build` contradicts the spec
+#:   it claims to follow.
+#: * an already-conforming subject silently rewritten — the seed says what conformed; pin it.
+#: * "a concrete, currently-real release version" — `citation-existence-check` already answers
+#:   "does this exist" keylessly by shipping reference data, and `known_releases.json` does the
+#:   same for releases.
+#:
+#: Each was declared unverifiable from the SHAPE of the requirement rather than by attempting it.
+#: "A checker cannot know meaning" is true and was not the question; the question was whether the
+#: specific evasion leaves a mechanical trace, and every one of them did. Three of the four fell to
+#: a technique already used twice elsewhere in this catalog on the same afternoon — pin what the
+#: seed shipped and compare.
+#:
+#: The list is kept, empty, because the category is real: a purpose written for a human worker CAN
+#: state something no checker reaches. But an entry here is a claim that no implementation exists,
+#: and that claim is only earned by trying and failing to write one — never by reading the sentence
+#: and concluding it sounds subjective.
+NOT_MECHANICALLY_CHECKABLE: dict[str, str] = {}
+
+
 def load(path: Path) -> list[Tier2Mutant]:
     """Read a committed Tier-2 corpus. Raises on a shape this version cannot read."""
     document = json.loads(path.read_text(encoding="utf-8"))

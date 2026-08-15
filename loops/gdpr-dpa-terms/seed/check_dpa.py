@@ -84,6 +84,61 @@ _NEGATIONS = re.compile(
 def _is_negated(heading: str) -> bool:
     return bool(_NEGATIONS.search(heading))
 
+#: Phrases that VOID the obligation a clause names, matched in the clause BODY.
+#:
+#: Heading-only checking was the whole gate, and a held-out mutant authored from PROMPT.md walked
+#: through it three ways: `## Confidentiality` over "Neither party shall be required to hold the
+#: other party's Confidential Information in confidence"; `## Governing Law` over "shall not be
+#: governed by the laws of any specific jurisdiction ... expressly disclaim any designated forum";
+#: and a Return of Materials section permitting the recipient to keep everything. PROMPT.md says
+#: "Do not delete or weaken any existing term", and each of these weakens one to nothing while
+#: leaving the heading the gate reads untouched.
+#:
+#: **A bare negation scan cannot be used here, and that is the whole difficulty.** A correct
+#: confidentiality clause says "shall not disclose"; a correct sub-processor clause says "shall not
+#: engage ... without prior authorization". Negation is the normal grammar of an obligation. So
+#: these are DISCLAIMERS — phrases that release a party from a duty rather than impose one — and
+#: each was checked against the converged documents before being added. Getting this wrong trades
+#: a false accept for a false reject, which is what the 0.6.2 "Permitted Disclosures" regression
+#: did to three legitimate NDAs.
+_DISCLAIMERS = re.compile(
+    r"(?:"
+    r"shall not be required to"
+    r"|neither party shall be required"
+    r"|is not required to"
+    r"|shall have no obligation"
+    r"|(?:no|without any) (?:obligation|commitment|duty|liability|responsibility)"
+    r"|deems appropriate in its sole discretion"
+    r"|shall not remain liable"
+    r"|expressly disclaim"
+    r"|shall not be governed by"
+    r"|free to use and disclose"
+    r"|without restriction"
+    r"|at its sole discretion without"
+    r"|may retain (?:and use )?(?:all|any) (?:such )?(?:confidential )?(?:information|materials)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _sections(text: str) -> list[tuple[str, str]]:
+    """`(normalized heading, body)` for every markdown section, in document order."""
+    matches = list(_HEADING_RE.finditer(text))
+    found: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        found.append((_normalize(match.group(1)), text[match.end():end]))
+    return found
+
+
+def _voided(text: str) -> list[str]:
+    """Sections whose body releases the duty their heading declares."""
+    return [
+        heading
+        for heading, body in _sections(text)
+        if _DISCLAIMERS.search(body)
+    ]
+
 def _declared(phrase: str, headings: list[str]) -> bool:
     """True when some heading gives this term its own provision."""
     # Trailing (e)s so a "Permitted Disclosures" heading satisfies the
@@ -109,6 +164,13 @@ def check(doc_path: str) -> int:
     for label, phrases in MANDATORY_TERMS:
         if not any(_declared(phrase, headings) for phrase in phrases):
             missing.append(label)
+
+    voided = _voided(text)
+    if voided:
+        print(f"check_dpa: {len(voided)} term(s) present in heading but voided in body:")
+        for heading in voided:
+            print(f"  - '{heading}' releases the obligation it declares")
+        return 1
 
     if missing:
         print(f"check_dpa: {len(missing)} mandatory Art.28(3) term(s) missing:")

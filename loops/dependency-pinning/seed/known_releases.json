@@ -1,0 +1,11 @@
+{
+  "_why": "Real released versions for the packages this loop seeds, so a keyless gate can tell a concrete release from a fabricated one. PROMPT.md asks for 'a concrete, currently-real release version'; verifying that against an index needs the network, which this loop refuses by design. Shipping the reference data instead is the pattern citation-existence-check already uses with known_reporter.json.",
+  "_scope": "A FLOOR, not an index. A package listed here must pin a version listed here. A package absent from this file is not checked -- the file makes a positive claim about what exists, never a negative one about what does not, so it cannot reject a real release it has simply never heard of.",
+  "_staleness": "Adding a newly-released version is a one-line edit and the gate stays keyless. A production pinning loop that must track releases live composes this format gate with a network-backed one; see README.md.",
+  "releases": {
+    "requests": ["2.28.0", "2.28.1", "2.28.2", "2.29.0", "2.30.0", "2.31.0", "2.32.0", "2.32.1", "2.32.2", "2.32.3"],
+    "flask": ["2.3.0", "2.3.1", "2.3.2", "2.3.3", "3.0.0", "3.0.1", "3.0.2", "3.0.3"],
+    "pydantic": ["2.4.0", "2.4.2", "2.5.0", "2.5.1", "2.5.2", "2.5.3", "2.6.0", "2.6.1", "2.7.0"],
+    "numpy": ["1.24.0", "1.24.4", "1.25.0", "1.25.2", "1.26.0", "1.26.2", "1.26.3", "1.26.4", "2.0.0", "2.0.1", "2.1.0"]
+  }
+}
