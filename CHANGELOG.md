@@ -44,6 +44,23 @@ test in both directions.
 
 ### Added
 
+- **A stable evidence contract, `bounded-loops.dev/slm-bridge/v1`.** Another product can now
+  observe a finished graph run over MCP without importing this package, parsing its receipt
+  files, or pinning its version. Two read-only tools: `bl_graph_terminal_runs` lists what has
+  finished, `bl_graph_evidence` returns one run's outcome, digests, node states, attempt counts
+  and receipt head. `bl_capabilities` advertises the contract so a consumer can discover it.
+
+  Compatibility is the contract id, not our version number — branch on it and stay on the
+  latest release of both products. SuperLocalMemory is the first consumer and an entirely
+  optional one; neither product depends on the other, and each is complete installed alone.
+
+  Gate prose, artifact contents, paths, commands, environment values and secrets never appear
+  in the document. `workspace_id` is a digest rather than a path. Non-terminal runs and unsafe
+  run references are refused. `eligible_for_learning` is `false` in the payload, and
+  `demonstration` marks a cassette replay — the evidence supports observation, not learning.
+
+  See [`docs/evidence-contract.md`](docs/evidence-contract.md).
+
 - Every loop in the catalog now has an end-to-end test that runs by default: it must reach
   DONE, and its untouched seed must fail its own gate. Previously ten loops had such a test
   and all ten were excluded from the default run, so a broken loop could ship green. The

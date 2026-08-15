@@ -425,6 +425,20 @@ local-development commands: [`plugins/README.md`](plugins/README.md).
 
 ---
 
+## Working alongside SuperLocalMemory
+
+`bounded-loops.dev/slm-bridge/v1` lets another product observe a finished run over MCP without
+importing this package or pinning its version — branch on the contract id, not `engine.version`.
+[SuperLocalMemory](https://github.com/qualixar/superlocalmemory) is the first consumer, and
+optional: no dependency either way. [`docs/evidence-contract.md`](docs/evidence-contract.md)
+
+```
+bl_graph_terminal_runs()
+bl_graph_evidence(run_ref="...")
+```
+
+---
+
 ## Known limitations
 
 - A `kind: loop` node whose `loop_package` digest resolves on this host runs; one that

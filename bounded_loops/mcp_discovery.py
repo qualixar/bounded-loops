@@ -35,6 +35,7 @@ from bounded_loops.graph.application.capability_report import capability_report
 # is the defect class this project keeps paying for. Moving it into `application/` means moving
 # the seams the existing `cli_loops` tests patch, which belongs in its own change.
 from bounded_loops.cli_loops import _collect_loop_entries, _matches_filters
+from bounded_loops.graph.application.slm_bridge import CONTRACT_ID
 
 # Words too common in a task description to carry ranking signal. Kept tiny and explicit rather
 # than pulling in a stopword corpus — every entry here is a word that appeared in a real query
@@ -108,6 +109,55 @@ def register(mcp: object) -> None:
 
         Read-only."""
         return {"status": "ok", **search_loops(task_description, limit=limit)}
+
+    @tool()
+    def bl_graph_terminal_runs(limit: int = 100) -> dict:
+        """List the FINISHED graph runs in this workspace, newest first. Read-only.
+
+        The discovery half of the `bounded-loops.dev/slm-bridge/v1` evidence contract: poll
+        this, diff it against what you have already observed, then call `bl_graph_evidence`
+        for the ones that are new. Runs still in flight are omitted, not reported with a
+        placeholder state.
+
+        Each entry is `{run_id, run_state, terminal_at}` and nothing else. No paths."""
+        from bounded_loops.graph.slm_evidence import terminal_runs
+        from bounded_loops.workspace import discover
+
+        return {
+            "status": "ok",
+            "contract": CONTRACT_ID,
+            "runs": terminal_runs(discover(), limit=limit),
+        }
+
+    @tool()
+    def bl_graph_evidence(run_id: str) -> dict:
+        """Evidence for ONE finished graph run, as `bounded-loops.dev/slm-bridge/v1`. Read-only.
+
+        For a memory or analytics system that wants to observe what this engine did without
+        importing it, parsing its receipt files, or pinning its package version. Branch on
+        `contract`, never on `engine.version` — the version says which build produced the
+        document, the contract says what you may rely on.
+
+        `run_id` names a run in this workspace. It is never a path: it is validated against the
+        same allow-list the run store uses, so `../` is refused rather than resolved.
+
+        Refuses a run that has not finished. Carries digests, states, outcome, attempt counts
+        and receipt head — never gate prose, artifact bytes, paths, commands or environment
+        values.
+
+        Read this before acting on it: `demonstration: true` means a cassette replay that
+        proves the wiring and nothing about the work, and `eligible_for_learning` is always
+        false. This is observation. It does not authorize learning, ranking or routing."""
+        from bounded_loops.graph.application.slm_bridge import EvidenceUnavailable
+        from bounded_loops.graph.slm_evidence import evidence_for_run
+        from bounded_loops.workspace import discover
+
+        try:
+            return {"status": "ok", "evidence": evidence_for_run(discover(), run_id)}
+        except EvidenceUnavailable as exc:
+            # A refusal, not a crash. The consumer polls; "not finished yet" is an ordinary
+            # answer and must not look like a broken tool.
+            return {"status": "unavailable", "contract": CONTRACT_ID, "reason": str(exc)}
 
 
 # ── pure logic, reusable by the CLI and the UI ────────────────────────────────

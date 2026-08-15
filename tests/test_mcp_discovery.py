@@ -49,19 +49,39 @@ class _RecordingMcp:
         return _decorate
 
 
-def test_all_three_discovery_tools_are_REGISTERED() -> None:
+#: Every tool `mcp_discovery.register` must wire, in order. The two evidence tools are part of
+#: the public `bounded-loops.dev/slm-bridge/v1` contract, so another product depends on their
+#: existence — dropping one is a breaking change to something outside this repository.
+_DISCOVERY_TOOLS = [
+    "bl_capabilities", "bl_catalog", "bl_search_loops",
+    "bl_graph_terminal_runs", "bl_graph_evidence",
+]
+
+
+def test_all_discovery_tools_are_REGISTERED() -> None:
     """A tool that exists as a function but is never registered is a tool nobody can call."""
     recorder = _RecordingMcp()
 
     mcp_discovery.register(recorder)
 
-    assert recorder.registered == ["bl_capabilities", "bl_catalog", "bl_search_loops"]
+    assert recorder.registered == _DISCOVERY_TOOLS
 
 
 def test_the_shipped_server_registers_them_on_its_own_instance() -> None:
     """Guards the wiring, not just the registrar: mcp_server must actually call register()."""
     names = _shipped_tool_names()
-    assert {"bl_capabilities", "bl_catalog", "bl_search_loops"} <= names
+    assert set(_DISCOVERY_TOOLS) <= names
+
+
+def test_BOTH_handshake_paths_expose_the_evidence_contract_tools() -> None:
+    """Parity across the MCP 2.0 handshake split.
+
+    `initialize` and `discover` reach the tool registry by different routes, and a consumer
+    that negotiates the legacy path must not find the bridge missing. This is the shape of
+    failure the 0.6.0 confirm-token bug had: a tool that existed and could never be reached.
+    """
+    names = _shipped_tool_names()
+    assert {"bl_graph_evidence", "bl_graph_terminal_runs"} <= names
 
 
 def test_no_discovery_tool_accepts_anything_secret_shaped() -> None:

@@ -15,6 +15,7 @@ and product overview.
   native-sandbox demo.
 
 - **[monitor.md](./monitor.md)** — `bl monitor`, the local web UI over a run
+- **[evidence-contract.md](./evidence-contract.md)** — `bounded-loops.dev/slm-bridge/v1`, the stable document another product can read over MCP to observe a finished run without importing this package or pinning its version
   directory: what it is and is not (a view, never a service), the exact security
   posture (loopback bind, per-invocation token, same-origin requirement, CSP)
   and its stated limits, how to read the panels without over-reading them, and
