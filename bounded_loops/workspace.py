@@ -157,7 +157,8 @@ def discover(start: Path | None = None, *, explicit: Path | None = None) -> Work
     1. `explicit`, then `$BOUNDED_LOOPS_WORKSPACE`.
     2. The nearest existing `.bounded-loops/` at or above `start`, bounded by the git
        repository root — a repository's receipts must not silently land in a workspace that
-       happens to sit above the checkout.
+       happens to sit above the checkout. With no repository, the bound is the user's home
+       directory, so a gitless tree cannot borrow a workspace from `/` or a shared parent.
     3. The git repository root, if there is one.
     4. `start`.
 
@@ -171,15 +172,21 @@ def discover(start: Path | None = None, *, explicit: Path | None = None) -> Work
         return workspace
 
     origin_start = (start if start is not None else Path.cwd()).resolve()
-    ceiling = _repository_root(origin_start)
+    # Two distinct roles, deliberately not one variable. The repository root both BOUNDS the search
+    # and is a legitimate fallback project root. Home only BOUNDS it: falling back to home would
+    # put every gitless project's receipts in `~/.bounded-loops`, which is the capture this ceiling
+    # exists to prevent. Collapsing them into a single `ceiling` also mislabelled a home ceiling as
+    # `git-toplevel`, and an origin that names the wrong reason is a receipt nobody can act on.
+    repository = _repository_root(origin_start)
+    ceiling = repository or _home_ceiling(origin_start)
 
     for candidate in _upward(origin_start, ceiling):
         workspace = Workspace(project_root=candidate, origin="existing")
         if _inspect(workspace.root):
             return workspace
 
-    if ceiling is not None:
-        return Workspace(project_root=ceiling, origin="git-toplevel")
+    if repository is not None:
+        return Workspace(project_root=repository, origin="git-toplevel")
     return Workspace(project_root=origin_start, origin="cwd")
 
 
@@ -194,6 +201,30 @@ def _upward(start: Path, ceiling: Path | None) -> Iterator[Path]:
         yield candidate
         if ceiling is not None and candidate == ceiling:
             return
+
+
+def _home_ceiling(start: Path) -> Path | None:
+    """The user's home directory, when `start` is inside it. The fallback bound for a gitless tree.
+
+    Without this, a project with no `.git` anywhere had NO ceiling, so discovery walked to the
+    filesystem root. A stray `.bounded-loops/` in `$HOME` — or anywhere above — would then capture
+    every gitless project on the machine, and its receipts would land somewhere the user never
+    chose. The git-root bound already exists for exactly this reason; a repository is simply the
+    common case, not the only one.
+
+    Home is the right fallback because it is the outermost directory a user can be said to own.
+    Stopping there still permits a deliberate per-user workspace at `~/.bounded-loops`, while
+    refusing to reach past it into `/` or a shared parent on a multi-user host.
+
+    `None` when home cannot be determined or `start` sits outside it — a system path, another
+    user's tree, a container with no HOME. Returning `start` there would silently narrow discovery
+    for callers who legitimately keep a workspace above the starting directory.
+    """
+    try:
+        home = Path.home().resolve()
+    except (RuntimeError, OSError):  # no HOME, or an unresolvable one
+        return None
+    return home if home == start or home in start.parents else None
 
 
 def _repository_root(start: Path) -> Path | None:
@@ -282,13 +313,22 @@ def read_config(workspace: Workspace) -> Mapping[str, Any]:
 
 
 def mint_run_directory_name(*, now: datetime | None = None) -> str:
-    """A fresh, sortable, collision-resistant directory name for one run.
+    """A fresh, sortable directory name for one run: a UTC timestamp plus 24 random bits.
 
     This names a *directory*, not the engine's `run_id`: the single-tenant CLI uses a fixed
     `LOCAL_RUN_ID` as its identity (it shapes plan and approval-ledger derivation), while the
     out directory is what distinguishes one execution from the next. `graph_composition`
     refuses an out directory that already holds a run, so the name must be unique — the random
     suffix is there because two runs started inside the same second are ordinary.
+
+    **Not "collision-resistant", which is what this docstring used to claim.** `token_hex(3)` is
+    24 bits, so among runs sharing a one-second timestamp a collision becomes likely at a few
+    thousand — reachable by an automated caller, not by a human at a terminal. The safety net is
+    that a collision is *detected*, not that it cannot happen: `graph_composition` refuses to
+    write into a directory that already holds a run, so the outcome is a refusal rather than two
+    runs interleaving receipts in one log. Widening the token would push the probability down
+    without changing that guarantee, so the claim is narrowed here instead of the entropy being
+    raised and the real invariant left unstated.
 
     Shaped to satisfy `run_store.validate_run_id`, so it is a legal `Workspace.run_dir` key.
     """

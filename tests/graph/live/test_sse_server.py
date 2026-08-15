@@ -337,12 +337,45 @@ def test_static_arena_html_has_no_eventsource(tmp_path: Path) -> None:
 
 # ── posture extraction: token_ok / origin_ok ──────────────────────────────────
 
-def test_token_ok_constant_time() -> None:
+def test_token_ok_accepts_only_an_exact_match() -> None:
+    """Correctness, including the two length-mismatch cases that must not raise.
+
+    Renamed from `test_token_ok_constant_time`, which claimed a timing property this body does not
+    measure — a plain `==` passes every assertion here unchanged. The timing guarantee is asserted
+    separately below, against the mechanism. Named for a property it did not test, which the
+    wave-1 Grok audit flagged.
+    """
     from bounded_loops.graph.live.posture import token_ok
     assert token_ok("abc", "abc") is True
     assert token_ok("abc", "xyz") is False
     assert token_ok("", "abc") is False
     assert token_ok("abc", "") is False
+    assert token_ok("abc", "abcd") is False, "a prefix must not authenticate"
+
+
+def test_token_ok_uses_a_constant_time_primitive() -> None:
+    """The actual timing guarantee, asserted against the mechanism rather than the clock.
+
+    A wall-clock timing test on a comparison this short is dominated by scheduler noise and would
+    be flaky in CI — it would eventually be marked skip, and the property would go unguarded. What
+    is checkable and stable is that the comparison goes through `hmac.compare_digest` on bytes:
+    that is where "time does not vary with WHICH byte differs" comes from, and swapping in `==`
+    (the regression this exists to catch) fails here immediately.
+    """
+    import inspect
+
+    from bounded_loops.graph.live import posture
+
+    source = inspect.getsource(posture.token_ok)
+
+    assert "hmac.compare_digest" in source, (
+        "token comparison no longer uses a constant-time primitive; a plain == leaks how much of "
+        "the token an attacker has guessed"
+    )
+    assert ".encode(" in source, (
+        "compare_digest must receive bytes — on str arguments it raises for non-ASCII, so a "
+        "unicode token would crash the handler instead of being rejected"
+    )
 
 
 def test_origin_ok_logic() -> None:

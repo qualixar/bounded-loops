@@ -70,6 +70,13 @@ class IsolationFact:
     has no container runtime" and "no host can ever deliver this tier" are different facts, and
     reporting the first as the second would tell a host model that container isolation does not
     exist.
+
+    **`deliverable_here` is the network-DENY answer, and DENY is not the harder case.**
+    `deliverable_with_authorized_egress` answers the ALLOWLIST posture separately because it
+    demands strictly more of the host — container-grade isolation AND a loopback egress proxy AND
+    Seatbelt. A Linux box with Docker delivers `container_restricted` under DENY and cannot deliver
+    it under ALLOWLIST at all. One boolean covering both would have to pick which caller to
+    mislead.
     """
 
     level: str
@@ -77,6 +84,11 @@ class IsolationFact:
     reason_if_not: str | None
     controls_enforced_here: tuple[str, ...]
     available_anywhere: bool
+    #: Defaulted so an existing constructor call keeps working; every in-tree producer sets it.
+    #: `False` is the safe default — it under-claims egress capability rather than promising a
+    #: cage the host cannot build.
+    deliverable_with_authorized_egress: bool = False
+    authorized_egress_reason_if_not: str | None = None
 
 
 @dataclass(frozen=True)
@@ -287,9 +299,14 @@ def _isolation(platform: PlatformSnapshot) -> dict[str, Any]:
         "tiers": [
             {
                 "level": fact.level,
+                # The network-DENY answer. Named without a mode for compatibility; the
+                # authorized-egress answer sits beside it because ALLOWLIST is the harder case
+                # and a consumer planning one must not read the DENY boolean and assume it holds.
                 "deliverable_here": fact.deliverable_here,
                 "reason_if_not": fact.reason_if_not,
                 "controls_enforced_here": list(fact.controls_enforced_here),
+                "deliverable_with_authorized_egress": fact.deliverable_with_authorized_egress,
+                "authorized_egress_reason_if_not": fact.authorized_egress_reason_if_not,
             }
             for fact in platform.isolation
         ],

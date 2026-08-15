@@ -17,7 +17,7 @@ Steps (follow in order, stop at step 4):
    engine validates what you wrote and refuses what it cannot enforce.
 
 2. **Fix** — if the composer returns errors (refusal codes), look each code up
-   in the refusal reference (plugins/shared/docs/refusal-reference.md), fix the
+   in the refusal reference (../docs/refusal-reference.md), fix the
    manifest, and retry. Loop until lint is clean. Never deliver a manifest with
    open errors.
 

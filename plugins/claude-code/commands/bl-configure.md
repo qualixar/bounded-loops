@@ -44,7 +44,7 @@ Steps:
 
 5. **Show the diff and the lint result**, then call again with `confirm=true`.
    If lint fails, the graph is NOT written — report which answer caused the
-   refusal, look the code up in `plugins/shared/docs/refusal-reference.md`, and
+   refusal, look the code up in `../docs/refusal-reference.md`, and
    ask again for that field only.
 
 6. **Report what is still unanswered.** If any `must_ask` question went

@@ -14,7 +14,6 @@ import pytest
 from bounded_loops.domain.errors import ManifestError
 from bounded_loops.workspace import (
     WORKSPACE_DIRNAME,
-    Workspace,
     discover,
     ensure,
     read_config,
@@ -245,17 +244,39 @@ def test_a_MALFORMED_config_is_a_clear_refusal_not_a_traceback(tmp_path: Path) -
         read_config(workspace)
 
 
-def test_the_index_is_documented_as_a_rebuildable_cache(tmp_path: Path) -> None:
-    """If index.json is ever consulted as authority that is the second-source-of-truth bug.
+def test_no_production_code_READS_the_index(tmp_path: Path) -> None:
+    """`index.json` is a rebuildable cache. Reading it as authority is the drift bug.
 
-    The guard is cheap: the docstring must say so, because the next person to touch this
-    reads the docstring before the design doc.
+    This replaces a check that asserted the words "cache" and "rebuild" appeared somewhere in two
+    concatenated docstrings — which would have passed unchanged on the day someone started using
+    the index as authority, since it measured the prose and not the code. Named for a property it
+    did not test, which the wave-1 Muse audit flagged.
+
+    What is measured now: `index_path` has no call site outside its own definition. `runs/` is the
+    truth; anything that needs a listing scans it (see `cli_workspace._counts`, which says so). A
+    new reference here is not necessarily wrong, but it must be a deliberate decision rather than
+    an accident, so it fails this test first.
     """
-    from bounded_loops import workspace as module
+    import ast
 
-    text = (module.__doc__ or "") + (Workspace.__doc__ or "")
-    assert "cache" in text.lower()
-    assert "rebuild" in text.lower()
+    from bounded_loops import workspace as workspace_module
+
+    package = Path(workspace_module.__file__).parent
+    offenders: list[str] = []
+
+    for source_file in sorted(package.rglob("*.py")):
+        tree = ast.parse(source_file.read_text(encoding="utf-8"), filename=str(source_file))
+        for node in ast.walk(tree):
+            # The property's own definition is the one legitimate occurrence.
+            if isinstance(node, ast.FunctionDef) and node.name == "index_path":
+                continue
+            if isinstance(node, ast.Attribute) and node.attr == "index_path":
+                offenders.append(f"{source_file.relative_to(package)}:{node.lineno}")
+
+    assert not offenders, (
+        "index.json is a rebuildable cache derived from runs/, and these read it as a source: "
+        + ", ".join(offenders)
+    )
 
 
 # ── the additive guarantee ───────────────────────────────────────────────────

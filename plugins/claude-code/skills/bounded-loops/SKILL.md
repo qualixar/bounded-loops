@@ -252,7 +252,7 @@ Only `DONE` is success. Report the exact status verbatim — never convert
 ## Refusal reference (quick lookup)
 
 When the compiler rejects your manifest, look up the error code in
-[plugins/shared/docs/refusal-reference.md](../../docs/refusal-reference.md)
+[../../docs/refusal-reference.md](../../docs/refusal-reference.md)
 for the plain-language cause and the fix. The 37 codes are derived from
 `bounded_loops.graph.application.refusals.REFUSAL_CODES`.
 

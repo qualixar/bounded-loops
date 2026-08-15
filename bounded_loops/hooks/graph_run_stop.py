@@ -35,6 +35,7 @@ from pathlib import Path
 from bounded_loops.graph.adapters.persistence.event_log import (  # noqa: E402
     _TERMINAL as _TERMINAL_RUN_STATES,
 )
+from bounded_loops.workspace import Workspace  # noqa: E402
 
 # Event types that set run state, with the state each one declares.
 #
@@ -53,8 +54,6 @@ _STATE_SETTING_EVENTS = {
 }
 
 EVENTS_FILENAME = "controller-events.jsonl"
-WORKSPACE_DIRNAME = ".bounded-loops"
-RUNS_SUBDIR = "runs"
 
 
 def _extract_cwd(payload: dict, tool: str) -> str | None:
@@ -119,7 +118,12 @@ def _check_workspace(project_root: Path) -> tuple[bool, str]:
 
     Returns (passed, reason).  passed=True means allow session-stop.
     """
-    runs_dir = project_root / WORKSPACE_DIRNAME / RUNS_SUBDIR
+    # Derived from `Workspace`, not rebuilt from local copies of `.bounded-loops` and `runs`.
+    # Those two constants were re-declared here, so a rename of either would have left this hook
+    # looking in a directory that no longer exists — and an empty runs directory reads as "nothing
+    # active", which ALLOWS session stop. The failure would have been silent and permissive, which
+    # is the same argument the `_TERMINAL` import above is making.
+    runs_dir = Workspace(project_root=project_root, origin="explicit").runs_dir
     if not runs_dir.is_dir():
         return True, "no runs directory — no active bounded graph runs"
 

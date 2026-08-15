@@ -204,18 +204,21 @@ class LoopbackHandler(BaseHTTPRequestHandler):
             return False
 
     def _send_sse_headers(self) -> None:
-        """The response headers for a stream, including the hardening set.
+        """The response headers for a stream: the shared hardening set, plus streaming specifics.
 
         An audit noted the stream was the one token-bearing response that skipped the shared
-        hardening headers; emitting them here means no streaming surface can forget them.
+        hardening headers. The first fix re-listed them here instead of calling the shared helper,
+        which left two copies that promptly disagreed — this one omitted `Pragma: no-cache` and the
+        entire `Content-Security-Policy`, while its docstring claimed no streaming surface could
+        forget them. Copying a security header list is how half of it goes missing.
+
+        `X-Accel-Buffering: no` is the only genuinely stream-specific header: it stops a reverse
+        proxy buffering an event stream into uselessness.
         """
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
         self.send_header("X-Accel-Buffering", "no")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
+        self._send_hardening_headers()
         self.end_headers()
 
     def _send_plain(self, status: HTTPStatus, message: str) -> None:
@@ -258,3 +261,24 @@ class LoopbackHandler(BaseHTTPRequestHandler):
 
     def do_CONNECT(self) -> None:
         self._send_plain(HTTPStatus.METHOD_NOT_ALLOWED, "method not allowed")
+
+    def __getattr__(self, name: str):
+        """Any OTHER verb — `FROB`, `PROPFIND`, anything — also gets 405.
+
+        The explicit handlers above cover the standard verbs. `BaseHTTPRequestHandler` dispatches
+        on `getattr(self, "do_" + command)`, so an unlisted verb fell through to its default 501
+        "Unsupported method". That is a response shape distinguishable from 405, produced BEFORE
+        any token check, so an unauthenticated caller could tell this server apart from one that
+        answers uniformly — a small fingerprinting seam, and a needless one.
+
+        Handled here rather than by adding more `do_*` methods because the set of verbs someone
+        can send is not enumerable. Only `do_*` is intercepted; every other missing attribute
+        raises as normal, so this cannot mask a genuine typo elsewhere in the handler.
+        """
+        if not name.startswith("do_"):
+            raise AttributeError(name)
+
+        def _refuse() -> None:
+            self._send_plain(HTTPStatus.METHOD_NOT_ALLOWED, "method not allowed")
+
+        return _refuse
