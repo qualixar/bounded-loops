@@ -24,13 +24,13 @@ def check(path: str) -> int:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"check_jwt: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     try:
         algorithm = data["jwt"]["algorithm"]
     except (KeyError, TypeError) as exc:
         print(f"check_jwt: cannot run: missing field {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     normalized = "" if algorithm is None else str(algorithm).strip().lower()
 

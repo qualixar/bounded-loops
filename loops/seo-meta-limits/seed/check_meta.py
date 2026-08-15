@@ -30,17 +30,17 @@ def check(meta_path: str) -> int:
         data = json.loads(Path(meta_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"check_meta: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     if not isinstance(data, dict):
         print(f"check_meta: {meta_path} must contain a JSON object", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     title = data.get("title")
     description = data.get("description")
     if not isinstance(title, str) or not isinstance(description, str):
         print("check_meta: 'title' and 'description' must both be strings", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     violations: list[str] = []
 

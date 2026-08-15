@@ -24,8 +24,14 @@ this gate's contract is the stricter "every image carries description".)
 Pure Python standard library: no network, no API key, no external tool.
 It runs anywhere Python does.
 
-Exit code: 0 = every image has non-empty alt text, 1 = one or more images
-are missing alt text, 2 = could not run.
+Exit code: 0 = every image has non-empty alt text, 1 = the post does not
+satisfy the requirement (an image missing alt text, or a post with no images
+at all), 2 = could not run.
+
+The line between 1 and 2 is "did this gate reach a verdict", not "was the
+input what I hoped for". An unreadable file or a bad argv is a 2 because no
+judgement was possible. A post that parses and contains nothing to check is a
+1: the gate read it and the answer is no.
 """
 from __future__ import annotations
 
@@ -72,8 +78,19 @@ def check(post_path: str) -> int:
 
     images = _images(text)
     if not images:
-        print(f"check_alt: no images found in {post_path}", file=sys.stderr)
-        return 2
+        # A VERDICT, not an inability to run. The file was read and parsed; the conclusion is that
+        # a post which is supposed to carry images carries none. PROMPT.md asks the agent to fix
+        # post.md, and deleting its images is not fixing it.
+        #
+        # This returned 2 — "could not run" — which the engine classifies as a gate ERROR rather
+        # than a rejection. The vacuity was detected and then discarded: the run halted with an
+        # error instead of looping back to tell the worker what was wrong.
+        print(
+            f"check_alt: no images found in {post_path} — a post with no images cannot "
+            "demonstrate that every image has alt text",
+            file=sys.stderr,
+        )
+        return 1
 
     violations: list[tuple[str, str]] = []
     for alt, src in images:

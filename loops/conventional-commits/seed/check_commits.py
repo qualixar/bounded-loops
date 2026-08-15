@@ -43,12 +43,12 @@ def check(commits_path: str) -> int:
         text = Path(commits_path).read_text(encoding="utf-8")
     except OSError as exc:
         print(f"check_commits: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     lines = [line for line in text.splitlines() if line.strip()]
     if not lines:
         print("check_commits: no commit subjects found", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     violations: list[tuple[int, str]] = []
     for lineno, line in enumerate(lines, start=1):

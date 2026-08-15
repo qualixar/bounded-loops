@@ -54,8 +54,15 @@ def check(prd_path: str) -> int:
 
     sections = _split_sections(text)
     if not sections:
-        print("check_prd: no '## Story:' sections found", file=sys.stderr)
-        return 2
+        # A VERDICT, not an inability to run. A PRD with no stories has no story missing acceptance
+        # criteria, which is not the same as every story being verifiable. Returning 2 made the
+        # engine treat it as a gate ERROR, so the vacuity was detected and then discarded.
+        print(
+            "check_prd: no '## Story:' sections found — a PRD with no stories cannot show that "
+            "every story is verifiable",
+            file=sys.stderr,
+        )
+        return 1
 
     violations: list[str] = []
     for title, body in sections:

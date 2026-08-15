@@ -27,16 +27,29 @@ def _load_allowlist(path: str) -> set[str]:
 
 
 def check(datasets_path: str, allowlist_path: str) -> int:
+    # Read in two steps, because the two inputs have different owners and a shared `try` cannot
+    # tell them apart. `allowlist.json` is in this loop's `forbid` list: the worker may not edit it,
+    # so a problem with it is this gate being unable to run and no retry can fix it. `datasets.json`
+    # is the worker's output, and anything wrong with it is a verdict the worker can act on.
     try:
         allowed = _load_allowlist(allowlist_path)
-        datasets = json.loads(Path(datasets_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"check_licenses: cannot run: {exc}", file=sys.stderr)
+        print(f"check_licenses: cannot run: allowlist {allowlist_path}: {exc}", file=sys.stderr)
         return 2
 
     if not allowed:
         print("check_licenses: allowlist has no usable license ids", file=sys.stderr)
         return 2
+
+    try:
+        datasets = json.loads(Path(datasets_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"check_licenses: {datasets_path} is not readable JSON ({exc}) — every dataset entry "
+            "must be listed there with a license id",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         violations = [
@@ -46,7 +59,7 @@ def check(datasets_path: str, allowlist_path: str) -> int:
         ]
     except (KeyError, TypeError) as exc:
         print(f"check_licenses: cannot run: malformed dataset entry: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     if violations:
         print(f"check_licenses: {len(violations)} dataset(s) with a disallowed license:")

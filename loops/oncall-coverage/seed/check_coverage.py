@@ -79,11 +79,11 @@ def check(schedule_path: str) -> int:
         period_hours, shifts = _load_schedule(schedule_path)
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         print(f"check_coverage: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     if period_hours <= 0:
         print("check_coverage: period_hours must be positive", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     counts = _coverage_counts(period_hours, shifts)
     gaps = [h for h, c in enumerate(counts) if c == 0]

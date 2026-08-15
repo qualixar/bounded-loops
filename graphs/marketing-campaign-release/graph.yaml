@@ -15,7 +15,7 @@ connection_slots: []
 nodes:
   - id: check-seo
     kind: loop
-    loop_package: "sha256:181d84a6308d3f42f5898706f071ebf73a13aad99554c076784774f30dfcfde5"
+    loop_package: "sha256:0659df646fabfe79a05097fec739f3ecd02ca68c6d87e40ff45bbb966cc0208f"
     inputs: {}
     outputs:
       verdict: internal
@@ -26,7 +26,7 @@ nodes:
     isolation: process_restricted
   - id: check-reading-level
     kind: loop
-    loop_package: "sha256:af3c8d32036a7f8ccff2d48fede4bda93fa9e6d82c7f35265acafc45974afa44"
+    loop_package: "sha256:933f46446ae0835edce766b76538027dedacfacbfdc34d9b77c223ec683c07cf"
     inputs: {}
     outputs:
       verdict: internal
@@ -37,7 +37,7 @@ nodes:
     isolation: process_restricted
   - id: check-alt-text
     kind: loop
-    loop_package: "sha256:a25dcd89fc62af1ef5f3cad14ba78074ec2577a5a96fbb26078d9efeac0d9009"
+    loop_package: "sha256:9b37d6d79b7861c8317cbe5174c9d2c99cd98e0812aeca3a027edaf9e0e9d048"
     inputs: {}
     outputs:
       verdict: internal

@@ -83,9 +83,9 @@ def test_the_generator_never_imports_anything_gate_related(module: Path) -> None
             names = [node.module or ""]
         for name in names:
             if any(fragment in name for fragment in _FORBIDDEN_IMPORT_FRAGMENTS):
-                offenders.append(f"line {node.lineno}: {name}")
+                offenders.append(f"line {getattr(node, 'lineno', '?')}: {name}")
             if name.split(".")[0] in _FORBIDDEN_MODULES:
-                offenders.append(f"line {node.lineno}: {name} (execution)")
+                offenders.append(f"line {getattr(node, 'lineno', '?')}: {name} (execution)")
 
     assert not offenders, (
         f"{_module_ids(module)} can reach a gate or run code:\n  " + "\n  ".join(offenders)
@@ -96,7 +96,7 @@ def test_the_generator_never_imports_anything_gate_related(module: Path) -> None
 def test_the_generator_never_executes_anything(module: Path) -> None:
     """Running a checker to see what it accepts would make the corpus a search, not a sample."""
     offenders = [
-        f"line {node.lineno}: {node.func.id}()"
+        f"line {getattr(node, 'lineno', '?')}: {node.func.id}()"
         for node in ast.walk(_tree(module))
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
@@ -136,7 +136,7 @@ def test_the_generator_never_reads_a_checker_file(module: Path) -> None:
     docstrings = _docstring_nodes(tree)
 
     offenders = [
-        f"line {node.lineno}: {node.value!r}"
+        f"line {getattr(node, 'lineno', '?')}: {node.value!r}"
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
@@ -174,7 +174,7 @@ def test_the_generator_reads_only_the_forbid_list_from_a_manifest(module: Path) 
             key = node.args[0].value
 
         if key in _MANIFEST_KEYS_THAT_DESCRIBE_A_GATE and key not in _ALLOWED_MANIFEST_KEYS:
-            offenders.append(f"line {node.lineno}: reads manifest key {key!r}")
+            offenders.append(f"line {getattr(node, 'lineno', '?')}: reads manifest key {key!r}")
 
     assert not offenders, (
         f"{_module_ids(module)} reads a gate-describing manifest key:\n  " + "\n  ".join(offenders)
@@ -227,18 +227,28 @@ def test_every_module_is_classified_as_generator_or_runner() -> None:
     )
 
 
-def test_the_runner_is_the_only_thing_that_touches_a_gate() -> None:
-    """The positive half: the harness must ACTUALLY reach the real gate adapters.
+def test_the_runner_builds_gates_through_THE_SHIPPED_WIRING() -> None:
+    """The positive half: the harness must reach the real gates the way `bl run` reaches them.
 
-    A runner that quietly stopped importing them — reimplementing the check locally, say — would
+    A runner that quietly stopped building them — reimplementing the check locally, say — would
     pass every blindness test above while measuring something other than the shipped product.
-    """
-    harness = _PACKAGE / "harness.py"
-    source = harness.read_text(encoding="utf-8")
 
-    assert "adapters.gates" in source, (
-        "the harness no longer builds a real gate adapter; a local reimplementation measures this "
-        "file's idea of how gates work, not what users run"
+    **Stronger than "imports a gate adapter", and the difference is not pedantic.** The harness used
+    to construct `CommandGate(manifest["gate"]["run"])` by hand. That satisfied an
+    `"adapters.gates" in source` check completely, and could still only build ONE of the catalog's
+    six gate kinds — so `jsonschema`, `pytest` and `composite` loops, 24 of 68, produced no verdict
+    at all while this test stayed green. Asserting the shipped CONSTRUCTOR is used means the
+    harness cannot know about a gate kind that `bl run` does not, or miss one that it does.
+    """
+    source = (_PACKAGE / "harness.py").read_text(encoding="utf-8")
+
+    assert "_instantiate_gate" in source and "composition" in source, (
+        "the harness no longer builds gates through bounded_loops.composition; a hand-rolled "
+        "constructor measures this file's idea of how gates are wired, not what users run"
+    )
+    assert "application.manifest" in source, (
+        "the harness no longer loads the real LoopManifest; gate config resolved any other way "
+        "(schema paths, timeouts, composite children) is not the config the product uses"
     )
 
 

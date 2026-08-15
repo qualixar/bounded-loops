@@ -48,11 +48,11 @@ def check(okrs_path: str) -> int:
         data = json.loads(Path(okrs_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"check_okrs: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     if not isinstance(data, list) or not data:
         print("check_okrs: expected a non-empty JSON list of objectives", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     violations: list[str] = []
     for objective in data:

@@ -119,13 +119,12 @@ def _extract_json_array(raw: str) -> list[dict]:
 
 def author_for_loop(loop_dir: Path, cli: str, *, timeout_s: int) -> list[tier2.Tier2Mutant]:
     """Ask one CLI for mutants against one loop's largest mutable artifact."""
-    artifacts = corpus.mutable_artifacts(loop_dir)
-    if not artifacts:
+    relatives = corpus.mutable_artifacts(loop_dir)
+    if not relatives:
         return []
-    artifact = max(artifacts, key=lambda p: p.stat().st_size)
-    relative = artifact.relative_to(loop_dir).as_posix()
+    relative = max(relatives, key=lambda r: (loop_dir / r).stat().st_size)
     try:
-        content = artifact.read_text(encoding="utf-8")
+        content = (loop_dir / relative).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return []
 

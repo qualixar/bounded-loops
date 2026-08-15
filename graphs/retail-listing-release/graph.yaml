@@ -15,7 +15,7 @@ connection_slots: []
 nodes:
   - id: check-barcode
     kind: loop
-    loop_package: "sha256:913cdb1c49e02200a5e47bdfad4bc71feeb75df2748bdbf994e9a4d9a19d099c"
+    loop_package: "sha256:bba2dc49bbe6cd95e22caf3d13059843205b60aac6dc11911882bb8d79bde576"
     inputs: {}
     outputs:
       verdict: internal
@@ -37,7 +37,7 @@ nodes:
     isolation: process_restricted
   - id: check-margin
     kind: loop
-    loop_package: "sha256:72f8c003c3ccdfef158584016a7b6c1f4ebb6bbc3f672df25fb34a1fc8910d99"
+    loop_package: "sha256:15c393d703e37434dc066a2f7e750cfadcee2657a4b1c56deb63bed1f293d8da"
     inputs: {}
     outputs:
       verdict: internal
@@ -48,7 +48,7 @@ nodes:
     isolation: process_restricted
   - id: review-stock
     kind: loop
-    loop_package: "sha256:460d698127c9b9eb25e9006c9f1a0af95f1bad5e41527ec1025a9083cdab1c5e"
+    loop_package: "sha256:6e5b791d78cd20bd472d32fa2ac0ec27f8bde06804275e9a8532ce1dd75a660a"
     inputs:
       source: internal
     outputs:

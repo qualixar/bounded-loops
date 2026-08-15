@@ -49,7 +49,7 @@ def check(sample_path: str) -> int:
         tree = ast.parse(source, filename=sample_path)
     except (OSError, SyntaxError) as exc:
         print(f"check_sleep: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     # "No hardcoded sleeps in test code" is satisfied by having no test code, so an emptied file
     # passed. Deleting the tests removes the sleeps and the coverage together, which is not the

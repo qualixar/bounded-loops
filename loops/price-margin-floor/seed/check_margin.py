@@ -25,17 +25,30 @@ def _load(path: str) -> object:
 
 
 def check(catalog_path: str, policy_path: str) -> int:
+    # Read in two steps: the two inputs have different owners, and a shared `try` cannot tell them
+    # apart. `policy.json` is in this loop's `forbid` list — the worker may not edit it, so a
+    # problem with it means this gate cannot run and no retry will help. `catalog.json` is the
+    # worker's output, and anything wrong with it is a verdict the worker can act on.
     try:
-        catalog = _load(catalog_path)
         policy = _load(policy_path)
         min_margin = float(policy["min_margin"])
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        print(f"check_margin: cannot run: {exc}", file=sys.stderr)
+        print(f"check_margin: cannot run: policy {policy_path}: {exc}", file=sys.stderr)
         return 2
+
+    try:
+        catalog = _load(catalog_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"check_margin: {catalog_path} is not readable JSON ({exc}) — the catalog must be a "
+            "JSON list of items with a price and a cost",
+            file=sys.stderr,
+        )
+        return 1
 
     if not isinstance(catalog, list):
         print("check_margin: catalog.json must be a list of items", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     violations: list[str] = []
     for item in catalog:
@@ -45,7 +58,7 @@ def check(catalog_path: str, policy_path: str) -> int:
             price = float(item["price"])
         except (KeyError, TypeError, ValueError) as exc:
             print(f"check_margin: malformed catalog item {item!r}: {exc}", file=sys.stderr)
-            return 2
+            return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
         floor = cost * (1 + min_margin)
         if price < floor:

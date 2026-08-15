@@ -76,8 +76,15 @@ def check(doc_path: str) -> int:
     used_terms = [m.strip() for m in _BOLD_RE.findall(body_text)]
 
     if not defined_terms:
-        print("check_defined: no '## Definitions' section with bolded terms found", file=sys.stderr)
-        return 2
+        # A VERDICT, not an inability to run. A contract with no Definitions section cannot define
+        # the terms its body uses. Returning 2 made the engine treat it as a gate ERROR, so the
+        # vacuity was detected and then discarded.
+        print(
+            "check_defined: no '## Definitions' section with bolded terms found — a contract "
+            "without one defines nothing it uses",
+            file=sys.stderr,
+        )
+        return 1
 
     seen: list[str] = []
     undefined: list[str] = []

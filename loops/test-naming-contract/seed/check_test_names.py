@@ -58,7 +58,7 @@ def check(sample_path: str) -> int:
         tree = ast.parse(source, filename=sample_path)
     except (OSError, SyntaxError) as exc:
         print(f"check_test_names: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     # A module with no functions has no misnamed ones, so emptying the file passed this gate.
     # Renaming the tests is the fix; removing them is not. Found by the held-out mutant corpus.

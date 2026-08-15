@@ -31,11 +31,11 @@ def check(manifest_path: str) -> int:
         data = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"check_transport: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     if not isinstance(data, dict):
         print("check_transport: manifest must be a JSON object", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     objects = data.get("objects")
     dependencies = data.get("dependencies")
@@ -44,7 +44,7 @@ def check(manifest_path: str) -> int:
             "check_transport: manifest must have list fields 'objects' and 'dependencies'",
             file=sys.stderr,
         )
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     object_set = set(objects)
     dangling = [dep for dep in dependencies if dep not in object_set]

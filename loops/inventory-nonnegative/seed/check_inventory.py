@@ -31,7 +31,7 @@ def check(movements_path: str) -> int:
         movements = list(data["movements"])
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         print(f"check_inventory: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     balances: dict[str, int] = {}
     for sku, qty in opening.items():
@@ -39,7 +39,7 @@ def check(movements_path: str) -> int:
             balances[str(sku)] = int(qty)
         except (TypeError, ValueError) as exc:
             print(f"check_inventory: malformed opening balance for {sku!r}: {exc}", file=sys.stderr)
-            return 2
+            return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     violations: list[str] = []
     for idx, mv in enumerate(movements):
@@ -48,7 +48,7 @@ def check(movements_path: str) -> int:
             delta = int(mv["delta"])
         except (KeyError, TypeError, ValueError) as exc:
             print(f"check_inventory: malformed movement at index {idx}: {exc}", file=sys.stderr)
-            return 2
+            return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
         balances[sku] = balances.get(sku, 0) + delta
         if balances[sku] < 0:

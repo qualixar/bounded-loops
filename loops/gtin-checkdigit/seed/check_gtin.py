@@ -34,11 +34,11 @@ def check(products_path: str) -> int:
         products = json.loads(Path(products_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"check_gtin: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     if not isinstance(products, list):
         print("check_gtin: products.json must be a list of items", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     violations: list[str] = []
     for item in products:
@@ -47,7 +47,7 @@ def check(products_path: str) -> int:
             gtin = str(item["gtin"])
         except (KeyError, TypeError) as exc:
             print(f"check_gtin: malformed product item {item!r}: {exc}", file=sys.stderr)
-            return 2
+            return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
         if len(gtin) != 13 or not gtin.isdigit():
             violations.append(f"{sku}: gtin {gtin!r} is not a 13-digit numeric string")

@@ -23,7 +23,7 @@ def check(path: str) -> int:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"check_cors: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     try:
         cors = data["cors"]
@@ -31,7 +31,7 @@ def check(path: str) -> int:
         allow_credentials = cors["allow_credentials"]
     except (KeyError, TypeError) as exc:
         print(f"check_cors: cannot run: missing field {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     if allow_credentials and "*" in allow_origins:
         print(

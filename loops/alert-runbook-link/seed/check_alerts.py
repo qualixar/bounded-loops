@@ -29,11 +29,11 @@ def check(alerts_path: str) -> int:
         data = json.loads(Path(alerts_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"check_alerts: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     if not isinstance(data, list) or not data:
         print("check_alerts: alerts.json must be a non-empty JSON list", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     violations: list[str] = []
     for entry in data:
@@ -42,7 +42,7 @@ def check(alerts_path: str) -> int:
             runbook_url = entry.get("runbook_url", "")
         except (KeyError, TypeError) as exc:
             print(f"check_alerts: cannot run: malformed alert entry: {exc}", file=sys.stderr)
-            return 2
+            return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
         if not runbook_url or not str(runbook_url).strip().startswith("http"):
             violations.append(alert_name)

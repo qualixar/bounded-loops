@@ -46,13 +46,24 @@ def check(minutes_path: str) -> int:
 
     section = _extract_action_section(text)
     if not section.strip():
-        print("check_actions: no '## Action Items' section found", file=sys.stderr)
-        return 2
+        # A VERDICT, not an inability to run. Minutes with no Action Items section record no
+        # actions, and deleting the section is the cheapest way to make every action have an owner.
+        # Returning 2 made the engine treat it as a gate ERROR, so the vacuity was discarded.
+        print(
+            "check_actions: no '## Action Items' section found — minutes with no actions cannot "
+            "show that every action has an owner and a date",
+            file=sys.stderr,
+        )
+        return 1
 
     bullets = _BULLET_RE.findall(section)
     if not bullets:
-        print("check_actions: '## Action Items' section has no bullet items", file=sys.stderr)
-        return 2
+        print(
+            "check_actions: '## Action Items' section has no bullet items — an empty section "
+            "records no actions",
+            file=sys.stderr,
+        )
+        return 1
 
     violations: list[str] = []
     for bullet in bullets:

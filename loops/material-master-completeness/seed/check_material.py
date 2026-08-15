@@ -40,11 +40,11 @@ def check(material_path: str) -> int:
         data = json.loads(Path(material_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"check_material: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     if not isinstance(data, dict):
         print("check_material: material record must be a JSON object", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     material_type = data.get("material_type")
     required = _REQUIRED_BY_TYPE.get(material_type)
@@ -54,7 +54,7 @@ def check(material_path: str) -> int:
             f"(expected one of {sorted(_REQUIRED_BY_TYPE)})",
             file=sys.stderr,
         )
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     missing = [f for f in required if not str(data.get(f, "")).strip()]
 

@@ -47,7 +47,21 @@ BY_EXTENSION: Mapping[str, tuple[Operator, ...]] = {
 EXCLUDED_SUFFIXES = frozenset({".pyc", ".pyo", ".so", ".lock"})
 
 #: Never mutated, whatever the extension: build litter and VCS internals.
-EXCLUDED_PARTS = frozenset({"__pycache__", ".git", "node_modules", ".venv"})
+EXCLUDED_PARTS = frozenset(
+    {"__pycache__", ".git", "node_modules", ".venv", ".pytest_cache", ".bounded-loops"}
+)
+
+#: Files the ENGINE writes into a workspace, which no worker authored and no gate should judge.
+#:
+#: Naming them here is not a peek at any gate. These are properties of the runtime — the scratch
+#: marker it drops to identify a governed workspace, and the transcript it writes of what the runner
+#: said. They would be excluded identically if every gate in the catalog were deleted, which is the
+#: test for whether an exclusion is blind.
+#:
+#: The distinction this draws is the one the corpus depends on once it reads a CONVERGED workspace
+#: rather than a pristine `seed/`: a **work product** is what the worker made, and engine
+#: bookkeeping is what the machine left behind. Mutating the latter measures nothing about a gate.
+EXCLUDED_NAMES = frozenset({".bounded-loops-scratch", "agent_output.txt"})
 
 
 def is_mutable_artifact(relative_path: str) -> bool:
@@ -56,6 +70,8 @@ def is_mutable_artifact(relative_path: str) -> bool:
     if any(part in EXCLUDED_PARTS for part in parts):
         return False
     name = parts[-1]
+    if name in EXCLUDED_NAMES:
+        return False
     return not any(name.endswith(suffix) for suffix in EXCLUDED_SUFFIXES)
 
 

@@ -56,13 +56,13 @@ def check(post_path: str) -> int:
         text = Path(post_path).read_text(encoding="utf-8")
     except OSError as exc:
         print(f"check_readability: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     prose = " ".join(_prose_lines(text))
     sentences = _sentences(prose)
     if not sentences:
         print(f"check_readability: no prose sentences found in {post_path}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     # An average over one or two sentences is not an average. The held-out mutant corpus replaced
     # the whole post with "lorem ipsum dolor sit amet" — a single five-word sentence — and this

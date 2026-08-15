@@ -37,8 +37,12 @@ def check(idoc_path: str) -> int:
     try:
         root = ET.fromstring(text)
     except ET.ParseError as exc:
+        # A VERDICT, not an inability to run. This gate's stated purpose is that the IDoc is
+        # STRUCTURALLY VALID, and XML that does not parse is the most structurally invalid an IDoc
+        # can be. Returning 2 filed the clearest possible rejection as "could not run", so an
+        # emptied or corrupted IDoc halted the run as an error instead of failing the gate.
         print(f"check_idoc: {idoc_path} is not well-formed XML: {exc}", file=sys.stderr)
-        return 2
+        return 1
 
     missing: list[str] = []
 

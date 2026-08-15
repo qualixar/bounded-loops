@@ -29,11 +29,11 @@ def check(rates_path: str) -> int:
         pairs = data["pairs"]
     except (OSError, json.JSONDecodeError, KeyError) as exc:
         print(f"check_fx: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     if not isinstance(pairs, dict) or not pairs:
         print("check_fx: rates has no pairs", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     violations: list[str] = []
 

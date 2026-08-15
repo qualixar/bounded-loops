@@ -46,7 +46,7 @@ def check(sample_path: str) -> int:
         tree = ast.parse(source, filename=sample_path)
     except (OSError, SyntaxError) as exc:
         print(f"check_assertions: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     # "Every test_* function contains an assert" is satisfied by a file containing no test_*
     # functions at all — vacuous truth, and the gate used to report it as a pass. Deleting the

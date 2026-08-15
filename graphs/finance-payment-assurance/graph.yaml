@@ -26,7 +26,7 @@ nodes:
     isolation: process_restricted
   - id: balance-journal
     kind: loop
-    loop_package: "sha256:d3a14308fb5232abcbcad4bee5e9bfcc930323378714a41d7b34cbe179e52c63"
+    loop_package: "sha256:6672c2027f66307758cfb73ad4b3e7b26bd7910a97bbc238a7e27b3159460fbd"
     inputs: {}
     outputs:
       verdict: internal
@@ -37,7 +37,7 @@ nodes:
     isolation: process_restricted
   - id: check-fx-rate
     kind: loop
-    loop_package: "sha256:5748b6c1830366041841c0e8a5e4c009513e76cfdb8772161b505ffa2bd6ebca"
+    loop_package: "sha256:b761ed98bdace4685ec4c7a6db72c61fec1d6ea3693e0a452bbb9e43f6398af5"
     inputs: {}
     outputs:
       verdict: internal
@@ -59,7 +59,7 @@ nodes:
     isolation: process_restricted
   - id: reconcile-ledger
     kind: loop
-    loop_package: "sha256:ea85af8bdd685bb6076bd0686d60e1bcbd687c098ed6e07dce4b45d9214c3f28"
+    loop_package: "sha256:22f8fc10984162ef17c4ffd9b0a9a6509ae9a81ddeb997ad5cd9a5a83031155a"
     inputs:
       source: internal
     outputs:

@@ -58,58 +58,88 @@ class Mutant:
         }
 
 
-def _forbidden_paths(manifest: dict) -> set[str]:
-    """The loop's own `forbid` list, as relative paths. Read as paths, never interpreted."""
-    return {str(entry) for entry in (manifest.get("forbid") or [])}
+def _forbidden_patterns(manifest: dict) -> tuple[str, ...]:
+    """The loop's own `forbid` list, as path globs. Read as paths, never interpreted."""
+    return tuple(str(entry) for entry in (manifest.get("forbid") or []))
 
 
-def mutable_artifacts(loop_dir: Path) -> list[Path]:
-    """Files under `seed/` that a worker is allowed to change.
+def _is_forbidden(relative_path: str, patterns: tuple[str, ...]) -> bool:
+    """Whether the loop forbids editing this path, decided by the SHIPPED matcher.
 
-    Returns paths sorted, so generation order is deterministic and a regenerated corpus is
-    byte-identical.
+    `anchor_guard.matches_forbid` is what the runtime enforces at run time — case-insensitive
+    `fnmatch` against the relative path or its basename. This module used exact string equality,
+    which silently disagreed for the five loops that declare a glob (`seed/test_*.py`): the corpus
+    considered a protected gate anchor mutable, because `"seed/test_ledger.py" != "seed/test_*.py"`.
+
+    Importing the matcher is not a peek at any gate. It resolves PATHS against PATTERNS and would
+    behave identically with every gate in the catalog deleted — the same test applied to the engine
+    bookkeeping exclusions. What it buys is that "mutable" means here exactly what "editable" means
+    to the runtime, rather than two definitions that agree until one is changed.
+    """
+    from bounded_loops.adapters.runners.anchor_guard import matches_forbid
+
+    return matches_forbid(relative_path, patterns)
+
+
+def mutable_artifacts(loop_dir: Path, *, content_root: Path | None = None) -> list[str]:
+    """Relative paths of the work products a worker is allowed to change.
+
+    **Which tree is enumerated matters, and getting it wrong silently loses whole gate kinds.**
+
+    Without `content_root` this reads the catalog's `seed/`, which is what a loop SHIPS. With one,
+    it reads the converged workspace, which is what a worker PRODUCED — and those are not the same
+    set. A `jsonschema` loop seeds `seed/output.json` and converges by writing `output.json` at the
+    workspace root; that root file is the artifact its gate reads, and a corpus enumerating only
+    `seed/` never generates a single mutant for it. Ten loops measured nothing for exactly that
+    reason, and nothing failed, because "no mutants" and "no false accepts" look identical in a
+    count.
+
+    Engine bookkeeping — the scratch marker, the runner transcript, `.git/`, `__pycache__/` — is
+    excluded by `operators.is_mutable_artifact`. That exclusion is blind: it names files the RUNTIME
+    writes, and would be unchanged if every gate in the catalog were deleted.
+
+    `forbid` is still read from the catalog manifest as a path list, and still the only thing taken
+    from `loop.yaml`. Returns relative POSIX paths, sorted, so a regenerated corpus is byte-identical.
     """
     manifest_path = loop_dir / "loop.yaml"
     if not manifest_path.is_file():
         return []
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
-    forbidden = _forbidden_paths(manifest)
+    forbidden = _forbidden_patterns(manifest)
 
-    seed = loop_dir / "seed"
-    if not seed.is_dir():
+    root = content_root if content_root is not None else loop_dir / "seed"
+    base = loop_dir if content_root is None else content_root
+    if not root.is_dir():
         return []
 
-    found: list[Path] = []
-    for path in sorted(seed.rglob("*")):
+    found: list[str] = []
+    for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        relative = path.relative_to(loop_dir).as_posix()
-        if relative in forbidden or not operators.is_mutable_artifact(relative):
+        relative = path.relative_to(base).as_posix()
+        if _is_forbidden(relative, forbidden) or not operators.is_mutable_artifact(relative):
             continue
-        found.append(path)
+        found.append(relative)
     return found
 
 
 def generate_for_loop(loop_dir: Path, *, content_root: Path | None = None) -> list[Mutant]:
     """Every mutant for one loop, in a deterministic order.
 
-    `content_root` is where the artifact BYTES are read from, defaulting to the loop directory. The
-    harness passes the converged run workspace instead: the loop directory holds the pristine seed,
-    which fails its own gate by design, so mutating it produces mutants whose labels are wrong.
-    Which files are mutable still comes from the catalog manifest, because the workspace has no
-    `loop.yaml`.
+    `content_root` is the converged run workspace, and it decides BOTH which files are mutable and
+    what bytes they hold. The loop directory holds the pristine seed, which fails its own gate by
+    design, so mutating it produces mutants whose labels are wrong — and it is also missing every
+    artifact the worker created rather than edited.
 
     Splitting the two roots does not widen what the generator can see: it reads `forbid` (a path
-    list) and file bytes, exactly as before.
+    list) and file bytes, exactly as before. It reads MORE FILES, not more about any gate.
     """
     loop = loop_dir.name
     root = content_root if content_root is not None else loop_dir
     mutants: list[Mutant] = []
-    for artifact in mutable_artifacts(loop_dir):
-        relative = artifact.relative_to(loop_dir).as_posix()
+    for relative in mutable_artifacts(loop_dir, content_root=content_root):
         source = root / relative
         if not source.is_file():
-            # Present in the catalog, absent from the converged workspace — nothing to mutate.
             continue
         try:
             text = source.read_text(encoding="utf-8")

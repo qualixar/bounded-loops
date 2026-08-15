@@ -25,11 +25,11 @@ def check(journal_path: str) -> int:
         entries = json.loads(Path(journal_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"check_balance: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     if not isinstance(entries, list) or not entries:
         print("check_balance: journal has no entries", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     violations: list[str] = []
     for entry in entries:
@@ -40,7 +40,7 @@ def check(journal_path: str) -> int:
             total_credit = sum(float(line["credit"]) for line in lines)
         except (KeyError, TypeError, ValueError) as exc:
             print(f"check_balance: cannot run: malformed entry {entry!r}: {exc}", file=sys.stderr)
-            return 2
+            return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
         if abs(total_debit - total_credit) > _TOLERANCE:
             violations.append(

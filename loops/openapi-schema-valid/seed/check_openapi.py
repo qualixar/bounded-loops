@@ -40,11 +40,11 @@ def check(doc_path: str) -> int:
         doc = json.loads(text)
     except (OSError, json.JSONDecodeError) as exc:
         print(f"check_openapi: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     if not isinstance(doc, dict):
         print("check_openapi: document root must be a JSON object", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     violations: list[str] = []
 

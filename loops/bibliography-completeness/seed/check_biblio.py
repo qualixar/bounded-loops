@@ -43,15 +43,28 @@ def check(paper_path: str) -> int:
 
     body, references = _split_references(text)
     if not references:
-        print("check_biblio: no '## References' section found", file=sys.stderr)
-        return 2
+        # A VERDICT, not an inability to run. A paper with no References section cannot have every
+        # cited key listed there — that is the requirement failing, not the gate failing. Returning
+        # 2 made the engine treat it as a gate ERROR, so the vacuity was detected and discarded.
+        print(
+            "check_biblio: no '## References' section found — a paper without one cannot list "
+            "the keys it cites",
+            file=sys.stderr,
+        )
+        return 1
 
     cited = sorted(set(_CITE_RE.findall(body)))
     listed = set(_REF_KEY_RE.findall(references))
 
     if not listed:
-        print("check_biblio: References section has no usable keys", file=sys.stderr)
-        return 2
+        # Same reasoning: a References section with no parseable keys is a failed requirement, not
+        # a gate that could not run.
+        print(
+            "check_biblio: References section has no usable keys — nothing there can satisfy a "
+            "citation",
+            file=sys.stderr,
+        )
+        return 1
 
     violations = [key for key in cited if key not in listed]
 

@@ -326,7 +326,93 @@ STILL_ACCEPTED: list[GateCase] = [
     ),
 ]
 
-ALL_CASES = FALSE_ACCEPTS + FALSE_REJECTS + STILL_ACCEPTED
+#: Round 3 — class 10: **a verdict filed as an inability to run**.
+#:
+#: These seven gates already DETECTED vacuity. Each returned 2 on an artifact with nothing to
+#: check, and 2 is the documented code for "could not run" — which `CommandGate` classifies as a
+#: gate ERROR, not a rejection. So the detection was performed and then thrown away: in production
+#: an emptied artifact halted the run with an error instead of looping back to tell the worker what
+#: was wrong, and in the mutant corpus all 84 such mutants were excluded from α as "not judged".
+#:
+#: This is the subtlest shape of the vacuity defect found so far, because the guard is present and
+#: reads correctly. Only running it end to end shows the answer never reaches a caller. It is also
+#: the reason error counts deserve reading: 84 of 233 mutants were errors, seven loops produced
+#: NOTHING BUT errors, and a rate computed over the remainder looked perfect.
+#:
+#: The line these pin: exit 2 means no verdict was possible (unreadable file, bad argv). Exit 1
+#: means the gate read the artifact and the answer is no. "Nothing to check" is an answer.
+VACUITY_IS_A_REJECTION_NOT_AN_ERROR = [
+    GateCase(
+        loop="alt-text-present", script="seed/check_alt.py", args=("post.md",), expected=1,
+        why="a post with no images was reported as 'could not run' instead of failing",
+        files={"post.md": ""},
+    ),
+    GateCase(
+        loop="bibliography-completeness", script="seed/check_biblio.py",
+        args=("paper.md",), expected=1,
+        why="a paper with no References section cannot list the keys it cites",
+        files={"paper.md": "# Paper\nSome prose with no citations.\n"},
+    ),
+    GateCase(
+        loop="bibliography-completeness", script="seed/check_biblio.py",
+        args=("paper.md",), expected=1,
+        why="a References section with no parseable keys satisfies no citation",
+        files={"paper.md": "# Paper\nText [@a].\n\n## References\n\nnothing usable here\n"},
+    ),
+    GateCase(
+        loop="contract-defined-terms", script="seed/check_defined.py",
+        args=("contract.md",), expected=1,
+        why="a contract with no Definitions section defines nothing it uses",
+        files={"contract.md": "# Contract\nThe **Effective Date** is important.\n"},
+    ),
+    GateCase(
+        loop="dockerfile-no-root", script="seed/check_dockerfile.py",
+        args=("Dockerfile",), expected=1,
+        why="a file with no FROM pins no base image",
+        files={"Dockerfile": "# just a comment\n"},
+    ),
+    GateCase(
+        loop="idoc-xml-schema", script="seed/check_idoc.py", args=("idoc.xml",), expected=1,
+        why="XML that does not parse is the most structurally invalid an IDoc can be",
+        files={"idoc.xml": ""},
+    ),
+    GateCase(
+        loop="meeting-action-items", script="seed/check_actions.py",
+        args=("minutes.md",), expected=1,
+        why="minutes with no Action Items section record no actions",
+        files={"minutes.md": "# Minutes\nWe talked about things.\n"},
+    ),
+    GateCase(
+        loop="meeting-action-items", script="seed/check_actions.py",
+        args=("minutes.md",), expected=1,
+        why="an Action Items section with no bullets records no actions",
+        files={"minutes.md": "# Minutes\n## Action Items\n\n## Next Meeting\nsoon\n"},
+    ),
+    GateCase(
+        loop="prd-acceptance-criteria", script="seed/check_prd.py",
+        args=("prd.md",), expected=1,
+        why="a PRD with no stories cannot show that every story is verifiable",
+        files={"prd.md": "# PRD\nA product with no stories written yet.\n"},
+    ),
+    # The other half of the line. Without these, "return 1 more often" would pass every case above
+    # while destroying the distinction that makes an ERROR meaningful — a gate that cannot run must
+    # not be recorded as having judged, because that credits it for catching what it never saw.
+    GateCase(
+        loop="alt-text-present", script="seed/check_alt.py", args=("absent.md",), expected=2,
+        why="a file that cannot be read yields NO verdict and must stay an error",
+        files={"post.md": "# P\n![a](x.png)\n"},
+    ),
+    GateCase(
+        loop="prd-acceptance-criteria", script="seed/check_prd.py",
+        args=("absent.md",), expected=2,
+        why="a file that cannot be read yields NO verdict and must stay an error",
+        files={"prd.md": "# PRD\n## Story: x\n### Acceptance Criteria\n- [ ] y\n"},
+    ),
+]
+
+ALL_CASES = (
+    FALSE_ACCEPTS + FALSE_REJECTS + STILL_ACCEPTED + VACUITY_IS_A_REJECTION_NOT_AN_ERROR
+)
 
 
 @pytest.mark.parametrize("case", ALL_CASES, ids=[c.id for c in ALL_CASES])

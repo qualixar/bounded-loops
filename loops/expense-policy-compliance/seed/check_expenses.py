@@ -19,18 +19,31 @@ from pathlib import Path
 
 
 def check(expenses_path: str, policy_path: str) -> int:
+    # Read in two steps: the two inputs have different owners, and a shared `try` cannot tell them
+    # apart. `policy.json` is in this loop's `forbid` list — the worker may not edit it, so a
+    # problem with it means this gate cannot run and no retry will help. `expenses.json` is the
+    # worker's output, and anything wrong with it is a verdict the worker can act on.
     try:
-        expenses = json.loads(Path(expenses_path).read_text(encoding="utf-8"))
         policy = json.loads(Path(policy_path).read_text(encoding="utf-8"))
         allowed = set(policy["allowed_categories"])
         caps = policy["caps"]
     except (OSError, json.JSONDecodeError, KeyError) as exc:
-        print(f"check_expenses: cannot run: {exc}", file=sys.stderr)
+        print(f"check_expenses: cannot run: policy {policy_path}: {exc}", file=sys.stderr)
         return 2
+
+    try:
+        expenses = json.loads(Path(expenses_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"check_expenses: {expenses_path} is not readable JSON ({exc}) — the expense report "
+            "must be a JSON list of lines",
+            file=sys.stderr,
+        )
+        return 1
 
     if not isinstance(expenses, list) or not expenses:
         print("check_expenses: expense report has no lines", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     violations: list[str] = []
     for idx, line in enumerate(expenses):
@@ -40,7 +53,7 @@ def check(expenses_path: str, policy_path: str) -> int:
             description = line.get("description", "")
         except (KeyError, TypeError, ValueError) as exc:
             print(f"check_expenses: cannot run: malformed line {line!r}: {exc}", file=sys.stderr)
-            return 2
+            return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
         if category not in allowed:
             violations.append(

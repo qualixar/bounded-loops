@@ -26,7 +26,7 @@ nodes:
     isolation: process_restricted
   - id: check-types
     kind: loop
-    loop_package: "sha256:56f41f3b5bdfb7e7c09e2b903c52d33fe5e4fad217aece32cdaa2582176161c7"
+    loop_package: "sha256:3db997c7a53d634fa91a3521f17783a967ad592ea9f21257673ce7262db5622f"
     inputs: {}
     outputs:
       verdict: internal
@@ -37,7 +37,7 @@ nodes:
     isolation: process_restricted
   - id: check-commits
     kind: loop
-    loop_package: "sha256:c97e21aa7175ef1f930a1c15a81e8c072e427b701e5666bdda76ed92b16ba369"
+    loop_package: "sha256:526fff87005d304577bf1b1691187f996fb6af92b2a62484e3ed2855cf92c0c2"
     inputs: {}
     outputs:
       verdict: internal

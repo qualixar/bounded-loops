@@ -45,8 +45,15 @@ def check(path: str) -> int:
 
     from_matches = _FROM_RE.findall(text)
     if not from_matches:
-        print("check_dockerfile: no FROM instruction found", file=sys.stderr)
-        return 2
+        # A VERDICT, not an inability to run. A file with no FROM is not a Dockerfile that pins its
+        # base image — it is one that has no base image. Returning 2 made the engine treat it as a
+        # gate ERROR, so the vacuity was detected and then discarded.
+        print(
+            "check_dockerfile: no FROM instruction found — a Dockerfile without one cannot pin "
+            "a base image",
+            file=sys.stderr,
+        )
+        return 1
     for image_ref in from_matches:
         v = _base_image_violation(image_ref)
         if v:

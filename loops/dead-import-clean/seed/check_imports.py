@@ -80,7 +80,7 @@ def check(module_path: str) -> int:
         tree = ast.parse(source, filename=module_path)
     except (OSError, SyntaxError) as exc:
         print(f"check_imports: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     imports = _collect_imports(tree)
     used = _collect_used_names(tree)

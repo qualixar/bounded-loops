@@ -62,7 +62,7 @@ def check(module_path: str) -> int:
         tree = ast.parse(source, filename=module_path)
     except (OSError, SyntaxError) as exc:
         print(f"check_types: cannot run: {exc}", file=sys.stderr)
-        return 2
+        return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
     violations: list[str] = []
     public_functions = 0
