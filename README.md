@@ -42,7 +42,7 @@ bl monitor                 # opens on 127.0.0.1, loopback only, one-time token
 `bl monitor` is a local web UI over the same run directory the CLI reads. It holds no state
 of its own — close it and nothing is lost, because the receipt log was always the truth.
 
-![The bounded-loops monitor showing a completed seven-node graph run](assets/screenshots/monitor-dag.png)
+![The bounded-loops monitor showing a completed seven-node graph run](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/screenshots/monitor-dag.png)
 
 ### What the engine actually recorded
 
@@ -50,7 +50,7 @@ Click a node and you get what the receipts say, not a summary of them: the isola
 OS really enforced, the independent gate's own verdict **and its reason**, and the artifact
 digest.
 
-![Node detail showing enforced isolation controls, the gate verdict, and the artifact digest](assets/screenshots/monitor-node-detail.png)
+![Node detail showing enforced isolation controls, the gate verdict, and the artifact digest](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/screenshots/monitor-node-detail.png)
 
 ### A human gate, and what saying yes releases
 
@@ -61,14 +61,14 @@ and flags the ones stopping the run will not take back.
 Note the gate line: **"no verdict — the gate has not evaluated this node."** A human hold is
 not a gate pass, and the UI says so rather than painting a green check.
 
-![The approval panel naming external_write as an effect that cannot be undone](assets/screenshots/monitor-approval-preview.png)
+![The approval panel naming external_write as an effect that cannot be undone](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/screenshots/monitor-approval-preview.png)
 
 ### A shareable report
 
 `bl graph arena --run <dir>` writes one self-contained HTML file. No server, no network, no
 build step — send it to someone who was not there.
 
-![The Arena report for a completed run](assets/screenshots/arena-report.png)
+![The Arena report for a completed run](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/screenshots/arena-report.png)
 
 ---
 
@@ -195,7 +195,7 @@ A local web UI over the run directory — live DAG, per-node evidence, spend, an
 controls. It detects which agent CLIs you already have logged in and lists your runs; it never
 asks for a credential of its own.
 
-![The monitor's workspace rail listing detected orchestrators and runs](assets/screenshots/monitor-workspace.png)
+![The monitor's workspace rail listing detected orchestrators and runs](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/screenshots/monitor-workspace.png)
 
 It is a **view**, not a service. Loopback bind, a token per invocation that never touches disk,
 and a same-origin requirement on every data route — so a page in another tab cannot drive it
@@ -373,7 +373,7 @@ of which runner, gate, or storage backend a loop uses. The graph engine reuses t
 same ports per node. [`bounded_loops/composition.py`](bounded_loops/composition.py)
 is the composition root.
 
-![Ports and adapters: the domain rule at the centre, runners, gates and storage at the edges](docs/diagrams/ports-and-adapters.png)
+![Ports and adapters: the domain rule at the centre, runners, gates and storage at the edges](https://raw.githubusercontent.com/qualixar/bounded-loops/main/docs/diagrams/ports-and-adapters.png)
 
 Full design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

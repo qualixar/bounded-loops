@@ -239,3 +239,43 @@ def test_public_docs_have_no_orphan_course_section_references() -> None:
             ):
                 offenders.append(str(path.relative_to(REPO_ROOT)))
     assert offenders == []
+
+
+def test_readme_images_are_ABSOLUTE_because_pypi_cannot_resolve_relative_ones() -> None:
+    """`pyproject.toml` sets `readme = "README.md"`, so this file becomes the PyPI project
+    page. GitHub resolves a relative image path against the repo; PyPI does not, and renders a
+    broken image instead.
+
+    The failure is quiet in the worst way: the README looks perfect in the editor, perfect on
+    GitHub, and broken on the page most people arrive at from `pip install`.
+    """
+    import re
+
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    relative = [
+        m.group(1)
+        for m in re.finditer(r'!\[[^\]]*\]\(([^)]+)\)', readme)
+        if not m.group(1).startswith(("http://", "https://"))
+    ]
+
+    assert not relative, (
+        "these README images use relative paths and will render broken on PyPI:\n  "
+        + "\n  ".join(relative)
+        + "\nUse https://raw.githubusercontent.com/qualixar/bounded-loops/main/<path>."
+    )
+
+
+def test_every_README_screenshot_actually_EXISTS_in_the_repo() -> None:
+    """An absolute raw.githubusercontent URL renders broken just as easily if the file was
+    never committed — and unlike a relative path, nothing local catches it."""
+    import re
+
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    prefix = "https://raw.githubusercontent.com/qualixar/bounded-loops/main/"
+    missing = [
+        url[len(prefix):]
+        for url in re.findall(r'!\[[^\]]*\]\((https://raw\.githubusercontent\.com/\S+?)\)', readme)
+        if url.startswith(prefix) and not (REPO_ROOT / url[len(prefix):]).exists()
+    ]
+
+    assert not missing, f"README references images that are not in the repo: {missing}"
