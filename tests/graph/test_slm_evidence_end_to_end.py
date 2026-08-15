@@ -164,3 +164,34 @@ def test_terminal_at_is_the_EVENT_timestamp_not_a_payload_key(tmp_path: Path) ->
         return
     assert terminal_at != "2099-01-01T00:00:00Z"
     assert terminal_at == real
+
+
+def test_a_run_ref_FROM_THE_LISTING_fetches_evidence(tmp_path: Path) -> None:
+    """End to end: whatever `terminal_runs` hands back must work as the fetch argument.
+
+    This is the round trip a consumer actually performs, and it is what would have caught the
+    0.6.2 parameter-name mismatch before publication.
+    """
+    workspace = _workspace(tmp_path)
+    _graph_run(workspace)
+
+    listed = terminal_runs(workspace)
+    assert listed, "the demo run should be listed"
+
+    for entry in listed:
+        document = evidence_for_run(workspace, entry["run_ref"])
+        assert document["run_ref"] == entry["run_ref"]
+        assert document["run_id"] == entry["run_id"]
+
+
+def test_the_run_IDENTITY_does_not_resolve_as_an_address(tmp_path: Path) -> None:
+    """Proof the two keys are not interchangeable, which is why the name mattered."""
+    workspace = _workspace(tmp_path)
+    _graph_run(workspace)
+
+    entry = terminal_runs(workspace)[0]
+    if entry["run_id"] == entry["run_ref"]:
+        pytest.skip("this run's identity and address coincide; nothing to distinguish")
+
+    with pytest.raises(EvidenceUnavailable):
+        evidence_for_run(workspace, entry["run_id"])

@@ -349,3 +349,57 @@ def test_every_refusal_this_module_raises_has_a_safe_public_reason() -> None:
             assert "Users" not in reason and "etc" not in reason, reason
         else:
             raise AssertionError("expected a refusal")
+
+
+# ── the MCP surface must advertise what the contract says (0.6.3) ─────────────
+
+
+def _registered_signatures() -> dict[str, object]:
+    """Every discovery tool's real signature, taken from the registrar."""
+    import inspect
+
+    from bounded_loops import mcp_discovery
+
+    captured: dict[str, object] = {}
+
+    class _Recorder:
+        def tool(self):
+            def decorate(fn):
+                captured[fn.__name__] = inspect.signature(fn)
+                return fn
+
+            return decorate
+
+    mcp_discovery.register(_Recorder())
+    return captured
+
+
+def test_bl_graph_evidence_takes_run_ref_NOT_run_id() -> None:
+    """The published tool schema is the contract a consumer actually reads.
+
+    0.6.2 shipped `bl_graph_evidence(run_id: str)` while the listing returned `run_ref`, the
+    docs said to pass `run_ref`, and the resolver wanted the directory name. A consumer
+    reading the generated input schema would pass the run's IDENTITY and get a refusal — the
+    identity does not resolve, because a run usually lives in a directory named something
+    else. The same defect class the rest of 0.6.2 fixed: a surface saying one thing and doing
+    another. Found by the SLM 4.0.4 bridge audit.
+    """
+    parameters = _registered_signatures()["bl_graph_evidence"].parameters  # type: ignore[attr-defined]
+
+    assert "run_ref" in parameters, "the address parameter must be named run_ref"
+    assert "run_id" not in parameters, (
+        "run_id is the run's identity and must never be the fetch argument"
+    )
+    assert parameters["run_ref"].default is parameters["run_ref"].empty, "run_ref is required"
+
+
+def test_the_two_bridge_tools_agree_on_the_address_key() -> None:
+    """Whatever the listing returns as the address is what the fetch tool must accept."""
+    parameters = _registered_signatures()["bl_graph_evidence"].parameters  # type: ignore[attr-defined]
+    address_key = "run_ref"
+
+    assert address_key in parameters
+    # And the document carries both, so a consumer is never forced to guess.
+    document = _doc()
+    assert document[address_key] == "run-dir-name"
+    assert document["run_id"] != document[address_key]

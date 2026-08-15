@@ -5,6 +5,23 @@ All notable changes to bounded-loops are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-08-15
+
+### Fixed
+
+- **`bl_graph_evidence` advertised the wrong argument name.** Its published MCP schema said
+  `run_id`, while `bl_graph_terminal_runs` returns the address as `run_ref`, the documentation
+  says to pass `run_ref`, and the resolver wants the directory name. A consumer reading the
+  tool schema would pass the run's identity — which does not resolve, because a run usually
+  lives in a directory named something else. The tool did the right thing under the wrong name.
+
+  The argument is now `run_ref`. No change to resolution behaviour, evidence shape, contract
+  id, trust semantics, or terminal-run handling. A test now asserts the real registered
+  signature, and another performs the full round trip: whatever the listing returns as
+  `run_ref` must work as the fetch argument.
+
+  Found by the SuperLocalMemory 4.0.4 bridge audit.
+
 ## [0.6.2] — 2026-08-15
 
 ### Fixed

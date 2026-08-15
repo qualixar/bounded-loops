@@ -130,7 +130,7 @@ def register(mcp: object) -> None:
         }
 
     @tool()
-    def bl_graph_evidence(run_id: str) -> dict:
+    def bl_graph_evidence(run_ref: str) -> dict:
         """Evidence for ONE finished graph run, as `bounded-loops.dev/slm-bridge/v1`. Read-only.
 
         For a memory or analytics system that wants to observe what this engine did without
@@ -138,8 +138,13 @@ def register(mcp: object) -> None:
         `contract`, never on `engine.version` — the version says which build produced the
         document, the contract says what you may rely on.
 
-        `run_id` names a run in this workspace. It is never a path: it is validated against the
-        same allow-list the run store uses, so `../` is refused rather than resolved.
+        `run_ref` is the ADDRESS of a run in this workspace — the value `bl_graph_terminal_runs`
+        returns under that same key. It is never a path: it is validated against the same
+        allow-list the run store uses, so `../` is refused rather than resolved.
+
+        Do not pass `run_id`. That is the run's own immutable IDENTITY, recorded inside its
+        receipts and returned inside the evidence document; a run frequently lives in a
+        directory named something else, so the identity will not resolve.
 
         Refuses a run that has not finished. Carries digests, states, outcome, attempt counts
         and receipt head — never gate prose, artifact bytes, paths, commands or environment
@@ -153,7 +158,7 @@ def register(mcp: object) -> None:
         from bounded_loops.workspace import discover
 
         try:
-            return {"status": "ok", "evidence": evidence_for_run(discover(), run_id)}
+            return {"status": "ok", "evidence": evidence_for_run(discover(), run_ref)}
         except EvidenceUnavailable as exc:
             # A refusal, not a crash. The consumer polls; "not finished yet" is an ordinary
             # answer and must not look like a broken tool.

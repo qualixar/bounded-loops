@@ -37,14 +37,18 @@ from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
 from bounded_loops.workspace import Workspace
 
 
-def evidence_for_run(workspace: Workspace, run_id: str) -> dict[str, Any]:
+def evidence_for_run(workspace: Workspace, run_ref: str) -> dict[str, Any]:
     """The v1 evidence document for one terminal run in `workspace`.
+
+    `run_ref` is the ADDRESS — the directory name, and the value `terminal_runs` returns under
+    that key. Not `run_id`, which is the run's own identity from its receipts: the two differ,
+    and the MCP tool advertised the wrong one until 0.6.3.
 
     Raises `EvidenceUnavailable` for an unsafe id, a missing run, an unreadable log, or a run
     that has not finished. One exception type for every refusal, so a consumer never has to
     parse a message to tell "no such run" from "still running".
     """
-    run_dir = _safe_run_dir(workspace, run_id)
+    run_dir = _safe_run_dir(workspace, run_ref)
     projection, demonstration, terminal_at = _project(run_dir)
     return evidence_document(
         projection,
@@ -96,9 +100,9 @@ def terminal_runs(workspace: Workspace, *, limit: int = 100) -> list[dict[str, A
     return found
 
 
-def _safe_run_dir(workspace: Workspace, run_id: str) -> Path:
+def _safe_run_dir(workspace: Workspace, run_ref: str) -> Path:
     try:
-        run_dir = workspace.run_dir(run_id)
+        run_dir = workspace.run_dir(run_ref)
     except (ManifestError, ValueError, OSError) as exc:
         # ManifestError is what `validate_run_id` actually raises, and it is NOT a ValueError.
         # Catching only ValueError let a traversal attempt escape as an unhandled exception —
@@ -113,7 +117,7 @@ def _safe_run_dir(workspace: Workspace, run_id: str) -> Path:
         # False, because the resolved path IS the target — the same mistake `graph.save` was
         # shipping until 0.6.0.
         raise EvidenceUnavailable(
-            f"no such run in this workspace: {run_id!r}",
+            f"no such run in this workspace: {run_ref!r}",
             public_reason="no such run in this workspace",
         )
     return run_dir

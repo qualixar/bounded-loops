@@ -44,6 +44,10 @@ read-only. Neither takes a secret.
 records its own name in its receipts and lives in a directory that may be named something else.
 Pass `run_ref` back to fetch; use `run_id` when you mean the run itself.
 
+`bl_graph_evidence` takes **`run_ref`**. Until 0.6.3 its published schema named that argument
+`run_id`, so a consumer reading the schema would pass the identity and get a refusal — the
+tool did the right thing under the wrong name.
+
 ## The document
 
 ```json
