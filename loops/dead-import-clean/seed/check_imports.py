@@ -85,6 +85,16 @@ def check(module_path: str) -> int:
     imports = _collect_imports(tree)
     used = _collect_used_names(tree)
 
+    # "Every import is referenced" holds vacuously for a module with no imports, so emptying the
+    # file passed this gate. The loop asks for unused imports to be REMOVED, not for the module to
+    # be. Found by the held-out mutant corpus.
+    if not imports:
+        print(
+            "check_imports: no imports found. A module with nothing imported satisfies "
+            "'every import is referenced' vacuously — remove the unused imports, not the module."
+        )
+        return 1
+
     unused = sorted(
         ((name, line) for name, line in imports.items() if name not in used),
         key=lambda pair: pair[1],

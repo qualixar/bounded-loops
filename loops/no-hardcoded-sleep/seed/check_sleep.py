@@ -51,6 +51,21 @@ def check(sample_path: str) -> int:
         print(f"check_sleep: cannot run: {exc}", file=sys.stderr)
         return 2
 
+    # "No hardcoded sleeps in test code" is satisfied by having no test code, so an emptied file
+    # passed. Deleting the tests removes the sleeps and the coverage together, which is not the
+    # fix this loop asks for. Found by the held-out mutant corpus.
+    tests_found = sum(
+        1 for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+    )
+    if tests_found == 0:
+        print(
+            "check_sleep: no test_* functions found. A module with no test code has no hardcoded "
+            "sleeps only vacuously — replace the sleeps, do not delete the tests."
+        )
+        return 1
+
     hits = _find_sleep_calls(tree)
 
     if hits:

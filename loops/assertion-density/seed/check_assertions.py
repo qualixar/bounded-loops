@@ -48,6 +48,21 @@ def check(sample_path: str) -> int:
         print(f"check_assertions: cannot run: {exc}", file=sys.stderr)
         return 2
 
+    # "Every test_* function contains an assert" is satisfied by a file containing no test_*
+    # functions at all — vacuous truth, and the gate used to report it as a pass. Deleting the
+    # tests is the cheapest way to make this gate agree with you, and the exact opposite of what
+    # the loop asks for. Found by the held-out mutant corpus: empty and whitespace-only both passed.
+    tests_found = sum(
+        1 for node in ast.walk(tree)
+        if isinstance(node, _ANY_FUNC) and node.name.startswith("test_")
+    )
+    if tests_found == 0:
+        print(
+            "check_assertions: no test_* functions found. An empty module satisfies "
+            "'every test asserts something' vacuously — add assertions, do not remove the tests."
+        )
+        return 1
+
     assertion_free = _find_assertion_free(tree)
 
     if assertion_free:

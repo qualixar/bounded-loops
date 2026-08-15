@@ -65,14 +65,25 @@ def check(module_path: str) -> int:
         return 2
 
     violations: list[str] = []
+    public_functions = 0
     for node in tree.body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if node.name.startswith("_"):
             continue
+        public_functions += 1
         reasons = _missing_annotations(node)
         for reason in reasons:
             violations.append(f"'{node.name}' (line {node.lineno}): {reason}")
+
+    # No public functions means no unannotated ones, so an emptied module passed. Annotating the
+    # functions is the fix; deleting them is not. Found by the held-out mutant corpus.
+    if public_functions == 0:
+        print(
+            "check_types: no public functions found. A module with nothing to annotate satisfies "
+            "'every public function is annotated' vacuously — annotate them, do not remove them."
+        )
+        return 1
 
     if violations:
         print(f"check_types: {len(violations)} violation(s):")

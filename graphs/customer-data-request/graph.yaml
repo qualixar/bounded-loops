@@ -37,7 +37,7 @@ nodes:
     isolation: process_restricted
   - id: scan-exposure
     kind: loop
-    loop_package: "sha256:f71aeb9ca7c51a798ccdbaae72d02a55661347a1d467ad71f755af8621874904"
+    loop_package: "sha256:9e4af73c3f9034b9d1eb611172268eaab11b0a51271870e98a443517e42c4e0a"
     inputs: {}
     outputs:
       verdict: internal

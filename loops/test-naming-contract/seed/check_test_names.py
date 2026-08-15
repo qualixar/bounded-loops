@@ -60,6 +60,19 @@ def check(sample_path: str) -> int:
         print(f"check_test_names: cannot run: {exc}", file=sys.stderr)
         return 2
 
+    # A module with no functions has no misnamed ones, so emptying the file passed this gate.
+    # Renaming the tests is the fix; removing them is not. Found by the held-out mutant corpus.
+    functions_found = sum(
+        1 for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    if functions_found == 0:
+        print(
+            "check_test_names: no functions found. An empty module satisfies the naming contract "
+            "vacuously — rename the test functions, do not delete them."
+        )
+        return 1
+
     misnamed = _find_misnamed(tree)
 
     if misnamed:

@@ -15,7 +15,7 @@ connection_slots: []
 nodes:
   - id: pin-dependencies
     kind: loop
-    loop_package: "sha256:37f7babb849aeff2ce1f3d9235b3d874ea9c1946ab82f49b158a219cb9658edd"
+    loop_package: "sha256:eb65850837fccb8d611eff68c2df055878d04b55f0feac8ae95ef4ac958701e7"
     inputs: {}
     outputs:
       verdict: internal
@@ -48,7 +48,7 @@ nodes:
     isolation: process_restricted
   - id: scan-secrets
     kind: loop
-    loop_package: "sha256:f71aeb9ca7c51a798ccdbaae72d02a55661347a1d467ad71f755af8621874904"
+    loop_package: "sha256:9e4af73c3f9034b9d1eb611172268eaab11b0a51271870e98a443517e42c4e0a"
     inputs:
       source: internal
     outputs:

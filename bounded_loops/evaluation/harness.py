@@ -81,6 +81,28 @@ class MutantOutcome:
         return self.verdict in (VERDICT_PASSED, VERDICT_REJECTED)
 
 
+#: Gate commands that shell out to a tool this project does not ship. Their verdicts are that
+#: tool's behaviour, not this catalog's, so an alpha computed over them would attribute a third
+#: party's judgement to us.
+#:
+#: `content-fact-gate` is the concrete case: its gate is `npx markdown-link-check`, and an emptied
+#: article has no links for it to check, so it passes. That is a real property of delegating a gate
+#: to an external tool — and worth reporting as one — but it is not a defect we can fix by editing
+#: a checker, and counting it in alpha would be reporting someone else's vacuity as our own.
+#:
+#: The same loops are already skipped by the convergence suite for needing a binary or a network.
+_EXTERNAL_TOOL_PREFIXES = ("npx", "npm", "checkov", "osv-scanner", "semgrep", "trivy", "gitleaks")
+
+
+def uses_an_external_tool(loop_dir: Path) -> bool:
+    """Whether this loop's gate delegates to a tool this project does not ship."""
+    command = _gate_command(loop_dir)
+    if command is None:
+        return False
+    first_word = command.strip().split()[0] if command.strip() else ""
+    return first_word in _EXTERNAL_TOOL_PREFIXES
+
+
 def _gate_command(loop_dir: Path) -> str | None:
     """The loop's declared gate command, or None when it is not a `command` gate.
 
@@ -165,6 +187,101 @@ def establish_baseline(loop_dir: Path, *, into: Path, timeout_s: int = 180) -> P
         return None
     verdict, _detail = _run_gate(command, workspace)
     return workspace if verdict == VERDICT_PASSED else None
+
+
+def judges_artifact(loop_dir: Path, relative_path: str) -> bool:
+    """Whether the gate actually judges this file — decided from its own argv, before any verdict.
+
+    The destroying operators claim "an emptied artifact cannot satisfy the loop's stated purpose".
+    That holds only for the artifact under judgement. Two loops proved it:
+
+    * `test-presence-per-module` checks that each `src/<mod>.py` has a matching test file. Emptying
+      `src/a.py` leaves the test file exactly where it was, so the gate passed — correctly.
+    * `broken-internal-links` checks that every link resolves. Emptying one of two documents deletes
+      that document's links; it does not break any, so the gate passed — correctly.
+
+    Both were recorded as false accepts and both were mislabelled mutants. The gate was right each
+    time.
+
+    **This is not the generator peeking at the gate.** The filter is applied harness-side, uses only
+    the paths named in the gate's command line, and is decided before the gate runs — so it cannot
+    select for whether a mutant would be caught, which is the bias the blindness guard exists to
+    prevent. It excludes mutants that were never about the gate in the first place.
+
+    A file counts as judged when the command names it, or names a directory containing it.
+
+    **This is necessary and not sufficient**, and the shortfall is stated in
+    `tier1_claim_holds` below — being in scope does not make emptying it a violation.
+    """
+    import shlex
+
+    command = _gate_command(loop_dir)
+    if command is None:
+        return False
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+
+    target = Path(relative_path)
+    for word in argv[1:]:
+        if word.startswith("-"):
+            continue
+        named = Path(word)
+        if named == target or named in target.parents:
+            return True
+    return False
+
+
+#: Loops whose gate states a NEGATIVE requirement — "the artifact must NOT contain X". The
+#: destroying operators cannot make a certain claim about these, because an emptied artifact
+#: satisfies a prohibition **genuinely**: there is no secret in an empty file.
+#:
+#: The distinction the corpus rests on:
+#:
+#:   POSITIVE   "every dependency is pinned"      emptied ⇒ vacuous ⇒ INCORRECT   claim holds
+#:   NEGATIVE   "no hardcoded secrets"            emptied ⇒ satisfied            claim fails
+#:
+#: Discovered by trying to "fix" `secret-scan-keyless` and breaking it. A vacuity guard was added
+#: so the gate would reject an emptied config; it immediately failed a 0.6.2 regression pin, because
+#: `def f(password: str) -> None:` is a type annotation and this gate must pass it. The gate was
+#: right, the corpus was wrong, and the tempting move was to make the gate stricter than its stated
+#: purpose so a measurement would come out clean. That is the same error as loosening a gate to
+#: improve a number, and it is the one a corpus author is most likely to make.
+#:
+#: A negative requirement still deserves mutants — a secret ADDED back, in a shape the scanner
+#: misses. That is Tier 2: authored from the stated purpose, with the checker withheld.
+_NEGATIVE_REQUIREMENT_LOOPS = frozenset({"secret-scan-keyless"})
+
+
+def states_a_negative_requirement(loop_name: str) -> bool:
+    """Whether the destroying operators' claim is inapplicable to this loop."""
+    return loop_name in _NEGATIVE_REQUIREMENT_LOOPS
+
+
+def tier1_claim_holds(judged_artifacts: int) -> bool:
+    """Whether "emptied ⇒ incorrect" is certain for a loop with this many judged artifacts.
+
+    **It is certain only when the gate judges exactly ONE artifact.** With several, a requirement is
+    usually about the RELATION between them, and emptying one removes a subject of the requirement
+    instead of violating it:
+
+    * `test-presence-per-module` — "every src module has a test file". Empty `src/a.py` and the
+      module still has its test. The requirement holds.
+    * `broken-internal-links` — "every link resolves". Empty one of two documents and its links are
+      gone, not broken. The requirement holds.
+
+    Both gates were right; both mutants were mislabelled by me. The operator assumed that deleting
+    the subjects of a requirement violates it, when it can satisfy it **vacuously** — which is the
+    exact defect this corpus was built to find in gates, committed by the corpus itself. Recording
+    that plainly matters more than the twelve false accepts it costs: a method that cannot catch
+    its own instance of the bug it hunts is not a method anyone should trust.
+
+    Multi-artifact loops are not abandoned. They need a mutant that violates the RELATION — delete
+    the test file, break the link target — which requires knowing what the relation is, and that is
+    Tier 2: authored per loop from the stated purpose, with the checker withheld.
+    """
+    return judged_artifacts == 1
 
 
 def materialise(mutant: Mutant, *, baseline: Path, into: Path) -> Path:

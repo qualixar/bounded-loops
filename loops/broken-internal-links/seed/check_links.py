@@ -55,6 +55,7 @@ def check(content_dir: str) -> int:
         return 2
 
     violations: list[str] = []
+    links_examined = 0
     for md_file in md_files:
         try:
             text = md_file.read_text(encoding="utf-8")
@@ -68,9 +69,22 @@ def check(content_dir: str) -> int:
             target = _strip_anchor(raw_target)
             if not target:
                 continue
+            links_examined += 1
             resolved = (md_file.parent / target).resolve()
             if not resolved.is_file():
                 violations.append(f"{md_file.relative_to(root.parent)} -> {raw_target}")
+
+    # "Every relative internal link resolves" is satisfied by a document containing no links, so
+    # emptying, blanking, truncating or overwriting the content all passed this gate. Fixing the
+    # broken links is the task; deleting them is not. Found by the held-out mutant corpus, which
+    # got eight false accepts out of this one loop.
+    if links_examined == 0:
+        print(
+            "check_links: no relative internal links found in any markdown file. A document with "
+            "no links satisfies 'every link resolves' vacuously — repair the links, do not "
+            "remove them."
+        )
+        return 1
 
     if violations:
         print(f"check_links: {len(violations)} broken internal link(s):")

@@ -21,12 +21,17 @@ from bounded_loops.evaluation.operators import destroying, preserving
 #: `(path, text) -> mutations`. Deterministic and side-effect free: no clock, no RNG, no I/O.
 Operator = Callable[[str, str], list[Mutation]]
 
-#: Applied to every mutable artifact whatever its type.
+#: Applied to every mutable artifact whatever its type. Each carries a claim that holds regardless
+#: of the artifact's structure, which is what lets the label be certain without reading a gate.
+#:
+#: `destroying.truncate_to_first_line` is deliberately ABSENT. Its claim — incomplete therefore
+#: incorrect — fails for homogeneous lists, where every prefix of a valid list is valid. It stayed
+#: registered long enough to record one false accept against `conventional-commits` that was
+#: really a mislabelled mutant. See its docstring.
 UNIVERSAL: tuple[Operator, ...] = (
     destroying.empty_file,
     destroying.whitespace_only,
     destroying.filler_text,
-    destroying.truncate_to_first_line,
 )
 
 #: Applied only where a parser can prove the edit preserving.

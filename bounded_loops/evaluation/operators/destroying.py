@@ -88,11 +88,33 @@ def filler_text(path: str, text: str) -> list[Mutation]:
 
 
 def truncate_to_first_line(path: str, text: str) -> list[Mutation]:
-    """Keep only the first line.
+    """Keep only the first line. **WITHDRAWN from the corpus — see below.**
 
-    The partial case, and the most realistic of the four: a truncated write, an interrupted
-    generation, a file cut off mid-document. Requires at least two non-blank lines, or it is not a
-    truncation.
+    Still here, still tested, and deliberately not registered in `operators.UNIVERSAL`.
+
+    **Why it was withdrawn.** Its claim was "a truncated artifact is incomplete, therefore
+    incorrect". The first half is true and the second does not follow. For a *homogeneous list* —
+    commit subjects, dependency pins, one requirement per line — every prefix of a valid list is
+    itself a valid list. `conventional-commits` was recorded as a false accept when its truncated
+    file kept exactly one line, and that line was a perfectly well-formed conventional commit. The
+    gate was right and the label was wrong.
+
+    That direction of error matters more than the reverse. A mislabelled INCORRECT mutant inflates
+    the false-accept rate, which makes the product look worse and the measurement look better —
+    the error nobody has an incentive to catch. The preserving operators verify their own edits for
+    exactly this reason, and an operator that cannot make its label certain does not belong in a
+    corpus whose entire method is ground-truth-by-construction.
+
+    Deciding WHEN truncation breaks a required structure needs to know what structure is required,
+    which is knowledge of the gate — the one thing the generator may not have. So this cannot be
+    rescued by making it cleverer; it is the wrong shape for a blind operator.
+
+    Where truncation did find real defects — a document truncated past its required sections, a
+    brief truncated past its citations — `empty_file`, `whitespace_only` and `filler_text` catch
+    the same gates, because those claims hold whatever the artifact's structure is.
+
+    Reinstating it would need a per-artifact argument for why truncation must break that artifact,
+    and that argument is Tier 2 work, authored per loop from the stated purpose.
     """
     lines = [line for line in text.splitlines() if line.strip()]
     if len(lines) < 2:

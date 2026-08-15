@@ -117,7 +117,7 @@ version: "1.0.0"
 nodes:
   - id: only
     kind: loop
-    loop_package: "sha256:e342bf11a78e398aec751de42280307e9e880af4f0973fbee187621334df6b04"
+    loop_package: "__LOOP_PACKAGE_DIGEST__"
     inputs: {}
     outputs: {verdict: internal}
     budget: {max_attempts: 1, max_wallclock_s: 60}
@@ -140,10 +140,19 @@ def test_a_loop_whose_isolation_cannot_be_DELIVERED_never_starts(tmp_path: Path,
     much running in a sandbox. Two questions, one predicate.
     """
     from bounded_loops.graph.graph_composition import execute_graph_run
+    from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
+
+    # Resolved at run time rather than pinned. WHICH loop this is does not matter — the test needs
+    # any ADMITTED package, so that admission passes and the run reaches the isolation check it is
+    # actually about. A hardcoded digest made this test fail every time any loop's checker changed,
+    # refusing the run at package admission for a reason the assertion below does not describe.
+    admitted = sorted(admitted_loop_package_digests())
+    assert admitted, "no admitted loop packages; this test cannot reach the isolation check"
+    manifest = _UNDELIVERABLE_ISOLATION.replace("__LOOP_PACKAGE_DIGEST__", admitted[0])
 
     out_dir = tmp_path / "run"
     rc = execute_graph_run(
-        manifest_text=_UNDELIVERABLE_ISOLATION, manifest_suffix=".yaml",
+        manifest_text=manifest, manifest_suffix=".yaml",
         connections_raw=[], node_prompts={}, out_dir=out_dir, run_id="run-1",
     )
     output = capsys.readouterr()

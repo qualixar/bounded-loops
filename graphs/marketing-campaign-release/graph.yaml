@@ -26,7 +26,7 @@ nodes:
     isolation: process_restricted
   - id: check-reading-level
     kind: loop
-    loop_package: "sha256:7b74557465af3224c92fa5a4500c7b8b316e99e6f0cecfd6cfaae32bd055f1df"
+    loop_package: "sha256:af3c8d32036a7f8ccff2d48fede4bda93fa9e6d82c7f35265acafc45974afa44"
     inputs: {}
     outputs:
       verdict: internal
@@ -48,7 +48,7 @@ nodes:
     isolation: process_restricted
   - id: map-claim-sources
     kind: loop
-    loop_package: "sha256:fcea0fdf9966e67ea8b9363091549a04a77cd4589e30af32a0082fd29f23bd5a"
+    loop_package: "sha256:0e2a37de06e9fbe1926966dbbcca8d0df5b6a71dcbff44f2ac272842233fcc66"
     inputs:
       source: internal
     outputs:

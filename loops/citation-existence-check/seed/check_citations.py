@@ -124,6 +124,18 @@ def check(doc_path: str, reporter_path: str) -> int:
             "this citation cannot be verified against any real case",
         ))
 
+    # "Every citation resolves to a real case" is satisfied by a brief containing no citations, so
+    # emptying, blanking, truncating or overwriting the document all passed. Replacing an invented
+    # citation with a real one is the task; deleting the citations is not. Found by the held-out
+    # mutant corpus.
+    citations_seen = len(cite_re.findall(text)) + sum(1 for _ in _ANY_CITATION_RE.finditer(text))
+    if citations_seen == 0:
+        print(
+            "check_citations: no citations found. A document that cites nothing satisfies "
+            "'every citation resolves' vacuously — correct the citations, do not remove them."
+        )
+        return 1
+
     if violations:
         print(f"check_citations: {len(violations)} unverified citation(s):")
         for citation, reason in violations:

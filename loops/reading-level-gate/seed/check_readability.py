@@ -27,6 +27,12 @@ from pathlib import Path
 
 MAX_AVG_WORDS_PER_SENTENCE = 25
 
+#: Fewest sentences over which this gate is willing to call an average a reading level. Three is
+#: not a statistical threshold — no threshold makes a tiny sample informative — it is a floor that
+#: stops the most misleading kind of pass, where a post replaced by one short line scores well
+#: because there is nothing left to score.
+_MIN_SENTENCES_TO_JUDGE = 3
+
 _SENTENCE_END_RE = re.compile(r"[.!?]+")
 
 
@@ -57,6 +63,22 @@ def check(post_path: str) -> int:
     if not sentences:
         print(f"check_readability: no prose sentences found in {post_path}", file=sys.stderr)
         return 2
+
+    # An average over one or two sentences is not an average. The held-out mutant corpus replaced
+    # the whole post with "lorem ipsum dolor sit amet" — a single five-word sentence — and this
+    # gate passed it, because five is comfortably under the limit. The arithmetic was right and
+    # the judgement was empty: there was no prose left to assess.
+    #
+    # This is a MINIMUM-EVIDENCE rule, the same discipline gate_metrics applies when it refuses to
+    # report a rate from too small a sample. Below this floor the honest answer is "cannot judge",
+    # not "passes".
+    if len(sentences) < _MIN_SENTENCES_TO_JUDGE:
+        print(
+            f"check_readability: only {len(sentences)} sentence(s) found — too little prose to "
+            f"assess reading level. An average over fewer than {_MIN_SENTENCES_TO_JUDGE} sentences "
+            "is not a reading level; shorten the sentences, do not delete the post."
+        )
+        return 1
 
     word_counts = [len(s.split()) for s in sentences]
     total_words = sum(word_counts)

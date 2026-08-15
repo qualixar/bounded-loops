@@ -47,6 +47,7 @@ _ASSIGNMENT_RE = re.compile(
 )
 
 
+
 def check(path: str) -> int:
     try:
         text = Path(path).read_text(encoding="utf-8")
@@ -82,6 +83,19 @@ def check(path: str) -> int:
             print(f"  - {f}")
         return 1
 
+    # NO vacuity guard here, deliberately — one was added and reverted the same hour.
+    #
+    # The mutant corpus reports an emptied config as a false accept, and that report is wrong. This
+    # gate states a NEGATIVE requirement: the file must not contain a hardcoded secret. An empty
+    # file satisfies that genuinely, not vacuously — there is no secret in it. The corpus's
+    # destroying operators assume "emptied therefore incorrect", which holds for POSITIVE
+    # requirements ("every dependency is pinned", "every module has a test") and does not hold here.
+    #
+    # The guard that was tried counted `name = value` / `name: value` lines and rejected a file
+    # with none. It immediately failed a 0.6.2 regression pin: `def f(password: str) -> None:` is a
+    # type annotation in a source file, not configuration, and this gate must pass it. Making a
+    # gate stricter than its stated purpose to satisfy a measurement is the same error as loosening
+    # one to make a number look good.
     print("check_secrets: no hardcoded secrets found")
     return 0
 

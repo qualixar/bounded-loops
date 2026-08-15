@@ -44,6 +44,16 @@ def check(article_path: str, sources_path: str) -> int:
     cited = sorted({f"S{n}" for n in _CITE_RE.findall(text)}, key=lambda s: int(s[1:]))
     violations = [cite for cite in cited if cite not in known_ids]
 
+    # "Every citation resolves to a real source" holds vacuously for an article that cites nothing,
+    # so emptying, blanking, truncating or overwriting it all passed. Mapping each claim to a real
+    # source is the task; removing the claims is not. Found by the held-out mutant corpus.
+    if not cited:
+        print(
+            "check_claims: no citations found. An article with no sourced claims satisfies "
+            "'every claim maps to a source' vacuously — cite the sources, do not drop the claims."
+        )
+        return 1
+
     if violations:
         print(f"check_claims: {len(violations)} citation(s) not found in sources.json:")
         for v in violations:
