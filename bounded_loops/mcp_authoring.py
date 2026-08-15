@@ -204,8 +204,14 @@ def register(mcp: object) -> None:
         derived from the run, never from your arguments, so a model cannot attribute a decision to
         someone. Be aware of what the receipt therefore records — on a local run the actor is the
         run's ORGANIZATION, not a named person, which is the same attribution `bl graph approve`
-        produces. An approval authorizes only the effects the node declares; one declaring no
-        effects authorizes nothing."""
+        produces.
+
+        An approval authorizes every effect reachable DOWNSTREAM of it, not just the effects
+        declared on the approval node itself. That is what the recorded grant contains, and it
+        is the only sane reading: a gate exists to release what follows it. So an approval
+        declaring no effects of its own is NOT inert — approving a bare gate in front of a
+        publish authorizes that publish. Call this with confirm=false first; the preview names
+        the effects and flags the ones that cannot be undone."""
         return _mutate(
             run,
             lambda facade, payload: _graph_approve_handler(
@@ -437,8 +443,9 @@ _DEFAULTS_EXPLANATION = (
     "Unstated required fields were filled at the safe end of their range: one attempt, a 300s "
     "deadline, NO declared effects, workspace_only isolation, fail_closed, and no repair budget. "
     "Widen each one deliberately. In particular, effects default to empty because a declared "
-    "effect is a grant of authority — an approval node declaring no effects authorizes nothing, "
-    "and that is the correct starting point."
+    "effect is a grant of authority, and the narrowest declaration is the correct starting "
+    "point. Note this does NOT make an approval node inert: approving a gate releases every "
+    "effect reachable downstream of it, whatever the gate itself declares."
 )
 
 

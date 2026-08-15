@@ -164,3 +164,39 @@ def test_a_manifest_that_is_not_a_graph_yields_no_questions_rather_than_crashing
     """It runs on drafts the compiler would refuse — that is when it is needed most."""
     assert interview({}) == () or all(q.node_id is None for q in interview({}))
     assert interview({"nodes": "not a list", "policies": None}) is not None
+
+
+def test_an_UNGATED_publish_is_a_high_question() -> None:
+    """The one class of graph this question exists for was the one it skipped.
+
+    `_IRREVERSIBLE` was {irreversible, financial}, which excludes `external_write` — the effect
+    every shipped publish graph declares. So a graph whose only side-effecting node published to
+    the outside world, with no approval in front of it, was never flagged.
+    """
+    draft = {
+        "api_version": "bounded-loops.dev/graph/v1",
+        "graph_id": "no-gate", "version": "1.0.0",
+        "connection_slots": [], "edges": [], "policies": {"fail_mode": "halt"},
+        "nodes": [{
+            "id": "pub", "kind": "publish", "inputs": {}, "outputs": {},
+            "budget": {"max_attempts": 1, "max_wallclock_s": 60},
+            "effects": ["external_write"], "isolation": "workspace_only",
+        }],
+    }
+
+    document = interview_document(draft)
+
+    assert "approval:pub" in document["must_ask"], (
+        "a publish with nothing gating it is not flagged as needing a human"
+    )
+
+
+def test_the_interview_and_the_confirm_screen_agree_on_what_is_irreversible() -> None:
+    """Two hand-maintained copies of this set is how they disagreed in the first place."""
+    from bounded_loops.graph.application.interview import _IRREVERSIBLE
+    from bounded_loops.graph.domain.authoring import EFFECTS_THAT_CANNOT_BE_UNDONE
+    from bounded_loops.graph.monitor.api import _CANNOT_BE_UNDONE
+
+    expected = frozenset(effect.value for effect in EFFECTS_THAT_CANNOT_BE_UNDONE)
+    assert _IRREVERSIBLE == expected
+    assert _CANNOT_BE_UNDONE == expected

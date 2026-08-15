@@ -24,7 +24,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from bounded_loops.graph.domain.authoring import NETWORK_EFFECTS, Effect
+from bounded_loops.graph.domain.authoring import (
+    EFFECTS_THAT_CANNOT_BE_UNDONE,
+    NETWORK_EFFECTS,
+    Effect,
+)
 
 
 @dataclass(frozen=True)
@@ -53,7 +57,14 @@ _MEDIUM = "medium"
 _LOW = "low"
 
 _EFFECTFUL = frozenset(effect.value for effect in NETWORK_EFFECTS)
-_IRREVERSIBLE = frozenset({Effect.IRREVERSIBLE.value, Effect.FINANCIAL.value})
+#: Effects that make "is there an approval in front of this?" the headline question.
+#:
+#: Taken from the domain rather than hand-listed. It used to be {irreversible, financial}
+#: only, which excluded `external_write` — the effect every shipped publish graph declares —
+#: so an author whose only side-effecting node published to the outside world was never asked
+#: whether a human should see it first. The one class of graph this question exists for was the
+#: one class it skipped.
+_IRREVERSIBLE = frozenset(effect.value for effect in EFFECTS_THAT_CANNOT_BE_UNDONE)
 
 
 def interview(manifest: Mapping[str, Any]) -> tuple[Question, ...]:

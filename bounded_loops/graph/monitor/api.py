@@ -458,7 +458,21 @@ def _start_run_thread(*, manifest_text: str, out_dir: Path) -> str | None:
                 pass
 
     try:
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # exist_ok=False, deliberately. A minted run name carries 24 bits of randomness inside a
+        # one-second stamp, so two confirms in the same second can collide. With exist_ok=True
+        # that collision was silent: both callers got started:true for the same directory, the
+        # second controller raised "fresh controller refuses to resume a non-empty graph stream"
+        # inside its daemon thread where nothing read the return value, and both HTTP callers
+        # then watched the FIRST run's receipts believing they were their own.
+        #
+        # Rare is not the same as impossible, and a run that reports started when it did not
+        # start is precisely the claim this engine exists to prevent.
+        out_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        return (
+            f"a run directory named {out_dir.name} already exists — this is a name collision, "
+            "not a failure of the graph. Try again."
+        )
     except OSError as exc:
         return f"cannot create {out_dir}: {exc}"
     threading.Thread(target=_run, name=f"bl-run-{out_dir.name}", daemon=True).start()
