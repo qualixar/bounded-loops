@@ -317,6 +317,16 @@ export function ConfigPanel({
 
   const projNode  = projection?.nodes?.find(n => n.node_id === selectedNodeId);
   const planNode  = planNodes?.find(n => (n.node_id ?? n.id) === selectedNodeId);
+
+  // A selected id that resolves to no node in the graph currently on screen is stale — it came
+  // from a different run or a different saved graph. Treated as no selection at all rather than
+  // rendered as a mostly-empty card headed with a node name this graph does not contain.
+  // Clearing the id at the source is the actual fix; this makes the panel unable to lie even if
+  // a future path forgets to, which is how the last one happened.
+  const graphIsLoaded = Boolean(projection?.nodes?.length || planNodes?.length);
+  const selectionIsStale = Boolean(selectedNodeId) && graphIsLoaded && !projNode && !planNode;
+  const shownNodeId = selectionIsStale ? null : selectedNodeId;
+
   const nodeKind  = projNode?.kind ?? planNode?.kind ?? '';
   const nodeState = projNode?.state ?? (planNode ? 'PENDING' : null);
   const nodeFields = forms?.nodes?.[nodeKind] ?? null;
@@ -354,16 +364,16 @@ export function ConfigPanel({
       <div className="col-hdr">
         <div className="col-hdr-label">
           <span>Configure</span>
-          ${selectedNodeId ? html`
+          ${shownNodeId ? html`
             <span className="mono dim" style=${{ fontSize: 'var(--t-xs)' }}>
-              ${selectedNodeId}
+              ${shownNodeId}
             </span>` : null}
         </div>
       </div>
 
       <div className="col-body">
 
-        ${!selectedNodeId ? html`
+        ${!shownNodeId ? html`
           <div className="panel-empty">
             Select a node in the graph to inspect and configure it.
           </div>` : html`
@@ -374,7 +384,7 @@ export function ConfigPanel({
               <div className="ev-section-title">Node</div>
               <div className="ev-row">
                 <span className="ev-key">id</span>
-                <span className="ev-val">${selectedNodeId}</span>
+                <span className="ev-val">${shownNodeId}</span>
               </div>
               ${nodeKind ? html`
                 <div className="ev-row">

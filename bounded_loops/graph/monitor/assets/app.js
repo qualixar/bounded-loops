@@ -115,6 +115,11 @@ function App() {
   // ── SSE: live run projection ─────────────────────────────────────────────────
   useEffect(() => {
     if (esRef.current) { esRef.current.close(); esRef.current = null; }
+    // A node id belongs to ONE graph. Carrying it across a run switch left the panel headed
+    // "CONFIGURE CHECK-TESTS-EXIST" while the graph on screen had no such node — evidence from
+    // one run presented against another. onLoadGraph already cleared this when switching saved
+    // graphs, with a comment saying why; the run path simply never did the same thing.
+    setSelectedNodeId(null);
     if (!selectedRun) { setProjection(null); return; }
 
     setLoad('run', true);

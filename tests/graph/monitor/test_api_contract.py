@@ -181,3 +181,53 @@ def test_the_undoable_list_is_taken_from_the_DOMAIN_not_hand_written() -> None:
     assert "workspace_write" not in api._CANNOT_BE_UNDONE, (
         "a local workspace write IS undoable; warning about it trains people to ignore warnings"
     )
+
+
+# ── the UI must not show a node from a different graph ───────────────────────
+
+
+def test_switching_runs_CLEARS_the_selected_node() -> None:
+    """Found while screenshotting the monitor for the release.
+
+    Select a node in run A, click run B, and the Configure panel stayed headed
+    "CONFIGURE CHECK-TESTS-EXIST" — a node that does not exist in run B's graph. Evidence from
+    one run rendered against another, which is the defect class this whole engine is about.
+
+    `onLoadGraph` already cleared the selection when switching SAVED GRAPHS, with a comment
+    saying why. The run path never did the same thing: one way in was guarded, the other was
+    not. Asserted at the source because the behaviour lives in the browser.
+    """
+    from pathlib import Path
+
+    app_js = (
+        Path(__file__).resolve().parents[3]
+        / "bounded_loops" / "graph" / "monitor" / "assets" / "app.js"
+    ).read_text(encoding="utf-8")
+
+    run_effect = app_js.split("// ── SSE: live run projection", 1)[1].split("}, [selectedRun]);", 1)[0]
+
+    assert "setSelectedNodeId(null)" in run_effect, (
+        "changing the selected run no longer clears the selected node; the Configure panel "
+        "will show a node belonging to the previous run's graph"
+    )
+
+
+def test_the_configure_panel_REFUSES_to_render_a_node_the_graph_lacks() -> None:
+    """Defence in depth for the same defect.
+
+    Clearing at the source is the fix. This makes the panel structurally unable to name a node
+    the loaded graph does not contain, so the next path that forgets to clear cannot reproduce
+    the bug — the first one only happened because a single guard was assumed to be enough.
+    """
+    from pathlib import Path
+
+    columns_js = (
+        Path(__file__).resolve().parents[3]
+        / "bounded_loops" / "graph" / "monitor" / "assets" / "columns.js"
+    ).read_text(encoding="utf-8")
+
+    assert "selectionIsStale" in columns_js
+    assert "const shownNodeId = selectionIsStale ? null : selectedNodeId;" in columns_js
+    # The rendered header must read the RESOLVED id, never the raw prop.
+    header = columns_js.split("<span>Configure</span>", 1)[1][:400]
+    assert "shownNodeId" in header and "${selectedNodeId}" not in header
