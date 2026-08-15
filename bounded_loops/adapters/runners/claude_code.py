@@ -1,7 +1,6 @@
 """
-ClaudeCodeRunner — invokes `claude -p --output-format json --bare`, parsing
-the JSON payload for real cost tracking instead of ShellRunner's tokens=0
-guess.
+ClaudeCodeRunner — invokes `claude -p --output-format json`, parsing the JSON
+payload for real cost tracking instead of ShellRunner's tokens=0 guess.
 
 RESOLVED 2026-07-06: confirmed against
 the real `claude` binary (v2.1.168), not guessed. A real invocation with
@@ -14,15 +13,32 @@ This confirms `total_cost_usd` and `session_id` genuinely are top-level
 JSON keys, exactly as this module assumed. No other field name should be
 assumed present beyond what's quoted above without a similar real check.
 
-REAL LIMITATION (discovered by the same check, not previously documented):
-`--bare` mode strictly requires `ANTHROPIC_API_KEY` or `apiKeyHelper` — it
-never reads OAuth or keychain credentials (this is `claude --help`'s own
-documented behavior for `--bare`, confirmed live). A user who only ran
-`claude login` interactively (the common individual-user setup, e.g. a
-Claude subscription with no separate API key) will hit the "Not logged
-in" result above on their very first `--runner claude-code` attempt. This
-is a real prerequisite, not a bug — document it wherever `--runner
-claude-code` usage is described (README, `bl new`/`bl run --help` output).
+`--bare` REMOVED 2026-08-16, and the paragraph that used to stand here was
+WRONG. It read: "`--bare` mode strictly requires `ANTHROPIC_API_KEY` ... This is
+a real prerequisite, not a bug — document it wherever `--runner claude-code`
+usage is described." Both halves fail:
+
+* **It was a bug, and an unconditional one.** `ENV_ALLOWLIST` is
+  ``{PATH, HOME, LANG, LC_ALL, TMPDIR, SHELL}``, so `ANTHROPIC_API_KEY` never
+  reaches this subprocess at all unless a loop DECLARES it via
+  ``env_passthrough`` *and* the operator allows it. No shipped loop declares
+  any passthrough and none names that variable. So the flag this runner always
+  passed required a credential this runner could never deliver: every
+  `--runner claude-code` attempt against a shipped loop returned
+  ``is_error: true`` with zero tokens and zero cost, for every user.
+* **The alternative was never tried.** Probed live on 2026-08-16 with
+  `ANTHROPIC_API_KEY` unset — the ordinary subscription setup. WITH `--bare`:
+  ``is_error: true``, usage all zeros. WITHOUT it, same prompt, same host:
+  ``is_error: false``, ``input_tokens 2``, ``cache_creation_input_tokens
+  46749``, ``output_tokens 4``, ``total_cost_usd 0.2811``. The graph-side
+  connector (``graph/adapters/connectors/local_cli_worker.py``) had been
+  invoking it the working way since it shipped.
+
+The conclusion was drawn from `claude --help` instead of from running the
+alternative. It is recorded rather than deleted because the failure mode
+generalises: a limitation inferred from documentation, written down as a
+property of the world, and then relied upon. HOME is allowlisted, so the
+subscription login under ``~/.claude`` is reachable and needs no key.
 
 The non-zero exit code / `is_error: true` case is intentionally NOT
 raised as a RunnerError here, consistent with ShellRunner's own
@@ -36,10 +52,12 @@ Bound #7 (token budget) is REAL for this runner (2026-07-06): the JSON
 payload's `usage` block carries input_tokens/output_tokens (+ cache token
 fields), confirmed present in the real binary's output above; run_once sums
 them into RunResult.tokens, which BudgetMeter.spend() accumulates and enforces
-against bounds.max_tokens. (shell/antigravity genuinely cannot report tokens —
-no structured output — and codex's usage schema is not yet verified against a
-real binary; those remain tokens=0, an honest tool limitation documented as
-such, not a silent gap.)
+against bounds.max_tokens. (shell genuinely cannot report tokens — no
+structured output — and codex was re-probed live on 2026-08-15 and again on
+2026-08-16: it emits plain text with no JSON anywhere, so it is unmetered by
+measurement rather than by assumption. Both remain tokens=0, an honest tool
+limitation documented as such, not a silent gap. `antigravity` no longer
+belongs in that list — see its own module.)
 """
 
 from __future__ import annotations
@@ -123,9 +141,11 @@ def _workspace_changed(workspace: Path) -> bool:
 
 class ClaudeCodeRunner:
     """
-    Invokes `claude -p --output-format json --bare [session flags]`,
-    parsing the JSON payload for real cost tracking instead of ShellRunner's
-    tokens=0 guess.
+    Invokes `claude -p --output-format json`, parsing the JSON payload for real
+    cost tracking instead of ShellRunner's tokens=0 guess.
+
+    No `--bare`: it requires an API key that ``ENV_ALLOWLIST`` never forwards,
+    so it authenticated for nobody. See the module docstring.
     """
 
     def __init__(self, agent_cmd: str = "claude", timeout_s: int = 300,
@@ -136,7 +156,7 @@ class ClaudeCodeRunner:
 
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
         prompt_text = _build_prompt(spec, ctx)
-        argv = shlex.split(self.agent_cmd) + ["-p", "--output-format", "json", "--bare"]
+        argv = shlex.split(self.agent_cmd) + ["-p", "--output-format", "json"]
         env = _build_subprocess_env({**ctx.env, **self.extra_env})
         try:
             completed = ProcessTurn.start(

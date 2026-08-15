@@ -21,9 +21,33 @@ from __future__ import annotations
 import os
 from typing import Mapping
 
-# The six variables a subprocess genuinely needs. NEVER widen this without a
+# The variables a subprocess genuinely needs. NEVER widen this without a
 # security review — every entry is a potential exfiltration channel.
-ENV_ALLOWLIST = frozenset({"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SHELL"})
+#
+# ``USER`` added 2026-08-16 after bisecting a live failure, and it is the one
+# entry here that deserves its reasoning written down rather than assumed.
+#
+# SYMPTOM: on a host whose agent CLI is under enterprise-managed settings, every
+# CLI runner returned EMPTY stdout and ``tokens=0``. The loop then burned its
+# whole ``max_iterations`` budget making no progress, and reported HALT — a
+# perfectly well-behaved bound doing exactly the wrong thing, because the agent
+# had never run at all. Nothing in the receipt log said why.
+#
+# CAUSE: with this allowlist applied, the CLI printed "Your organization
+# requires remote managed settings to load, but they could not be loaded."
+# Bisected one variable at a time against the real binary: ``USER`` alone
+# restores it (``is_error: false``, real usage, real cost); ``LOGNAME`` alone
+# does NOT. Only ``USER`` is added, because only ``USER`` was shown to be needed.
+#
+# SECURITY ARGUMENT, since this is the primary exfiltration defense: ``USER``
+# carries the OS account name and nothing else — it is not a credential and
+# matches no ``SENSITIVE_ENV_MARKERS`` pattern. It also discloses nothing the
+# child does not already hold: ``HOME`` has been on this list since it was
+# written, and on every supported platform ``HOME`` contains the same account
+# name as its final path component. So this widens the identity surface by
+# zero. That argument is the bar for any future addition here; "the tool seems
+# to want it" is not.
+ENV_ALLOWLIST = frozenset({"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SHELL", "USER"})
 SENSITIVE_ENV_MARKERS = (
     "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "API_KEY", "AUTH",
 )

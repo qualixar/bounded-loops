@@ -128,8 +128,42 @@ def test_run_once_builds_argv_with_output_format_json(tmp_path):
         runner = ClaudeCodeRunner(agent_cmd="claude")
         runner.run_once(_spec(), _ctx(tmp_path))
     argv = mock_start.call_args.args[0]
-    assert argv == ["claude", "-p", "--output-format", "json", "--bare"]
+    assert argv == ["claude", "-p", "--output-format", "json"]
     assert mock_start.call_args.kwargs["input_text"].startswith("# Goal")
+
+
+def test_run_once_never_passes_bare(tmp_path):
+    """`--bare` requires a credential this runner structurally cannot deliver.
+
+    INVERTED, not deleted, on 2026-08-16. This assertion used to REQUIRE
+    ``--bare`` in the argv, and so pinned the defect in place: ``ENV_ALLOWLIST``
+    is ``{PATH, HOME, LANG, LC_ALL, TMPDIR, SHELL}``, so ``ANTHROPIC_API_KEY``
+    never reaches the subprocess, and no shipped loop declares an
+    ``env_passthrough`` that would carry it. Every ``--runner claude-code``
+    attempt therefore came back ``is_error: true`` with zero tokens and zero
+    cost — for every user, not only for those without an API key.
+
+    Probed live the same day with the key unset: WITHOUT ``--bare`` the same
+    prompt returns ``is_error: false`` and real usage. HOME is allowlisted, so
+    the subscription login is reachable and no key is needed.
+
+    The guard still points at whichever direction is currently the lie.
+    """
+    with patch("bounded_loops.adapters.runners.claude_code.ProcessTurn.start", return_value=_fake_turn(stdout="{}")) as mock_start:
+        ClaudeCodeRunner(agent_cmd="claude").run_once(_spec(), _ctx(tmp_path))
+    assert "--bare" not in mock_start.call_args.args[0]
+
+
+def test_anthropic_api_key_is_not_forwarded_so_bare_could_never_authenticate(tmp_path, monkeypatch):
+    """The premise of the inverted guard above, asserted rather than asserted-about.
+
+    If this ever fails, ``--bare`` became deliverable and the reasoning in
+    ``test_run_once_never_passes_bare`` needs revisiting rather than trusting.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+    with patch("bounded_loops.adapters.runners.claude_code.ProcessTurn.start", return_value=_fake_turn(stdout="{}")) as mock_start:
+        ClaudeCodeRunner().run_once(_spec(), _ctx(tmp_path))
+    assert "ANTHROPIC_API_KEY" not in mock_start.call_args.kwargs["env"]
 
 
 def test_run_once_extra_env_merged_into_subprocess_env(tmp_path, monkeypatch):

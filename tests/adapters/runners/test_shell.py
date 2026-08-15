@@ -11,6 +11,7 @@ or explicitly passed via ctx.env.
 
 import pytest
 
+from bounded_loops.adapters._env import ENV_ALLOWLIST
 from bounded_loops.adapters.runners.shell import ShellRunner, _build_subprocess_env
 from bounded_loops.domain.errors import RunnerError
 from bounded_loops.domain.models import LoopContext, Rung, Spec
@@ -134,4 +135,10 @@ def test_build_subprocess_env_only_allowlisted_keys_plus_ctx_env(monkeypatch):
     assert "MY_SUPER_SECRET_API_KEY" not in env
     assert env.get("PATH") == "/usr/bin"
     assert env.get("EXTRA") == "value"
-    assert set(env.keys()) <= {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SHELL", "EXTRA"}
+    # Imported, not re-typed. This assertion used to spell the six names out, so
+    # it was a SECOND copy of the allowlist in a module whose entire purpose is
+    # that there be exactly one — and it failed the moment `USER` was added
+    # (2026-08-16) for a reason that had nothing to do with what it guards.
+    # What it actually protects is "nothing beyond the allowlist plus ctx_env",
+    # and that is what it now says.
+    assert set(env.keys()) <= (ENV_ALLOWLIST | {"EXTRA"})
