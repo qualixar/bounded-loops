@@ -76,9 +76,26 @@ script that mechanically checks a fact, without an LLM in the loop.
 **pytest** — for loops whose done-condition is "the test suite passes."
 Set `gate.kind: pytest`; `PytestGate` runs `pytest -q` in the workspace,
 treating exit 1 (some tests failed) as a normal `Verdict(passed=False)` and
-exit codes 2-5 (interrupted, internal error, usage error, no tests
-collected) as a `GateError` — the gate couldn't run at all, a different
-failure mode than "the agent hasn't fixed it yet."
+exit codes 3-5 (internal error, usage error, no tests collected) as a
+`GateError` — the gate couldn't run at all, a different failure mode than
+"the agent hasn't fixed it yet."
+
+Exit 2 is split, because pytest returns it for two unrelated things. When
+its report names a **collection error** — an import raised, so the suite
+could not be assembled — that is the agent's own edit and comes back as a
+normal `Verdict(passed=False)` carrying the import error, so the loop
+retries. Any other exit 2 is an interruption from outside the run and stays
+a `GateError`. Emptying the module under test is the most common way a
+bounded loop's edit goes wrong, and it used to end the run instead of
+being handed back.
+
+**Which exit code your own checker should return** is the single decision
+that most affects how your loop behaves, and it has one rule: anything
+wrong with an artifact the *worker owns* is exit 1, and exit 2 is only for
+the gate being unable to form an opinion — a bad argv, or a file your loop
+ships in `forbid` that the worker was never allowed to touch. "Nothing to
+check" is an answer, not an inability to answer. See
+[gate-verdict-contract.md](gate-verdict-contract.md).
 
 ## How the stub cassette replays a recorded fix
 

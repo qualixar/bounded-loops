@@ -3,9 +3,28 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.4] — 2026-08-16
 
 ### Changed
+
+- **A gate that reads your work and finds nothing to check now FAILS the attempt instead of
+  ending the run.** Twenty-four shipped checkers reported an empty, vacuous or malformed artifact
+  with exit `2` — the code reserved for "the gate could not run" — so the engine treated a precise,
+  actionable diagnosis as an infrastructure fault and halted. Writing broken JSON stopped your run
+  rather than telling you what was wrong.
+
+  The line is now stated: anything wrong with an artifact **you own** is a rejection you can act
+  on; exit `2` is reserved for the gate itself being unable to run — a bad argv, or a file the loop
+  ships that you were never allowed to edit. Your loop's `forbid` list already declares which is
+  which. See [`docs/gate-verdict-contract.md`](docs/gate-verdict-contract.md).
+
+- **`pytest` gates: a failed test collection is now a failed check, not a broken run.** `pytest`
+  returns exit `2` both for "your module does not import" and for "somebody interrupted me", and
+  the first was being reported as the second. Emptying the module under test is the most common way
+  an edit goes wrong in a bounded loop, and it now comes back to the worker with the import error.
+  A genuine interruption still halts.
+
+### Changed (metrics)
 
 - **`bl graph metrics` now reports an anytime-valid confidence sequence.** The stitched PrPl-EB
   sequence had been implemented and tested since 0.6.0 and was called by nothing: every published
@@ -38,6 +57,32 @@ All notable changes to bounded-loops are documented here. This project follows
   product pools attempts across many. On six nodes the same estimator reaches 0.8450, on thirty
   0.9783. The figure was accurate and its scope was not, which is the same defect class as the
   gate bugs fixed in 0.6.2.
+
+- **Sixteen more catalog gates accepted work that violates the task they state.** Every one had the
+  same shape as the fourteen closed in 0.6.2 — the gate agreeing with the thing it exists to catch:
+
+  - `test-presence-per-module` accepted a test file with no import and no assertion, a test for one
+    module that imports a different one, a test that asserts on a standalone calculation it never
+    feeds through the module, and a rename in the source that leaves the test importing a name no
+    longer there. It now checks that the test imports the module, uses what it imported, asserts
+    something, and that the name it imports exists.
+  - `nda-required-clauses` and `gdpr-dpa-terms` read section headings and never section bodies, so a
+    clause could keep its heading and say the opposite — `## Confidentiality` over "Neither party
+    shall be required to hold the other party's Confidential Information in confidence".
+  - `okr-measurable`, `dependency-pinning` and `conventional-commits` allowed an item to be deleted
+    rather than repaired. "Every key result is measurable" was satisfiable by removing the vague one.
+  - `dependency-pinning` also accepted a pin to a version that was never released, and a pin below
+    the floor the file itself declared. It now checks both, keylessly, against shipped reference
+    data — the same approach `citation-existence-check` already uses.
+  - `conventional-commits` accepted a subject rewritten into an unrelated change, a documentation
+    change typed as `build`, and edits to subjects that already conformed and were never in scope.
+  - `secret-scan-keyless` missed a credential split across a concatenation (`"AKIA" + "..."`) and a
+    `password` renamed to `passwd`, and allowed the config to be deleted rather than moved to the
+    environment.
+
+- **`ledger-reconciliation` accepted an emptied ledger.** An empty ledger balances (`0.0 == 0.0`)
+  and every transaction in it is categorised, so deleting the books was the cheapest way to make
+  them reconcile. `PROMPT.md` forbids deleting rows; nothing checked it.
 
 ### Notes
 

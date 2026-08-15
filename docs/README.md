@@ -14,6 +14,12 @@ and product overview.
   inspect with `bl graph arena` and `bl graph status`, and run the built-in
   native-sandbox demo.
 
+- **[gate-verdict-contract.md](./gate-verdict-contract.md)** — the three things a gate can answer
+  and where the line sits between them: pass, reject, and "could not run". Why anything wrong with
+  an artifact the worker OWNS is a rejection it can act on, why exit 2 is reserved for the gate
+  itself being unable to form an opinion, and what goes wrong when a gate files a verdict as an
+  error — a diagnosis the loop had in hand and discarded. Read this before writing a gate.
+
 - **[approval-identity.md](./approval-identity.md)** — who a decision is attributed to, why
   `actor_id` (who was permitted) and `decided_by` (who decided) are separate fields, the resolution
   order for setting an identity, why no local source counts as authentication, and what travels with
