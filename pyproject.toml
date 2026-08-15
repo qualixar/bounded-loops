@@ -1,6 +1,6 @@
 [project]
 name = "bounded-loops"
-version = "0.6.0"
+version = "0.6.1"
 description = "A graph engine for reliable AI agents: a DAG of independently-gated bounded loops (68-loop catalog, 64 keyless) with no-secret connectors and receipt-backed audit trails."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -79,6 +79,35 @@ exclude = [".backup/", "audit/", "*.db"]
 [tool.hatch.build.targets.wheel]
 packages = ["bounded_loops"]
 artifacts = ["bounded_loops/graph/schemas/*.json", "bounded_loops/graph/arena/*.html", "bounded_loops/graph/studio/*.html", "bounded_loops/graph/console/*.html", "bounded_loops/graph/monitor/assets/*", "bounded_loops/graph/monitor/assets/vendor/*"]
+
+# Run artifacts are never catalog content. Declared BEFORE the force-include sub-table below:
+# a TOML table runs until the next header, so a key placed after it silently becomes part of
+# it — which is a build error, not a silent one, but only if you notice the message.
+#
+# HONEST LIMIT: hatchling's force-include bypasses this exclude list. These patterns cover the
+# normal file selection; they do NOT clean the force-included catalog. What actually guarantees
+# a clean artifact is (a) every one of these paths is gitignored, so a clean checkout has none
+# of them, and (b) `test_the_packaged_catalog_carries_no_RUN_ARTIFACTS` inspects the built
+# wheel and fails if any slipped in. Release builds come from a clean worktree for this reason.
+exclude = [
+  "loops/**/.ledger.jsonl",
+  "loops/**/.bounded-loops/**",
+  "loops/**/__pycache__/**",
+]
+
+# The loop catalog ships INSIDE the wheel. Until 0.6.1 it did not, so `pip install
+# bounded-loops` gave you an engine and no loops — `bl loops list` found nothing and told the
+# user to clone the repo to obtain what the package advertises on its front page.
+#
+# force-include maps the directory at build time rather than duplicating 2.5 MB into the
+# source tree, so `loops/` stays the single copy in git.
+#
+# Deliberately NOT fetched over the network on demand. This engine's whole posture is offline
+# and credential-free; a catalog that needed github.com would be unavailable in exactly the
+# air-gapped, corporate-proxied and egress-restricted environments it is aimed at. 2.5 MB in
+# the wheel is the cheaper honesty.
+[tool.hatch.build.targets.wheel.force-include]
+"loops" = "bounded_loops/catalog/loops"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

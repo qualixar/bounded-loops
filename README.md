@@ -17,13 +17,14 @@
 
 ```bash
 pip install bounded-loops
-git clone https://github.com/qualixar/bounded-loops && cd bounded-loops
-bl run loops/bug-fix-red-green --yes    # a real planted bug, a real pytest gate, no API key
+bl loops install bug-fix-red-green
+bl run .bounded-loops/loops/bug-fix-red-green --yes   # a real planted bug, a real pytest gate, no API key
 ```
 
-68 loop packages ship in [`loops/`](loops/); 64 need no API key. The catalog is in
-the repository, not the wheel — `bl run` takes a path and writes its ledger beside
-the loop.
+68 loop packages ship **inside the wheel**; 64 need no API key. `bl loops list` shows them all
+and `bl loops install` copies one into your project — nothing is downloaded, so this works
+offline. Installing is a step because `bl run` writes its ledger beside the loop, and
+`site-packages` is the wrong place to keep run receipts.
 
 ---
 
@@ -120,9 +121,8 @@ No API key. The runner is a stub; the gate is real pytest.
 
 ```bash
 pip install bounded-loops
-git clone https://github.com/qualixar/bounded-loops
-cd bounded-loops
-bl run loops/bug-fix-red-green --yes
+bl loops install bug-fix-red-green
+bl run .bounded-loops/loops/bug-fix-red-green --yes
 ```
 
 Output:

@@ -279,3 +279,64 @@ def test_every_README_screenshot_actually_EXISTS_in_the_repo() -> None:
     ]
 
     assert not missing, f"README references images that are not in the repo: {missing}"
+
+
+def test_the_BUILT_WHEEL_carries_the_loop_catalog() -> None:
+    """`pip install bounded-loops` must come with the loops the front page advertises.
+
+    Until 0.6.1 it did not. The catalog lived only in the git repository, so a pip-only user
+    ran `bl loops list`, saw "No loops found", and was told to "run from a bounded-loops source
+    checkout" — by a package whose README opens by advertising 68 of them.
+
+    Inspects the built artifact rather than the source tree on purpose: the source tree has
+    `loops/` either way, so only the wheel can answer this. Skips when nothing is built,
+    because `uv build` is not something a unit test should trigger.
+    """
+    import zipfile
+
+    wheels = sorted((REPO_ROOT / "dist").glob("bounded_loops-*-py3-none-any.whl"))
+    if not wheels:
+        pytest.skip("no built wheel in dist/ — run `uv build` first")
+    newest = max(wheels, key=lambda p: p.stat().st_mtime)
+
+    with zipfile.ZipFile(newest) as archive:
+        catalog = [n for n in archive.namelist() if n.startswith("bounded_loops/catalog/loops/")]
+
+    loops = {n.split("/")[3] for n in catalog if len(n.split("/")) > 4}
+    assert len(loops) >= 60, (
+        f"{newest.name} carries {len(loops)} loops; the catalog is not in the wheel"
+    )
+    assert any(n.endswith("/loop.yaml") for n in catalog), "no manifests in the packaged catalog"
+
+
+def test_the_packaged_catalog_carries_no_RUN_ARTIFACTS() -> None:
+    """A shipped loop carries its source, never somebody else's receipts.
+
+    `force-include` bypasses hatchling's exclude rules, so a build from a dirty working tree
+    will happily bake the developer's own `.ledger.jsonl` and `.bounded-loops/runs/` into the
+    wheel. Those files are gitignored, so a clean checkout builds clean — but "we usually build
+    clean" is not a guarantee, and shipping a receipt for a run the user never performed is the
+    exact claim this engine exists to prevent.
+    """
+    import zipfile
+
+    wheels = sorted((REPO_ROOT / "dist").glob("bounded_loops-*-py3-none-any.whl"))
+    if not wheels:
+        pytest.skip("no built wheel in dist/ — run `uv build` first")
+    newest = max(wheels, key=lambda p: p.stat().st_mtime)
+
+    with zipfile.ZipFile(newest) as archive:
+        polluted = [
+            name for name in archive.namelist()
+            if name.startswith("bounded_loops/catalog/")
+            and (
+                name.endswith(".ledger.jsonl")
+                or "/.bounded-loops/" in name
+                or "/__pycache__/" in name
+            )
+        ]
+
+    assert not polluted, (
+        f"{newest.name} ships run artifacts — rebuild from a clean tree:\n  "
+        + "\n  ".join(polluted[:8])
+    )

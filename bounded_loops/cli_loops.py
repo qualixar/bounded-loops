@@ -46,6 +46,37 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     )
     loops_sub = loops_parser.add_subparsers(dest="loops_cmd", metavar="ACTION")
 
+    # ── bl loops install ──────────────────────────────────────────────────────
+    install_parser = loops_sub.add_parser(
+        "install",
+        help="Copy a shipped loop into this project so you can run and edit it.",
+        description=(
+            "Copies a loop from the bundled catalog into your project's workspace. "
+            "`bl run` writes its ledger BESIDE the loop, so a loop has to live somewhere "
+            "writable — which site-packages is not. Nothing is downloaded: the catalog "
+            "ships inside the package and this works offline."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  bl loops install bug-fix-red-green      # into .bounded-loops/loops/\n"
+            "  bl loops install a11y --dest ./loops    # somewhere else\n"
+            "  bl loops install bug-fix-red-green --overwrite\n"
+        ),
+    )
+    install_parser.add_argument("name", help="Loop name, as shown by `bl loops list`.")
+    install_parser.add_argument(
+        "--dest",
+        metavar="DIR",
+        default=None,
+        help="Where to put it (default: this project's .bounded-loops/loops/).",
+    )
+    install_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing copy. Refused unless the target is itself a loop package.",
+    )
+
     # ── bl loops list ─────────────────────────────────────────────────────────
     list_parser = loops_sub.add_parser(
         "list",
@@ -100,6 +131,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         help="Emit results as a JSON array instead of a table.",
     )
     list_parser.set_defaults(func=_cmd_loops_list)
+    install_parser.set_defaults(func=_cmd_loops_install)
 
     loops_parser.set_defaults(func=_cmd_loops_no_action)
 
@@ -112,7 +144,7 @@ def _cmd_loops_no_action(args: argparse.Namespace) -> int:
     """Printed when `bl loops` is invoked with no sub-action."""
     _err(
         "bl loops: no action given. "
-        "Available actions: list. "
+        "Available actions: list, install. "
         "Run `bl loops list --help` for usage."
     )
     return 1
@@ -210,6 +242,17 @@ def _discover_catalog_yamls() -> list[Path]:
             # above cwd that has actual loops.
             if found:
                 break
+
+    # Nothing on disk: fall back to the catalog bundled in the wheel. Without this a
+    # `pip install bounded-loops` user ran `bl loops list`, got "No loops found", and was
+    # told to "run from a bounded-loops source checkout" — the package advertises 68 loops
+    # and then asks you to go and clone them.
+    if not found:
+        from bounded_loops.catalog_access import packaged_catalog_root
+
+        packaged = packaged_catalog_root()
+        if packaged is not None:
+            _collect_from_base(packaged, found)
 
     return [found[k] for k in sorted(found)]
 
@@ -401,3 +444,52 @@ def _summary_line(entries: list[dict]) -> str:
         f"{len(ok)} loop(s)  keyless: {keyless_count}  "
         f"gate breakdown: {gate_summary}"
     )
+
+
+# ---------------------------------------------------------------------------
+# bl loops install
+# ---------------------------------------------------------------------------
+
+def _cmd_loops_install(args: argparse.Namespace) -> int:
+    """Copy a bundled loop into the project so it can actually be run.
+
+    Before 0.6.1 there was nothing to copy: the catalog lived only in the git repository, so
+    `pip install bounded-loops` produced an engine with no loops and the README had to tell
+    people to clone the repo to get what the package advertises.
+    """
+    from bounded_loops.catalog_access import install_loop, packaged_loop_names
+
+    if args.dest is not None:
+        destination = Path(args.dest)
+    else:
+        from bounded_loops.workspace import discover, ensure
+
+        workspace = discover()
+        ensure(workspace)
+        destination = workspace.root / "loops"
+
+    try:
+        installed = install_loop(args.name, destination, overwrite=args.overwrite)
+    except FileExistsError as exc:
+        _err(f"{exc} already exists — pass --overwrite to replace it")
+        return 2
+    except LookupError as exc:
+        _err(str(exc))
+        names = packaged_loop_names()
+        if names:
+            close = [n for n in names if args.name.lower() in n.lower()][:5]
+            if close:
+                print("Did you mean: " + ", ".join(close), file=sys.stderr)
+            print(
+                f"{len(names)} loops are available — run `bl loops list`.", file=sys.stderr
+            )
+        return 2
+    except OSError as exc:
+        _err(f"could not install {args.name!r}: {exc}")
+        return 2
+
+    print(f"installed {args.name} -> {installed}")
+    print()
+    print("Run it:")
+    print(f"  bl run {installed}")
+    return 0

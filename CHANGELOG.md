@@ -5,6 +5,45 @@ All notable changes to bounded-loops are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-08-15
+
+### Fixed
+
+- **`pip install bounded-loops` now comes with the loops it advertises.** The catalog lived
+  only in the git repository, so a pip-only user ran `bl loops list`, saw "No loops found",
+  and was told to "run from a bounded-loops source checkout" — by a package whose README
+  opens by advertising 68 of them. The wheel now carries the catalog, and `bl loops install
+  <name>` copies one into your project.
+
+  Bundled rather than downloaded on demand, deliberately. A catalog that needed github.com
+  would be unavailable in the air-gapped, corporate-proxied and egress-restricted
+  environments this engine is aimed at, and the whole posture is that it runs offline with no
+  credential. 2.5 MB in the wheel is the cheaper honesty.
+
+  Installing is a separate step from bundling because `bl run` writes its ledger BESIDE the
+  loop. `site-packages` is not writable in a managed environment and is not a sensible place
+  to accumulate one user's run receipts. `bl loops install` puts the loop in the project
+  workspace, which is where a run's evidence belongs. `--overwrite` refuses any target that is
+  not itself a loop package, and the loop name is validated as one path segment before it can
+  reach a delete.
+
+- **README images rendered broken on PyPI.** `readme = "README.md"` makes that file the PyPI
+  project page, and PyPI does not resolve relative image paths the way GitHub does. The
+  architecture diagram had been relative since it was added, so it was broken on the page most
+  people reach from `pip install` for every prior release — while looking correct in the editor
+  and on GitHub the whole time. Two tests now cover it: one for relative paths, one for
+  absolute URLs pointing at files that were never committed.
+
+- **Switching runs in the monitor left a node from the other run's graph selected.** The
+  Configure panel stayed headed with a node the displayed graph did not contain. The saved-graph
+  path already cleared this, with a comment explaining why; the run path never did.
+
+### Changed
+
+- `hatchling` is pinned. Unpinned it emitted `Metadata-Version: 2.5`, which twine rejects and
+  whose PyPI acceptance could not be confirmed.
+
+
 ## [0.6.0] — 2026-08-15
 
 Two independent auditors went through this release end to end, five focused passes each. Eight
