@@ -56,7 +56,7 @@ def test_installing_NEVER_carries_somebody_elses_receipts(tmp_path: Path) -> Non
     against a workspace that no longer exists — evidence for something that did not happen
     here, which is the one thing this engine exists to prevent.
     """
-    root = _catalog()
+    _catalog()
     names = catalog_access.packaged_loop_names()
 
     for name in names:
@@ -70,7 +70,7 @@ def test_installing_NEVER_carries_somebody_elses_receipts(tmp_path: Path) -> Non
 
 def test_an_existing_target_is_REFUSED_rather_than_merged(tmp_path: Path) -> None:
     """Half-overwriting a loop leaves a manifest that no longer matches its own seed."""
-    root = _catalog()
+    _catalog()
     name = catalog_access.packaged_loop_names()[0]
     catalog_access.install_loop(name, tmp_path)
 

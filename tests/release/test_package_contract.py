@@ -7,6 +7,7 @@ import struct
 import tomllib
 from pathlib import Path
 
+import pytest
 import yaml
 
 from bounded_loops import __version__ as _PACKAGE_VERSION
