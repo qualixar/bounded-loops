@@ -205,6 +205,20 @@ class _FileApprovalCommandPort:
     ) -> None:
         """Durably persist a human REJECTION so a later resume re-honors it (C-078 follow-up).
 
+        **Attribution is symmetric with the approve path (#56).** A rejection blocks an irreversible
+        effect, which is exactly as consequential as permitting one, and "who stopped the release?"
+        has to be answerable from the receipt. ``actor_id`` is the authorization subject and on a
+        local run can only ever be the tenant, so it answers nothing on its own — ``decided_by``
+        carries the person, with ``decided_by_source`` recording how much that name is worth.
+
+        The identity is resolved HERE rather than accepted as an argument, for the same reason the
+        approve path resolves it internally: a caller — or a model driving one — must not be able to
+        assert who made a decision.
+
+        This was the asymmetry #56 left behind. The approve path gained attribution and the reject
+        path did not, so a run could record that a person approved something while recording only
+        ``local-org`` for a refusal. Found by a test written to probe precisely that gap.
+
         Rejections do not flow through the ``approvals.approve`` use case (which only GRANTS); they
         are recorded here under the SAME exclusive ``flock`` + ``os.replace`` atomic-write discipline,
         in a separate ``rejections`` list so the approval version chain is untouched. Idempotent by
@@ -230,9 +244,14 @@ class _FileApprovalCommandPort:
                 for stored in rejections:
                     if stored.get("node_id") == node_id and int(stored.get("attempt", 1)) == attempt:
                         return  # already rejected — idempotent
+                from bounded_loops import local_identity
+
+                decided_by = local_identity.resolve_for_workspace()
                 rejections.append({
                     "node_id": node_id, "attempt": attempt, "approval_id": approval_id,
                     "actor_id": actor_id, "decided_at": decided_at,
+                    "decided_by": decided_by.name,
+                    "decided_by_source": decided_by.source,
                     "repair_round": self._repair_round,
                 })
                 new_record = {
