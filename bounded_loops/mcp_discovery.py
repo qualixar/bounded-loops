@@ -157,7 +157,17 @@ def register(mcp: object) -> None:
         except EvidenceUnavailable as exc:
             # A refusal, not a crash. The consumer polls; "not finished yet" is an ordinary
             # answer and must not look like a broken tool.
-            return {"status": "unavailable", "contract": CONTRACT_ID, "reason": str(exc)}
+            #
+            # `public_reason`, NEVER str(exc). The underlying exceptions name files, so
+            # returning the full text put the operator's workspace path on the consumer's
+            # message bus every time an incomplete run was polled — while the success
+            # document was being sanitized field by field. The failure path is the frequent
+            # one, and it was the unguarded one.
+            return {
+                "status": "unavailable",
+                "contract": CONTRACT_ID,
+                "reason": exc.public_reason,
+            }
 
 
 # ── pure logic, reusable by the CLI and the UI ────────────────────────────────

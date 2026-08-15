@@ -99,8 +99,24 @@ class EvidenceUnavailable(Exception):
     """The run cannot produce evidence — non-terminal, unsafe id, or malformed projection.
 
     One exception type for every refusal so a consumer never has to distinguish "no such run"
-    from "still running" by parsing a message. The reason travels in the text for a human.
+    from "still running" by parsing a message.
+
+    TWO messages, and the split is the point. `str(exc)` is for a local operator and may name
+    files. `public_reason` is what crosses the MCP boundary, and it is drawn from a fixed
+    vocabulary that can never contain a path.
+
+    The document was sanitized field by field while the REFUSAL shipped raw exception text —
+    so an ordinary "this run is not complete" poll answered with
+    `run-meta.json not found in /Users/someone/clients/acme/.bounded-loops/runs/x`, putting the
+    operator's workspace path on the consumer's message bus. The success path honoured the
+    contract; the far more frequent failure path did not. Found by the 0.6.2 Grok audit.
     """
+
+    def __init__(self, message: str, *, public_reason: str | None = None) -> None:
+        super().__init__(message)
+        #: Safe to send to another process. Defaults to the generic refusal rather than to
+        #: `message`, so a new raise site leaks nothing until it opts in deliberately.
+        self.public_reason = public_reason or "this run cannot produce evidence"
 
 
 def contract_advertisement() -> dict[str, str]:
@@ -141,7 +157,9 @@ def evidence_document(
     if run_state not in TERMINAL_RUN_STATES:
         raise EvidenceUnavailable(
             f"run {projection.run_id!r} is {run_state}, not terminal — evidence is only "
-            f"produced for a finished run. Terminal states: {sorted(TERMINAL_RUN_STATES)}."
+            f"produced for a finished run. Terminal states: {sorted(TERMINAL_RUN_STATES)}.",
+            # The STATE is safe to publish and is the one thing a poller needs.
+            public_reason=f"this run is {run_state}, not finished",
         )
     outcome = _OUTCOME_BY_RUN_STATE.get(run_state)
     if outcome is None:  # pragma: no cover - guarded by TERMINAL_RUN_STATES above
@@ -197,7 +215,10 @@ def _node(node: Any) -> dict[str, Any]:
     """
     gate_passed = node.gate_passed
     if gate_passed is not None and not isinstance(gate_passed, bool):
-        raise EvidenceUnavailable(f"node {node.node_id!r}: gate_passed is not a bool or None")
+        raise EvidenceUnavailable(
+            f"node {node.node_id!r}: gate_passed is not a bool or None",
+            public_reason="a node's gate verdict is malformed",
+        )
     return {
         "node_id": _safe_id("node_id", node.node_id),
         "state": _safe_id("state", str(node.state)),
@@ -219,7 +240,10 @@ def _safe_id(field: str, value: object) -> str:
     if not _SAFE_ID.match(text):
         raise EvidenceUnavailable(
             f"{field} is not a safe identifier: {text[:64]!r}. Evidence carries identifiers, "
-            "never free text, paths or user-authored content."
+            "never free text, paths or user-authored content.",
+            # The offending VALUE is exactly what must not travel — a receipt whose run_id is
+            # a path would otherwise put that path in the refusal.
+            public_reason=f"this run's {field} is not a safe identifier",
         )
     return text
 
@@ -241,7 +265,8 @@ def _digest(field: str, value: object) -> str:
     if not _SHA256.match(text):
         raise EvidenceUnavailable(
             f"{field} is not a sha256 digest: {text[:80]!r}. A malformed digest must refuse "
-            "rather than travel — a consumer cannot tell a wrong digest from a right one."
+            "rather than travel — a consumer cannot tell a wrong digest from a right one.",
+            public_reason=f"this run's {field} is not a valid digest",
         )
     return text
 
@@ -250,7 +275,8 @@ def _timestamp(value: object) -> str:
     text = str(value)
     if not _RFC3339_UTC.match(text):
         raise EvidenceUnavailable(
-            f"terminal_at must be RFC3339 UTC ending in Z, got {text[:40]!r}"
+            f"terminal_at must be RFC3339 UTC ending in Z, got {text[:40]!r}",
+            public_reason="this run's terminal timestamp is malformed",
         )
     return text
 
@@ -259,14 +285,18 @@ def _flag(field: str, value: object) -> bool:
     if not isinstance(value, bool):
         raise EvidenceUnavailable(
             f"{field} must be a real bool, got {type(value).__name__}. A truthy string or a "
-            "None standing in for 'we did not check' would be read as a decision."
+            "None standing in for 'we did not check' would be read as a decision.",
+            public_reason=f"this run's {field} flag is malformed",
         )
     return value
 
 
 def _sequence(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise EvidenceUnavailable(f"receipt.sequence must be a non-negative int, got {value!r}")
+        raise EvidenceUnavailable(
+            f"receipt.sequence must be a non-negative int, got {value!r}",
+            public_reason="this run's receipt sequence is malformed",
+        )
     return value
 
 
@@ -294,7 +324,8 @@ def _refuse_if_anything_leaked(document: Mapping[str, Any]) -> None:
             if marker in value:
                 raise EvidenceUnavailable(
                     f"refusing to emit evidence: field {field!r} contains {marker!r}, which "
-                    "means a path or free text reached a document that must carry neither"
+                    "means a path or free text reached a document that must carry neither",
+                    public_reason="this run's evidence failed its own leak check",
                 )
 
 

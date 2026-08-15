@@ -15,7 +15,7 @@ connection_slots: []
 nodes:
   - id: check-processor-terms
     kind: loop
-    loop_package: "sha256:97298cd36cb3d2cc69e73184d406b40537a1b32873fd2f790c457c0c6df15d03"
+    loop_package: "sha256:15b52c0a23edf6750bd823820f00e00d85cc83c8843a9a5cca092d1f8e709927"
     inputs: {}
     outputs:
       verdict: internal
@@ -26,7 +26,7 @@ nodes:
     isolation: process_restricted
   - id: check-privacy-notice
     kind: loop
-    loop_package: "sha256:2cf9ffa4f5931349f57cc7f11fd08a9f7a848303af22b44fa7d414510fcc7f60"
+    loop_package: "sha256:a1b5b116423ffcede2e61141cf7059c1b88372a9bc792930e329357ba3a8868e"
     inputs: {}
     outputs:
       verdict: internal

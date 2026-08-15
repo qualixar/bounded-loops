@@ -295,3 +295,57 @@ def test_replacing_a_node_does_not_leak_the_dataclass() -> None:
     document = _doc(nodes=(replace(FakeNode(), node_id="publish"),))
     assert isinstance(document["nodes"][0], dict)
     assert document["nodes"][0]["node_id"] == "publish"
+
+
+# ── found by the 0.6.2 dual audit (Grok B1, B2) ──────────────────────────────
+
+
+def test_a_REFUSAL_never_carries_a_path(tmp_path: Path) -> None:
+    """The document was sanitized field by field; the refusal shipped raw exception text.
+
+    An ordinary "this run is incomplete" poll answered with the operator's full workspace
+    path, because the MCP tool returned `str(exc)`. The failure path is the FREQUENT path,
+    and it was the unguarded one.
+    """
+    exc = EvidenceUnavailable(
+        f"cannot reconstruct the plan: run-meta.json not found in {tmp_path}/runs/x",
+        public_reason="this run is incomplete or unreadable",
+    )
+
+    assert str(tmp_path) in str(exc), "the operator message may name files"
+    assert str(tmp_path) not in exc.public_reason
+    for marker in ("/", "\\", "Users", "runs"):
+        assert marker not in exc.public_reason
+
+
+def test_public_reason_defaults_to_safe_rather_than_to_the_message() -> None:
+    """A new raise site must leak nothing until it opts in deliberately."""
+    exc = EvidenceUnavailable("internal detail naming /etc/passwd")
+
+    assert "/etc/passwd" not in exc.public_reason
+    assert exc.public_reason == "this run cannot produce evidence"
+
+
+def test_every_refusal_this_module_raises_has_a_safe_public_reason() -> None:
+    """Structural: exercise each refusal and assert none of them carries a path."""
+    cases = [
+        lambda: _doc(run_state="RUNNING"),
+        lambda: _doc(run_id="/Users/someone/clients/acme/run-1"),
+        lambda: _doc(graph_digest="not-a-digest"),
+        lambda: _doc(receipt_sequence=-1),
+        lambda: _doc(nodes=(FakeNode(node_id="/etc/passwd"),)),
+        lambda: evidence_document(
+            FakeProjection(),  # type: ignore[arg-type]
+            workspace_id=_WS, terminal_at="not-a-time", demonstration=False,
+            run_ref="run-dir-name",
+        ),
+    ]
+    for build in cases:
+        try:
+            build()
+        except EvidenceUnavailable as exc:
+            reason = exc.public_reason
+            assert "/" not in reason and "\\" not in reason, reason
+            assert "Users" not in reason and "etc" not in reason, reason
+        else:
+            raise AssertionError("expected a refusal")

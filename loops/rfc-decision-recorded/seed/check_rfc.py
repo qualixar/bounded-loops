@@ -60,6 +60,20 @@ def _sections(text: str) -> dict[str, str]:
     return sections
 
 
+
+def _has_written_content(body: str) -> bool:
+    """True when a section contains prose, not merely more headings.
+
+    Sub-headings still belong to their parent, so "## Mitigation / ### Step 1 / do it" is
+    written. But "## Rollback / ### TBD" is not: counting a heading as content let a section
+    whose only body was an empty sub-heading pass as complete, which is the same
+    table-of-contents defect one level down. Found by the 0.6.2 Grok audit.
+    """
+    return any(
+        line.strip() and not line.lstrip().startswith("#")
+        for line in body.splitlines()
+    )
+
 def check(rfc_path: str) -> int:
     try:
         text = Path(rfc_path).read_text(encoding="utf-8")
@@ -69,7 +83,7 @@ def check(rfc_path: str) -> int:
 
     sections = _sections(text)
     missing = [s for s in _REQUIRED_SECTIONS if s not in sections]
-    empty = [s for s in _REQUIRED_SECTIONS if s in sections and not sections[s]]
+    empty = [s for s in _REQUIRED_SECTIONS if s in sections and not _has_written_content(sections[s])]
 
     if missing or empty:
         print(

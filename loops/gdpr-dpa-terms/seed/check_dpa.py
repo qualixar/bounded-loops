@@ -69,15 +69,20 @@ def _headings(text: str) -> list[str]:
     return [_normalize(m.group(1)) for m in _HEADING_RE.finditer(text)]
 
 
-#: Heading prefixes that DENY the provision they name. "## No Audit Rights Are Granted"
-#: contains the word "audit", so matching a heading is not enough — the 0.6.2 fix moved this
-#: defect from prose into headings rather than removing it. A heading that opens by negating
-#: itself does not declare a provision.
-_NEGATIONS = ("no ", "not ", "without ", "excluding ", "except ")
+#: Words that DENY the provision the heading names, matched anywhere in it. Checking only
+#: PREFIXES caught "## No Audit Rights" and missed "## Audit: None Granted" and
+#: "## Rights (No Audit Permitted)" — the negation simply moved past the first word. Found by
+#: the 0.6.2 Grok audit, one round after prefix-matching was itself the fix for the same class.
+#:
+#: Whole words only. "Non-Disclosure" is a real clause name, not a negation, and a substring
+#: match on "non" would reject every NDA that has one.
+_NEGATIONS = re.compile(
+    r"\b(no|not|none|never|without|excluding|except|prohibited|denied|disclaimed)\b"
+)
 
 
 def _is_negated(heading: str) -> bool:
-    return heading.startswith(_NEGATIONS)
+    return bool(_NEGATIONS.search(heading))
 
 def _declared(phrase: str, headings: list[str]) -> bool:
     """True when some heading gives this term its own provision."""

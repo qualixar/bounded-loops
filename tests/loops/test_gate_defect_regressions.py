@@ -173,6 +173,26 @@ FALSE_ACCEPTS: list[GateCase] = [
             "## No Audit Rights Are Granted\nnone\n"
         )},
     ),
+    # Round 3 — found by the Grok audit, one round after round 2 fixed the same class.
+    # Prefix-matching a negation caught "## No Audit Rights" and missed the negation simply
+    # moving past the first word.
+    GateCase(
+        loop="gdpr-dpa-terms", script="seed/check_dpa.py", args=("dpa.md",), expected=1,
+        why="negation AFTER the term ('## Audit: None Granted') still satisfied it",
+        files={"dpa.md": "# DPA\n## Subject Matter\nx\n## Duration\nx\n## Nature and Purpose\nx\n## Type of Personal Data\nx\n## Obligations of the Controller\nx\n## Sub-Processor\nx\n## Confidentiality\nx\n## Security Measures\nx\n## Audit: None Granted\nnone\n"},
+    ),
+    GateCase(
+        loop="gdpr-dpa-terms", script="seed/check_dpa.py", args=("dpa.md",), expected=1,
+        why="negation inside parentheses ('## Rights (No Audit Permitted)')",
+        files={"dpa.md": "# DPA\n## Subject Matter\nx\n## Duration\nx\n## Nature and Purpose\nx\n## Type of Personal Data\nx\n## Obligations of the Controller\nx\n## Sub-Processor\nx\n## Confidentiality\nx\n## Security Measures\nx\n## Rights (No Audit Permitted)\nn\n"},
+    ),
+    GateCase(
+        loop="runbook-completeness", script="seed/check_runbook.py", args=("rb.md",), expected=1,
+        why="a section whose only content was an EMPTY SUB-HEADING passed",
+        files={"rb.md": "# RB\n## Summary\ns\n## Severity\ns\n## Detection\nd\n"
+                        "## Diagnosis\nd\n## Mitigation\nm\n## Rollback\n### TBD\n"
+                        "## Escalation\ne\n"},
+    ),
     GateCase(
         loop="citation-existence-check", script="seed/check_citations.py",
         args=("brief.md",), extra_args=("seed/known_reporter.json",), expected=1,
@@ -278,6 +298,20 @@ STILL_ACCEPTED: list[GateCase] = [
             "## Sub-Processor\nx\n## Confidentiality\nx\n## Security Measures\nx\n"
             "## Audit\nThe controller may audit annually.\n"
         )},
+    ),
+    GateCase(
+        loop="nda-required-clauses", script="seed/check_clauses.py", args=("nda.md",), expected=0,
+        why="'Non-Disclosure' is a clause name, not a negation",
+        files={"nda.md": "# NDA\n## Confidentiality and Non-Disclosure\nx\n## Term\nx\n"
+                         "## Governing Law\nx\n## Return of Materials\nx\n"
+                         "## Permitted Disclosures\nx\n"},
+    ),
+    GateCase(
+        loop="runbook-completeness", script="seed/check_runbook.py", args=("rb.md",), expected=0,
+        why="a sub-heading WITH prose under it is still written content",
+        files={"rb.md": "# RB\n## Summary\ns\n## Severity\ns\n## Detection\nd\n"
+                        "## Diagnosis\nd\n## Mitigation\n### Step 1\ndo it\n"
+                        "## Rollback\nr\n## Escalation\ne\n"},
     ),
     GateCase(
         loop="secret-scan-keyless", script="seed/check_secrets.py", args=("c.yaml",), expected=0,

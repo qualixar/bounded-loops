@@ -125,3 +125,42 @@ def test_an_unknown_run_refuses_rather_than_crashes(tmp_path: Path) -> None:
 
 def test_listing_an_empty_workspace_is_empty_not_an_error(tmp_path: Path) -> None:
     assert terminal_runs(_workspace(tmp_path)) == []
+
+
+def test_terminal_at_is_the_EVENT_timestamp_not_a_payload_key(tmp_path: Path) -> None:
+    """A payload key named `timestamp` used to win over the event's own.
+
+    Events are written with `sort_keys=True`, so `payload` sorts before `timestamp`. The old
+    implementation scanned raw bytes for the FIRST `"timestamp":` on the last line, which is
+    the payload's — worker-influenced data reaching the field a consumer reads as "when this
+    run stopped", and never validated against the hash chain. Found by the Grok audit.
+    """
+    import json
+
+    from bounded_loops.graph.slm_evidence import _project
+
+    workspace = _workspace(tmp_path)
+    run_id = _graph_run(workspace)
+    log = workspace.runs_dir / run_id / "controller-events.jsonl"
+
+    lines = log.read_text(encoding="utf-8").splitlines()
+    last = json.loads(lines[-1])
+    real = last.get("timestamp")
+    assert isinstance(real, str) and real, "the engine writes a top-level timestamp"
+
+    # Plant a far-future timestamp inside the payload, where a worker could put one.
+    payload = last.get("payload")
+    if not isinstance(payload, dict):
+        pytest.skip("last receipt carries no payload object to plant into")
+    payload["timestamp"] = "2099-01-01T00:00:00Z"
+    lines[-1] = json.dumps(last, sort_keys=True)
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    try:
+        _, _, terminal_at = _project(workspace.runs_dir / run_id)
+    except Exception:
+        # Editing the log breaks the hash chain, which is itself the correct outcome:
+        # a tampered receipt stream must refuse rather than report a planted value.
+        return
+    assert terminal_at != "2099-01-01T00:00:00Z"
+    assert terminal_at == real
