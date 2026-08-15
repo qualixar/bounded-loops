@@ -395,3 +395,111 @@ def test_the_interval_is_NOT_a_95_percent_interval_for_the_MARGINAL_rate() -> No
     assert prpl_cov - marginal_coverage > 0.30, (
         "the gap between latent and marginal coverage is the whole point of the caveat"
     )
+
+
+# ── anytime-validity: the property the fixed-time interval does NOT have ─────
+
+
+def _ever_excluded(interval_fn, *, alpha: float, true_mean: float, trials: int,
+                   horizon: int, seed: int) -> float:
+    """Fraction of trajectories where `true_mean` leaves the interval at ANY checked n.
+
+    This is the quantity anytime-validity bounds, and the only measure that separates a
+    confidence sequence from a fixed-time interval: check at one n and both look fine.
+    """
+    import random
+
+    rng = random.Random(seed)
+    checkpoints = list(range(1, 41)) + list(range(50, horizon + 1, 10))
+    misses = 0
+    for _ in range(trials):
+        draws = [1.0 if rng.random() < true_mean else 0.0 for _ in range(horizon)]
+        for n in checkpoints:
+            low, high = interval_fn(draws[:n], alpha)
+            if not low <= true_mean <= high:
+                misses += 1
+                break
+    return misses / trials
+
+
+def test_the_anytime_interval_bounds_the_EVER_excluded_rate() -> None:
+    """P(∃n : μ ∉ C_n) ≤ α — the guarantee that makes peeking safe.
+
+    An operator watching a live run is peeking after every observation. That is the entire
+    reason this exists, and it is exactly what a fixed-time radius does not survive.
+    """
+    from bounded_loops.graph.application.confidence_sequence import anytime_valid_interval
+
+    rate = _ever_excluded(
+        anytime_valid_interval,
+        alpha=0.10, true_mean=0.30, trials=200, horizon=300, seed=20260815,
+    )
+
+    assert rate <= 0.10, f"the confidence sequence excluded the true mean in {rate:.1%} of runs"
+
+
+def test_the_FIXED_TIME_interval_does_not_survive_the_same_check() -> None:
+    """The control, and the reason the two functions both exist.
+
+    Without this the test above proves nothing: an interval of [0, 1] would also pass it. This
+    shows the measure is sharp enough to fail a construction that is genuinely not anytime-valid
+    — the one this repo shipped while its docstring said so.
+    """
+    from bounded_loops.graph.application.confidence_sequence import (
+        empirical_bernstein_interval,
+    )
+
+    rate = _ever_excluded(
+        empirical_bernstein_interval,
+        alpha=0.10, true_mean=0.30, trials=200, horizon=300, seed=20260815,
+    )
+
+    assert rate > 0.10, (
+        f"the fixed-time interval held the anytime bound ({rate:.1%}); either it was replaced "
+        "by a confidence sequence or this check has stopped discriminating"
+    )
+
+
+def test_the_anytime_interval_is_WIDER_than_the_fixed_time_one() -> None:
+    """The width is the guarantee. A confidence sequence narrower than the fixed-time bound at
+    the same n would be getting time-uniformity for free, which is not on offer."""
+    import random
+
+    from bounded_loops.graph.application.confidence_sequence import (
+        anytime_valid_interval,
+        empirical_bernstein_interval,
+    )
+
+    rng = random.Random(11)
+    draws = [1.0 if rng.random() < 0.3 else 0.0 for _ in range(200)]
+
+    anytime_low, anytime_high = anytime_valid_interval(draws, 0.05)
+    fixed_low, fixed_high = empirical_bernstein_interval(draws, 0.05)
+
+    assert (anytime_high - anytime_low) > (fixed_high - fixed_low)
+
+
+def test_the_bets_never_look_at_the_observation_they_weight() -> None:
+    """Predictability is what makes the capital process a supermartingale.
+
+    A λ_t computed from X_t still produces plausible numbers and silently voids the guarantee,
+    so this is asserted at the source rather than inferred from output that would look correct
+    either way.
+    """
+    import inspect
+
+    from bounded_loops.graph.application import confidence_sequence
+
+    source = inspect.getsource(confidence_sequence.anytime_valid_interval)
+    body = source.split("for t, x in enumerate", 1)[1]
+    before_use, _, _ = body.partition("weighted_x += lam * x")
+
+    assert "lam = " in before_use, "λ_t is no longer computed before the observation is used"
+    assert "var_prev" in before_use and "x)" not in before_use.split("lam =", 1)[1].split("\n")[0]
+
+
+def test_no_observations_yields_the_whole_interval() -> None:
+    """No evidence must read as no information, not as a narrow interval around a default."""
+    from bounded_loops.graph.application.confidence_sequence import anytime_valid_interval
+
+    assert anytime_valid_interval([], 0.05) == (0.0, 1.0)

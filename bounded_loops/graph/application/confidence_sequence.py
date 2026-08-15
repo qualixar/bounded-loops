@@ -178,3 +178,104 @@ def empirical_bernstein_interval(
     )
 
     return max(0.0, mu_hat_n - radius), min(1.0, mu_hat_n + radius)
+
+
+# ── the anytime-valid one ────────────────────────────────────────────────────
+
+
+def _psi_e(lam: float) -> float:
+    """ψ_E(λ) = (−log(1−λ) − λ)/4, the empirical-Bernstein exponent (WSR 2023, §3.2)."""
+    return (-math.log1p(-lam) - lam) / 4.0
+
+
+def anytime_valid_interval(
+    observations: Sequence[float],
+    alpha: float = 0.05,
+    *,
+    bet_cap: float = 0.5,
+) -> tuple[float, float]:
+    """A genuine PrPl-EB confidence sequence: valid SIMULTANEOUSLY over every n.
+
+    This is the function `empirical_bernstein_interval` is repeatedly careful to say it is not.
+    That one is the closed-form fixed-time radius; peek after every observation and its error
+    compounds, because nothing in it is uniform over time. This one is uniform, and the
+    difference is not cosmetic — optional stopping is the entire reason a live monitor wants an
+    interval at all. An operator watching a run IS peeking after every observation.
+
+    **Construction.** For predictable bets λ_t the capital process
+
+        K_n(μ) = Π_{t≤n} exp( λ_t(X_t − μ) − v_t ψ_E(λ_t) ),   v_t = 4(X_t − μ̂_{t−1})²
+
+    is a non-negative supermartingale with K_0 = 1 when μ is the true mean. Ville's inequality
+    (1939) then bounds P(∃n : K_n(μ) ≥ 1/α) ≤ α — over ALL n at once, which is where
+    time-uniformity comes from, rather than from any choice of radius. Inverting
+    `log K_n(μ) < log(1/α)` for a two-sided interval at level α gives
+
+        C_n = { μ : |Σ λ_t(X_t − μ)| ≤ log(2/α) + Σ v_t ψ_E(λ_t) }
+
+    which is a closed interval, computed below in one pass.
+
+    **The bets.** λ_t is the predictable plug-in of Waudby-Smith & Ramdas (2023, §5.1):
+
+        λ_t = min( bet_cap, sqrt( 2 log(2/α) / (σ̂²_{t−1} · t · log(1+t)) ) )
+
+    Predictable means λ_t may use X_1..X_{t−1} but never X_t — that is what keeps K_n a
+    supermartingale, and using X_t here would silently destroy the guarantee while still
+    producing plausible-looking numbers. The `log(1+t)` is the stitching that the fixed-time
+    radius omits; it is why this interval is wider, and the width IS the guarantee.
+
+    `bet_cap` < 1 keeps `-log(1−λ)` finite. 1/2 is the value WSR use.
+
+    **Coverage is measured, not asserted.** `tests/graph/application/test_confidence_sequence.py`
+    simulates trajectories and counts how often the true mean is EVER excluded across all n —
+    the quantity anytime-validity bounds. The same test applies that measure to the fixed-time
+    interval, which fails it. A coverage check at a single fixed n cannot tell the two apart,
+    which is how a fixed-time bound gets described as a sequence in the first place.
+
+    Returns (lower, upper), clipped to [0, 1]. An empty sequence returns the whole interval,
+    which is the honest answer for no evidence.
+    """
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be in (0, 1)")
+    if not 0.0 < bet_cap < 1.0:
+        raise ValueError("bet_cap must be in (0, 1)")
+    if not observations:
+        return (0.0, 1.0)
+
+    log2a = math.log(2.0 / alpha)
+
+    running_sum = 0.0
+    running_sos = 0.0    # Σ (X_i − μ̂_{i−1})², the plug-in variance numerator
+    mu_prev = 0.5        # μ̂_0
+    var_prev = 0.25      # σ̂²_0 — the maximal variance on [0, 1], so early bets stay small
+
+    weighted_x = 0.0     # Σ λ_t X_t
+    weight = 0.0         # Σ λ_t
+    penalty = 0.0        # Σ v_t ψ_E(λ_t)
+
+    for t, x in enumerate(observations, start=1):
+        if not 0.0 <= x <= 1.0:
+            raise ValueError(f"observation {x!r} is outside [0, 1]")
+
+        # λ_t uses ONLY the past. Computed before x is folded in, deliberately.
+        denominator = var_prev * t * math.log(1.0 + t)
+        lam = bet_cap if denominator <= 0.0 else min(
+            bet_cap, math.sqrt(2.0 * log2a / denominator)
+        )
+
+        weighted_x += lam * x
+        weight += lam
+        penalty += 4.0 * (x - mu_prev) ** 2 * _psi_e(lam)
+
+        # Now update the plug-ins for the NEXT step.
+        running_sos += (x - mu_prev) ** 2
+        running_sum += x
+        mu_prev = running_sum / t
+        var_prev = (0.25 + running_sos) / (t + 1)
+
+    if weight <= 0.0:
+        return (0.0, 1.0)
+
+    centre = weighted_x / weight
+    radius = (log2a + penalty) / weight
+    return max(0.0, centre - radius), min(1.0, centre + radius)
