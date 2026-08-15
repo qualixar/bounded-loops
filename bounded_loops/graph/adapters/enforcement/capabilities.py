@@ -20,6 +20,7 @@ expressible (no Seatbelt), authorized-egress nodes still fail closed.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import os
 import shutil
 import subprocess
@@ -191,8 +192,32 @@ def probe_platform(*, docker_timeout_s: float = 4.0) -> PlatformCapabilities:
     )
 
 
+@lru_cache(maxsize=1)
 def _seatbelt_available() -> bool:
-    return sys.platform == "darwin" and os.access(SEATBELT_BINARY, os.X_OK)
+    """Whether a Seatbelt profile can actually be APPLIED here, not merely whether the binary
+    is executable.
+
+    `os.access(SEATBELT_BINARY, X_OK)` answers a question nobody asked. Inside a nested
+    sandbox — a CI runner, a container, another agent's sandbox — the binary is present and
+    executable while `sandbox_apply` returns "Operation not permitted". The capability report
+    then told the operator that `process_restricted` denies outbound network and confines
+    writes, on a host where the profile cannot be installed at all. An audit found exactly
+    this: the panel promised a cage that the worker could not enter.
+
+    So the probe applies a trivial profile and looks at the exit status. That costs one
+    subprocess, cached for the process lifetime, and makes the claim true by construction
+    rather than by inference from a file mode.
+    """
+    if sys.platform != "darwin" or not os.access(SEATBELT_BINARY, os.X_OK):
+        return False
+    try:
+        completed = subprocess.run(
+            [SEATBELT_BINARY, "-p", "(version 1)(allow default)", "/usr/bin/true"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
 
 
 def _rlimits_available() -> bool:

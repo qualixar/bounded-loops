@@ -154,3 +154,56 @@ def test_the_gate_section_states_the_independence_rule(report: dict) -> None:
     assert "mechanical" in gates["independence_rule"]
     assert len(gates["kinds"]) >= 10
     assert all(entry["checks"] for entry in gates["kinds"])
+
+
+# ── the report must not invent a control the host does not enforce ───────────
+
+
+def test_the_reported_controls_come_from_the_ADAPTER_not_from_prose() -> None:
+    """Mutation testing found this uncovered: appending a made-up control string to every tier
+    left the suite green. The report could claim an undeliverable tier enforces something the
+    host has never heard of, and a model choosing an isolation tier would believe it."""
+    from bounded_loops.graph.adapters.enforcement.snapshot import platform_snapshot
+    from bounded_loops.graph.application.capability_report import capability_report
+
+    platform = platform_snapshot()
+    document = capability_report(platform=platform)
+
+    reported = {
+        tier["level"]: tuple(tier["controls_enforced_here"])
+        for tier in document["isolation"]["tiers"]
+    }
+    actual = {fact.level: tuple(fact.controls_enforced_here) for fact in platform.isolation}
+
+    assert reported == actual, (
+        "the capability document's controls do not match what the platform adapter reports"
+    )
+
+
+def test_a_tier_that_cannot_be_DELIVERED_here_claims_no_controls() -> None:
+    """"We cannot run this" and "we enforce these controls" cannot both be true of one tier."""
+    from bounded_loops.graph.adapters.enforcement.snapshot import platform_snapshot
+
+    for fact in platform_snapshot().isolation:
+        if not fact.deliverable_here:
+            assert not fact.controls_enforced_here, (
+                f"{fact.level} is not deliverable here yet claims to enforce "
+                f"{fact.controls_enforced_here}"
+            )
+
+
+def test_seatbelt_is_probed_by_APPLYING_a_profile_not_by_checking_a_file_mode() -> None:
+    """`os.access(X_OK)` is vacuously true inside a nested sandbox — a CI runner, a container,
+    another agent's sandbox — where sandbox_apply then fails with "Operation not permitted".
+    The report would promise `process_restricted` denies network and confines writes on a host
+    where the profile cannot be installed at all."""
+    import inspect
+
+    from bounded_loops.graph.adapters.enforcement import capabilities
+
+    source = inspect.getsource(capabilities._seatbelt_available)
+
+    assert "subprocess.run" in source, (
+        "the seatbelt probe no longer applies a profile; an executable bit is not enforcement"
+    )
+    assert "returncode == 0" in source
