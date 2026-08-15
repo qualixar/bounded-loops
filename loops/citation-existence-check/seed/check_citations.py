@@ -44,13 +44,18 @@ from pathlib import Path
 
 #: A reporter abbreviation token — "U.", "S.", "F.", "Cal.", or a series marker
 #: like "2d" / "3d" / "4th".
-_REPORTER_TOKEN = r"(?:[A-Z][A-Za-z]*\.|\d(?:d|st|nd|rd|th))"
+#: An abbreviation ending in a period ("U.", "F.", "Cal."), a bare uppercase abbreviation
+#: ("WL", "LEXIS" — Westlaw and LEXIS carry no periods, and a fabricated cite in one was
+#: invisible for the same reason F.3d was), or an ordinal series marker ("2d", "3d").
+_REPORTER_TOKEN = r"(?:[A-Z][A-Za-z]*\.|[A-Z]{2,}|\d(?:d|st|nd|rd|th))"
 
 #: VOLUME <any reporter-shaped abbreviation> PAGE. Deliberately NOT built from
 #: the reporter file: this is the pattern that finds citations the trusted
 #: reporter has never heard of.
 _ANY_CITATION_RE = re.compile(
-    rf"\b\d{{1,4}}\s+((?:{_REPORTER_TOKEN}\s*){{1,4}})\s*\d{{1,4}}\b"
+    # Page numbers run past four digits in the regional and commercial reporters
+    # ("500 WL 12345"); a cap of four silently un-matched every one of them.
+    rf"\b\d{{1,5}}\s+((?:{_REPORTER_TOKEN}\s*){{1,4}})\s*\d{{1,6}}\b"
 )
 
 #: Statutes, regulations and procedural rules cite in the same

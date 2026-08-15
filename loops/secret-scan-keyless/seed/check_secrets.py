@@ -24,9 +24,21 @@ _PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 #: The same three names inside a dict / JSON / YAML mapping. The assignment
 #: pattern above is anchored to `name = "value"`, so `{"password": "hunter2"}`
 #: — the shape a leaked config file actually takes — was never scanned.
-_MAPPING_RE = re.compile(
-    r"""(?i)['"]?\b(password|api_key|secret)\b['"]?\s*:\s*['"]([^'"]+)['"]"""
+#: A QUOTED key anywhere on a line — the dict / JSON shape, `{"password": "hunter2"}`.
+_QUOTED_KEY_RE = re.compile(
+    r"""(?i)['"](password|api_key|secret)['"]\s*:\s*['"]([^'"\n]+)['"]"""
 )
+
+#: A BARE key at the start of a line — the YAML shape, `password: hunter2`. Anchored to line
+#: start on purpose: unanchored, it would match the `password` in `def f(password: str)` and
+#: report every type annotation as a leaked credential.
+_YAML_KEY_RE = re.compile(
+    r"""(?im)^\s*(password|api_key|secret)\s*:\s*"""
+    r"""(?:['"]([^'"\n]+)['"]|([^\s'"#][^\n#]*?))\s*(?:#.*)?$"""
+)
+
+#: Values that are a type or a placeholder, not a credential.
+_NOT_A_SECRET = frozenset({"str", "int", "bool", "none", "null", "~", "{}", "[]"})
 
 _ASSIGNMENT_RE = re.compile(
     r"(?im)^\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?"
@@ -55,8 +67,13 @@ def check(path: str) -> int:
         if m and m.group("value").strip():
             findings.append(f"hardcoded {m.group(1)} literal: {line.strip()}")
 
-    for name, value in _MAPPING_RE.findall(text):
+    for name, value in _QUOTED_KEY_RE.findall(text):
         if value.strip():
+            findings.append(f"hardcoded {name.lower()} literal in a mapping: {name}: {value!r}")
+
+    for name, quoted, bare in _YAML_KEY_RE.findall(text):
+        value = (quoted or bare).strip()
+        if value and value.lower() not in _NOT_A_SECRET:
             findings.append(f"hardcoded {name.lower()} literal in a mapping: {name}: {value!r}")
 
     if findings:

@@ -58,6 +58,16 @@ def _headings(text: str) -> list[str]:
     return [_normalize(m.group(1)) for m in _HEADING_RE.finditer(text)]
 
 
+#: Heading prefixes that DENY the provision they name. "## No Audit Rights Are Granted"
+#: contains the word "audit", so matching a heading is not enough — the 0.6.2 fix moved this
+#: defect from prose into headings rather than removing it. A heading that opens by negating
+#: itself does not declare a provision.
+_NEGATIONS = ("no ", "not ", "without ", "excluding ", "except ")
+
+
+def _is_negated(heading: str) -> bool:
+    return heading.startswith(_NEGATIONS)
+
 def _declared(phrase: str, headings: list[str]) -> bool:
     """True when some heading gives this topic its own section."""
     # Trailing (e)s so a "Permitted Disclosures" heading satisfies the
@@ -65,7 +75,9 @@ def _declared(phrase: str, headings: list[str]) -> bool:
     # "Termination" from satisfying "term"; a bare trailing boundary also rejected
     # every plural heading, which broke three legitimate documents.
     pattern = re.compile(rf"\b{re.escape(phrase)}(?:e?s)?\b")
-    return any(pattern.search(heading) for heading in headings)
+    return any(
+        pattern.search(heading) and not _is_negated(heading) for heading in headings
+    )
 
 
 def check(doc_path: str) -> int:

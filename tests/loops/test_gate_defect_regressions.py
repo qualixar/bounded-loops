@@ -1,4 +1,4 @@
-"""The fourteen gate defects found and fixed in 0.6.2, pinned so they stay fixed.
+"""The gate defects found and fixed in 0.6.2, pinned so they stay fixed.
 
 Every case here was CONFIRMED BY RUNNING the shipped checker before it was fixed —
 none was inferred from reading. They were found while designing the held-out mutant
@@ -22,6 +22,13 @@ The eight classes, as a checklist for the next gate anyone writes:
   6. presence checked, ORDER ignored        -> a later instruction overrides the one that passed
   7. sync-only AST walk                     -> `async def` is invisible
   8. empty collection                       -> passes vacuously
+  9. the FIX itself is evadable              -> requiring a heading moved the substring defect
+                                               into headings ("## No Audit Rights") instead of
+                                               removing it
+
+Round 2 exists because of class 9. After fixing the first fourteen I probed my own fixes the
+same way I had probed the originals, and three survived: a negated heading, a case reporter
+with no periods, and an unquoted YAML value. A fix is not a fix until it has been attacked.
 """
 
 from __future__ import annotations
@@ -153,6 +160,30 @@ FALSE_ACCEPTS: list[GateCase] = [
                        "## Data Sharing\nx\n## Your Rights\nx\n## Contact\nx\n\n"
                        "We publish no data retention schedule of any kind.\n"},
     ),
+    # Round 2 — found by probing my OWN 0.6.2 fixes before release. Fixing the substring
+    # class by requiring a heading MOVED the defect into headings rather than removing it,
+    # and two narrowed patterns were still narrower than the thing they claim to check.
+    GateCase(
+        loop="gdpr-dpa-terms", script="seed/check_dpa.py", args=("dpa.md",), expected=1,
+        why="a heading that NEGATES itself satisfied its own requirement",
+        files={"dpa.md": (
+            "# DPA\n## Subject Matter\nx\n## Duration\nx\n## Nature and Purpose\nx\n"
+            "## Type of Personal Data\nx\n## Obligations of the Controller\nx\n"
+            "## Sub-Processor\nx\n## Confidentiality\nx\n## Security Measures\nx\n"
+            "## No Audit Rights Are Granted\nnone\n"
+        )},
+    ),
+    GateCase(
+        loop="citation-existence-check", script="seed/check_citations.py",
+        args=("brief.md",), extra_args=("seed/known_reporter.json",), expected=1,
+        why="a reporter with no periods (Westlaw) was still invisible",
+        files={"brief.md": "See Smith v. Jones, 500 WL 12345 (2026).\n"},
+    ),
+    GateCase(
+        loop="secret-scan-keyless", script="seed/check_secrets.py", args=("s.yaml",), expected=1,
+        why="an UNQUOTED yaml value hid a secret the quoted form catches",
+        files={"s.yaml": "password: hunter2\napi_key: sk-abc123\n"},
+    ),
     GateCase(
         loop="nda-required-clauses", script="seed/check_clauses.py", args=("nda.md",), expected=1,
         why="prose DENYING a governing law satisfied Governing Law",
@@ -239,6 +270,21 @@ STILL_ACCEPTED: list[GateCase] = [
         files={"c/a.md": '# A\n<a href="https://example.com">ext</a>\n[b](b.md)\n', "c/b.md": "# B\n"},
     ),
     GateCase(
+        loop="gdpr-dpa-terms", script="seed/check_dpa.py", args=("dpa.md",), expected=0,
+        why="a real Audit heading is not a negation and must still satisfy the requirement",
+        files={"dpa.md": (
+            "# DPA\n## Subject Matter\nx\n## Duration\nx\n## Nature and Purpose\nx\n"
+            "## Type of Personal Data\nx\n## Obligations of the Controller\nx\n"
+            "## Sub-Processor\nx\n## Confidentiality\nx\n## Security Measures\nx\n"
+            "## Audit\nThe controller may audit annually.\n"
+        )},
+    ),
+    GateCase(
+        loop="secret-scan-keyless", script="seed/check_secrets.py", args=("c.yaml",), expected=0,
+        why="ordinary yaml config keys are not credentials",
+        files={"c.yaml": "timeout: 30\nname: myapp\n"},
+    ),
+    GateCase(
         loop="cds-view-annotations", script="seed/check_cds.py", args=("z.txt",), expected=0,
         why="real, uncommented annotations still satisfy the gate",
         files={"z.txt": "@AccessControl.authorizationCheck: #CHECK\n@EndUserText.label: x\n"
@@ -263,8 +309,7 @@ def test_gate_verdict(case: GateCase, tmp_path: Path) -> None:
 #: gate fix without thinking about over-correction fails this test rather than
 #: passing quietly.
 NO_NEAR_MISS_TO_GUARD = {
-    "gdpr-dpa-terms",           # guarded via nda-required-clauses, identical code path
-    "privacy-policy-completeness",  # ditto
+    "privacy-policy-completeness",  # guarded via gdpr-dpa-terms, identical code path
     "alt-text-present",         # "image has alt text" has no near-miss
     "rfc-decision-recorded",    # guarded via runbook-completeness, identical _sections
     "okr-measurable",           # "zero key results" has no legitimate form
@@ -284,7 +329,7 @@ def test_every_fixed_gate_is_pinned_in_both_directions() -> None:
     accepts = {c.loop for c in FALSE_ACCEPTS}
     rejects = {c.loop for c in FALSE_REJECTS}
 
-    assert len(accepts) == 14, sorted(accepts)
+    assert len(accepts) == 14, sorted(accepts)  # 14 loops; 17 confirmed defect cases
     assert rejects == {"conventional-commits", "dependency-pinning"}
 
     unguarded = (accepts | rejects) - {c.loop for c in STILL_ACCEPTED}
