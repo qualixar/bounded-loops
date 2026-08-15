@@ -175,16 +175,20 @@ CLI_PROFILES: Mapping[str, CliProfile] = MappingProxyType({
         "grok", ("-p",), prompt_via="arg",
         usage_args=("--output-format", "json"), envelope="grok",
     ),
-    # codex and muse emit JSONL EVENT STREAMS (`--json`), not a single envelope. Both were
-    # probed live on 2026-08-13: muse's 26-event stream contains NO token, usage, cost or spend
-    # key anywhere in its payload tree — a verified absence, not an unread shape. codex did not
-    # return within the probe window (it is the Azure-hosted model whose connection drops on long
-    # jobs), so its stream is genuinely unread.
+    # codex and muse declare NO usage_args and NO envelope, so both are invoked plainly and both
+    # return plain text. Re-probed live on 2026-08-15 against the real binaries: each exited 0 with
+    # a 2-byte reply and no JSON anywhere. The unmetered classification is therefore measured on
+    # both, not assumed on either.
     #
-    # Either way these stay unmetered, and that is stated rather than papered over: a spend cap
-    # on them fails closed naming the provider, instead of metering their calls as free. Guessing
-    # a parser from a --help string is exactly how a spend total ends up wrong in the
-    # safe-looking direction.
+    # Two claims in the previous version of this comment were wrong and are recorded here rather
+    # than quietly deleted. It said codex "did not return within the probe window (it is the
+    # Azure-hosted model whose connection drops on long jobs)" — codex is a personal subscription
+    # login with no Azure involved, and it returns promptly. An unread shape had been written up as
+    # a known infrastructure failure, which is a worse error than admitting it was unread.
+    #
+    # These stay unmetered, and that is stated rather than papered over: a spend cap on them fails
+    # closed naming the provider, instead of metering their calls as free. Guessing a parser from a
+    # --help string is exactly how a spend total ends up wrong in the safe-looking direction.
     "codex": CliProfile("codex", ("exec", "--skip-git-repo-check"), prompt_via="arg"),
     "muse": CliProfile("muse", ("exec",), prompt_via="arg"),
     # Verified live (2026-08-13): reply under `response`, usage.total_tokens = input + output
@@ -195,6 +199,36 @@ CLI_PROFILES: Mapping[str, CliProfile] = MappingProxyType({
         usage_args=("--output-format", "json"), envelope="agy",
     ),
 })
+
+
+def build_cli_argv(
+    profile: CliProfile, prompt: str, *, binary: str
+) -> tuple[list[str], str | None]:
+    """Assemble one CLI launch: ``(argv, stdin_text)``. Pure — no filesystem, no subprocess.
+
+    Extracted from ``LocalCliConnectorWorker._launch`` so the ORDER can be tested without a
+    subscription, a login, or a process. It was inline, and the ordering rule below was held up by
+    a comment: the existing unit tests hand ``_caged_argv`` a pre-built ``inner_argv`` and never
+    exercise the code that builds one.
+
+    **usage_args go LAST, after the prompt, and never between a flag and its value.** Placing them
+    straight after ``args`` breaks Grok outright: ``-p`` is an alias for ``--single <PROMPT>``, so
+    ``grok -p --output-format json <prompt>`` makes ``-p`` swallow the flag and the CLI exits with
+    "a value is required for '--single <PROMPT>'". Verified twice — once by the cross-CLI graph that
+    first found it, and once by an audit probe that reproduced the exact failure by rebuilding the
+    argv in the wrong order.
+
+    The returned argv is also what the Seatbelt cage wraps, so a sandboxed run cannot silently drop
+    back to unmetered text output.
+    """
+    argv = [binary, *profile.args]
+    stdin_text: str | None = None
+    if profile.prompt_via == "arg":
+        argv.append(prompt)
+    else:
+        stdin_text = prompt
+    argv.extend(profile.usage_args)
+    return argv, stdin_text
 
 
 @dataclass(frozen=True)
@@ -266,20 +300,9 @@ class LocalCliConnectorWorker:
 
         workdir = self._workdir(node)
         deadline = (node.hard_deadline_ms / 1000.0) if node.hard_deadline_ms else self._default_deadline_s
-        inner_argv = [binary, *invocation.profile.args]
-        stdin_text: str | None = None
-        if invocation.profile.prompt_via == "arg":
-            inner_argv.append(invocation.prompt)
-        else:
-            stdin_text = invocation.prompt
-        # usage_args go LAST, after the prompt, and never between a flag and its value. Placing
-        # them right after `args` broke Grok outright: `-p` is an alias for `--single <PROMPT>`,
-        # so `grok -p --output-format json <prompt>` made `-p` swallow the flag and the CLI
-        # exited with "a value is required for '--single <PROMPT>'". Found by running the real
-        # cross-CLI graph — the unit fixtures never build a real argv.
-        # They ride the same inner_argv the cage wraps, so a sandboxed run cannot silently drop
-        # back to unmetered text output.
-        inner_argv.extend(invocation.profile.usage_args)
+        inner_argv, stdin_text = build_cli_argv(
+            invocation.profile, invocation.prompt, binary=binary,
+        )
 
         env = self._child_env(invocation.profile)
         argv: list[str] = inner_argv
