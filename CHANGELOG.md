@@ -5,6 +5,50 @@ All notable changes to bounded-loops are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-08-15
+
+### Fixed
+
+Fourteen shipped gates accepted output they should have rejected, or rejected output they
+should have accepted. Each was confirmed by running the gate, and each now has a regression
+test in both directions.
+
+**Gates that passed genuinely broken work:**
+
+- `citation-existence-check` — a fabricated case in a reporter absent from the trusted file
+  was never examined at all, because the citation pattern was built from that file. Inventing
+  a reporter was easier than inventing a page number. An unverifiable citation now fails.
+- `dockerfile-no-root` — `USER root` after a non-root `USER` passed. Only the last `USER` in
+  the final build stage decides who the container runs as, and that is what is checked now.
+- `gdpr-dpa-terms`, `nda-required-clauses`, `privacy-policy-completeness` — a document
+  *denying* a required term satisfied it, because any mention anywhere counted. Each required
+  term must now have its own section heading.
+- `runbook-completeness`, `rfc-decision-recorded` — a document of bare headings with nothing
+  written under them passed. Sections must now have content; sub-headings count as content.
+- `alt-text-present` — an HTML `<img>` with no `alt` was invisible; only markdown images were
+  checked. Both are checked now.
+- `broken-internal-links` — an HTML `<a href>` to a missing file was invisible.
+- `secret-scan-keyless` — a password in a dict or JSON mapping was invisible; only
+  `name = "value"` assignments were scanned.
+- `cds-view-annotations` — commented-out annotations counted as present.
+- `assertion-density`, `test-naming-contract` — `async def` tests were invisible.
+- `okr-measurable` — an objective with no key results at all passed.
+
+**Gates that blocked correct work:**
+
+- `conventional-commits` — `feat!:` was rejected. The `!` breaking-change marker is part of
+  Conventional Commits; `revert` and `style` were also missing from the accepted types.
+- `dependency-pinning` — `requests[security]==2.31.0`, `urllib3 == 2.0.7`, `torch==2.1.0+cpu`
+  and environment markers were rejected as unpinned. All are exact pins. `foo==1.0.*` is a
+  prefix match rather than a pin and is still rejected.
+
+### Added
+
+- Every loop in the catalog now has an end-to-end test that runs by default: it must reach
+  DONE, and its untouched seed must fail its own gate. Previously ten loops had such a test
+  and all ten were excluded from the default run, so a broken loop could ship green. The
+  whole catalog takes about 20 seconds.
+
 ## [0.6.1] — 2026-08-15
 
 ### Fixed

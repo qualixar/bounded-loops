@@ -52,9 +52,18 @@ def check(path: str) -> int:
         if v:
             violations.append(v)
 
-    user_matches = _USER_RE.findall(text)
-    non_root_users = [u for u in user_matches if u.lower() not in ("root", "0")]
-    if not non_root_users:
+    # Only the FINAL build stage decides who the container runs as, and within
+    # it only the LAST USER takes effect. Asking merely whether SOME non-root
+    # USER appeared anywhere passed `USER appuser` followed by `USER root` — a
+    # container running as root while a security gate reported success.
+    final_stage = text.rsplit("\nFROM ", 1)[-1] if "\nFROM " in text else text
+    user_matches = _USER_RE.findall(final_stage)
+    if user_matches and user_matches[-1].lower() in ("root", "0"):
+        violations.append(
+            f"the last USER instruction is '{user_matches[-1]}' — the container "
+            "runs as root regardless of any earlier USER"
+        )
+    elif not user_matches:
         violations.append("no USER instruction switching to a non-root user found")
 
     if violations:

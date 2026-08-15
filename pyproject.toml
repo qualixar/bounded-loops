@@ -1,6 +1,6 @@
 [project]
 name = "bounded-loops"
-version = "0.6.1"
+version = "0.6.2"
 description = "A graph engine for reliable AI agents: a DAG of independently-gated bounded loops (68-loop catalog, 64 keyless) with no-secret connectors and receipt-backed audit trails."
 readme = "README.md"
 requires-python = ">=3.11"

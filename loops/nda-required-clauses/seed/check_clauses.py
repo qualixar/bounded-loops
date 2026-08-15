@@ -11,9 +11,19 @@ expires, has no forum for disputes, or never requires the other party
 to give back (or destroy) confidential materials.
 
 Pure Python standard library: no network, no API key, no external
-tool. It runs anywhere Python does. The check is a case-insensitive
-heading/keyword match against the document body — it does not judge
-legal quality, only presence of the required section.
+tool. It runs anywhere Python does. It does not judge legal quality, only
+whether the agreement DECLARES each required clause as its own section.
+
+WHY HEADINGS AND NOT PROSE. This used to substring-match the whole document,
+so any sentence that merely mentioned a word satisfied the corresponding
+requirement — including a sentence denying it. A keyword search cannot
+distinguish a clause from a passing reference to one. Requiring a heading is a
+narrower contract and an honest one. An NDA that covers every clause in
+unheaded prose will now FAIL: that is the gate refusing to certify what it
+cannot verify.
+
+Matching is case-insensitive and word-boundary anchored, so a "Termination"
+heading does not satisfy the "term" requirement.
 
 Exit code: 0 = every required clause is present (gate passes),
 1 = one or more required clauses are missing (gate fails),
@@ -21,12 +31,13 @@ Exit code: 0 = every required clause is present (gate passes),
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
 # Each required clause is declared as (label, [alternate keyword phrases]).
-# A clause is considered PRESENT if any one of its keyword phrases appears
-# case-insensitively in the document, either as a heading or in body text.
+# A clause is PRESENT when one of its phrases appears in a markdown HEADING —
+# that is, the agreement gives it its own section.
 REQUIRED_CLAUSES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Confidentiality", ("confidentiality",)),
     ("Term/Duration", ("term", "duration")),
@@ -36,9 +47,31 @@ REQUIRED_CLAUSES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+_HEADING_RE = re.compile(r"^\s*#{1,6}\s+(.+?)\s*$", re.MULTILINE)
+
+
 def _normalize(s: str) -> str:
-    """Collapse internal whitespace for reliable substring matching."""
+    """Collapse internal whitespace for reliable matching."""
     return " ".join(s.split()).lower()
+
+
+def _headings(text: str) -> list[str]:
+    """The normalized text of every markdown heading in the document."""
+    return [_normalize(m.group(1)) for m in _HEADING_RE.finditer(text)]
+
+
+def _declared(phrase: str, headings: list[str]) -> bool:
+    """True when some heading gives this clause its own section.
+
+    Word-boundary anchored, so a "Termination" heading does not satisfy the
+    "term" requirement.
+    """
+    # Trailing (e)s so a "Permitted Disclosures" heading satisfies the
+    # "permitted disclosure" phrase. The LEADING boundary is what stops
+    # "Termination" from satisfying "term"; a bare trailing boundary also rejected
+    # every plural heading, which broke three legitimate documents.
+    pattern = re.compile(rf"\b{re.escape(phrase)}(?:e?s)?\b")
+    return any(pattern.search(heading) for heading in headings)
 
 
 def check(doc_path: str) -> int:
@@ -48,11 +81,11 @@ def check(doc_path: str) -> int:
         print(f"check_clauses: cannot run: {exc}", file=sys.stderr)
         return 2
 
-    normalized = _normalize(text)
+    headings = _headings(text)
 
     missing: list[str] = []
     for label, phrases in REQUIRED_CLAUSES:
-        if not any(phrase in normalized for phrase in phrases):
+        if not any(_declared(phrase, headings) for phrase in phrases):
             missing.append(label)
 
     if missing:

@@ -24,6 +24,7 @@ more missing (gate fails, lists them), 2 = could not run (file missing).
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -34,6 +35,17 @@ _REQUIRED_ANNOTATIONS = (
 )
 
 
+def _strip_comments(ddl: str) -> str:
+    """DDL with `/* block */` and `// line` comments removed.
+
+    A `//` inside a string literal would be treated as a comment; CDS
+    annotations do not contain one, and erring toward "not present" keeps the
+    gate strict rather than permissive.
+    """
+    without_blocks = re.sub(r"/\*.*?\*/", " ", ddl, flags=re.DOTALL)
+    return "\n".join(line.split("//", 1)[0] for line in without_blocks.splitlines())
+
+
 def check(cds_path: str) -> int:
     try:
         text = Path(cds_path).read_text(encoding="utf-8")
@@ -41,7 +53,11 @@ def check(cds_path: str) -> int:
         print(f"check_cds: cannot read {cds_path}: {exc}", file=sys.stderr)
         return 2
 
-    missing = [a for a in _REQUIRED_ANNOTATIONS if a not in text]
+    # Comments are stripped first. A substring search over raw DDL counted a
+    # COMMENTED-OUT annotation as present, so a view with every annotation
+    # disabled passed the gate that exists to require them.
+    active = _strip_comments(text)
+    missing = [a for a in _REQUIRED_ANNOTATIONS if a not in active]
 
     if missing:
         print(f"check_cds: {len(missing)} required annotation(s) missing:")

@@ -8,6 +8,19 @@ an exact version with `==`. Bare names, or ranges using `>=`/`<=`/`~=`/`>`/
 `<`/`!=`, are rejected as unpinned — an unpinned dependency can silently
 pull in a new, unreviewed, possibly-compromised release.
 
+ACCEPTED alongside the plain `name==version` form, because PEP 440 and the
+requirements-file format allow them and every one of these IS exactly pinned:
+  - extras:               `requests[security]==2.31.0`
+  - space around `==`:    `urllib3 == 2.0.7`
+  - local versions:       `torch==2.1.0+cpu`
+  - epochs:               `foo==1!2.0`
+  - environment markers:  `tomli==2.0.1; python_version < "3.11"`
+Rejecting those was this gate blocking correct work — a false rejection, which
+costs a retry loop an attempt and teaches the agent to mangle valid input.
+
+STILL REJECTED, and deliberately: `foo==1.0.*`. A wildcard is a prefix match,
+not an exact pin, and it is precisely the shape this gate exists to catch.
+
 Exit code: 0 = every dependency is exactly pinned (gate passes), 1 = one or
 more unpinned dependencies (gate fails), 2 = could not run.
 """
@@ -17,7 +30,13 @@ import re
 import sys
 from pathlib import Path
 
-_EXACT_PIN_RE = re.compile(r"^[A-Za-z0-9_.\-]+==[A-Za-z0-9_.\-]+$")
+_EXACT_PIN_RE = re.compile(
+    r"^[A-Za-z0-9_.\-]+"                 # distribution name
+    r"(?:\[[A-Za-z0-9_.,\-\s]+\])?"      # optional extras: requests[security]
+    r"\s*==\s*"                          # the exact-pin operator, space permitted
+    r"[A-Za-z0-9_.\-+!]+"                # version: local (+), epoch (!). NO '*'.
+    r"\s*(?:;.*)?$"                      # optional environment marker
+)
 
 
 def check(path: str) -> int:

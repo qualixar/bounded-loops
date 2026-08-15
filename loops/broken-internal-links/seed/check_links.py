@@ -23,6 +23,10 @@ import sys
 from pathlib import Path
 
 _LINK_RE = re.compile(r"\]\(([^)\s]+)\)")
+# Raw HTML anchors, which every markdown renderer passes through verbatim.
+# Checking only `](target)` meant <a href="missing.md"> resolved to nothing and
+# was never checked — a broken link the gate could not see.
+_HTML_LINK_RE = re.compile(r"""<a\b[^>]*?\bhref\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 
 
 def _is_relative_target(target: str) -> bool:
@@ -58,7 +62,7 @@ def check(content_dir: str) -> int:
             print(f"check_links: cannot read {md_file}: {exc}", file=sys.stderr)
             return 2
 
-        for raw_target in _LINK_RE.findall(text):
+        for raw_target in _LINK_RE.findall(text) + _HTML_LINK_RE.findall(text):
             if not _is_relative_target(raw_target):
                 continue
             target = _strip_anchor(raw_target)

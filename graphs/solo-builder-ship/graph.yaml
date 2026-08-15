@@ -37,7 +37,7 @@ nodes:
     isolation: process_restricted
   - id: check-commits
     kind: loop
-    loop_package: "sha256:e322142fba549b0a803336ee099fefcf92b95a2a9e36980fcdc3aab8030b9299"
+    loop_package: "sha256:c97e21aa7175ef1f930a1c15a81e8c072e427b701e5666bdda76ed92b16ba369"
     inputs: {}
     outputs:
       verdict: internal

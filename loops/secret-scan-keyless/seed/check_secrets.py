@@ -21,6 +21,13 @@ from pathlib import Path
 
 _AWS_KEY_RE = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+#: The same three names inside a dict / JSON / YAML mapping. The assignment
+#: pattern above is anchored to `name = "value"`, so `{"password": "hunter2"}`
+#: — the shape a leaked config file actually takes — was never scanned.
+_MAPPING_RE = re.compile(
+    r"""(?i)['"]?\b(password|api_key|secret)\b['"]?\s*:\s*['"]([^'"]+)['"]"""
+)
+
 _ASSIGNMENT_RE = re.compile(
     r"(?im)^\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?"
     r"(password|api_key|secret)\s*=\s*"
@@ -47,6 +54,10 @@ def check(path: str) -> int:
         m = _ASSIGNMENT_RE.match(line)
         if m and m.group("value").strip():
             findings.append(f"hardcoded {m.group(1)} literal: {line.strip()}")
+
+    for name, value in _MAPPING_RE.findall(text):
+        if value.strip():
+            findings.append(f"hardcoded {name.lower()} literal in a mapping: {name}: {value!r}")
 
     if findings:
         print(f"check_secrets: {len(findings)} hardcoded secret(s) found:")

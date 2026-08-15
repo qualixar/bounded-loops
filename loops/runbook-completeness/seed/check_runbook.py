@@ -16,8 +16,19 @@ after stripping leading `#` characters and whitespace, matches a required
 section name case-insensitively (e.g. "## severity", "# SEVERITY", and
 "### Severity" all count).
 
-Exit code: 0 = every required section present (gate passes), 1 = one or
-more sections missing (gate fails), 2 = could not run.
+A heading alone is NOT a section. Every required section must also have
+CONTENT beneath it — anything before the next heading at the same or a higher
+level. Checking headings only meant a runbook consisting of nothing but the
+seven required headings and no text whatsoever passed this gate, which is the
+precise failure the module docstring says it exists to prevent: the on-call
+engineer opens Rollback at 3am and finds an empty heading. A gate that cannot
+tell a written runbook from a table of contents is not checking completeness.
+
+Sub-headings count as content, so a Mitigation section organised as
+"### Step 1 / ### Step 2" is complete, not empty.
+
+Exit code: 0 = every required section present and non-empty (gate passes),
+1 = one or more sections missing or empty (gate fails), 2 = could not run.
 """
 from __future__ import annotations
 
@@ -35,17 +46,38 @@ REQUIRED_SECTIONS = (
     "Escalation",
 )
 
-_HEADING_RE = re.compile(r"^\s*#{1,6}\s+(.+?)\s*$")
+_HEADING_RE = re.compile(r"^\s*(#{1,6})\s+(.+?)\s*$")
 
 
-def _headings(text: str) -> set[str]:
-    """Return the set of lowercased, stripped markdown heading texts."""
-    found: set[str] = set()
+def _sections(text: str) -> dict[str, str]:
+    """Map lowercased heading text -> the content written beneath it.
+
+    A section runs until the next heading at the SAME OR A HIGHER level, so a
+    sub-heading and its prose belong to the parent section instead of ending it.
+    That is what lets "## Mitigation / ### Step 1 / ..." count as written.
+    """
+    sections: dict[str, str] = {}
+    open_sections: list[tuple[str, int, list[str]]] = []
+
+    def close_to(level: int) -> None:
+        while open_sections and open_sections[-1][1] >= level:
+            name, _, body = open_sections.pop()
+            sections[name] = "\n".join(body).strip()
+
     for line in text.splitlines():
         match = _HEADING_RE.match(line)
-        if match:
-            found.add(match.group(1).strip().lower())
-    return found
+        if match is None:
+            for _, _, body in open_sections:
+                body.append(line)
+            continue
+        level = len(match.group(1))
+        close_to(level)
+        for _, _, body in open_sections:
+            body.append(line)  # a sub-heading is content for its parent
+        open_sections.append((match.group(2).strip().lower(), level, []))
+
+    close_to(1)
+    return sections
 
 
 def check(runbook_path: str) -> int:
@@ -55,16 +87,22 @@ def check(runbook_path: str) -> int:
         print(f"check_runbook: cannot run: {exc}", file=sys.stderr)
         return 2
 
-    headings = _headings(text)
-    missing = [s for s in REQUIRED_SECTIONS if s.lower() not in headings]
+    sections = _sections(text)
+    missing = [s for s in REQUIRED_SECTIONS if s.lower() not in sections]
+    empty = [s for s in REQUIRED_SECTIONS if s.lower() in sections and not sections[s.lower()]]
 
-    if missing:
-        print(f"check_runbook: {len(missing)} required section(s) missing:")
+    if missing or empty:
+        print(
+            f"check_runbook: {len(missing)} required section(s) missing, "
+            f"{len(empty)} present but empty:"
+        )
         for s in missing:
-            print(f"  - {s}")
+            print(f"  - {s}  (no such heading)")
+        for s in empty:
+            print(f"  - {s}  (heading present, but nothing is written under it)")
         return 1
 
-    print("check_runbook: all required sections present")
+    print("check_runbook: all required sections present and non-empty")
     return 0
 
 

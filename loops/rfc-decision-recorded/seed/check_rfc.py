@@ -23,10 +23,41 @@ from pathlib import Path
 
 _REQUIRED_SECTIONS = ("status", "context", "decision", "consequences")
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
+_LEVELLED_HEADING_RE = re.compile(r"^\s*(#{1,6})\s+(.+?)\s*$")
 
 
-def _found_headings(text: str) -> set[str]:
-    return {m.group(1).strip().lower() for m in _HEADING_RE.finditer(text)}
+def _sections(text: str) -> dict[str, str]:
+    """Map lowercased heading text -> what is written beneath it.
+
+    A section runs until the next heading at the same or a higher level, so a
+    sub-heading and its prose belong to the parent rather than ending it.
+
+    Checking for headings alone let an RFC consisting of four bare headings and
+    no text pass — the exact document this gate exists to reject, since a
+    "## Decision" with nothing under it records no decision.
+    """
+    sections: dict[str, str] = {}
+    open_sections: list[tuple[str, int, list[str]]] = []
+
+    def close_to(level: int) -> None:
+        while open_sections and open_sections[-1][1] >= level:
+            name, _, body = open_sections.pop()
+            sections[name] = "\n".join(body).strip()
+
+    for line in text.splitlines():
+        match = _LEVELLED_HEADING_RE.match(line)
+        if match is None:
+            for _, _, body in open_sections:
+                body.append(line)
+            continue
+        level = len(match.group(1))
+        close_to(level)
+        for _, _, body in open_sections:
+            body.append(line)
+        open_sections.append((match.group(2).strip().lower(), level, []))
+
+    close_to(1)
+    return sections
 
 
 def check(rfc_path: str) -> int:
@@ -36,13 +67,19 @@ def check(rfc_path: str) -> int:
         print(f"check_rfc: cannot run: {exc}", file=sys.stderr)
         return 2
 
-    headings = _found_headings(text)
-    missing = [s for s in _REQUIRED_SECTIONS if s not in headings]
+    sections = _sections(text)
+    missing = [s for s in _REQUIRED_SECTIONS if s not in sections]
+    empty = [s for s in _REQUIRED_SECTIONS if s in sections and not sections[s]]
 
-    if missing:
-        print(f"check_rfc: {len(missing)} required section(s) missing:")
+    if missing or empty:
+        print(
+            f"check_rfc: {len(missing)} required section(s) missing, "
+            f"{len(empty)} present but empty:"
+        )
         for m in missing:
-            print(f"  - {m.title()}")
+            print(f"  - {m.title()}  (no such heading)")
+        for m in empty:
+            print(f"  - {m.title()}  (heading present, but nothing is written under it)")
         return 1
 
     print("check_rfc: Status, Context, Decision, and Consequences are all present")

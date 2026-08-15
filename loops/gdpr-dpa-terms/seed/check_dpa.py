@@ -11,23 +11,38 @@ one of these is a common defect in AI-drafted or template-derived
 agreements and is a direct compliance gap under GDPR.
 
 Pure Python standard library: no network, no API key, no external tool.
-It runs anywhere Python does. The check is a case-insensitive keyword
-phrase match against the document body — it does not judge legal quality,
-only presence of the required term.
+It runs anywhere Python does. It does not judge legal quality, only whether
+the agreement DECLARES each required term as its own provision.
 
-Exit code: 0 = every mandatory term is present (gate passes),
+WHY HEADINGS AND NOT PROSE. This used to substring-match the whole document
+body, which meant a DPA containing the sentence "this agreement grants NO
+audit rights whatsoever" satisfied the Art.28(3) audit requirement — the word
+was present, so the term was "covered". A keyword search cannot tell a
+provision from its negation, so it was passing agreements that failed the
+exact compliance check it advertises. Requiring a heading is a narrower
+contract, and an honest one: it verifies a dedicated provision exists.
+
+The consequence is deliberate and worth stating — a DPA that covers every
+Art.28(3) term in unheaded prose will now FAIL. That is this gate refusing to
+certify what it cannot actually verify, which is the same discipline the rest
+of this project applies to unmeasurable quantities.
+
+Matching is case-insensitive and word-boundary anchored, so a "Termination"
+heading does not satisfy a "term" requirement.
+
+Exit code: 0 = every mandatory term is declared (gate passes),
 1 = one or more mandatory terms are missing (gate fails),
 2 = could not run.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
 # Each mandatory Art.28(3) term is declared as (label, [alternate keyword
-# phrases]). A term is considered PRESENT if any one of its keyword phrases
-# appears case-insensitively in the document, either as a heading or in
-# body text.
+# phrases]). A term is PRESENT when one of its phrases appears in a markdown
+# HEADING — that is, the agreement gives it its own provision.
 MANDATORY_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Subject Matter", ("subject matter",)),
     ("Duration", ("duration",)),
@@ -41,9 +56,27 @@ MANDATORY_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+_HEADING_RE = re.compile(r"^\s*#{1,6}\s+(.+?)\s*$", re.MULTILINE)
+
+
 def _normalize(s: str) -> str:
-    """Collapse internal whitespace for reliable substring matching."""
+    """Collapse internal whitespace for reliable matching."""
     return " ".join(s.split()).lower()
+
+
+def _headings(text: str) -> list[str]:
+    """The normalized text of every markdown heading in the document."""
+    return [_normalize(m.group(1)) for m in _HEADING_RE.finditer(text)]
+
+
+def _declared(phrase: str, headings: list[str]) -> bool:
+    """True when some heading gives this term its own provision."""
+    # Trailing (e)s so a "Permitted Disclosures" heading satisfies the
+    # "permitted disclosure" phrase. The LEADING boundary is what stops
+    # "Termination" from satisfying "term"; a bare trailing boundary also rejected
+    # every plural heading, which broke three legitimate documents.
+    pattern = re.compile(rf"\b{re.escape(phrase)}(?:e?s)?\b")
+    return any(pattern.search(heading) for heading in headings)
 
 
 def check(doc_path: str) -> int:
@@ -53,11 +86,11 @@ def check(doc_path: str) -> int:
         print(f"check_dpa: cannot run: {exc}", file=sys.stderr)
         return 2
 
-    normalized = _normalize(text)
+    headings = _headings(text)
 
     missing: list[str] = []
     for label, phrases in MANDATORY_TERMS:
-        if not any(phrase in normalized for phrase in phrases):
+        if not any(_declared(phrase, headings) for phrase in phrases):
             missing.append(label)
 
     if missing:

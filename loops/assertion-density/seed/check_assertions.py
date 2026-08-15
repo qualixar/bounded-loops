@@ -20,7 +20,12 @@ import sys
 from pathlib import Path
 
 
-def _has_assert(func: ast.FunctionDef) -> bool:
+#: Both function shapes. An `async def test_x()` is a test pytest collects and
+#: runs; matching only ast.FunctionDef let every assertion-free async test pass.
+_ANY_FUNC = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _has_assert(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return any(isinstance(node, ast.Assert) for node in ast.walk(func))
 
 
@@ -28,7 +33,7 @@ def _find_assertion_free(tree: ast.Module) -> list[str]:
     assertion_free: list[str] = []
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+        if isinstance(node, _ANY_FUNC) and node.name.startswith("test_"):
             if not _has_assert(node):
                 assertion_free.append(node.name)
 

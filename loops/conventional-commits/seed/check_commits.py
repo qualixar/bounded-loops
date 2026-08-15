@@ -12,8 +12,13 @@ catch.
 Pure Python standard library: no network, no API key, no external tool. It
 runs anywhere Python does.
 
-Allowed types: feat, fix, docs, refactor, test, chore, perf, ci, build.
+Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore,
+revert — the type list of Conventional Commits v1.0.0.
 Scope, if present, is lowercase alphanumeric plus hyphens, in parentheses.
+An optional `!` before the colon marks a breaking change (`feat!:`,
+`feat(api)!:`), which the spec defines and which this gate must accept: it is
+the single most important subject a release tool reads, and rejecting it made
+this gate refuse valid input it advertised support for.
 A description must follow the colon-space.
 
 Exit code: 0 = every line conforms (gate passes), 1 = one or more lines
@@ -26,7 +31,10 @@ import sys
 from pathlib import Path
 
 _SUBJECT_RE = re.compile(
-    r"^(feat|fix|docs|refactor|test|chore|perf|ci|build)(\([a-z0-9-]+\))?: .+$"
+    r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
+    r"(\([a-z0-9-]+\))?"
+    r"!?"  # breaking-change marker, per Conventional Commits v1.0.0
+    r": .+$"
 )
 
 

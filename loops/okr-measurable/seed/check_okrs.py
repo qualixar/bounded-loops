@@ -58,6 +58,11 @@ def check(okrs_path: str) -> int:
     for objective in data:
         obj_text = objective.get("objective", "<missing objective>")
         key_results = objective.get("key_results", [])
+        if not key_results:
+            # Zero key results is the least measurable objective there is, and
+            # an empty list made the per-key-result loop pass over it in silence.
+            violations.append(f"[{obj_text}]: no key results at all")
+            continue
         for kr in key_results:
             reasons = _is_vague(kr)
             if reasons:

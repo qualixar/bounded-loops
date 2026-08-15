@@ -26,7 +26,12 @@ import sys
 from pathlib import Path
 
 
-def _has_assert(func: ast.FunctionDef) -> bool:
+#: Both function shapes — an `async def` test is still a test. See
+#: check_assertions.py; the same sync-only walk hid misnamed async tests here.
+_ANY_FUNC = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _has_assert(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return any(isinstance(node, ast.Assert) for node in ast.walk(func))
 
 
@@ -36,11 +41,11 @@ def _find_misnamed(tree: ast.Module) -> list[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
             for item in node.body:
-                if isinstance(item, ast.FunctionDef) and not item.name.startswith("test_"):
+                if isinstance(item, _ANY_FUNC) and not item.name.startswith("test_"):
                     misnamed.append(f"{node.name}.{item.name}")
 
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and not node.name.startswith("test_"):
+        if isinstance(node, _ANY_FUNC) and not node.name.startswith("test_"):
             if _has_assert(node):
                 misnamed.append(node.name)
 

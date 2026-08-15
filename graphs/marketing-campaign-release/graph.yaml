@@ -37,7 +37,7 @@ nodes:
     isolation: process_restricted
   - id: check-alt-text
     kind: loop
-    loop_package: "sha256:e3ce4e1a88d8125dd3501005697805ce6b8c8320c4c586d1afb2d3e47780c1fc"
+    loop_package: "sha256:a25dcd89fc62af1ef5f3cad14ba78074ec2577a5a96fbb26078d9efeac0d9009"
     inputs: {}
     outputs:
       verdict: internal
