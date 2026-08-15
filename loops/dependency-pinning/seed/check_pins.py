@@ -47,12 +47,25 @@ def check(path: str) -> int:
         return 2
 
     violations: list[str] = []
+    declared = 0
     for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
+        declared += 1
         if not _EXACT_PIN_RE.match(line):
             violations.append(line)
+
+    # A requirements file with no dependencies in it has no UNPINNED dependencies either, so the
+    # violation list is empty and the gate used to pass. "Every dependency is pinned" is satisfied
+    # vacuously by deleting the dependencies, which is the opposite of what the loop asks for.
+    # Found by the held-out mutant corpus: emptying, blanking or truncating this file all passed.
+    if declared == 0:
+        print(
+            "check_pins: no dependencies found. An empty requirements file satisfies "
+            "'every dependency is pinned' only vacuously — pin the dependencies, do not remove them."
+        )
+        return 1
 
     if violations:
         print(f"check_pins: {len(violations)} unpinned dependenc{'y' if len(violations) == 1 else 'ies'}:")

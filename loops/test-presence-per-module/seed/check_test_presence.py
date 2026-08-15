@@ -18,6 +18,24 @@ import sys
 from pathlib import Path
 
 
+def _has_a_test(path: Path) -> bool:
+    """Whether this file actually defines a test, rather than merely existing.
+
+    Existence alone was the original check, and an empty file passes it. The held-out mutant
+    corpus found that mechanically: emptying, blanking, truncating or overwriting every test file
+    left this gate reporting that every module was covered. A file with no `def test_` in it
+    provides exactly the zero verified coverage this gate exists to detect, so treating it as a
+    test made the gate agree with the thing it was built to catch.
+
+    Deliberately a text scan rather than an AST parse: a truncated or filler file is often not
+    valid Python at all, and a parse error must not be the reason a missing test goes unreported.
+    """
+    try:
+        return "def test_" in path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def _find_missing(src_dir: Path, tests_dir: Path) -> list[str]:
     missing: list[str] = []
     for src_file in sorted(src_dir.glob("*.py")):
@@ -25,7 +43,7 @@ def _find_missing(src_dir: Path, tests_dir: Path) -> list[str]:
             continue
         mod = src_file.stem
         expected_test = tests_dir / f"test_{mod}.py"
-        if not expected_test.exists():
+        if not expected_test.exists() or not _has_a_test(expected_test):
             missing.append(mod)
     return missing
 
