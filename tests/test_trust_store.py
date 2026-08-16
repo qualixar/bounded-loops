@@ -265,6 +265,9 @@ def test_save_leaves_no_temp_files_on_success(tmp_path, monkeypatch):
     store_path = tmp_path / "trust.json"
     monkeypatch.setenv("BOUNDED_LOOPS_TRUST_STORE", str(store_path))
     record_trust(tmp_path, "cmd")
+    # Existence obligation (0.6.5): an empty directory would satisfy "no temp files remain"
+    # while proving the store was never written at all.
+    assert store_path.exists(), "the store was not written; a leftover check over nothing passes"
     leftover = [
         p for p in store_path.parent.iterdir()
         if p != store_path and p.name.startswith(".trust_tmp_")

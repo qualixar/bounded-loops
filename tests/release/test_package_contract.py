@@ -266,11 +266,12 @@ def test_readme_images_are_ABSOLUTE_because_pypi_cannot_resolve_relative_ones() 
     import re
 
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    relative = [
-        m.group(1)
-        for m in re.finditer(r'!\[[^\]]*\]\(([^)]+)\)', readme)
-        if not m.group(1).startswith(("http://", "https://"))
-    ]
+    declared = re.findall(r'!\[[^\]]*\]\(([^)]+)\)', readme)
+    relative = [url for url in declared if not url.startswith(("http://", "https://"))]
+
+    # Existence obligation (0.6.5): a README that declares no images at all satisfies "no relative
+    # image is used" without checking anything, and would keep passing if every image were dropped.
+    assert declared, "README declares no images; this guard would pass over nothing"
 
     assert not relative, (
         "these README images use relative paths and will render broken on PyPI:\n  "
@@ -286,11 +287,16 @@ def test_every_README_screenshot_actually_EXISTS_in_the_repo() -> None:
 
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     prefix = "https://raw.githubusercontent.com/qualixar/bounded-loops/main/"
-    missing = [
-        url[len(prefix):]
-        for url in re.findall(r'!\[[^\]]*\]\((https://raw\.githubusercontent\.com/\S+?)\)', readme)
-        if url.startswith(prefix) and not (REPO_ROOT / url[len(prefix):]).exists()
+    referenced = [
+        url for url in re.findall(r'!\[[^\]]*\]\((https://raw\.githubusercontent\.com/\S+?)\)', readme)
+        if url.startswith(prefix)
     ]
+    missing = [url[len(prefix):] for url in referenced
+               if not (REPO_ROOT / url[len(prefix):]).exists()]
+
+    # Existence obligation (0.6.5): with no screenshots referenced, "none are missing" is true and
+    # checks nothing -- including in the case where they were all removed by accident.
+    assert referenced, "README references no repository screenshots; this guard checks nothing"
 
     assert not missing, f"README references images that are not in the repo: {missing}"
 

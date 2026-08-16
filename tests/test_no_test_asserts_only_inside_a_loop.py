@@ -56,9 +56,28 @@ def _iterates_a_discovered_collection(iter_node: ast.AST) -> bool:
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
             return True
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            if node.func.attr in _DISCOVERY_CALLS:
+            if node.func.attr in _DISCOVERY_CALLS and not _is_structural_walk(node):
                 return True
     return False
+
+
+def _is_structural_walk(node: ast.Call) -> bool:
+    """`ast.walk(tree)` is not discovery: a parsed module always yields nodes.
+
+    `walk` is in the discovery set for `os.walk`, which can legitimately find nothing. Conflating
+    the two made this detector flag `offenders = [n for n in ast.walk(tree) if ...]; assert not
+    offenders` -- the correct shape for "no forbidden construct appears", where an empty result is
+    the PASS condition rather than a missed check. Two of the first five it flagged were that, both
+    of them the guards enforcing generator blindness, and a detector that cries wolf on
+    provably-safe code gets suppressed and stops being a detector.
+    """
+    func = node.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "walk"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "ast"
+    )
 
 
 #: Assertions that are TRUE OF THE EMPTY CASE. A test whose every assertion is one of these, over a
@@ -82,7 +101,28 @@ def _is_satisfied_by_emptiness(node: ast.Assert) -> bool:
     return False
 
 
+
+def _where(path: Path, root: Path | None, function: ast.AST) -> str:
+    """Report location relative to `root`, or absolutely when the file lies outside it.
+
+    Parameterised in 0.6.5 so this scanner can be pointed at a tree that is not ours. It used to
+    hard-code the project's own test directory and raise ValueError on anything else; an external
+    scan that caught that ValueError alongside SyntaxError skipped every file and reported zero
+    findings over 14,833 test functions.
+    """
+    try:
+        shown: object = path.relative_to(root) if root is not None else path.relative_to(_TESTS)
+    except ValueError:
+        shown = path
+    return f"{shown}:{function.lineno} {function.name}"
+
+
 def _unguarded_tests(path: Path) -> list[str]:
+    """Backwards-compatible alias: scan relative to this project's own test directory."""
+    return unguarded_tests(path, _TESTS)
+
+
+def unguarded_tests(path: Path, root: Path | None = None) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     offenders: list[str] = []
 
@@ -97,7 +137,21 @@ def _unguarded_tests(path: Path) -> list[str]:
             continue
 
         loops = [n for n in ast.walk(function) if isinstance(n, (ast.For, ast.AsyncFor))]
-        if not any(_iterates_a_discovered_collection(loop.iter) for loop in loops):
+
+        # Comprehensions iterate too, and until 0.6.5 this line collected only `for` statements.
+        # A test whose only iteration is `bad = [x for x in glob(...) if ...]` produced an EMPTY
+        # `loops`, `any(...)` over the empty list is False, and the function was skipped -- so the
+        # guard against vacuity was itself skipped whenever ITS collection was empty. That is this
+        # module's own subject, in this module's control flow, missing the shape the paper uses to
+        # DEFINE shape 2. Found by a positive control asserting the scanner fires at all.
+        iterated = [loop.iter for loop in loops]
+        iterated += [
+            generator.iter
+            for node in ast.walk(function)
+            if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp))
+            for generator in node.generators
+        ]
+        if not any(_iterates_a_discovered_collection(it) for it in iterated):
             continue
 
         inside = {
@@ -109,7 +163,7 @@ def _unguarded_tests(path: Path) -> list[str]:
 
         # SHAPE 1 — every assertion is inside the loop. No iteration, no assertion.
         if inside and len(inside) == len(asserts):
-            offenders.append(f"{path.relative_to(_TESTS)}:{function.lineno} {function.name}")
+            offenders.append(_where(path, root, function))
             continue
 
         # SHAPE 2 — accumulate-then-assert-empty. The assertions sit OUTSIDE the loop and look
@@ -118,7 +172,7 @@ def _unguarded_tests(path: Path) -> list[str]:
         # `for x in glob(...): if bad: found.append(x)` then `assert not found`.
         outside = [node for node in asserts if id(node) not in inside]
         if outside and all(_is_satisfied_by_emptiness(node) for node in outside):
-            offenders.append(f"{path.relative_to(_TESTS)}:{function.lineno} {function.name}")
+            offenders.append(_where(path, root, function))
 
     return offenders
 

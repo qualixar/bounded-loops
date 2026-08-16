@@ -73,6 +73,11 @@ def test_the_authoring_prompt_never_contains_a_checker(loop_dir: Path, checker: 
         line.strip() for line in body.splitlines()
         if line.strip() and not line.strip().startswith(("#", '"""', "'''"))
     ]
+    # Existence obligation (0.6.5): a checker with no substantial code lines makes the leak check
+    # below vacuous -- it would report "no leak" having compared nothing. This guard backs the
+    # paper's Tier-2 blindness claim, so it must not be satisfiable by an empty comparison.
+    assert code_lines, f"{checker.name} yielded no code lines; the leak comparison checks nothing"
+
     leaked = [line for line in code_lines if len(line) > 30 and line in prompt]
     assert not leaked, (
         f"{loop_dir.name}: {checker.name} appears inside the authoring prompt:\n  "

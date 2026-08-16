@@ -59,6 +59,10 @@ def test_installing_NEVER_carries_somebody_elses_receipts(tmp_path: Path) -> Non
     _catalog()
     names = catalog_access.packaged_loop_names()
 
+    # Existence obligation (0.6.5): without it an empty catalog passes this guard silently,
+    # which is the defect class this suite exists to find, in a guard about install isolation.
+    assert len(names) >= 50, f"catalog resolved {len(names)} loops; this guard checks nothing"
+
     for name in names:
         installed = catalog_access.install_loop(name, tmp_path / name)
         leaked = [
