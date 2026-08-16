@@ -738,3 +738,88 @@ def test_a_label_names_the_round_it_judged(tmp_path):
     matrix = confusion(log.replay())
     assert matrix.false_accept == 1, "a label must match the verdict from its own round"
     assert matrix.unlabelled == 0 or matrix.unlabelled >= 0
+
+
+# ── the two guards the paper's RunGraph figure claims carry the theorem ────────────────────────
+#
+# Writing the graph procedure down as a figure forced an enumeration of the guards the termination
+# proof leans on. Three were claimed; only one of them was pinned. These are the other two. A paper
+# that asserts a guard its own suite does not protect is the defect this project exists to find.
+
+
+def _fork_plan(*, budget: int = 1):
+    """``root`` fans out to two chains of unequal length:
+
+        root -> a -> b
+        root -> c -> d
+
+    ``a`` fails and repairs ``root``. ``d`` becomes ready only AFTER ``a`` has already failed, so a
+    scheduler that opened a repair round as soon as a failure existed would seal ``d``'s branch
+    unrun. That is exactly the ordering line 2.3 of the figure forbids.
+    """
+    a = _node("a", 1, inputs={"feed": "text"}, on_failure={"mode": "repair", "target": "root"})
+    graph = validate_authoring_graph({
+        "api_version": "bounded-loops.dev/graph/v1", "graph_id": "fork-run", "version": "1.0.0",
+        "nodes": [
+            _node("root", 1), a, _node("b", 1, inputs={"feed": "text"}),
+            _node("c", 1, inputs={"feed": "text"}), _node("d", 1, inputs={"feed": "text"}),
+        ],
+        "edges": [
+            {"from_node": "root", "from_port": "out", "to_node": "a", "to_port": "feed", "when": None},
+            {"from_node": "a", "from_port": "out", "to_node": "b", "to_port": "feed", "when": None},
+            {"from_node": "root", "from_port": "out", "to_node": "c", "to_port": "feed", "when": None},
+            {"from_node": "c", "from_port": "out", "to_node": "d", "to_port": "feed", "when": None},
+        ],
+        "connection_slots": [],
+        "policies": {"data_class": "public", "fail_mode": "continue_declared",
+                     "repair_budget": budget},
+    })
+    return compile_graph(graph, CompileSnapshot(
+        policy_digest="sha256:" + "a" * 64, package_digests=frozenset(), connections=(),
+    ))
+
+
+def test_a_repair_round_opens_only_after_the_ready_set_drains(tmp_path):
+    """Figure line 2.3: repair is tried LAST, so it can never pre-empt runnable work.
+
+    ``d`` is only reachable after ``c``, and ``a`` has already failed by then. If the controller
+    opened a round on the first failure, ``d`` would never run in round 0.
+    """
+    plan = _fork_plan(budget=1)
+    worker = _Worker([])
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+
+    _controller(plan, log, worker, gate=_GateRejecting("a", [])).run()
+
+    types = [e.event.event_type for e in log.replay()]
+    boundary_at = types.index(REPAIR_ROUND_EVENT)
+    ran_d_at = [
+        i for i, e in enumerate(log.replay())
+        if e.event.payload.get("node_id") == "d" and e.event.event_type == "node.ready"
+    ]
+    assert ran_d_at, "d never became ready; the fixture no longer exercises the ordering"
+    assert ran_d_at[0] < boundary_at, (
+        "a repair round opened while work was still runnable — line 2.3 of the graph procedure "
+        "requires the ready set to drain first, or a repair can starve a sibling branch"
+    )
+
+
+def test_the_round_count_is_read_from_the_ledger_not_from_memory(tmp_path):
+    """Figure line 2.3.2. An in-memory counter resets on restart, so a crash-loop repairs forever.
+
+    Simulated here by discarding every in-memory state and asking the pure decision function using
+    only the replayed receipts — which is what a resumed process actually has.
+    """
+    plan = _plan(budget=2)
+    log = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+    _controller(plan, log, _Worker([]), gate=_GateRejecting("verify", [])).run()
+
+    assert rounds_spent(log.replay()) == 2, "fixture must exhaust the budget to be meaningful"
+
+    # A restarted process: no counter, no state map, only the log on disk.
+    reopened = GraphEventLog(tmp_path / "events.jsonl", _identity(plan))
+    states_as_if_fresh = {"fetch": "SUCCEEDED", "shape": "SUCCEEDED", "verify": "FAILED"}
+    assert next_repair_round(plan, states_as_if_fresh, reopened.replay()) is None, (
+        "the budget restarted across a process boundary — repair rounds must be counted from the "
+        "receipts, or a crash-loop can repair without limit and the (1+R) bound is not a bound"
+    )
