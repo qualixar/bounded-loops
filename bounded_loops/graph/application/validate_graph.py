@@ -477,8 +477,10 @@ def _repair_budget(raw: object) -> int:
     """The GLOBAL bound on repair rounds. Absent means 0 — repair off, and every pre-0.5 graph.
 
     Capped for the same reason a retry budget is: total work is bounded by
-    ``(1 + repair_budget) * Σ_v (max_attempts_v + 1)``, so an unbounded budget quietly turns a
-    provable bound into an unusable one.
+    ``(1 + repair_budget) * Σ_v max_attempts_v``, so an unbounded budget quietly turns a
+    provable bound into an unusable one. ``max_attempts`` is the TOTAL attempts a node may make;
+    ``Σ (max_attempts + 1)`` — which this docstring carried until 0.6.5 — overstates the bound by
+    one per node per round. ``repair_rounds.total_execution_bound`` is the authority.
     """
     if raw is None:
         return 0

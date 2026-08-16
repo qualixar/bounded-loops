@@ -149,7 +149,9 @@ class GraphPolicyIntent:
     #: each other for ever, each seeing its own counter as unspent. That is the reset-arc
     #: construction whose soundness is undecidable in general, and a single global counter is what
     #: makes a restricted answer possible. Total executions are bounded by
-    #: ``(1 + repair_budget) * Σ_v (max_attempts_v + 1)``.
+    #: ``(1 + repair_budget) * Σ_v max_attempts_v`` — ``max_attempts`` is the TOTAL attempts a node
+    #: may make, so ``max_attempts: 1`` contributes 1. See ``repair_rounds`` for the authoritative
+    #: statement; writing ``Σ (max_attempts + 1)`` here overstated it by one per node per round.
     repair_budget: int = 0
 
 
