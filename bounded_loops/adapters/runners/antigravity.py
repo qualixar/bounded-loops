@@ -1,5 +1,37 @@
 """
-AntigravityRunner — invokes `agy -p --headless --approve <policy>`.
+AntigravityRunner — invokes `agy -p <prompt> [--dangerously-skip-permissions]`.
+
+FLAGS CORRECTED 2026-08-16, and the previous ones never worked. This module
+invoked ``agy -p --headless --approve <policy>``. Probed against the real binary:
+``flags provided but not defined: -headless -approve``, followed by agy's usage
+text and an empty result. So every ``bl run --runner antigravity`` produced NO
+agent output, and the loop then spent its entire attempt budget and reported
+HALT — indistinguishable, in the ledger, from an agent that tried four times and
+failed. It had tried zero times.
+
+That is the same defect the `--bare` removal in ``claude_code.py`` fixed and the
+same one the ``USER`` entry in ``adapters/_env.py`` fixed: an invocation asking
+for something the environment cannot supply, failing silently in the direction
+that looks like ordinary difficulty. Three instances in one codebase is a
+pattern, not bad luck, and the shared cause is that each was written from a
+--help page or an assumption rather than from a probe of the running binary.
+
+WHAT AGY ACTUALLY OFFERS. There is no graded approval policy. The only control
+is ``--dangerously-skip-permissions`` ("Auto-approve all tool permission
+requests without prompting"). Without it, agy runs in headless mode, its
+file-writing tools are auto-denied because nothing can prompt, and it returns
+successfully having changed nothing:
+
+    "no output produced — a tool required the \"command\" permission that
+     headless mode cannot prompt for, so it was auto-denied."
+
+An agent that cannot write is not a degraded agent, it is a no-op, and a runner
+that produces one silently is worse than one that refuses. So the graded policy
+this runner used to accept is now honoured as follows: ``all`` passes the flag;
+``none`` and ``plan`` RAISE, naming the reason, because agy cannot deliver a
+partial approval posture and pretending otherwise would hand an L1 or L2 loop an
+agent that appears to run and never acts. Refusing a posture we cannot deliver,
+before starting, is the same rule the engine applies to isolation.
 
 fix 1 (error-handling scope): the original draft raised RunnerError
 whenever `returncode != 0 OR empty stdout`. That conflated two different
@@ -102,15 +134,44 @@ class AntigravityRunner:
 
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
         prompt_text = _build_prompt(spec, ctx)
+        if self.approve_policy != "all":
+            raise RunnerError(
+                f"AntigravityRunner: agy offers no graded approval policy, only "
+                f"--dangerously-skip-permissions (all-or-nothing), so "
+                f"approve_policy={self.approve_policy!r} cannot be delivered. "
+                f"Without auto-approval agy's tools are denied in headless mode and it "
+                f"returns success having changed nothing, which the loop cannot tell "
+                f"apart from an agent that tried and failed. Declare this loop L3 / "
+                f"approve_policy='all' if that posture is acceptable, or choose another "
+                f"runner. Refusing rather than running an agent that cannot act."
+            )
+        # agy takes the prompt as a POSITIONAL argument; it does not read stdin
+        # ("flag needs an argument: -p" when stdin is piped). Probed 2026-08-16.
+        #
+        # --add-dir is REQUIRED and its absence is silent. agy does not treat the
+        # process cwd as its workspace: asked to create a file "in the current
+        # working directory" while cwd was an empty temp dir, it created one in
+        # ~/.gemini/antigravity-cli/scratch/ and reported "Created and verified"
+        # with a file:// URL pointing there. The gate then saw an unchanged
+        # workspace, so the loop looked like an agent that tried and achieved
+        # nothing. Passing the workspace explicitly puts the edit where the gate
+        # reads. Every other shipped runner inherits its working directory from
+        # the subprocess cwd; this one does not, and the difference is invisible
+        # until you check the filesystem rather than the transcript.
         argv = (shlex.split(self.agent_cmd) +
-                ["-p", "--headless", "--approve", self.approve_policy])
+                ["-p", prompt_text,
+                 "--dangerously-skip-permissions",
+                 "--add-dir", str(ctx.workspace)])
         env = _build_subprocess_env({**ctx.env, **self.extra_env})
         try:
             completed = ProcessTurn.start(
                 argv,
                 cwd=ctx.workspace,
                 env=env,
-                input_text=prompt_text,
+                # Empty: the prompt is in argv above. Feeding it on stdin as well
+                # would deliver it twice to a CLI that already has it, and agy does
+                # not read stdin in this mode.
+                input_text="",
                 output_limit_bytes=_MAX_AGENT_OUTPUT_BYTES,
                 redactions=output_redactions({**ctx.env, **self.extra_env}),
             ).wait(timeout_s=self.timeout_s)
