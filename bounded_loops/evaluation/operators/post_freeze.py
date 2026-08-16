@@ -46,6 +46,53 @@ from typing import Any
 from bounded_loops.evaluation.mutation import FAMILY_DESTROYING, FAMILY_PRESERVING, Mutation
 
 
+# ── the precondition, derived from adjudicating this family's first run ───────────────────────
+#
+# E7 produced 21 apparent false accepts and a spec review found 7 of them mislabelled. They were
+# not 7 accidents; they were two failures of one assumption:
+#
+#     A content-removal operator's DESTROYING claim is certain only for a requirement universally
+#     quantified over content the operator removes. It is FALSE for a requirement that is negative
+#     ("must not contain X") — removing content removes X — and FALSE for a requirement satisfied
+#     by structure the operator preserves: a name, a signature, a key, a heading.
+#
+# `no-hardcoded-sleep` asks that no test contain `time.sleep`; stubbing bodies deletes the sleeps
+# and satisfies it. `type-annotations-present` asks that signatures be annotated; stubbing bodies
+# keeps every signature. In both the gate was right and the operator was wrong.
+#
+# The rule is enforced by REFUSING TO EMIT. A mutant nobody can label is worse than a missing
+# mutant, because it enters a denominator and moves a published rate. This is the same discipline
+# `tier1_claim_holds` applies to multi-artifact loops, generalised.
+#
+# The requirement is read from the loop's stated purpose — the same material a Tier-2 author is
+# shown — and never from a gate. `is_content_quantified` takes the text, so no operator here
+# performs I/O and the AST blindness assertion is unaffected.
+
+_NEGATIVE_MARKERS = (
+    "no test contains", "never pair", "never contain", "must not", "does not contain",
+    "no hardcoded", "no credential", "not be present", "free of", "without any",
+)
+
+_STRUCTURAL_MARKERS = (
+    "is named", "are named", "naming", "annotated", "annotation", "signature",
+    "spelled", "cased", "casing",
+)
+
+
+def is_content_quantified(stated_purpose: str) -> bool:
+    """Whether a content-removal operator may claim *destroying* for this requirement.
+
+    Fails CLOSED: an unrecognised requirement yields ``False`` and no mutant, because the honest
+    output of an unmeasurable question is a refusal rather than a guess that reaches a denominator.
+    """
+    text = " ".join(stated_purpose.lower().split())
+    if any(marker in text for marker in _NEGATIVE_MARKERS):
+        return False
+    if any(marker in text for marker in _STRUCTURAL_MARKERS):
+        return False
+    return any(marker in text for marker in ("every ", "each ", "all ", "no fewer than"))
+
+
 def _destroying(operator: str, path: str, text: str, rationale: str) -> Mutation:
     return Mutation(
         operator=operator, family=FAMILY_DESTROYING, path=path,

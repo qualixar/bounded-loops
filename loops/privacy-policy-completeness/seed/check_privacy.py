@@ -73,6 +73,50 @@ _NEGATIONS = re.compile(
 def _is_negated(heading: str) -> bool:
     return bool(_NEGATIONS.search(heading))
 
+
+def _sections(text: str) -> list[tuple[str, str]]:
+    """`(normalized heading, body)` for every markdown section, in document order."""
+    matches = list(_HEADING_RE.finditer(text))
+    found: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        found.append((_normalize(match.group(1)), text[match.end():end]))
+    return found
+
+
+def _has_written_content(body: str) -> bool:
+    """Whether a section body says anything, as opposed to being a heading with nothing under it."""
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.lstrip("-*+0123456789. ").strip():
+            return True
+    return False
+
+
+def _hollow(text: str) -> list[str]:
+    """Required sections declared as a heading whose body is empty.
+
+    Added in 0.6.5. The post-freeze corpus (E7) kept every heading and emptied every body, and this
+    gate passed, because it checked headings and nothing else. `runbook-completeness` had been
+    repaired for exactly this shape in 0.6.2 (defect M2); this gate and two siblings were left with
+    it. A privacy policy whose section headings are present and whose bodies are empty tells a
+    reader nothing, and the docstring above claims this gate verifies a policy is complete.
+    """
+    sections = _sections(text)
+    hollow: list[str] = []
+    for label, phrases in REQUIRED_SECTIONS:
+        bodies = [
+            body for heading, body in sections
+            if any(re.search(rf"\b{re.escape(phrase)}(?:e?s)?\b", heading) for phrase in phrases)
+            and not _is_negated(heading)
+        ]
+        if bodies and not any(_has_written_content(body) for body in bodies):
+            hollow.append(label)
+    return hollow
+
+
 def _declared(phrase: str, headings: list[str]) -> bool:
     """True when some heading gives this topic its own section."""
     # Trailing (e)s so a "Permitted Disclosures" heading satisfies the
@@ -103,6 +147,13 @@ def check(doc_path: str) -> int:
         print(f"check_privacy: {len(missing)} required section(s) missing:")
         for label in missing:
             print(f"  - {label}")
+        return 1
+
+    hollow = _hollow(text)
+    if hollow:
+        print(f"check_privacy: {len(hollow)} section(s) declared as a heading with an empty body:")
+        for label in hollow:
+            print(f"  - {label!r} has a heading and no text beneath it")
         return 1
 
     print("check_privacy: all required sections are present")
