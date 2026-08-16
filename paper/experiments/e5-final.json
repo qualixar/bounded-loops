@@ -1,0 +1,216 @@
+{
+  "runs": [
+    {
+      "loop": "citation-existence-check",
+      "provider": "agy",
+      "terminal": "DONE",
+      "exit_code": 0,
+      "attempts": 1,
+      "attempts_to_done": 1,
+      "tokens": 0,
+      "wallclock_s": 38.4,
+      "workdir": "/tmp/e5-citation-existence-check-agy-dlidhyl8/loop",
+      "stdout_tail": [
+        "Next: inspect the ledger above; use --keep-workspace when you need to debug the resulting files."
+      ]
+    },
+    {
+      "loop": "citation-existence-check",
+      "provider": "claude",
+      "terminal": "DONE",
+      "exit_code": 0,
+      "attempts": 1,
+      "attempts_to_done": 1,
+      "tokens": 0,
+      "wallclock_s": 22.8,
+      "workdir": "/tmp/e5-citation-existence-check-claude-om8fvtqt/loop",
+      "stdout_tail": [
+        "Next: inspect the ledger above; use --keep-workspace when you need to debug the resulting files."
+      ]
+    },
+    {
+      "loop": "citation-existence-check",
+      "provider": "grok",
+      "terminal": "DONE",
+      "exit_code": 0,
+      "attempts": 1,
+      "attempts_to_done": 1,
+      "tokens": 0,
+      "wallclock_s": 51.1,
+      "workdir": "/tmp/e5-citation-existence-check-grok-wte3p5qk/loop",
+      "stdout_tail": [
+        "Next: inspect the ledger above; use --keep-workspace when you need to debug the resulting files."
+      ]
+    },
+    {
+      "loop": "citation-existence-check",
+      "provider": "muse",
+      "terminal": "DONE",
+      "exit_code": 0,
+      "attempts": 1,
+      "attempts_to_done": 1,
+      "tokens": 0,
+      "wallclock_s": 27.6,
+      "workdir": "/tmp/e5-citation-existence-check-muse-sx7lz2um/loop",
+      "stdout_tail": [
+        "Next: inspect the ledger above; use --keep-workspace when you need to debug the resulting files."
+      ]
+    },
+    {
+      "loop": "bug-fix-red-green",
+      "provider": "agy",
+      "terminal": "DONE",
+      "exit_code": 0,
+      "attempts": 1,
+      "attempts_to_done": 1,
+      "tokens": 0,
+      "wallclock_s": 38.8,
+      "workdir": "/tmp/e5-bug-fix-red-green-agy-py10ue6y/loop",
+      "stdout_tail": [
+        "Next: inspect the ledger above; use --keep-workspace when you need to debug the resulting files."
+      ]
+    },
+    {
+      "loop": "bug-fix-red-green",
+      "provider": "claude",
+      "terminal": "DONE",
+      "exit_code": 0,
+      "attempts": 1,
+      "attempts_to_done": 1,
+      "tokens": 0,
+      "wallclock_s": 23.6,
+      "workdir": "/tmp/e5-bug-fix-red-green-claude-1cuft62a/loop",
+      "stdout_tail": [
+        "Next: inspect the ledger above; use --keep-workspace when you need to debug the resulting files."
+      ]
+    },
+    {
+      "loop": "bug-fix-red-green",
+      "provider": "grok",
+      "terminal": "DONE",
+      "exit_code": 0,
+      "attempts": 1,
+      "attempts_to_done": 1,
+      "tokens": 0,
+      "wallclock_s": 72.2,
+      "workdir": "/tmp/e5-bug-fix-red-green-grok-3hi4gaxw/loop",
+      "stdout_tail": [
+        "Next: inspect the ledger above; use --keep-workspace when you need to debug the resulting files."
+      ]
+    },
+    {
+      "loop": "bug-fix-red-green",
+      "provider": "muse",
+      "terminal": "DONE",
+      "exit_code": 0,
+      "attempts": 1,
+      "attempts_to_done": 1,
+      "tokens": 0,
+      "wallclock_s": 25.0,
+      "workdir": "/tmp/e5-bug-fix-red-green-muse-m30fk37t/loop",
+      "stdout_tail": [
+        "Next: inspect the ledger above; use --keep-workspace when you need to debug the resulting files."
+      ]
+    },
+    {
+      "loop": "catalog-required-fields",
+      "provider": "agy",
+      "terminal": "DONE",
+      "exit_code": 0,
+      "attempts": 1,
+      "attempts_to_done": 1,
+      "tokens": 0,
+      "wallclock_s": 53.1,
+      "workdir": "/tmp/e5-catalog-required-fields-agy-yw9ignfz/loop",
+      "stdout_tail": [
+        "Next: inspect the ledger above; use --keep-workspace when you need to debug the resulting files."
+      ]
+    },
+    {
+      "loop": "catalog-required-fields",
+      "provider": "claude",
+      "terminal": "DONE",
+      "exit_code": 0,
+      "attempts": 1,
+      "attempts_to_done": 1,
+      "tokens": 0,
+      "wallclock_s": 40.2,
+      "workdir": "/tmp/e5-catalog-required-fields-claude-r7ntdnz1/loop",
+      "stdout_tail": [
+        "Next: inspect the ledger above; use --keep-workspace when you need to debug the resulting files."
+      ]
+    },
+    {
+      "loop": "catalog-required-fields",
+      "provider": "grok",
+      "terminal": "DONE",
+      "exit_code": 0,
+      "attempts": 1,
+      "attempts_to_done": 1,
+      "tokens": 0,
+      "wallclock_s": 165.6,
+      "workdir": "/tmp/e5-catalog-required-fields-grok-nyqbpwnf/loop",
+      "stdout_tail": [
+        "Next: inspect the ledger above; use --keep-workspace when you need to debug the resulting files."
+      ]
+    },
+    {
+      "loop": "catalog-required-fields",
+      "provider": "muse",
+      "terminal": "DONE",
+      "exit_code": 0,
+      "attempts": 1,
+      "attempts_to_done": 1,
+      "tokens": 0,
+      "wallclock_s": 41.7,
+      "workdir": "/tmp/e5-catalog-required-fields-muse-gi1n4v0e/loop",
+      "stdout_tail": [
+        "Next: inspect the ledger above; use --keep-workspace when you need to debug the resulting files."
+      ]
+    }
+  ],
+  "superseded_misconfigured_agy_arm": [
+    {
+      "loop": "citation-existence-check",
+      "provider": "agy",
+      "terminal": "HALT",
+      "exit_code": 1,
+      "attempts": 4,
+      "attempts_to_done": null,
+      "tokens": 0,
+      "wallclock_s": 72.9,
+      "workdir": "/tmp/e5-citation-existence-check-agy-qbjgniwo/loop",
+      "stdout_tail": [
+        "\u2717 [HALT] wallclock limit 60s exceeded (72.6s elapsed) (laps: 4)  ledger: /private/tmp/e5-citation-existence-check-agy-qbjgniwo/loop/.ledger.jsonl"
+      ]
+    },
+    {
+      "loop": "bug-fix-red-green",
+      "provider": "agy",
+      "terminal": "HALT",
+      "exit_code": 1,
+      "attempts": 4,
+      "attempts_to_done": null,
+      "tokens": 0,
+      "wallclock_s": 72.8,
+      "workdir": "/tmp/e5-bug-fix-red-green-agy-ipfbm8pq/loop",
+      "stdout_tail": [
+        "\u2717 [HALT] wallclock limit 60s exceeded (72.5s elapsed) (laps: 4)  ledger: /private/tmp/e5-bug-fix-red-green-agy-ipfbm8pq/loop/.ledger.jsonl"
+      ]
+    },
+    {
+      "loop": "catalog-required-fields",
+      "provider": "agy",
+      "terminal": "HALT",
+      "exit_code": 1,
+      "attempts": 4,
+      "attempts_to_done": null,
+      "tokens": 0,
+      "wallclock_s": 72.4,
+      "workdir": "/tmp/e5-catalog-required-fields-agy-dfyfymiq/loop",
+      "stdout_tail": [
+        "\u2717 [HALT] wallclock limit 60s exceeded (72.1s elapsed) (laps: 4)  ledger: /private/tmp/e5-catalog-required-fields-agy-dfyfymiq/loop/.ledger.jsonl"
+      ]
+    }
+  ]
+}
