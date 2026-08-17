@@ -7,7 +7,10 @@ on attempt one. This loop deliberately repairs a bounded amount of work per atte
 of attempts it consumes is a function of the workload — which is what makes a declared budget
 something you can observe being spent rather than merely declared.
 
-Set BOUNDED_LOOPS_REPAIR_QUOTA to repair more per attempt; unset means one.
+Repairs exactly one record per attempt. Not configurable on purpose: the engine passes an
+allow-listed environment to a runner (PATH, HOME, LANG, LC_ALL, TMPDIR, SHELL, USER), so a knob
+read from os.environ here could never be set by a caller. A documented control that cannot work is
+worse than no control.
 
 Stateless by construction: the quota is derived from what is already repaired in the workspace,
 never from an attempt counter the worker would have to be told. That keeps it correct under resume
@@ -17,24 +20,13 @@ and replay, where an attempt counter would drift.
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 
 RECORDS = pathlib.Path("seed/records.json")
-_QUOTA_VAR = "BOUNDED_LOOPS_REPAIR_QUOTA"
 
-
-def _quota() -> int:
-    """How many records to repair this attempt. Malformed input means one, never zero.
-
-    Zero would make the loop unable to progress, which the no-progress bound would then correctly
-    halt — a confusing failure to debug from a typo in an environment variable.
-    """
-    raw = os.environ.get(_QUOTA_VAR, "")
-    try:
-        return max(1, int(raw))
-    except (TypeError, ValueError):
-        return 1
+#: Records repaired per attempt. One, so attempts consumed equals the size of the outstanding work
+#: and a declared ceiling is something you can watch being approached.
+REPAIR_QUOTA = 1
 
 
 def checksum_for(record: dict) -> str:
@@ -47,7 +39,7 @@ def checksum_for(record: dict) -> str:
 def main() -> int:
     records = json.loads(RECORDS.read_text(encoding="utf-8"))
     missing = [r for r in records if not r.get("checksum")]
-    allowed = min(_quota(), len(missing))
+    allowed = min(REPAIR_QUOTA, len(missing))
 
     # Write only when something actually changes. Rewriting identical bytes still dirties the
     # workspace, and the engine reads workspace change as evidence of progress.
