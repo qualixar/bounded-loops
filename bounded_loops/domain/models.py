@@ -211,6 +211,12 @@ class Bounds:
     #: mid-task discards everything the attempt had worked out, and the next run starts from the same
     #: seed with the same budget and no knowledge of what the last one learned — so a task needing
     #: more than one budget window can never finish, however many times it is run.
+    #:
+    #: This default is the *dataclass* default, for bounds assembled in code. The manifest path
+    #: computes `default_handoff_reserve_s(max_wallclock_s)` instead, which is proportional below a
+    #: 270 s ceiling. The reason is ENG-02: substituting a flat 90 here made every ceiling at or
+    #: below 180 s unloadable, because the reserve then sat at or past half the declared total. A
+    #: courtesy the operator never asked for must not invalidate the number they did write.
     handoff_reserve_s:  int           = 90
 
 

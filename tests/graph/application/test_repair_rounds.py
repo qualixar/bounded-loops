@@ -7,6 +7,7 @@ boundary that permits it is checked harder than anything else in the engine.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
 import pytest
@@ -823,3 +824,34 @@ def test_the_round_count_is_read_from_the_ledger_not_from_memory(tmp_path):
         "the budget restarted across a process boundary — repair rounds must be counted from the "
         "receipts, or a crash-loop can repair without limit and the (1+R) bound is not a bound"
     )
+
+
+def test_a_per_node_repair_budget_is_refused_rather_than_resolved():
+    """ENG-05. Condition 3 is global; reading the first node's value would fake it.
+
+    The compiler copies one graph-level number onto every node, so a plan whose nodes
+    disagree can only come from a compiler that stopped doing that. `repair_budget` used
+    to `return` on the first node carrying a value, which would silently adopt that
+    node's number as the graph's — the per-node bound the termination proof excludes,
+    reached by accident, and visible nowhere: the run would simply have a different
+    bound than the one `bl graph plan` printed.
+    """
+    plan = _plan(budget=2)
+    divergent = list(plan.nodes)
+    policy = dict(divergent[1].approval_policy)
+    policy["repair_budget"] = 7
+    divergent[1] = dataclasses.replace(divergent[1], approval_policy=policy)
+    forked = dataclasses.replace(plan, nodes=tuple(divergent))
+
+    with pytest.raises(GraphIntegrityError, match="different repair budgets"):
+        repair_budget(forked)
+    with pytest.raises(GraphIntegrityError):
+        total_execution_bound(forked)
+
+
+def test_a_uniform_budget_on_every_node_is_still_read_as_one_number():
+    """The compiler's actual output must keep working — the check is not a tightening."""
+    plan = _plan(budget=3)
+    carriers = [n for n in plan.nodes if "repair_budget" in n.approval_policy]
+    assert len(carriers) == len(plan.nodes), "the compiler distributes to every node"
+    assert repair_budget(plan) == 3

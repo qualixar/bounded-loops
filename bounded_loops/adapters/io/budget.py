@@ -25,10 +25,16 @@ def effective_reserve_s(bounds: Bounds) -> float:
     and halt on the wallclock before running anything. A new default that breaks previously-correct
     code is a bad default, however well-motivated the feature behind it.
 
-    `manifest.py` separately REFUSES an authored reserve at or past half the ceiling, rather than
-    clamping it. The asymmetry is deliberate: an author who wrote the number should be told it is
+    `manifest_bounds.py` separately REFUSES an *authored* reserve at or past half the ceiling, rather
+    than clamping it. The asymmetry is deliberate: an author who wrote the number should be told it is
     wrong, while a `Bounds` assembled in code should degrade to a smaller courtesy rather than
     explode. Loud for input, forgiving for internals.
+
+    Since 0.6.6 that refusal can only fire on an authored value, because the manifest's *default*
+    reserve is proportional (`default_handoff_reserve_s`) and therefore always strictly below half.
+    So this clamp is now unreachable from a `bounds.yaml` and reachable only from code — which is
+    exactly the split the paragraph above claims. `test_the_reserve_never_starves_the_work.py`
+    asserts both halves; before 0.6.6 neither was tested and the manifest half was wrong.
     """
     if bounds.max_wallclock_s is None:
         raise ValueError("effective_reserve_s requires a declared max_wallclock_s")
