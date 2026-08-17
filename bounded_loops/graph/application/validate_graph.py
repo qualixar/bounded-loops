@@ -45,8 +45,8 @@ _BUDGET_QUANTITY_KEYS = frozenset({"max_tokens", "max_cost_microunits"})
 # Must cover every provider the project ships, or a slot naming the uncovered one silently
 # defeats the rule; a tripwire test asserts it stays a superset of the shipped CLI profiles.
 _PROVIDERS = frozenset({
-    "agy", "anthropic", "claude", "codex", "grok", "kimi", "muse", "openai", "openrouter",
-    "qwen",
+    "agy", "anthropic", "claude", "codex", "deepseek", "dsh", "grok", "kimi", "muse", "openai",
+    "openrouter", "qwen",
 })
 _ON_FAILURE_DECLARED = frozenset({"fail_graph", "continue", "repair", "await_human"})
 # Declared in the authoring schema but NOT routed by GraphRunController: every failure

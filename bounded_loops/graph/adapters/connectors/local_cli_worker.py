@@ -224,6 +224,46 @@ CLI_PROFILES: Mapping[str, CliProfile] = MappingProxyType({
         workspace_arg="--add-dir",
         usage_args=("--output-format", "json"), envelope="agy",
     ),
+    # DeepSeek Harness one-shot mode: `dsh --profile headless "<task>"`. The prompt is the
+    # profile's positional argument, so prompt_via="arg" and nothing may precede it that the
+    # launcher would not recognise — the launcher stops parsing at the first token it does not
+    # own and hands the rest to the booted profile.
+    #
+    # NOT LIVE-PROBED. Every other entry above records a live invocation on a real binary; this
+    # one does not, because `dsh` is not installed on the host that added it. The contract below
+    # is read from the vendor's own package documentation at a pinned commit (v0.1.0-rc.7,
+    # 99f6f02): the headless runner submits the task as one user message, waits for quiescence,
+    # writes the last non-empty assistant text to stdout, keeps stderr empty on success, opens no
+    # listening port, and takes its workspace from the invoking directory — so cwd carries it and
+    # no workspace_arg is needed, unlike agy. It exits 0 only when the final turn completed and 1
+    # otherwise, which makes a non-zero exit a real signal rather than noise. Saying "documented,
+    # not probed" costs one line; the codex comment above records what it costs to write an unread
+    # shape up as verified.
+    #
+    # UNMETERED, and for a more specific reason than codex and muse. That harness does account for
+    # tokens — per-step usage records in its own session log — but the headless path writes only
+    # the final assistant text to stdout, so nothing we can read carries a count. Metering it would
+    # mean parsing its session store, which this connector does not do. So no usage_args and no
+    # envelope: a node declaring a spend cap on it fails closed naming the provider, instead of
+    # metering real spend as free.
+    #
+    # NO env_grant, and that is the interesting part. Unlike the subscription CLIs above, this
+    # runtime authenticates from its environment (a key and a base URL). The first version of this
+    # entry granted those two NAMES here and a test refused it: no SHIPPED profile may pre-grant a
+    # variable, because a grant is an operator decision and this table is source code in a
+    # published package. The test was right. An operator who wants key-based auth adds the name to
+    # their OWN provider catalog entry plus the operator allow-list — the same two-key path codex
+    # uses, which is likewise granted nothing here.
+    #
+    # So the default posture for this provider is the base URL pointed at a local proxy, which the
+    # vendor documents as supported, and which is what the no-secret egress broker already is. A
+    # credential never enters the profile, the connector, or a log.
+    #
+    # Why this entry exists at all: that harness documents its own loop-until-done primitive as
+    # worker self-declaration with no independent evaluator (see the paper's related work). Run as
+    # a node here, its completion is decided by a gate it cannot write to and its attempts are
+    # bounded by a manifest read before the run starts.
+    "dsh": CliProfile("dsh", ("--profile", "headless"), prompt_via="arg"),
 })
 
 

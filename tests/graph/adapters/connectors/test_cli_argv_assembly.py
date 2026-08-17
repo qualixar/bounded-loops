@@ -207,3 +207,64 @@ def test_no_profile_hides_a_value_taking_flag_before_the_prompt(name: str) -> No
     assert argv[1 + len(profile.args)] == _PROMPT
     for flag in profile.post_prompt_args:
         assert argv.index(flag) > argv.index(_PROMPT)
+
+
+def test_dsh_puts_the_task_after_a_complete_launcher_flag_pair() -> None:
+    """DeepSeek Harness headless mode, whose argv shape differs from every profile above.
+
+    Every other `arg`-prompt profile ends `args` with a flag whose value IS the prompt (`-p`,
+    `exec`). This one ends with a flag that already has its own value: `--profile headless`. The
+    launcher parses only its own flags and stops at the first token it does not recognise, which
+    must therefore be the task itself — so `--profile` and `headless` have to stay adjacent, and
+    nothing may sit between `headless` and the task.
+
+    Asserted positionally on the shipped profile. Separating the pair would make `headless` the
+    task and the task an unknown profile name, and inserting anything after it would boot with the
+    wrong task text. Neither failure is a crash: both would run something.
+    """
+    profile = CLI_PROFILES["dsh"]
+
+    argv, stdin_text = build_cli_argv(profile, _PROMPT, binary="/opt/homebrew/bin/dsh")
+
+    assert argv == ["/opt/homebrew/bin/dsh", "--profile", "headless", _PROMPT]
+    assert stdin_text is None, "the task is a positional argument, not stdin"
+    assert argv[argv.index("--profile") + 1] == "headless", "the flag and its value must stay adjacent"
+    assert not profile.workspace_arg, (
+        "the invoking directory is the workspace for this profile, so cwd carries it; declaring a "
+        "workspace_arg would pass a flag the launcher does not own and it would become the task"
+    )
+
+
+def test_dsh_is_declared_unmetered_so_a_spend_cap_fails_closed() -> None:
+    """Not an oversight, and worth pinning so nobody 'fixes' it by guessing a parser.
+
+    That harness does count tokens internally, but only the final assistant text reaches stdout, so
+    no count is available on the path this connector reads. Declaring usage_args here without a
+    verified envelope shape would make spend look measured while reporting nothing, which is worse
+    than reporting nothing: a cap would pass while real spend went uncounted.
+    """
+    profile = CLI_PROFILES["dsh"]
+
+    assert profile.usage_args == (), "declaring usage args implies a parsed envelope we do not have"
+    assert profile.envelope == "", "an envelope name with no verified shape is a guess"
+
+
+def test_dsh_pre_grants_no_environment_variable_despite_needing_one() -> None:
+    """The provider most tempting to pre-grant, pinned as granting nothing.
+
+    This is the only shipped profile whose runtime authenticates from the environment rather than
+    from its own subscription config, so it is the one where adding `env_grant` here looks helpful.
+    The first version of the profile did exactly that and
+    `test_shipped_profiles_grant_nothing_by_default` refused it. That test covers the whole table
+    generically; this one records the specific temptation and why it is declined, so a later reader
+    who sees the CLI fail to authenticate reaches for the operator catalog rather than for this
+    file.
+
+    An operator enables key-based auth in their own provider catalog entry plus the operator
+    allow-list — both keys required, neither in shipped code.
+    """
+    profile = CLI_PROFILES["dsh"]
+
+    assert profile.env_grant == (), "a grant belongs in the operator's catalog, never in ours"
+    assert dict(profile.set_env) == {}, "a profile must never carry an environment VALUE"
+    assert profile.unset_env == ()
