@@ -8,6 +8,13 @@ predicted convergence length against the observed one.
 Refuses to pass on an empty or malformed record list. A gate that returns success because it found
 nothing to check is vacuous — satisfied by the absence of the thing it checks — and a loop whose
 gate can be satisfied that way certifies nothing.
+
+Every refusal exits 1, the same code as "found violations", and only a usage error exits 2. That is
+deliberate: `CommandGate` treats any exit outside `expected_fail_codes` (default `{1}`, and not
+declarable in `loop.yaml`) as an ERROR that aborts the run, and an errored cell is excluded from the
+false-accept rate. Signalling a refusal with 2 therefore made this gate's *best* behaviour —
+declining to certify a destroyed artifact — invisible to the measurement that scores gates. The
+distinction stays readable on stdout, where an operator wants it.
 """
 
 from __future__ import annotations
@@ -30,17 +37,17 @@ def main() -> int:
     path = pathlib.Path(sys.argv[1])
     if not path.exists():
         print(f"check_records: {path} does not exist — refusing to pass")
-        return 2
+        return 1
 
     try:
         records = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         print(f"check_records: {path} is not valid JSON: {exc}")
-        return 2
+        return 1
 
     if not isinstance(records, list) or not records:
         print("check_records: no records found — refusing to pass on an empty list")
-        return 2
+        return 1
 
     missing = outstanding(records)
     print(f"check_records: {len(missing)} of {len(records)} records missing a checksum")
