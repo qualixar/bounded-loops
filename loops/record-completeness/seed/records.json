@@ -1,0 +1,42 @@
+[
+  {
+    "id": 1,
+    "payload": "row-1",
+    "amount": 101
+  },
+  {
+    "id": 2,
+    "payload": "row-2",
+    "amount": 102
+  },
+  {
+    "id": 3,
+    "payload": "row-3",
+    "amount": 103
+  },
+  {
+    "id": 4,
+    "payload": "row-4",
+    "amount": 104
+  },
+  {
+    "id": 5,
+    "payload": "row-5",
+    "amount": 105
+  },
+  {
+    "id": 6,
+    "payload": "row-6",
+    "amount": 106
+  },
+  {
+    "id": 7,
+    "payload": "row-7",
+    "amount": 107
+  },
+  {
+    "id": 8,
+    "payload": "row-8",
+    "amount": 108
+  }
+]

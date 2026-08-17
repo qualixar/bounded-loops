@@ -1,0 +1,29 @@
+name: record-completeness
+description: >
+  Drive an agent until every record in a JSON dataset carries a checksum field. The gate is
+  `seed/check_records.py` — dependency-free standard library, so it runs anywhere Python does: no
+  network, no external tool, no API key. It reports the outstanding violation COUNT rather than a
+  bare pass/fail, so progress is visible per attempt and a predicted convergence length can be
+  checked against the observed one.
+
+  Unlike the cassette-replay loops in this catalogue, the shipped worker repairs a BOUNDED amount of
+  work per attempt (one record, or `BOUNDED_LOOPS_REPAIR_QUOTA`). Attempts consumed is therefore a
+  function of the workload, which makes a declared `max_iterations` something you can watch being
+  spent instead of a number that is never approached. Use this loop to see what your budget actually
+  buys before you trust one in production.
+pattern: evaluator-optimizer
+role:
+- quality
+- engineering
+rung: L2
+spec: PROMPT.md
+forbid:
+- seed/check_records.py
+runner:
+  default: shell
+  agent_cmd: python3 seed/worker.py
+gate:
+  kind: command
+  run: python3 seed/check_records.py seed/records.json
+bounds: bounds.yaml
+memory: STATE.md

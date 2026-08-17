@@ -125,7 +125,7 @@ def test_no_discovery_tool_accepts_anything_secret_shaped() -> None:
 
 
 def test_the_catalog_reports_totals_alongside_the_filtered_result() -> None:
-    """"3 loops" is unreadable without "of 68 discovered"."""
+    """"3 loops" is unreadable without "of 69 discovered"."""
     result = mcp_discovery.catalog()
 
     assert result["total_discovered"] >= 1

@@ -208,21 +208,21 @@ def test_release_metadata_uses_the_canonical_catalog_count_and_version() -> None
     citation = yaml.safe_load((REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8"))
     npm = json.loads((REPO_ROOT / "npm" / "package.json").read_text(encoding="utf-8"))
 
-    assert len(loop_dirs) == 68
-    assert len(loop_dirs) - len(framework_loops) == 64
+    assert len(loop_dirs) == 69
+    assert len(loop_dirs) - len(framework_loops) == 65
     assert citation["version"] == _PYPROJECT_VERSION, (
         f"CITATION.cff version ({citation['version']!r}) must match "
         f"pyproject.toml ({_PYPROJECT_VERSION!r})"
     )
     assert citation["url"] == "https://github.com/qualixar/bounded-loops"
-    assert "68 loop folders" in citation["abstract"]
+    assert "69 loop folders" in citation["abstract"]
     assert npm["version"] == _PYPROJECT_VERSION, (
         f"npm package.json version ({npm['version']!r}) must match "
         f"pyproject.toml ({_PYPROJECT_VERSION!r})"
     )
-    assert "68" in _project()["description"] and "64" in _project()["description"]
-    assert "68 loop folders" in npm["description"]
-    assert "64 keyless" in npm["description"]
+    assert "69" in _project()["description"] and "65" in _project()["description"]
+    assert "69 loop folders" in npm["description"]
+    assert "65 keyless" in npm["description"]
 
 
 def test_public_docs_have_no_orphan_course_section_references() -> None:

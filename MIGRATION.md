@@ -155,7 +155,7 @@ Read the two limits before quoting either number:
 
 `loops/` ships in the **repository**, not the wheel: `bl run` takes a path and writes its ledger
 beside the loop, so a read-only copy inside `site-packages` would be the wrong shape. A pip install
-gives you the engine; clone the repository for the 68-loop catalog and the reference graphs, or point
+gives you the engine; clone the repository for the 69-loop catalog and the reference graphs, or point
 `--loop-roots` at your own.
 
 ```bash

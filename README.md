@@ -21,7 +21,7 @@ bl loops install bug-fix-red-green
 bl run .bounded-loops/loops/bug-fix-red-green --yes   # a real planted bug, a real pytest gate, no API key
 ```
 
-68 loop packages ship **inside the wheel**; 64 need no API key. `bl loops list` shows them all
+69 loop packages ship **inside the wheel**; 65 need no API key. `bl loops list` shows them all
 and `bl loops install` copies one into your project — nothing is downloaded, so this works
 offline. Installing is a step because `bl run` writes its ledger beside the loop, and
 `site-packages` is the wrong place to keep run receipts.
@@ -227,9 +227,9 @@ of the worker's output. A wrapped worker (`GateWrapper(worker)`) that rubber-sta
 its input passes the identity check. The guarantee: no code path branches on
 `agent_claimed_done`; only `verdict.passed` can produce a `DONE` outcome.
 
-### The 68-loop catalog
+### The 69-loop catalog
 
-64 loops are keyless (stub runner + real mechanical gate — offline, deterministic,
+65 loops are keyless (a stub runner or a shipped script, plus a real mechanical gate — offline, deterministic,
 no API key). 4 require a framework package (`langgraph`, `crewai`, `agent-framework`,
 or `google-adk`). Gate kinds: 44 `command`, 10 `jsonschema`, 9 `pytest`, 3 `composite`,
 1 `osv`, 1 `checkov`. No loop uses "an LLM decides" as its gate.

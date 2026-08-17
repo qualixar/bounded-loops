@@ -292,9 +292,9 @@ def test_the_registry_indexes_every_shipped_loop_and_resolves_by_digest():
     registry = LoopPackageRegistry(roots=(SHIPPED_LOOPS,))
     index = registry.index()
 
-    # 68 shipped packages, each with a loop.yaml. If this number changes, the catalog changed and
+    # 69 shipped packages, each with a loop.yaml. If this number changes, the catalog changed and
     # this test should be updated deliberately rather than loosened.
-    assert len(index) == 68
+    assert len(index) == 69
     expected = loop_package_digest(SHIPPED_LOOPS / REAL_LOOP)
     assert registry.resolve(expected) == SHIPPED_LOOPS / REAL_LOOP
 
@@ -329,7 +329,7 @@ def test_a_directory_without_loop_yaml_is_not_a_candidate(tmp_path):
 def test_a_configured_root_that_does_not_exist_is_skipped_not_fatal(tmp_path):
     registry = LoopPackageRegistry(roots=(tmp_path / "absent", SHIPPED_LOOPS))
 
-    assert len(registry.index()) == 68
+    assert len(registry.index()) == 69
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 Until 0.6.1 it did not. `bl loops list` walked the filesystem for a `loops/` directory, found
 nothing in a pip-only install, printed "No loops found", and told the user to "run from a
-bounded-loops source checkout" — for a package whose front page advertises 68 loops. The
+bounded-loops source checkout" — for a package whose front page advertises 69 loops. The
 README had to instruct people to clone the repository to obtain the thing they had just
 installed.
 

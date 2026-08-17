@@ -168,7 +168,7 @@ def test_cli_writes_studio_with_shipped_catalogue(tmp_path, capsys):
     assert rc == 0
     html = out.read_text(encoding="utf-8")
     cat = _extract_catalogue_json(html)
-    # The shipped loops/ directory has 68 packages; at minimum some must be catalogued.
+    # The shipped loops/ directory has 69 packages; at minimum some must be catalogued.
     assert len(cat) >= 1
     assert all("digest" in e and "name" in e for e in cat)
 

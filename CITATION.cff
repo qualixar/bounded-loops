@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use bounded-loops, please cite it as below."
 type: software
 title: "bounded-loops"
-abstract: "Runnable, bounded AI-agent loops: an independent gate verifies every lap under nine enforced safety bounds plus a kill switch, so a loop is DONE only when the gate says so — never when the agent claims it. Includes 68 loop folders across a dozen industries, 64 keyless out of the box."
+abstract: "Runnable, bounded AI-agent loops: an independent gate verifies every lap under nine enforced safety bounds plus a kill switch, so a loop is DONE only when the gate says so — never when the agent claims it. Includes 69 loop folders across a dozen industries, 65 keyless out of the box."
 authors:
   - family-names: "Bhardwaj"
     given-names: "Varun Pratap"

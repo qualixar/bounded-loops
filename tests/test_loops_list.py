@@ -1,7 +1,7 @@
 """Tests for ``bl loops list`` — the loop catalog browser.
 
 Verifies:
-1. Running from the bounded-loops source tree finds all 68 shipped loops.
+1. Running from the bounded-loops source tree finds all 69 shipped loops.
 2. --role filter correctly narrows results.
 3. --gate filter correctly narrows results.
 4. --keyless filter excludes the 4 framework-example loops.
@@ -40,8 +40,8 @@ class TestLoopsListDiscovery:
         assert result.returncode == 0, result.stderr
         entries = json.loads(result.stdout)
         ok = [e for e in entries if not e["error"]]
-        assert len(ok) == 68, (
-            f"Expected 68 loops, found {len(ok)}. "
+        assert len(ok) == 69, (
+            f"Expected 69 loops, found {len(ok)}. "
             "If you added or removed a loop, update this test."
         )
 
@@ -73,7 +73,7 @@ class TestLoopsListRoleFilter:
         result = _bl("loops", "list", "--role", "engineering", "--json")
         entries = json.loads(result.stdout)
         ok = [e for e in entries if not e["error"]]
-        assert len(ok) == 11, f"Expected 11 engineering loops, got {len(ok)}"
+        assert len(ok) == 12, f"Expected 12 engineering loops, got {len(ok)}"
         assert all("engineering" in e["roles"] for e in ok)
 
     def test_role_security_returns_correct_count(self):
@@ -108,7 +108,7 @@ class TestLoopsListGateFilter:
         result = _bl("loops", "list", "--gate", "command", "--json")
         entries = json.loads(result.stdout)
         ok = [e for e in entries if not e["error"]]
-        assert len(ok) == 44, f"Expected 44 command loops, got {len(ok)}"
+        assert len(ok) == 45, f"Expected 45 command loops, got {len(ok)}"
         assert all(e["gate_kind"] == "command" for e in ok)
 
     def test_gate_pytest_returns_correct_count(self):
@@ -136,7 +136,7 @@ class TestLoopsListKeylessFilter:
         result = _bl("loops", "list", "--keyless", "--json")
         entries = json.loads(result.stdout)
         ok = [e for e in entries if not e["error"]]
-        assert len(ok) == 64, f"Expected 64 keyless loops, got {len(ok)}"
+        assert len(ok) == 65, f"Expected 65 keyless loops, got {len(ok)}"
         assert all(e["keyless"] for e in ok)
 
     def test_keyless_excludes_framework_examples(self):

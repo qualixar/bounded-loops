@@ -1,0 +1,12 @@
+# Eight records and one repair per attempt converges on attempt 8, so the ceiling below leaves two
+# attempts of headroom. That is deliberate: a bound with no headroom is indistinguishable from a
+# bound that is too small, and this loop exists to make the difference visible.
+max_iterations: 10
+no_progress_window: 3
+max_tokens: null
+max_wallclock_s: 120
+sandbox: true
+quarantine_inputs: true
+schema: null
+trace: true
+require_approval: false
