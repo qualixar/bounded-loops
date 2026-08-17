@@ -27,28 +27,39 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-GENERATOR = REPO_ROOT / "evaluation" / "workload" / "generate.py"
 BL = [sys.executable, "-m", "bounded_loops.cli"]
 
-_WINDOW = 3
-_CEILING = 10
+# The conditions are copies of the SHIPPED loop with its own declared knobs edited, using the same
+# helpers the E9 sweep uses. Sharing them is deliberate: an earlier version of this project kept a
+# second copy of a scan and fixing one copy fixed nothing.
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from e9_bound_utilisation import (  # noqa: E402
+    _bounds,
+    _copy,
+    _set_records,
+    _set_repair_limit,
+)
+
+_CEILING, _WINDOW = _bounds(REPO_ROOT / "loops" / "record-completeness")
 _RECORDS = 8
 
 
-def _materialise(dest: Path, policy: str, **extra: object) -> Path:
-    argv = [
-        sys.executable, str(GENERATOR),
-        "--dest", str(dest),
-        "--records", str(_RECORDS),
-        "--policy", policy,
-        "--max-iterations", str(_CEILING),
-        "--no-progress-window", str(_WINDOW),
-    ]
-    for key, value in extra.items():
-        argv += [f"--{key.replace('_', '-')}", str(value)]
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    assert result.returncode == 0, f"generator failed: {result.stderr}"
-    return dest
+def _materialise(dest: Path, policy: str, *, stall_after: int | None = None) -> Path:
+    """One sweep condition. `policy` names the shape rather than a generator flag.
+
+    `stalled` is a worker that never changes anything; `stall_after` repairs that many records and
+    then stops; `one_per_lap` is the shipped worker untouched.
+    """
+    loop_dir = _copy(dest)
+    _set_records(loop_dir, _RECORDS)
+    if policy == "stalled":
+        _set_repair_limit(loop_dir, 0)
+    elif policy == "stall_after":
+        assert stall_after is not None, "stall_after policy needs a count"
+        _set_repair_limit(loop_dir, stall_after)
+    elif policy != "one_per_lap":
+        raise AssertionError(f"unknown policy {policy!r}")
+    return loop_dir
 
 
 def _run(loop_dir: Path) -> tuple[str, list[dict]]:
@@ -132,12 +143,11 @@ def test_the_hard_ceiling_is_never_overspent_as_read_from_the_receipt(tmp_path):
     """
     # 8 records against a ceiling of 4, so the ceiling is what stops the run.
     loop_dir = _materialise(tmp_path / "over", "one_per_lap")
-    (loop_dir / "bounds.yaml").write_text(
-        (loop_dir / "bounds.yaml").read_text().replace(
-            f"max_iterations: {_CEILING}", "max_iterations: 4"
-        ),
-        encoding="utf-8",
-    )
+    bounds = loop_dir / "bounds.yaml"
+    text = bounds.read_text(encoding="utf-8")
+    assert f"max_iterations: {_CEILING}" in text, "shipped ceiling changed; update this test"
+    bounds.write_text(text.replace(f"max_iterations: {_CEILING}", "max_iterations: 4"),
+                      encoding="utf-8")
     stdout, entries = _run(loop_dir)
 
     attempts = sum(1 for entry in entries if entry.get("attempted", True))
@@ -163,13 +173,8 @@ def test_a_converging_run_marks_every_lap_as_attempted(tmp_path):
 @pytest.mark.parametrize("records", [2, 4, 8])
 def test_attempts_consumed_track_the_declared_workload(tmp_path, records):
     """Bound utilisation is a real quantity: attempts scale with the work, capped by the ceiling."""
-    dest = tmp_path / f"w{records}"
-    argv = [
-        sys.executable, str(GENERATOR), "--dest", str(dest),
-        "--records", str(records), "--policy", "one_per_lap",
-        "--max-iterations", str(_CEILING), "--no-progress-window", str(_WINDOW),
-    ]
-    assert subprocess.run(argv, capture_output=True, text=True, timeout=60).returncode == 0
+    dest = _copy(tmp_path / f"w{records}")
+    _set_records(dest, records)
 
     stdout, entries = _run(dest)
     assert entries[-1]["decision"] == "done", stdout
