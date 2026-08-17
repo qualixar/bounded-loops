@@ -201,7 +201,9 @@ def test_supplying_the_head_by_hand_is_enough_without_a_receipt(tmp_path: Path) 
     code, payload = _verify(str(path), "--expect-head", head)
     assert code == 1, "the lap accounting still has nothing to check against"
     anchor = next(c for c in payload["checks"] if c["check"] == "anchor")
-    assert anchor["passed"] is True and "--expect-head" in anchor["detail"]
+    assert anchor["passed"] is True
+    assert anchor["status"] == "MATCH_EXTERNAL"
+    assert anchor["witness"] == "external"
 
 
 def test_a_pre_chain_ledger_is_reported_as_unverifiable_not_as_verified(
@@ -237,3 +239,61 @@ def test_human_output_names_the_head_so_it_can_be_copied(
     printed = capsys.readouterr().out
     assert expected in printed
     assert "Verified:" in printed
+
+
+def test_a_colocated_witness_is_not_reported_as_the_strong_check(tmp_path: Path) -> None:
+    """An enterprise review caught this: both witnesses printed the same green tick.
+
+    The receipt lives in the directory it vouches for, so anyone who edits the ledger
+    edits the receipt in the same pass. The check still passes — it catches the careless
+    editor, which is most of them — but the output must not let a reader infer that an
+    external party confirmed anything.
+    """
+    directory = _run_dir(tmp_path)
+    code, payload = _verify(str(directory))
+    anchor = next(c for c in payload["checks"] if c["check"] == "anchor")
+
+    assert code == 0 and anchor["passed"] is True
+    assert anchor["status"] == "MATCH_COLOCATED"
+    assert anchor["witness"] == "co-located"
+    assert "--expect-head" in anchor["detail"], "and it says how to get the strong check"
+
+
+def test_the_human_summary_distinguishes_the_two_witnesses(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    directory = _run_dir(tmp_path)
+    head = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))["ledger_head"]
+
+    assert main(["verify", str(directory)]) == 0
+    weak = capsys.readouterr().out
+    assert "Not established" in weak, "a co-located pass must state what it did not show"
+
+    assert main(["verify", str(directory), "--expect-head", head]) == 0
+    strong = capsys.readouterr().out
+    assert "outside the run directory" in strong
+    assert "Not established" not in strong
+
+
+def test_a_mistyped_path_is_not_accused_of_tampering(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """BROKEN covers three unrelated situations; only one of them is an accusation."""
+    assert main(["verify", str(tmp_path / "typo")]) == 1
+    printed = capsys.readouterr().out
+    assert "no ledger at this path" in printed
+    assert "edited" not in printed, "a path that never existed cannot have been edited"
+
+
+def test_a_symlinked_ledger_says_so_rather_than_accusing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real = tmp_path / "real.jsonl"
+    _record(real, laps=1)
+    link = tmp_path / "link.jsonl"
+    link.symlink_to(real)
+
+    assert main(["verify", str(link)]) == 1
+    printed = capsys.readouterr().out
+    assert "symlink" in printed
+    assert "edited after it was written" not in printed

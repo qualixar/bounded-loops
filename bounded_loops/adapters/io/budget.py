@@ -38,7 +38,18 @@ def effective_reserve_s(bounds: Bounds) -> float:
     """
     if bounds.max_wallclock_s is None:
         raise ValueError("effective_reserve_s requires a declared max_wallclock_s")
-    return float(min(bounds.handoff_reserve_s, bounds.max_wallclock_s // 2))
+    # `(W - 1) // 2`, not `W // 2`. `prop:spend-bound` assumes `0 <= r < W/2` STRICTLY, and
+    # `W // 2` sits exactly on the boundary for every even W: a 60 s ceiling yielded a 30 s
+    # reserve against a 30 s work budget, so the hypothesis the proposition is stated under
+    # was false on this path for 90 of the first 180 declarable ceilings. Found by a
+    # proof-referee audit sweeping W numerically rather than by reading either artifact —
+    # which is the sixth instance in this project of a bound that was declared in a
+    # readable place and not enforced where it said it was.
+    #
+    # `(W - 1) // 2 < W / 2` holds for every integer W >= 1: for W = 2k it gives k - 1, and
+    # for W = 2k + 1 it gives k. The reserve loses at most a second, and the work budget is
+    # what gains it, which is the direction this function's whole contract points.
+    return float(min(bounds.handoff_reserve_s, (bounds.max_wallclock_s - 1) // 2))
 
 
 def _work_ceiling(bounds: Bounds) -> float:

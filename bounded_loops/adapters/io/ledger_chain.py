@@ -22,6 +22,16 @@ That matters because the property being claimed is verifiability *by a third par
 A scheme requiring the reader to reproduce our canonicalisation byte for byte is
 verifiable only by us, which is a different and much weaker claim.
 
+One caveat on that procedure, since claiming language-independence and then shipping a
+Python-shaped recipe would be its own small version of this project's favourite defect:
+the snippet relies on Python translating ``\\r\\n`` to ``\\n`` on read. A verifier written
+in a language that reads bytes literally must strip a trailing ``\\r`` as well as the
+``\\n``. The writer only ever emits ``\\n``, so this bites exactly one case --- a ledger
+that crossed a platform through a tool that rewrote its line endings --- and in that case
+the file has been rewritten, which the chain is entitled to notice. The rule for a
+non-Python implementation is: hash the line's content with all trailing end-of-line bytes
+removed.
+
 **A ledger written before chaining existed reports UNCHAINED, not BROKEN.** Earlier
 versions wrote no ``prev`` at all, and reporting those runs as tampered would be
 false. The mixed case --- an unchained prefix followed by a chained suffix, which is

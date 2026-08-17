@@ -48,9 +48,14 @@ def _print_outcome(outcome: Outcome, *, as_json: bool) -> None:
                 "Gate verified: the independent acceptance gate passed "
                 f"after {outcome.laps} {lap_word}."
             )
+            # Naming the exact command closes a real discovery gap: the head is
+            # printed, `bl verify` exists, and nothing connected the two. A user's
+            # only route to --expect-head was the CHANGELOG or --help.
+            print("Next: prove this receipt was not edited after the run ended —")
+            print(f"  bl verify {outcome.ledger_path.parent} \\")
+            print(f"    --expect-head {outcome.ledger_head}")
             print(
-                "Next: inspect the ledger above; use --keep-workspace "
-                "when you need to debug the resulting files."
+                "Use --keep-workspace when you need to debug the resulting files."
             )
 
 

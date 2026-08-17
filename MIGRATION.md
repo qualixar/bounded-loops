@@ -1,3 +1,78 @@
+# Migrating from 0.6.5 to 0.6.6
+
+Most 0.6.5 setups need **no changes**. Two groups do, and one of them fails loudly on the
+first run after the upgrade.
+
+| If you… | Read |
+|---|---|
+| have a loop with `quarantine_inputs: false` in `bounds.yaml` | [1. Waiving quarantine now needs the operator too](#1-waiving-quarantine-now-needs-the-operator-too) — **it will refuse to run** |
+| run `bl verify` in CI, or audit ledgers written before 0.6.6 | [2. Older ledgers report UNCHAINED](#2-older-ledgers-report-unchained) |
+| copied a hook command into your own editor config | [3. Hooks have an entry point now](#3-hooks-have-an-entry-point-now) — optional |
+
+## 1. Waiving quarantine now needs the operator too
+
+`quarantine_inputs: false` disables the exclusion of credential-bearing files from an
+agent's sandbox. It lives in `bounds.yaml`, so until 0.6.6 the loop's **author** could
+waive it alone and the operator running it was told nothing.
+
+It now takes two keys, the same rule `env_passthrough` uses. The loop declares the opt-out
+and the operator names that loop:
+
+```bash
+export BOUNDED_LOOPS_QUARANTINE_OPT_OUT_ALLOW=<loop-directory-name>
+```
+
+**Symptom if you do nothing:** `bl run` exits 2 before the trust prompt with an error
+naming the loop directory and the exact `export` line. It does not run and it does not
+silently re-enable quarantine — a loop that asked for a credential file would otherwise
+fail for a reason nothing in its output explains.
+
+Consent is per loop directory, deliberately: authorising a secret-scanning demo to see a
+planted key should not authorise every loop on the machine.
+
+## 2. Older ledgers report UNCHAINED
+
+The verdict ledger is hash-chained from 0.6.6 on. Rows written by 0.6.5 and earlier carry
+no `prev` field, so `bl verify` reports:
+
+| Ledger | Status | Exit |
+|---|---|---|
+| Written entirely by 0.6.6+ | `VERIFIED` | 0 (if the other checks pass) |
+| Written entirely before 0.6.6 | `UNCHAINED` | 1 |
+| Written before and appended to after | `MIXED` | 1 |
+
+`UNCHAINED` is not an accusation. It means integrity cannot be checked **either way**, and
+reporting that as a pass would convert an absence of evidence into evidence. There is no
+way to retro-fit a chain onto an old ledger: the digests were never recorded, and
+computing them now would only prove the file matches itself.
+
+**If `bl verify` is a CI gate:** it will fail on pre-0.6.6 run directories. Either scope
+the gate to runs created after the upgrade, or accept `UNCHAINED` explicitly for the
+historical set using the `--json` output's `checks[].status`.
+
+**One thing to change in your run scripts.** Capture the `Ledger head:` line that `bl run`
+now prints, and pass it back later:
+
+```bash
+bl verify <run-dir> --expect-head <digest>
+```
+
+Without `--expect-head`, the anchor check compares the ledger against a receipt in the
+same directory — which catches a careless edit and not a deliberate one. The command
+reports which of the two it did (`MATCH_COLOCATED` vs `MATCH_EXTERNAL`) rather than
+printing the same tick for both.
+
+## 3. Hooks have an entry point now
+
+The plugin manifests invoke `bounded-loops-hook <hook> <host>` instead of
+`python3 -m bounded_loops.hooks.<module> <host>`, because `python3` resolves against the
+user's PATH and need not be an interpreter that can import this package.
+
+**The `python3 -m` form still works.** If you copied a command into your own editor
+configuration, nothing breaks. Switching is a one-line improvement, not a requirement.
+
+---
+
 # Migrating from 0.4.0 to 0.5.0
 
 Most 0.4.0 setups need **no changes**. Three groups do:

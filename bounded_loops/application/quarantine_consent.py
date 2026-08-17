@@ -167,7 +167,7 @@ def require_quarantine_consent(
     if name in operator_quarantine_grants(source):
         return
     raise ManifestError(
-        f"loop '{name}' declares quarantine_inputs: false, which would copy "
+        f"loop directory '{name}' declares quarantine_inputs: false, which would copy "
         f"credential-bearing files (.env*, .ssh, .aws, .npmrc, .pypirc, .kube, "
         f"*.pem/*.key, …) from its seed into the agent's sandbox. That needs the "
         f"operator's consent as well as the author's.\n"

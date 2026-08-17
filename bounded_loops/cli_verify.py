@@ -71,15 +71,32 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     }]
 
     expected = args.expect_head or (metadata or {}).get("ledger_head") or ""
-    source = "--expect-head" if args.expect_head else "the run receipt"
+    external = bool(args.expect_head)
+    source = "--expect-head" if external else "the run receipt"
     if expected:
+        matched = expected == report.head
+        # A co-located witness and an external one are NOT the same finding, and printing
+        # both as "MATCH" was the defect an enterprise-architecture review caught in this
+        # command: the receipt sits in the directory it vouches for, so anyone who edits
+        # the ledger can edit the receipt in the same pass and collect a green tick. The
+        # check still passes — it detects the careless editor, which is most of them — but
+        # it reports its own strength rather than letting a reader infer the stronger one.
         checks.append({
             "check": "anchor",
-            "passed": expected == report.head,
-            "status": "MATCH" if expected == report.head else "MISMATCH",
+            "passed": matched,
+            "status": ("MATCH_EXTERNAL" if external else "MATCH_COLOCATED") if matched
+                      else "MISMATCH",
+            "witness": "external" if external else "co-located",
             "detail": (
-                f"head matches the digest recorded in {source}"
-                if expected == report.head
+                (
+                    "head matches the digest you supplied, which the run directory does "
+                    "not contain: this is the strong check"
+                    if external else
+                    f"head matches the digest in {source} — but that file sits beside the "
+                    f"ledger, so an editor of both satisfies this. Re-run with "
+                    f"--expect-head <digest> from your terminal or CI log for the strong check"
+                )
+                if matched
                 else f"{source} records {expected} but the ledger now heads at {report.head}"
             ),
         })
@@ -148,10 +165,30 @@ def _print_human(ledger_path: Path, report, checks: list[dict], *, ok: bool) -> 
         print(f"  {check['detail']}")
     print("")
     if ok:
-        print("Verified: this receipt is intact and accounts for every lap it claims.")
+        anchor = next((c for c in checks if c["check"] == "anchor"), {})
+        if anchor.get("witness") == "external":
+            print("Verified: this receipt is intact, accounts for every lap it claims, and "
+                  "matches a digest from outside the run directory.")
+        else:
+            print("Verified: this receipt is internally consistent and accounts for every lap "
+                  "it claims.")
+            print("  Not established: that the run directory was not rewritten wholesale. "
+                  "Only --expect-head with a digest kept elsewhere can show that.")
         return
     if report.status is ChainStatus.BROKEN:
-        print("NOT VERIFIED: the ledger was edited after it was written.")
+        # BROKEN covers three unrelated situations and only one of them is an accusation.
+        # Printing "edited after it was written" for a mistyped path told a user their run
+        # had been tampered with when no such run existed — caught by a usability review.
+        if "no ledger" in report.detail:
+            print("NOT VERIFIED: no ledger at this path. Is this a run directory?")
+            print("  Try `bl runs <loop-dir>` to list runs, or pass a ledger file directly.")
+        elif "symlink" in report.detail:
+            print("NOT VERIFIED: the ledger path is a symlink, so the bytes checked are not "
+                  "necessarily the bytes that were written.")
+        elif "cannot read" in report.detail:
+            print("NOT VERIFIED: the ledger could not be read. See the reason above.")
+        else:
+            print("NOT VERIFIED: the ledger was edited after it was written.")
     elif report.status is ChainStatus.TORN_TAIL:
         print("NOT VERIFIED: the final row is a partial write — an interrupted run.")
     elif report.status is ChainStatus.UNCHAINED:

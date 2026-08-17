@@ -153,9 +153,28 @@ def test_the_internal_clamp_still_protects_code_constructed_bounds() -> None:
     """
     bounds = _bounds(wallclock=60)  # picks up the dataclass default of 90
     assert bounds.handoff_reserve_s == 90, "the field is not rewritten"
-    assert effective_reserve_s(bounds) == 30.0, "but only half the ceiling is withheld"
-    assert _work_ceiling(bounds) == 30.0
+    assert effective_reserve_s(bounds) == 29.0, "strictly under half, not exactly half"
+    assert _work_ceiling(bounds) == 31.0
     assert _work_ceiling(bounds) + effective_reserve_s(bounds) == 60.0
+
+
+@pytest.mark.parametrize("wallclock", list(range(1, 400)) + [990, 1440, 3600, 86400])
+def test_the_reserve_is_strictly_under_half_on_every_path(wallclock: int) -> None:
+    """`prop:spend-bound` assumes `0 <= r < W/2` STRICTLY. Asserted, not assumed.
+
+    This test exists because the previous version of the test above asserted
+    `effective_reserve_s(60) == 30.0` — the implementation's behaviour at exactly the
+    boundary the proposition excludes. It passed, and it was pinning the defect rather
+    than the invariant: `W // 2` equals `W / 2` for every even W, so the hypothesis was
+    false for 90 of the first 180 declarable ceilings and no test noticed.
+
+    A test that restates what the code does proves nothing about what the paper claims.
+    This one is written from the paper's inequality and swept numerically, so it fails if
+    either the default or the clamp drifts back onto the boundary.
+    """
+    reserve = effective_reserve_s(_bounds(wallclock=wallclock))
+    assert 0 <= reserve < wallclock / 2, f"W={wallclock}: r={reserve} is not under W/2"
+    assert default_handoff_reserve_s(wallclock) * 2 < wallclock or wallclock < 3
 
 
 def test_the_work_budget_is_never_less_than_half_the_ceiling_on_the_manifest_path(
