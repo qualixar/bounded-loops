@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-from bounded_loops.domain.models import Bounds
+from bounded_loops.domain.models import Bounds, WallclockBudget
 
 
 class BudgetMeter:
@@ -61,6 +61,24 @@ class BudgetMeter:
                 )
 
         return (False, "")
+
+    def wallclock_budget(self, bounds: Bounds) -> WallclockBudget | None:
+        """What is left of the declared ceiling, for the attempt about to start.
+
+        `exceeded()` above answers "may another attempt start?" — a question asked only at a lap
+        boundary. This answers "how long may that attempt run?", which is what actually keeps the
+        declared ceiling from being decorative. Returns None when the loop declares no ceiling.
+
+        Never returns a negative remainder: the caller checks `exceeded()` first, and clamping here
+        keeps that ordering assumption from turning into a crash if a future caller forgets.
+        """
+        if bounds.max_wallclock_s is None:
+            return None
+        elapsed = time.monotonic() - self._start_mono
+        return WallclockBudget(
+            declared_s=bounds.max_wallclock_s,
+            remaining_s=max(0.0, bounds.max_wallclock_s - elapsed),
+        )
 
     def snapshot(self) -> dict:
         """

@@ -26,6 +26,7 @@ from bounded_loops.domain.models import (
     TurnRequest,
     TurnResult,
     Verdict,
+    WallclockBudget,
 )
 
 
@@ -97,6 +98,11 @@ class BudgetMeterPort(Protocol):
     def spend(self, tokens: int) -> None: ...
     def exceeded(self, lap: int, bounds: Bounds) -> tuple[bool, str]: ...  # (tripped, reason)
     def snapshot(self) -> dict: ...  # {"laps": int, "tokens": int, "wallclock_s": float}
+    #: What is left of bounds.max_wallclock_s, or None when no ceiling is declared. Part of the
+    #: Protocol rather than a duck-typed probe for the same reason snapshot() is: `exceeded()` only
+    #: runs BETWEEN attempts, so without this the declared ceiling cannot constrain the attempt
+    #: itself, and a meter that cannot answer must fail loudly instead of quietly disabling a bound.
+    def wallclock_budget(self, bounds: Bounds) -> WallclockBudget | None: ...
 
 
 @runtime_checkable

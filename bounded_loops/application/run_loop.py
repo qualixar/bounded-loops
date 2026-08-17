@@ -36,7 +36,7 @@ from bounded_loops.application.ports import (
     RunnerPort,
     TracerPort,
 )
-from bounded_loops.domain.errors import GateError, RunnerError
+from bounded_loops.domain.errors import GateError, RunnerError, WallclockExceeded
 from bounded_loops.domain.models import (
     Bounds,
     LedgerEntry,
@@ -174,14 +174,6 @@ class RunLoopUseCase:
         # ── OUTER LOOP ──
         while True:
             lap += 1
-            ctx = LoopContext(
-                workspace=self._workspace,
-                lap=lap,
-                rung=rung,
-                trace_id=trace_id,
-                env=self._env_passthrough,
-                memory_snapshot=memory_snapshot,
-            )
 
             # ── 1. Kill-switch check (highest priority) ──
             if d.killswitch.tripped():
@@ -202,9 +194,31 @@ class RunLoopUseCase:
                 d.ledger.record(entry)
                 return Outcome(Status.HALT, why, lap, d.ledger.path())
 
+            # ── 2b. Context is built HERE, after the budget check, so the wallclock remainder it
+            # carries is measured as late as possible — immediately before the turn it constrains.
+            # `exceeded()` above only answers "may another attempt start?"; the remainder below is
+            # what stops an attempt already under way from running past the declared ceiling.
+            ctx = LoopContext(
+                workspace=self._workspace,
+                lap=lap,
+                rung=rung,
+                trace_id=trace_id,
+                env=self._env_passthrough,
+                memory_snapshot=memory_snapshot,
+                wallclock=d.budget.wallclock_budget(bounds),
+            )
+
             # ── 3. Run the agent (one turn) ──
             try:
                 result = d.runner.run_once(spec, ctx)
+            except WallclockExceeded as exc:
+                # The declared ceiling expired mid-attempt. HALT, not ERROR: a bound firing is the
+                # harness working, and a run that stopped because it was told to must not be
+                # recorded the same way as a run that broke. `attempted` stays True — the worker
+                # did run; it ran out of budget, which is the opposite of never having started.
+                entry = _make_entry(lap, "halt", Verdict(False, str(exc)), _snap(d, lap), d.clock)
+                d.ledger.record(entry)
+                return Outcome(Status.HALT, str(exc), lap, d.ledger.path())
             except RunnerError as exc:
                 verdict = _error_verdict("runner", exc)
                 entry = _make_entry(lap, "error", verdict, _snap(d, lap), d.clock)

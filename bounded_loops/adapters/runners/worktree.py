@@ -11,6 +11,7 @@ from pathlib import Path
 
 from bounded_loops.adapters._env import build_subprocess_env
 from bounded_loops.adapters.runners._prompt import with_memory_snapshot
+from bounded_loops.adapters.runners.attempt_deadline import attempt_deadline
 from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn, TurnState
 from bounded_loops.adapters.runners.workspace_digest import workspace_digest
 from bounded_loops.domain.errors import RunnerError
@@ -26,6 +27,9 @@ class WorktreeRunner:
         self.timeout_s = timeout_s
 
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
+        # Anchor the loop's remaining wallclock budget FIRST, so the worktree setup below is spent
+        # from the budget rather than added on top of it. See attempt_deadline.py.
+        deadline = attempt_deadline(self.timeout_s, ctx)
         # Snapshot before the turn; compare after. Scoped to this lap so that a write by an
         # earlier lap cannot make this one look busy -- see workspace_digest.
         digest_before = workspace_digest(ctx.workspace)
@@ -35,15 +39,16 @@ class WorktreeRunner:
         worktree = worktree_parent / "worktree"
         try:
             _run_git(["worktree", "add", "--detach", str(worktree), "HEAD"], ctx.workspace)
+            budget = deadline.wait_budget()
             completed = ProcessTurn.start(
                 shlex.split(self.agent_cmd),
                 cwd=worktree,
                 env=build_subprocess_env(ctx.env),
                 input_text=_build_prompt(spec, ctx),
                 output_limit_bytes=_MAX_AGENT_OUTPUT_BYTES,
-            ).wait(timeout_s=self.timeout_s)
+            ).wait(timeout_s=budget.timeout_s)
             if completed.state is TurnState.TIMED_OUT:
-                raise RunnerError(f"WorktreeRunner: timed out after {self.timeout_s}s")
+                raise budget.timeout_error("WorktreeRunner")
             if completed.state is TurnState.CANCELLED:
                 raise RunnerError("WorktreeRunner: cancelled before completion")
             _copy_back(worktree, ctx.workspace)

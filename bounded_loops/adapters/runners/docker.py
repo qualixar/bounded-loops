@@ -8,6 +8,7 @@ import os
 
 from bounded_loops.adapters._env import build_subprocess_env, output_redactions
 from bounded_loops.adapters.runners._prompt import with_memory_snapshot
+from bounded_loops.adapters.runners.attempt_deadline import attempt_deadline
 from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn, TurnState
 from bounded_loops.adapters.runners.workspace_digest import workspace_digest
 from bounded_loops.domain.errors import RunnerError
@@ -31,6 +32,9 @@ class DockerRunner:
         self.cpus = cpus
 
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
+        # Anchor the loop's remaining wallclock budget FIRST, so the digest and argv assembly below
+        # are spent from the budget rather than added on top of it.
+        deadline = attempt_deadline(self.timeout_s, ctx)
         # Snapshot before the turn; compare after. Scoped to this lap so that a write by an
         # earlier lap cannot make this one look busy -- see workspace_digest.
         digest_before = workspace_digest(ctx.workspace)
@@ -62,6 +66,7 @@ class DockerRunner:
             argv.extend(["--user", f"{uid}:{gid}"])
         argv.extend([self.image, *command])
         try:
+            budget = deadline.wait_budget()
             completed = ProcessTurn.start(
                 argv,
                 cwd=ctx.workspace,
@@ -69,11 +74,11 @@ class DockerRunner:
                 input_text=prompt,
                 output_limit_bytes=_MAX_AGENT_OUTPUT_BYTES,
                 redactions=output_redactions(ctx.env),
-            ).wait(timeout_s=self.timeout_s)
+            ).wait(timeout_s=budget.timeout_s)
         except OSError as exc:
             raise RunnerError(f"DockerRunner: could not launch docker: {exc}") from exc
         if completed.state is TurnState.TIMED_OUT:
-            raise RunnerError(f"DockerRunner: timed out after {self.timeout_s}s")
+            raise budget.timeout_error("DockerRunner")
         if completed.state is TurnState.CANCELLED:
             raise RunnerError("DockerRunner: cancelled before completion")
         (ctx.workspace / "agent_output.txt").write_text(completed.stdout, encoding="utf-8")

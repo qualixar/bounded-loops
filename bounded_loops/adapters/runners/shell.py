@@ -26,7 +26,11 @@ Invariants:
   - The agent's non-zero exit code does NOT raise RunnerError — the agent
     process failing is different from the runner itself failing to
     launch.
-  - Timeout from the subprocess raises RunnerError.
+  - Timeout from the subprocess raises RunnerError when this adapter's own
+    `timeout_s` was the binding limit, and WallclockExceeded when the loop's
+    declared `bounds.max_wallclock_s` was — one is a runner failure, the other is
+    a bound firing, and the controller reports them differently. See
+    `attempt_deadline.py`.
   - agent_output.txt is always written, even if stdout is empty.
   - ctx.env overrides are merged OVER the allowlisted base, not replacing
     it (agent CLIs need PATH etc.).
@@ -38,6 +42,7 @@ import shlex
 
 from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env, output_redactions
 from bounded_loops.adapters.runners._prompt import with_memory_snapshot
+from bounded_loops.adapters.runners.attempt_deadline import attempt_deadline
 from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn, TurnState
 from bounded_loops.adapters.runners.workspace_digest import workspace_digest
 from bounded_loops.domain.errors import RunnerError
@@ -90,6 +95,9 @@ class ShellRunner:
         return with_memory_snapshot("\n".join(lines), ctx)
 
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
+        # Anchor the loop's remaining wallclock budget FIRST, so prompt building and the workspace
+        # digest below are spent from the budget rather than added on top of it.
+        deadline = attempt_deadline(self.timeout_s, ctx)
         prompt_text = self._build_prompt(spec, ctx)
 
         # Snapshot BEFORE the turn and compare AFTER, both within this lap. Scoping the comparison
@@ -115,17 +123,17 @@ class ShellRunner:
                 output_limit_bytes=_MAX_AGENT_OUTPUT_BYTES,
                 redactions=output_redactions(ctx.env),
             )
-            completed = turn.wait(timeout_s=self.timeout_s)
+            budget = deadline.wait_budget()
+            completed = turn.wait(timeout_s=budget.timeout_s)
         except OSError as exc:
             raise RunnerError(
                 f"ShellRunner: could not launch agent command "
                 f"{self.agent_cmd!r}: {exc}"
             ) from exc
         if completed.state is TurnState.TIMED_OUT:
-            raise RunnerError(
-                f"ShellRunner: agent command timed out after "
-                f"{self.timeout_s}s. cmd={self.agent_cmd!r}"
-            )
+            # Which limit bit decides HALT vs ERROR; `budget` already knows, so nothing here
+            # re-derives it. See attempt_deadline.py for why re-deriving cannot work.
+            raise budget.timeout_error("ShellRunner", f"cmd={self.agent_cmd!r}")
         if completed.state is TurnState.CANCELLED:
             raise RunnerError(f"ShellRunner: agent command was cancelled. cmd={self.agent_cmd!r}")
 

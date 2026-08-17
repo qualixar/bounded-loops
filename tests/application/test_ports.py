@@ -18,7 +18,7 @@ import inspect
 from pathlib import Path
 
 from bounded_loops.domain.models import (
-    Spec, Bounds, Verdict, RunResult, LedgerEntry, LoopContext,
+    Spec, Bounds, Verdict, RunResult, LedgerEntry, LoopContext, WallclockBudget,
 )
 from bounded_loops.application import ports as P
 from bounded_loops.application.ports import (
@@ -126,6 +126,19 @@ class FakeBudget:
 
     def snapshot(self) -> dict:
         return {"laps": 0, "tokens": self._tokens, "wallclock_s": 0.0}
+
+    def wallclock_budget(self, bounds: Bounds) -> WallclockBudget | None:
+        """Full budget always remaining: this fake does not model the passage of time.
+
+        Returning the declared ceiling in full is the honest answer for a meter with a frozen
+        clock — a fake that reported a shrinking remainder would be inventing elapsed time no
+        test controls.
+        """
+        if bounds.max_wallclock_s is None:
+            return None
+        return WallclockBudget(
+            declared_s=bounds.max_wallclock_s, remaining_s=float(bounds.max_wallclock_s)
+        )
 
 
 class FakeKillSwitch:

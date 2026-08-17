@@ -49,6 +49,7 @@ import queue
 
 from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env
 from bounded_loops.adapters.runners._prompt import with_memory_snapshot
+from bounded_loops.adapters.runners.attempt_deadline import attempt_deadline
 from bounded_loops.domain.errors import RunnerError
 from bounded_loops.domain.models import LoopContext, RunResult, Spec
 
@@ -173,6 +174,9 @@ class PythonCallableRunner:
         # function_name are only ever resolved inside the isolated child.
 
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
+        # Anchor the loop's remaining wallclock budget FIRST — before spawning — so process startup
+        # (a `spawn` context re-imports the interpreter, which is not free) is spent from the budget.
+        deadline = attempt_deadline(self.timeout_s, ctx)
         prompt_text = _build_prompt(spec, ctx)
         ctx_dir = str(ctx.workspace)
         mp_ctx = multiprocessing.get_context("spawn")   # ALWAYS spawn, never the
@@ -188,8 +192,9 @@ class PythonCallableRunner:
         # Drain the queue BEFORE joining — Queue.empty() immediately after
         # join() is the documented-unreliable pattern; get(timeout=...) is
         # the correct fix (see module docstring, fix #4).
+        budget = deadline.wait_budget()
         try:
-            status, payload = result_queue.get(timeout=self.timeout_s)
+            status, payload = result_queue.get(timeout=budget.timeout_s)
         except queue.Empty:
             proc.terminate()
             proc.join(timeout=5)
@@ -203,9 +208,8 @@ class PythonCallableRunner:
                 # nicety.
                 proc.kill()
                 proc.join()
-            raise RunnerError(
-                f"PythonCallableRunner: {self.module_path}.{self.function_name} "
-                f"timed out after {self.timeout_s}s"
+            raise budget.timeout_error(
+                "PythonCallableRunner", f"{self.module_path}.{self.function_name}"
             )
         finally:
             proc.join(timeout=5)   # reap; safe to call again if already joined above

@@ -33,6 +33,23 @@ class RunnerError(BoundedLoopsError):
     """
 
 
+class WallclockExceeded(BoundedLoopsError):
+    """
+    Raised by a runner when the loop's DECLARED `bounds.max_wallclock_s` expires
+    part-way through an attempt.
+
+    Deliberately NOT a subclass of RunnerError. A runner error means the harness
+    failed to do its job; this means the harness did its job — the operator asked
+    for a spend ceiling and the ceiling was reached. The controller turns it into
+    Status.HALT with the bound named, never Status.ERROR, so a run that stopped
+    because it was told to cannot be read as a run that broke.
+
+    Typical message pattern:
+        WallclockExceeded("wallclock limit 120s exceeded during an attempt "
+                          "(ShellRunner, cmd='python3 seed/worker.py')")
+    """
+
+
 class GateError(BoundedLoopsError):
     """
     Raised when the gate itself cannot execute (e.g. pytest binary missing,

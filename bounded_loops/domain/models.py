@@ -292,6 +292,38 @@ class TurnResult:
 
 
 @dataclass(frozen=True)
+class WallclockBudget:
+    """
+    What is left of `Bounds.max_wallclock_s` at the moment an attempt starts.
+
+    Exists because the declared ceiling bounds the RUN and the thing that has to
+    respect it is a single ATTEMPT. Handing every attempt the whole ceiling would
+    make the run's worst case (laps x ceiling), so the number in the manifest
+    would bound nothing a reader cares about. Only the controller knows how much
+    is left, so the controller measures and the runner is told.
+
+    `declared_s` travels alongside `remaining_s` for one reason: when the ceiling
+    is reached, the failure has to name the bound the operator actually wrote, not
+    the residue the runner happened to be handed.
+
+    Fields:
+      declared_s  — `bounds.max_wallclock_s` verbatim, for the halt reason.
+      remaining_s — seconds still unspent when the controller handed off. Never
+                    negative: the controller's pre-turn budget check already
+                    refuses to start an attempt once the ceiling is reached.
+    """
+    declared_s:  int
+    remaining_s: float
+
+    def __post_init__(self) -> None:
+        if self.remaining_s < 0:
+            raise ValueError(
+                f"remaining_s must be >= 0, got {self.remaining_s}; a negative remainder means "
+                "the controller started an attempt after the ceiling was already reached"
+            )
+
+
+@dataclass(frozen=True)
 class LoopContext:
     """
     Per-lap context passed to every port (runner, gate, memory, etc.).
@@ -304,6 +336,9 @@ class LoopContext:
       env        — arbitrary key→value bag for adapter configuration
                    (e.g. {"gate_timeout_s": 30}). Mutable-dict same caveat
                    as Verdict.evidence applies.
+      wallclock  — the declared wallclock ceiling and what is left of it, or None
+                   when the loop declares no ceiling. Runners clamp their own
+                   wait to it; see adapters/runners/attempt_deadline.py.
 
     Example:
       LoopContext(
@@ -325,6 +360,7 @@ class LoopContext:
     trace_id:  str
     env:       dict = field(default_factory=dict)
     memory_snapshot: str = ""
+    wallclock: Optional[WallclockBudget] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "env", _freeze_value(self.env))
