@@ -90,10 +90,19 @@ def check(schedule_path: str) -> int:
     overlaps = [h for h, c in enumerate(counts) if c > 1]
 
     if gaps or overlaps:
+        # Lead with the COUNT, then the ranges. Naming the ranges alone tells an operator where the
+        # problem is but not how much of it is left, so consecutive attempts are indistinguishable
+        # from each other and a schedule converging over several laps looks identical to one stuck.
         if gaps:
-            print(f"check_coverage: uncovered hour(s) (gap): {', '.join(_format_ranges(gaps))}")
+            print(
+                f"check_coverage: {len(gaps)} of {period_hours} hours uncovered (gap): "
+                f"{', '.join(_format_ranges(gaps))}"
+            )
         if overlaps:
-            print(f"check_coverage: overlapping hour(s): {', '.join(_format_ranges(overlaps))}")
+            print(
+                f"check_coverage: {len(overlaps)} of {period_hours} hours overlapping: "
+                f"{', '.join(_format_ranges(overlaps))}"
+            )
         return 1
 
     print(f"check_coverage: all {period_hours} hours covered exactly once")
