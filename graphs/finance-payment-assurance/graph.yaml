@@ -15,7 +15,7 @@ connection_slots: []
 nodes:
   - id: match-invoice
     kind: loop
-    loop_package: "sha256:95e9fb2346ef5b0b5d4dd0315de45f6972c3c64465dd98e91ee82564985aa767"
+    loop_package: "sha256:ad17731437e85b13f4e1f0415d58a44db5225e6eb63d310dc5b77675345c5eab"
     inputs: {}
     outputs:
       verdict: internal
@@ -26,7 +26,7 @@ nodes:
     isolation: process_restricted
   - id: balance-journal
     kind: loop
-    loop_package: "sha256:6672c2027f66307758cfb73ad4b3e7b26bd7910a97bbc238a7e27b3159460fbd"
+    loop_package: "sha256:c3c8c8ac69c52de2c6ae281b54a2d7a6033e322d7f974b8779c515b0d8b1477f"
     inputs: {}
     outputs:
       verdict: internal
@@ -37,7 +37,7 @@ nodes:
     isolation: process_restricted
   - id: check-fx-rate
     kind: loop
-    loop_package: "sha256:b761ed98bdace4685ec4c7a6db72c61fec1d6ea3693e0a452bbb9e43f6398af5"
+    loop_package: "sha256:15fe508cf6a4d8f32baa1879ab41bd1251e4d16ca3a8ff7f1118e4f1e701959e"
     inputs: {}
     outputs:
       verdict: internal
@@ -48,7 +48,7 @@ nodes:
     isolation: process_restricted
   - id: validate-iso20022
     kind: loop
-    loop_package: "sha256:e530756f564613283f044f59f870a9e75bf6f87f394e10b0cb65f85ba2b82996"
+    loop_package: "sha256:0ef62a5eed80df90e4107f22cc4fdc2d5cc33ba6deff12dc6f4655268a27f381"
     inputs: {}
     outputs:
       verdict: internal
@@ -59,7 +59,7 @@ nodes:
     isolation: process_restricted
   - id: reconcile-ledger
     kind: loop
-    loop_package: "sha256:22f8fc10984162ef17c4ffd9b0a9a6509ae9a81ddeb997ad5cd9a5a83031155a"
+    loop_package: "sha256:bd368e31c549023c5a06eb5f3be59ec9f0ee8f244a1a7df9519b9bbd918678d5"
     inputs:
       source: internal
     outputs:

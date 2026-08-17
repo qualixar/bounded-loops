@@ -15,7 +15,7 @@ connection_slots: []
 nodes:
   - id: check-processor-terms
     kind: loop
-    loop_package: "sha256:bdfdf02e4301b10f8277cbad723a361786e23db72618df96269bceb52d139bcb"
+    loop_package: "sha256:dbfcdd0371d7e6e8c9e2ee42ea80090dc6dcd7850d0c6a2fb91ec99ab445a847"
     inputs: {}
     outputs:
       verdict: internal
@@ -26,7 +26,7 @@ nodes:
     isolation: process_restricted
   - id: check-privacy-notice
     kind: loop
-    loop_package: "sha256:768c112b2dbbf425400cfa6c059c09109a72e47647ade9dbe31e4601e663632f"
+    loop_package: "sha256:60a193f730f8f755613d6486d1bbc1e1eb9e8e1461f232983aa4032669c9daae"
     inputs: {}
     outputs:
       verdict: internal
@@ -37,7 +37,7 @@ nodes:
     isolation: process_restricted
   - id: scan-exposure
     kind: loop
-    loop_package: "sha256:109a770f7b62a374256a0ece0ffd062abe0ecc022df88ea42e32715be7665e3e"
+    loop_package: "sha256:d49619cdc18ecb059978c139c71652e0a0044b630e9f11a67051457d293f52b5"
     inputs: {}
     outputs:
       verdict: internal
@@ -48,7 +48,7 @@ nodes:
     isolation: process_restricted
   - id: extract-clauses
     kind: loop
-    loop_package: "sha256:966985dcc32ca5c88cc830c99073854c5220c1ad85acafd544cf497d5ff40ea9"
+    loop_package: "sha256:80e22fb31906cb61a321eb215b261e70cf9d49c4d30ffdb526955aec3f09e5ce"
     inputs:
       source: internal
     outputs:

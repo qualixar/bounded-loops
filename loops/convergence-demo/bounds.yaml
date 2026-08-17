@@ -1,7 +1,7 @@
 max_iterations: 3
 no_progress_window: 3
 max_tokens: 5000
-max_wallclock_s: 60
+max_wallclock_s: 270
 sandbox: true
 quarantine_inputs: true
 schema: null

@@ -15,7 +15,7 @@ connection_slots: []
 nodes:
   - id: pin-dependencies
     kind: loop
-    loop_package: "sha256:452996050fa609579563f32c7deaacee1cbb265b87e712df0322dbaa1905e5b9"
+    loop_package: "sha256:653899a20c61919b5c8280163cc16e698df652839c72a4e74ad8c2da0860897d"
     inputs: {}
     outputs:
       verdict: internal
@@ -26,7 +26,7 @@ nodes:
     isolation: process_restricted
   - id: check-cors
     kind: loop
-    loop_package: "sha256:d4f04fd5009bfe5aa77fb432c6fe7d08a555025ee92f37793b3e4e1fd40a6cc4"
+    loop_package: "sha256:c834f444c98bd2663eb624aaf8b329d1573c8fbbd2c0e1bbba4fc4af81c3176b"
     inputs: {}
     outputs:
       verdict: internal
@@ -37,7 +37,7 @@ nodes:
     isolation: process_restricted
   - id: check-container-user
     kind: loop
-    loop_package: "sha256:9abdbac95a516ff999bd8d713f51866d981e1895f80812dc5f3fa355b5a06e66"
+    loop_package: "sha256:9b5ea9ecda3ac33e638378d7c5e60fa0b9a1d355d13088fbb1aa86ef2f2c0177"
     inputs: {}
     outputs:
       verdict: internal
@@ -48,7 +48,7 @@ nodes:
     isolation: process_restricted
   - id: scan-secrets
     kind: loop
-    loop_package: "sha256:109a770f7b62a374256a0ece0ffd062abe0ecc022df88ea42e32715be7665e3e"
+    loop_package: "sha256:d49619cdc18ecb059978c139c71652e0a0044b630e9f11a67051457d293f52b5"
     inputs:
       source: internal
     outputs:
