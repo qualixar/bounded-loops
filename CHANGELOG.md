@@ -3,6 +3,81 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.5] — 2026-08-17
+
+### Fixed
+
+- **`max_wallclock_s` is now enforced inside an attempt, not only between them.** The ceiling was
+  compared against elapsed time at the top of each lap and nowhere else, so it bounded the gap
+  between attempts rather than an attempt. A loop declaring `max_wallclock_s: 120` was observed
+  running one attempt for over 300 seconds and being stopped, in the end, by a runner default it
+  had never declared. The number was in the manifest and readable; it just did not constrain the
+  run.
+
+  What the bound now promises, stated exactly: **worker time is bounded by `max_wallclock_s`, and
+  total run time by `max_wallclock_s` plus at most one gate timeout.** Gates are deliberately not
+  clamped — cutting a gate short yields no verdict, and a verdict that cost a few extra seconds is
+  worth strictly more than none.
+
+  Exceeding the declared ceiling now **halts** the run and names the bound. Exceeding a runner's own
+  `timeout_s` remains a runner **error**. A run that stopped because it was told to is not a run
+  that broke, and they no longer report the same way.
+
+- **Every shipped loop's wallclock ceiling was wrong, and enforcing the bound is what revealed it.**
+  65 of 69 loops declared a 60-second total budget against `max_iterations: 10` — six seconds per
+  attempt. The demo worker finishes a lap in about 0.4s, so nothing noticed. Measured across four
+  providers on four loops, one real agent turn takes 20–271 seconds. Ceilings are now
+  `max_iterations × 90 + handoff_reserve_s`, and a test enforces the rule catalogue-wide.
+
+- **Two runners never told the agent what it was forbidden to touch.** Seven runners each carried a
+  `_build_prompt`, three annotated as verbatim copies; they had drifted into four variants, and the
+  `docker` and `worktree` versions dropped `spec.forbid` from the assembled prompt entirely. A loop
+  with no `PROMPT.md` therefore spent attempts being refused for touching files it was never told
+  about. One shared definition now, with a test that refuses to let a runner define its own again.
+
+- The agent-CLI runners' default per-turn timeout is 600s, up from 300s. One measured turn was still
+  working when 300s killed it, so 300 was truncating progress rather than catching a hang.
+
+### Added
+
+- **A bound halt leaves a handoff instead of only a reason.** `HANDOFF.md` is written beside the
+  ledger on every bound halt, from facts the harness already holds: which bound fired, attempts
+  spent, which laps changed the workspace, the gate's last message, and whether the run was stuck or
+  merely short of budget. It costs nothing and cannot be wrong about what happened.
+
+- **`bounds.handoff_reserve_s`** (default 90, `0` declines) gives the agent one final turn to say
+  *why* — what it did, what is left, what it would do next. **The reserve is taken out of
+  `max_wallclock_s`, never added to it:** work gets `ceiling − reserve`, the wind-down gets the
+  reserve, and the declared total is unchanged, so every termination guarantee holds verbatim.
+  Granting the turn *after* the ceiling would have made the ceiling silently mean "plus however long
+  a summary takes".
+
+  Without this, a run that hit its ceiling mid-task discarded everything the attempt had worked out,
+  and the next run began from the same seed with the same budget and no knowledge of it — so a task
+  needing more than one budget window could never finish, however often it was run.
+
+  The kill switch gets no wind-down: an operator pulling it wants the run to stop now, not to spend
+  more of anything. Every other bound halt gets one, no-progress included, since a stuck agent's
+  account of what it tried is the most useful handoff of the set. Nothing in the wind-down can
+  change the terminal status.
+
+- `attempted` on every ledger row, so bound utilisation is auditable from the receipt. A ceiling
+  halt at `max_iterations: 10` writes an eleventh row, and anyone computing consumed-over-declared
+  previously read 1.1 for a bound that held exactly.
+
+### Changed
+
+- Change detection is content-addressed (`adapters/runners/workspace_digest.py`), replacing six
+  mirrored copies of a git-based detector that could not report "unchanged" after lap 1 — the
+  no-progress soft bound was inoperative for every runner that shells out. **git is no longer a hard
+  engine dependency.**
+- The controller's attempt and repair round are published into the loop workspace, so a repair round
+  can change an outcome; the graph work bound's `(1+R)` factor had never been exercised.
+- New loop `record-completeness`; catalogue 68 → 69, keyless 64 → 65.
+- Existence obligations in five gates that had certified emptied artifacts.
+- Gate violation-count contract, with an explicit predicate-gate allow-list.
+- A compile check over all shipped gate scripts — `loops/` had never been linted.
+
 ## [0.6.4] — 2026-08-16
 
 ### Changed

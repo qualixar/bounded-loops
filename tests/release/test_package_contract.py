@@ -158,6 +158,54 @@ def test_claude_plugin_has_a_package_manifest() -> None:
     )
 
 
+def test_every_version_bearing_file_is_covered_by_this_contract() -> None:
+    """The release has SIX version sites and this test is the list of them.
+
+    Two were missing until 0.6.5: `plugins/antigravity/plugin.json` and the claude marketplace
+    manifest. Both were bumped by hand every release and neither was checked, so either could have
+    shipped stale and the only symptom would have been a plugin reporting the wrong version to a
+    user. A hand-synchronised constant that nothing compares is the drift defect this project has
+    now removed from three other places.
+
+    Discovery is by scan, not by list, so a seventh site added later fails here rather than being
+    silently unchecked.
+    """
+    import re  # noqa: PLC0415
+
+    version_pattern = re.compile(
+        r'(?:"version"\s*:\s*|^version\s*[:=]\s*|__version__\s*=\s*)"(\d+\.\d+\.\d+)"', re.M
+    )
+    # Scoped to files that carry the RELEASE version. A broader sweep picks up graph manifest
+    # schema versions, which are a different number that must not track the package at all —
+    # asserting they match would couple two unrelated things and make one of them unchangeable.
+    candidates = [
+        REPO_ROOT / "pyproject.toml",
+        REPO_ROOT / "CITATION.cff",
+        REPO_ROOT / "npm" / "package.json",
+        REPO_ROOT / "bounded_loops" / "__init__.py",
+        # Globbed, not listed: a new plugin manifest is then covered on the day it is added.
+        *sorted(REPO_ROOT.glob("plugins/**/*.json")),
+    ]
+
+    found: dict[str, str] = {}
+    for path in candidates:
+        if not path.is_file() or "node_modules" in path.parts:
+            continue
+        match = version_pattern.search(path.read_text(encoding="utf-8"))
+        if match:
+            found[str(path.relative_to(REPO_ROOT))] = match.group(1)
+
+    assert len(found) >= 6, (
+        f"only {len(found)} release version sites found ({sorted(found)}); at 0.6.5 there were six. "
+        "Refusing to report them consistent from a scan that did not find them."
+    )
+    stale = {name: value for name, value in found.items() if value != _PYPROJECT_VERSION}
+    assert not stale, (
+        f"version sites disagree with pyproject.toml ({_PYPROJECT_VERSION}):\n  "
+        + "\n  ".join(f"{name}: {value}" for name, value in sorted(stale.items()))
+    )
+
+
 def test_plugin_installation_and_mcp_extra_are_documented() -> None:
     text = (REPO_ROOT / "plugins" / "README.md").read_text(encoding="utf-8")
     assert 'pip install "bounded-loops[mcp]"' in text

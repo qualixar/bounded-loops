@@ -21,7 +21,7 @@ hand-written) loop folder has this shape — nine files, plus one directory:
 | File | Role |
 |---|---|
 | `loop.yaml` | The manifest: name, description, `pattern` (one of Anthropic's seven agentic patterns), `role`, `rung`, pointers to `spec`/`bounds`/`memory`, the `runner.default`, the `gate.kind`(+`gate.run` for `command`/`pytest`), and `forbid:` globs. |
-| `bounds.yaml` | The nine-bounds configuration for this loop — `max_iterations`, `no_progress_window`, `max_tokens`, `max_wallclock_s`, `sandbox`, `quarantine_inputs`, `schema`, `trace`, `require_approval`. |
+| `bounds.yaml` | The nine-bounds configuration for this loop — `max_iterations`, `no_progress_window`, `max_tokens`, `max_wallclock_s`, `sandbox`, `quarantine_inputs`, `schema`, `trace`, `require_approval` — plus `handoff_reserve_s`, the slice of `max_wallclock_s` held back so a bound halt can leave a handoff instead of just a reason. Size `max_wallclock_s` as `max_iterations × 90 + handoff_reserve_s`: 90 seconds is the 75th-percentile turn of a real agent CLI, measured. See [NINE-BOUNDS.md](NINE-BOUNDS.md). |
 | `PROMPT.md` | The spec text handed to the agent each lap — loaded verbatim as the single `Spec.steps` entry; the gate, not this file, is what actually proves the stop condition. |
 | `STATE.md` | Cross-lap memory, read/written via `MemoryPort` — lives outside the agent-writable scratch workspace. |
 | `seed/` | The broken starting state the agent operates on (copied into an isolated scratch dir at run time — never mutated in place). |

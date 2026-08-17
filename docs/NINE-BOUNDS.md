@@ -235,6 +235,56 @@ unable to affect a run, which is the defect this release closes.
 across the catalogue and refuses to let the per-attempt allowance be raised
 past the slowest measured turn.
 
+### The handoff reserve — a bound need not destroy the work it interrupts
+
+**Field:** `bounds.handoff_reserve_s` (an int; default 90, `0` declines).
+
+A hard bound has to be hard. But one that reports only "budget exceeded"
+throws away spend already paid for — and worse, the next run starts from the
+same seed with the same budget and no knowledge of what the last one learned.
+A task that genuinely needs more than one budget window can then never
+finish, however many times it is run. The bound stops being merely strict and
+becomes anti-productive.
+
+So a bound halt now leaves two things behind:
+
+1. **`HANDOFF.md`, written by the harness**, beside the ledger. Which bound
+   fired, attempts spent, which laps changed the workspace, the gate's last
+   message, and — the question a reader actually has — whether the run was
+   *stuck* or *short of budget*. Costs nothing, always available, cannot be
+   wrong about what happened.
+2. **One wind-down turn, written by the agent**, if the reserve allows. This
+   is the part that can say *"I was part-way through record 6 and the checksum
+   field is the problem"*. It is marked **unverified** in the document, because
+   no gate has looked at it.
+
+**The reserve is taken OUT of `max_wallclock_s`, never added to it.** Work
+gets `ceiling − reserve`; the wind-down gets the reserve; the declared total
+is unchanged. That is precisely what keeps the termination guarantees intact —
+there is no branch on which a run outlives its declared ceiling in exchange
+for a summary. Granting the turn *after* the ceiling would have made the
+ceiling silently mean "`max_wallclock_s` plus however long a summary takes",
+and that second term is exactly the quantity an operator cannot see. It is the
+same defect as a declared-but-unenforced bound, arrived at from the opposite
+direction.
+
+Consequences worth knowing:
+
+- **The kill switch gets no wind-down.** An operator pulling it wants the run
+  to stop now, not to spend more of anything. Every *other* bound halt gets
+  one — no-progress included, since a stuck agent's account of what it tried
+  is the most useful handoff of the set, not the least.
+- **Nothing in the wind-down can change the terminal status.** A handoff turn
+  that hangs, crashes or writes nonsense costs the reserve and no more.
+  Otherwise "we tried to help you" could turn a clean HALT into a failure.
+- `manifest.py` **refuses** an authored reserve at or past half the ceiling —
+  an author who wrote the number should be told it is wrong. A `Bounds`
+  assembled in code instead **clamps** to half the ceiling, so the default
+  cannot break a previously-valid construction. Loud for input, forgiving for
+  internals.
+- The wind-down turn's tokens are metered like any other. The budget is
+  already spent; not counting them would understate what the run cost.
+
 ## The kill switch — highest priority, polled first
 
 **Env var:** `BOUNDED_LOOPS_KILL` (any non-empty value trips it).
