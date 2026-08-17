@@ -54,11 +54,39 @@ import json
 import pathlib
 import sys
 
+#: Minimum repair round at which this gate is willing to pass, regardless of content.
+#: Zero means "content alone decides", which is the ordinary case.
+REQUIRE_ROUND = __REQUIRE_ROUND__
+
+
+def _repair_round() -> int:
+    """The graph controller's current repair round, or 0 when running standalone.
+
+    Published by `loop_node_entry` into the loop's own workspace. Absent under plain `bl run`,
+    which is not an error -- a loop outside a graph is always in round 0.
+    """
+    context = pathlib.Path(".bounded-loops-node.json")
+    if not context.exists():
+        return 0
+    try:
+        return int(json.loads(context.read_text(encoding="utf-8")).get("repair_round", 0))
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        # Refuse to guess. An unreadable context is round 0, which is the strictest reading.
+        return 0
+
 
 def main() -> int:
     if len(sys.argv) < 2:
         print("check_records: usage: check_records.py <records.json>")
         return 2
+    if REQUIRE_ROUND:
+        current = _repair_round()
+        if current < REQUIRE_ROUND:
+            print(
+                f"check_records: refusing before repair round {REQUIRE_ROUND} "
+                f"(currently {current})"
+            )
+            return 1
     path = pathlib.Path(sys.argv[1])
     if not path.exists():
         print(f"check_records: {path} does not exist -- refusing to pass")
@@ -149,8 +177,14 @@ def materialise(
     stall_after: int = 1,
     max_iterations: int = 10,
     no_progress_window: int = 3,
+    require_round: int = 0,
 ) -> pathlib.Path:
-    """Write a complete, runnable loop directory and return its path."""
+    """Write a complete, runnable loop directory and return its path.
+
+    ``require_round`` makes the gate refuse until the graph controller has reached that repair
+    round. It is how a repair round is given something to change: without it, a deterministic node
+    re-runs identical work every round and repair is a provable no-op.
+    """
     if policy not in POLICIES:
         raise ValueError(f"unknown policy {policy!r}; expected one of {POLICIES}")
     if n_records < 1:
@@ -165,7 +199,11 @@ def materialise(
     (dest / "seed" / "records.json").write_text(
         json.dumps(records, indent=2) + "\n", encoding="utf-8"
     )
-    (dest / "seed" / "check_records.py").write_text(_GATE, encoding="utf-8")
+    # Token substitution, not str.format: the gate template contains f-strings whose braces
+    # format() would try to interpret.
+    (dest / "seed" / "check_records.py").write_text(
+        _GATE.replace("__REQUIRE_ROUND__", str(require_round)), encoding="utf-8"
+    )
     # The worker lives INSIDE seed/ because the scratch workspace is a copy of seed/ alone
     # (composition._make_scratch_workspace). A worker at the loop root is simply absent from the
     # sandbox, and ShellRunner does not raise on a non-zero agent exit, so the loop would burn its
@@ -241,6 +279,8 @@ def main() -> int:
     parser.add_argument("--stall-after", type=int, default=1)
     parser.add_argument("--max-iterations", type=int, default=10)
     parser.add_argument("--no-progress-window", type=int, default=3)
+    parser.add_argument("--require-round", type=int, default=0,
+                        help="gate refuses until the controller reaches this repair round")
     args = parser.parse_args()
 
     path = materialise(
@@ -251,6 +291,7 @@ def main() -> int:
         stall_after=args.stall_after,
         max_iterations=args.max_iterations,
         no_progress_window=args.no_progress_window,
+        require_round=args.require_round,
     )
     print(f"materialised {path}")
     return 0

@@ -40,6 +40,9 @@ HARNESS_ARTIFACTS = frozenset({
     ".bounded-loops-scratch",
     ".ledger.jsonl",
     ".STATE.md.runtime",
+    # Node execution context published by the graph controller (attempt, repair round). Read by
+    # gates and workers; written by the harness, so never agent work product.
+    ".bounded-loops-node.json",
 })
 
 #: Directories excluded wholesale. ``.git`` matters most: the scratch copy is still git-init'd, and

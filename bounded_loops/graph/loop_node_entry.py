@@ -111,6 +111,7 @@ def run(argv: list[str] | None = None) -> int:
     manifest = load_manifest(package)
     wired = wire_loop_for_graph(manifest, request)
     _overlay_inputs(manifest, wired.workspace)
+    _write_node_context(wired.workspace, args)
     outcome = wired.run()
     _copy_loop_outputs(manifest, wired.workspace, Path.cwd())
 
@@ -131,6 +132,43 @@ def run(argv: list[str] | None = None) -> int:
         json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8",
     )
     return 0
+
+
+#: Filename the node's execution context is published under, inside the loop's own workspace.
+#: Listed in ``workspace_digest.HARNESS_ARTIFACTS`` so writing it can never be mistaken for the
+#: agent having made progress.
+NODE_CONTEXT_FILENAME = ".bounded-loops-node.json"
+
+
+def _write_node_context(workspace: Path, args: argparse.Namespace) -> None:
+    """Publish attempt and repair round INTO the loop's workspace.
+
+    The controller already knows which attempt and which repair round it is driving, and carries
+    both on the worker and gate ports. Neither value reached the loop itself, so a loop node could
+    not behave differently in round 1 than in round 0 -- which makes a repair round a provable
+    no-op for any deterministic node: the reset suffix re-runs identical work and produces an
+    identical failure. That is the mechanical reason every shipped reference graph declares no
+    repair budget, and the reason the ``(1+R)`` factor of the graph work bound had never been
+    exercised by anything.
+
+    Published as a file rather than an environment variable on purpose. ``env_passthrough`` is a
+    default-closed authorization control with an operator allow-list; widening it so a gate could
+    read a round counter would trade a real security boundary for a convenience.
+    """
+    (workspace / NODE_CONTEXT_FILENAME).write_text(
+        json.dumps(
+            {
+                "node_id": args.node_id,
+                "run_id": args.run_id,
+                "attempt": args.attempt,
+                "repair_round": args.repair_round,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _overlay_inputs(manifest: LoopManifest, workspace: Path) -> None:
