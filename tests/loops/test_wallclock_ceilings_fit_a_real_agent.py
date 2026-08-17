@@ -23,7 +23,11 @@ bound even when nothing appears to be wrong.
 
 THE RULE, AND WHY THE CEILING IS ALLOWED TO FIRE
 ------------------------------------------------
-    max_wallclock_s >= max_iterations * PER_ATTEMPT_ALLOWANCE_S
+    max_wallclock_s >= max_iterations * PER_ATTEMPT_ALLOWANCE_S + handoff_reserve_s
+
+The reserve term is there because `handoff_reserve_s` is taken OUT of the ceiling, not added to it.
+A ceiling sized for the work alone would silently spend the last 90 seconds of the work budget on
+the wind-down turn, so the last declared attempt would be the one that never got to run.
 
 `PER_ATTEMPT_ALLOWANCE_S` is 90: comfortably above the p75 turn, deliberately below the slowest
 observed one. That last part is a choice, not an oversight. A run whose every turn is as slow as the
@@ -82,12 +86,19 @@ def test_the_ceiling_leaves_every_declared_attempt_a_real_agents_worth_of_time(
         f"{manifest.parent.name}: max_wallclock_s is {ceiling!r}; every shipped loop declares one"
     )
 
-    required = iterations * PER_ATTEMPT_ALLOWANCE_S
+    reserve = spec.get("handoff_reserve_s", 90)
+    assert isinstance(reserve, int) and reserve >= 0, (
+        f"{manifest.parent.name}: handoff_reserve_s is {reserve!r}"
+    )
+
+    required = iterations * PER_ATTEMPT_ALLOWANCE_S + reserve
+    work_budget = ceiling - reserve
     assert ceiling >= required, (
-        f"{manifest.parent.name}: max_wallclock_s={ceiling} allows "
-        f"{ceiling / iterations:.1f}s per attempt across max_iterations={iterations}. A real agent "
-        f"turn takes {PER_ATTEMPT_ALLOWANCE_S}s at the 75th percentile, so this ceiling would halt "
-        f"a healthy run part-way through an attempt. Set it to at least {required}."
+        f"{manifest.parent.name}: max_wallclock_s={ceiling} minus a handoff_reserve_s={reserve} "
+        f"leaves {work_budget}s of work budget, i.e. {work_budget / iterations:.1f}s per attempt "
+        f"across max_iterations={iterations}. A real agent turn takes "
+        f"{PER_ATTEMPT_ALLOWANCE_S}s at the 75th percentile, so this ceiling would halt a healthy "
+        f"run part-way through an attempt. Set it to at least {required}."
     )
 
 

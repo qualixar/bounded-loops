@@ -15,7 +15,7 @@ connection_slots: []
 nodes:
   - id: check-tests-exist
     kind: loop
-    loop_package: "sha256:1c7d42cf4262de2b4faf86e3c4ff1594068aaddf045cd6f85ff78cd80d82c426"
+    loop_package: "sha256:40d418c93a038caf3720ffb9765090b7495c0b0865e70320f710cb2577a19224"
     inputs: {}
     outputs:
       verdict: internal
@@ -26,7 +26,7 @@ nodes:
     isolation: process_restricted
   - id: check-types
     kind: loop
-    loop_package: "sha256:65b96f769229133901149e3d1f7d4b4da32eaeb0bf680594a1db53e072e39fc4"
+    loop_package: "sha256:b829f4dd73d167db860b24031b4d4914bbb8a700773af7fe351245158dfce038"
     inputs: {}
     outputs:
       verdict: internal
@@ -37,7 +37,7 @@ nodes:
     isolation: process_restricted
   - id: check-commits
     kind: loop
-    loop_package: "sha256:75260e46d7f08830b43d63178ce2ad09d4fe85753928f5b9e181395598085e90"
+    loop_package: "sha256:90df97edf9a209354ef804ffd7ea3842d8e127e8e3168ad25fe76cfe26b41aaf"
     inputs: {}
     outputs:
       verdict: internal
@@ -48,7 +48,7 @@ nodes:
     isolation: process_restricted
   - id: fix-red-green
     kind: loop
-    loop_package: "sha256:e5dfcc6f72f9493b0765c09d914159dc7f093a53380b079bd1fc6bb1709ae303"
+    loop_package: "sha256:3f71605f7598b3442e4ffc2fc9f3934c40a649b5a33714009afae2b300f4998a"
     inputs:
       source: internal
     outputs:

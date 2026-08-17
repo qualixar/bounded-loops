@@ -31,7 +31,7 @@ from pathlib import Path
 import yaml
 
 from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env
-from bounded_loops.application.manifest import _UniqueKeySafeLoader
+from bounded_loops.application._manifest_validate import _UniqueKeySafeLoader
 from bounded_loops.trust_store import is_trusted
 
 _SUPPORTED_GATE_KINDS = {"command", "pytest"}

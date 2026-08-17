@@ -48,7 +48,7 @@ import os
 import queue
 
 from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env
-from bounded_loops.adapters.runners._prompt import with_memory_snapshot
+from bounded_loops.adapters.runners._prompt import build_prompt as _build_prompt
 from bounded_loops.adapters.runners.attempt_deadline import attempt_deadline
 from bounded_loops.domain.errors import RunnerError
 from bounded_loops.domain.models import LoopContext, RunResult, Spec
@@ -56,33 +56,6 @@ from bounded_loops.domain.models import LoopContext, RunResult, Spec
 # Single source in adapters/_env.py.
 _ENV_ALLOWLIST = ENV_ALLOWLIST
 
-
-def _build_prompt(spec: Spec, ctx: LoopContext) -> str:
-    """
-    Verbatim copy of ShellRunner._build_prompt's body (adapters/runners/
-    shell.py), duplicated here as a module-level function rather than
-    imported — same small-helper-duplication tradeoff already established
-    for _build_subprocess_env between stub.py/command.py. A plain function
-    (not a method) because PythonCallableRunner.run_once calls it without
-    needing `self`.
-    """
-    prompt_file = ctx.workspace / "PROMPT.md"
-    if prompt_file.exists():
-        return with_memory_snapshot(prompt_file.read_text(encoding="utf-8"), ctx)
-
-    lines = [
-        f"# Goal\n{spec.goal}",
-        "",
-        "# Steps",
-    ]
-    for i, step in enumerate(spec.steps, 1):
-        lines.append(f"{i}. {step}")
-    if spec.forbid:
-        lines.append("")
-        lines.append("# Forbidden actions")
-        for f in spec.forbid:
-            lines.append(f"- {f}")
-    return with_memory_snapshot("\n".join(lines), ctx)
 
 
 def _subprocess_target(module_path: str, function_name: str, prompt: str,

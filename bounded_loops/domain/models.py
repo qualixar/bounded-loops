@@ -199,6 +199,19 @@ class Bounds:
     schema:             Optional[str] = None
     trace:              bool          = True
     require_approval:   Optional[bool]= None
+    #: Seconds RESERVED OUT OF `max_wallclock_s` for one final wind-down turn when a bound stops the
+    #: run — the agent's chance to write down what it did, what is left, and what it would do next.
+    #:
+    #: Reserved, not added. A bound that grants a bonus turn on expiry does not bound anything an
+    #: operator can read off the manifest: the ceiling would silently mean "max_wallclock_s plus
+    #: however long the summary takes". So the work budget is `max_wallclock_s - handoff_reserve_s`
+    #: and the total is unchanged, which is what keeps every termination guarantee intact.
+    #:
+    #: Set to 0 to decline the wind-down. Its purpose: without it, a run that hits its ceiling
+    #: mid-task discards everything the attempt had worked out, and the next run starts from the same
+    #: seed with the same budget and no knowledge of what the last one learned — so a task needing
+    #: more than one budget window can never finish, however many times it is run.
+    handoff_reserve_s:  int           = 90
 
 
 @dataclass(frozen=True)
@@ -361,6 +374,9 @@ class LoopContext:
     env:       dict = field(default_factory=dict)
     memory_snapshot: str = ""
     wallclock: Optional[WallclockBudget] = None
+    #: Replaces the loop's own prompt for this turn. Set only by the controller, only for the
+    #: wind-down turn: an agent handed its original goal again keeps working instead of summarising.
+    prompt_override: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "env", _freeze_value(self.env))
@@ -417,7 +433,15 @@ class LedgerEntry:
     #: a ceiling halt at `max_iterations: 10` writes an eleventh row, and anyone computing
     #: consumed/declared from the ledger gets 1.1 for a bound that in fact held exactly. A cost
     #: claim that cannot be audited from its own receipt is not a cost claim.
+    #:
+    #: Scope: a WORK attempt. The wind-down turn on a bound halt is not one, and is recorded by
+    #: `handoff` below — so `attempted: false` with a non-empty `handoff` reads exactly right: no
+    #: work was attempted on this lap, and a handoff turn ran.
     attempted:    bool = True
+    #: Filename of the handoff document written when a bound stopped the run, alongside the ledger,
+    #: or empty when none was written. Present so the receipt records that a run was wound down
+    #: rather than merely cut off, and so a reader can find the evidence without knowing a convention.
+    handoff:      str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "budget_spent", _freeze_value(self.budget_spent))

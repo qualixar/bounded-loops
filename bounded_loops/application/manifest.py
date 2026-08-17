@@ -33,10 +33,15 @@ from pathlib import Path, PureWindowsPath
 from types import MappingProxyType
 from typing import Optional
 
-import yaml
-from yaml.nodes import MappingNode
-from yaml.resolver import BaseResolver
 
+from bounded_loops.application._manifest_validate import (
+    _load_yaml_mapping,
+    _reject_unknown_keys,
+    _resolve_contained,
+)
+from bounded_loops.application.manifest_bounds import (
+    _load_bounds,
+)
 from bounded_loops.domain.errors import ManifestError
 from bounded_loops.domain.models import Bounds, Rung, Spec
 
@@ -71,9 +76,8 @@ VALID_PATTERNS = {
     "evaluator-optimizer", "agents",
 }
 
-# Security hardening: a loop.yaml cannot legally request more laps
-# than this without --allow-large-loop on the CLI (not the manifest).
-MAX_ITERATIONS_CEILING = 1000
+# MAX_ITERATIONS_CEILING and _BOUNDS_KEYS now live in manifest_bounds.py and are re-exported by the
+# import above, so importers of this module keep working and there is one definition of each.
 
 # M-1 fix: allowlist of binary basenames permitted as the first token of
 # runner.agent_cmd. Mirrors the graph engine's CLI_PROFILES registry.
@@ -115,10 +119,6 @@ _LOOP_KEYS = frozenset({
     "name", "description", "pattern", "role", "rung", "runner", "gate",
     "spec", "bounds", "memory", "forbid", "inputs", "outputs",
 })
-_BOUNDS_KEYS = frozenset({
-    "max_iterations", "no_progress_window", "max_tokens", "max_wallclock_s",
-    "sandbox", "quarantine_inputs", "schema", "trace", "require_approval",
-})
 _RUNNER_KEYS = frozenset({
     "default", "cassette", "agent_cmd", "module_path", "function_name",
     "env_passthrough", "image", "approve_policy",
@@ -126,35 +126,6 @@ _RUNNER_KEYS = frozenset({
 _GATE_KEYS = frozenset({
     "kind", "run", "mode", "gates", "schema", "config", "severity", "checkpoint",
 })
-
-
-class _DuplicateYamlKeyError(yaml.YAMLError):
-    def __init__(self, key: object) -> None:
-        self.key = key
-        super().__init__(f"duplicate key {key!r}")
-
-
-class _UniqueKeySafeLoader(yaml.SafeLoader):
-    """Safe YAML loader that rejects duplicate keys at every mapping level."""
-
-
-def _construct_unique_mapping(
-    loader: _UniqueKeySafeLoader, node: MappingNode, deep: bool = False
-) -> dict[object, object]:
-    mapping: dict[object, object] = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        try:
-            duplicate = key in mapping
-        except TypeError as exc:
-            raise yaml.YAMLError(f"mapping key {key!r} is not hashable") from exc
-        if duplicate:
-            raise _DuplicateYamlKeyError(key)
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
-_UniqueKeySafeLoader.add_constructor(BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping)
 
 
 # ---------------------------------------------------------------------------
@@ -416,49 +387,6 @@ def load(loop_dir: Path) -> LoopManifest:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _resolve_contained(loop_dir: Path, rel: str, field_name: str) -> Path:
-    """
-    Security fix: resolve a manifest-relative path and REJECT any
-    path that escapes loop_dir via '..' or a symlink. Prevents a malicious
-    loop.yaml (e.g. `spec: ../../../../.ssh/id_rsa`) from reading files
-    outside the loop folder and injecting them into the agent prompt.
-    """
-    resolved = (loop_dir / rel).resolve()
-    loop_dir_resolved = loop_dir.resolve()
-    if not resolved.is_relative_to(loop_dir_resolved):
-        raise ManifestError(
-            f"loop.yaml: '{field_name}: {rel}' resolves outside the loop "
-            f"folder ({resolved} is not inside {loop_dir_resolved}) — rejected."
-        )
-    return resolved
-
-
-def _load_yaml_mapping(path: Path, label: str) -> dict:
-    try:
-        raw = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeySafeLoader)
-    except _DuplicateYamlKeyError as exc:
-        raise ManifestError(f"{label}: duplicate key {exc.key!r}") from exc
-    except yaml.YAMLError as exc:
-        raise ManifestError(f"{label} at {path} is not valid YAML: {exc}") from exc
-    if raw is None:
-        raise ManifestError(f"{label} is empty ({path})")
-    if not isinstance(raw, dict):
-        raise ManifestError(f"{label} must contain a mapping at the document root")
-    return raw
-
-
-def _reject_unknown_keys(values: Mapping[object, object], allowed: frozenset[str], section: str) -> None:
-    unknown = sorted((key for key in values if key not in allowed), key=repr)
-    if unknown:
-        # Name the file so the author knows exactly where to look.
-        file_hint = "bounds.yaml" if section == "bounds" else "loop.yaml"
-        raise ManifestError(
-            f"{file_hint} [{section}]: unknown key {unknown[0]!r}. "
-            f"Valid keys for this section: {sorted(allowed)}. "
-            f"Remove or rename this key, or check for a typo."
-        )
-
-
 def _require_nonempty_string(values: Mapping[object, object], field_name: str, section: str) -> str:
     value = values[field_name]
     if not isinstance(value, str) or not value.strip():
@@ -501,79 +429,6 @@ def _validate_gate_config(gate_block: dict, section: str) -> None:
             if not isinstance(child, dict):
                 raise ManifestError(f"{section}.gates[{index}] must be an object")
             _validate_gate_config(child, f"{section}.gates[{index}]")
-
-
-def _positive_int(value: object, field_name: str, *, allow_none: bool = False) -> int | None:
-    if value is None and allow_none:
-        return None
-    if not isinstance(value, int) or isinstance(value, bool):
-        suffix = " or null" if allow_none else ""
-        raise ManifestError(f"{field_name} must be an integer{suffix}")
-    if value < 1:
-        if field_name == "max_iterations":
-            raise ManifestError("max_iterations must be at least 1 (positive int)")
-        raise ManifestError(f"{field_name} must be at least 1")
-    return value
-
-
-def _strict_bool(value: object, field_name: str, *, allow_none: bool = False) -> bool | None:
-    if value is None and allow_none:
-        return None
-    if type(value) is not bool:
-        suffix = " or null" if allow_none else ""
-        raise ManifestError(f"{field_name} must be a boolean{suffix}")
-    return value
-
-
-def _load_bounds(bounds_path: Path, loop_dir: Path) -> Bounds:
-    if not bounds_path.exists():
-        raise ManifestError(f"bounds.yaml not found: {bounds_path}")
-    raw = _load_yaml_mapping(bounds_path, "bounds.yaml")
-    _reject_unknown_keys(raw, _BOUNDS_KEYS, "bounds")
-    if "max_iterations" not in raw:
-        raise ManifestError(f"bounds.yaml: max_iterations is required ({bounds_path})")
-    max_iter = _positive_int(raw["max_iterations"], "max_iterations")
-    assert max_iter is not None
-    # Security fix: an unbounded max_iterations + null max_wallclock_s
-    # + null max_tokens is an effectively-unbounded-cost loop. Cap it.
-    if max_iter > MAX_ITERATIONS_CEILING:
-        raise ManifestError(
-            f"max_iterations={max_iter} exceeds the {MAX_ITERATIONS_CEILING} "
-            f"ceiling, which is hard and non-overridable in v1 — no CLI flag "
-            f"exists to raise it. Split the loop or lower max_iterations."
-        )
-    no_progress_window = _positive_int(raw.get("no_progress_window", 3), "no_progress_window")
-    assert no_progress_window is not None
-    max_tokens = _positive_int(raw.get("max_tokens"), "max_tokens", allow_none=True)
-    max_wallclock_s = _positive_int(raw.get("max_wallclock_s"), "max_wallclock_s", allow_none=True)
-    # Security fix: null wallclock does NOT mean "unlimited" — it
-    # means "use the conservative platform default" (1 hour). A loop that
-    # genuinely needs longer must say so explicitly in bounds.yaml.
-    if max_wallclock_s is None:
-        max_wallclock_s = 3600
-    sandbox = _strict_bool(raw.get("sandbox", True), "sandbox")
-    quarantine_inputs = _strict_bool(raw.get("quarantine_inputs", True), "quarantine_inputs")
-    trace = _strict_bool(raw.get("trace", True), "trace")
-    require_approval = _strict_bool(raw.get("require_approval"), "require_approval", allow_none=True)
-    assert sandbox is not None
-    assert quarantine_inputs is not None
-    assert trace is not None
-    schema = raw.get("schema")
-    if schema is not None:
-        if not isinstance(schema, str) or not schema.strip():
-            raise ManifestError("schema must be a non-empty string or null")
-        _resolve_contained(loop_dir, schema, "bounds.schema")
-    return Bounds(
-        max_iterations=max_iter,
-        no_progress_window=no_progress_window,
-        max_tokens=max_tokens,
-        max_wallclock_s=max_wallclock_s,
-        sandbox=sandbox,
-        quarantine_inputs=quarantine_inputs,
-        schema=schema,
-        trace=trace,
-        require_approval=require_approval,
-    )
 
 
 def _require(d: dict, key: str, path: Path) -> None:

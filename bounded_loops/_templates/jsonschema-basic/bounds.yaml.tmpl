@@ -2,7 +2,12 @@
 max_iterations: 10
 no_progress_window: 3
 max_tokens: null
-max_wallclock_s: 60
+# 990 = max_iterations (10) x 90s for one real agent turn, + the 90s handoff reserve below. The
+# previous 60 allowed 6s an attempt, which no real provider can meet — see docs/NINE-BOUNDS.md.
+max_wallclock_s: 990
+# Reserved OUT OF max_wallclock_s, never added to it: when a bound stops the run, this is the agent's
+# one turn to write a handoff instead of being cut off mid-task. Set 0 to decline it.
+handoff_reserve_s: 90
 sandbox: true
 quarantine_inputs: true
 # schema: path to the JSON Schema file (relative to the loop directory).

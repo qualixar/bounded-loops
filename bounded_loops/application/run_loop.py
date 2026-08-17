@@ -25,6 +25,11 @@ from pathlib import Path
 from typing import Literal
 
 from bounded_loops.application.bounds import BoundsEnforcer
+from bounded_loops.application.handoff import (
+    HANDOFF_FILENAME,
+    run_summary,
+    wind_down_prompt,
+)
 from bounded_loops.application.ports import (
     ApprovalPort,
     BudgetMeterPort,
@@ -81,6 +86,7 @@ def _make_entry(
     clock: ClockPort,
     *,
     attempted: bool = True,
+    handoff: str = "",
 ) -> LedgerEntry:
     """Build one ledger entry. `decision` is always a plain closed-set value —
     the halt/pause/kill REASON lives exclusively in Outcome.reason, never here.
@@ -96,6 +102,7 @@ def _make_entry(
         decision=decision,
         budget_spent=budget_spent,
         attempted=attempted,
+        handoff=handoff,
     )
 
 
@@ -170,6 +177,10 @@ class RunLoopUseCase:
         )
         memory_snapshot = d.memory.load(ctx0)
         lap = 0
+        # Per-attempt facts for the handoff. The ledger is append-only and write-only from here, so
+        # a run cannot read its own receipt back to describe itself; these are the same facts, kept.
+        attempt_rows: list[dict] = []
+        attempts_spent = 0
 
         # ── OUTER LOOP ──
         while True:
@@ -188,11 +199,17 @@ class RunLoopUseCase:
             if tripped:
                 # decision="halt"; the WHY
                 # lives ONLY in Outcome.reason, never encoded into decision.
-                entry = _make_entry(
-                    lap, "halt", Verdict(False, why), _snap(d, lap), d.clock, attempted=False
+                return self._halt_on_bound(
+                    lap=lap,
+                    reason=why,
+                    rung=rung,
+                    trace_id=trace_id,
+                    memory_snapshot=memory_snapshot,
+                    rows=attempt_rows,
+                    attempts_spent=attempts_spent,
+                    last_verdict=None,
+                    attempted=False,
                 )
-                d.ledger.record(entry)
-                return Outcome(Status.HALT, why, lap, d.ledger.path())
 
             # ── 2b. Context is built HERE, after the budget check, so the wallclock remainder it
             # carries is measured as late as possible — immediately before the turn it constrains.
@@ -211,14 +228,23 @@ class RunLoopUseCase:
             # ── 3. Run the agent (one turn) ──
             try:
                 result = d.runner.run_once(spec, ctx)
+                attempts_spent += 1
             except WallclockExceeded as exc:
                 # The declared ceiling expired mid-attempt. HALT, not ERROR: a bound firing is the
                 # harness working, and a run that stopped because it was told to must not be
                 # recorded the same way as a run that broke. `attempted` stays True — the worker
                 # did run; it ran out of budget, which is the opposite of never having started.
-                entry = _make_entry(lap, "halt", Verdict(False, str(exc)), _snap(d, lap), d.clock)
-                d.ledger.record(entry)
-                return Outcome(Status.HALT, str(exc), lap, d.ledger.path())
+                return self._halt_on_bound(
+                    lap=lap,
+                    reason=str(exc),
+                    rung=rung,
+                    trace_id=trace_id,
+                    memory_snapshot=memory_snapshot,
+                    rows=attempt_rows,
+                    attempts_spent=attempts_spent + 1,
+                    last_verdict=None,
+                    attempted=True,
+                )
             except RunnerError as exc:
                 verdict = _error_verdict("runner", exc)
                 entry = _make_entry(lap, "error", verdict, _snap(d, lap), d.clock)
@@ -258,18 +284,166 @@ class RunLoopUseCase:
                 d.ledger.record(entry)
                 return Outcome(Status.DONE, "gate-passed", lap, d.ledger.path())
 
+            # Facts for the handoff, gathered per attempt because the ledger is write-only.
+            attempt_rows.append(
+                {"lap": lap, "changed": result.changed, "detail": verdict.detail}
+            )
+
             # ── 8b. No-progress check ──
             np_tripped, np_why = self._enforcer.check_no_progress(bounds)
             if np_tripped:
-                entry = _make_entry(lap, "halt", Verdict(False, np_why), _snap(d, lap), d.clock)
-                d.ledger.record(entry)
-                return Outcome(Status.HALT, np_why, lap, d.ledger.path())
+                # A stuck agent's account of what it tried is the most useful handoff of the set,
+                # not the least — so this bound gets a wind-down like every other.
+                return self._halt_on_bound(
+                    lap=lap,
+                    reason=np_why,
+                    rung=rung,
+                    trace_id=trace_id,
+                    memory_snapshot=memory_snapshot,
+                    rows=attempt_rows,
+                    attempts_spent=attempts_spent,
+                    last_verdict=verdict,
+                    attempted=True,
+                )
 
             # ── 8c. Continue ──
             d.memory.update(ctx, lap, verdict, "continue")
             entry = _make_entry(lap, "continue", verdict, _snap(d, lap), d.clock)
             d.ledger.record(entry)
             # Loop back to top
+
+    def _halt_on_bound(
+        self,
+        *,
+        lap: int,
+        reason: str,
+        rung: Rung,
+        trace_id: str,
+        memory_snapshot: str,
+        rows: list[dict],
+        attempts_spent: int,
+        last_verdict: Verdict | None,
+        attempted: bool,
+    ) -> Outcome:
+        """Wind the run down, write the handoff, record the halt. Every bound halt comes here.
+
+        One path, because the alternative is four halt sites each deciding for itself whether a
+        handoff happens — and the one that forgot would be indistinguishable from a run that had
+        nothing to hand off. The kill switch deliberately does NOT come here: an operator pulling it
+        wants the run to stop now, not to spend more of anything.
+
+        INVARIANT: nothing in here can change the terminal status. The run halted on a bound before
+        this method was called and it halts on that bound after. A wind-down turn that fails, hangs,
+        or writes nonsense costs the reserve and no more; a handoff that cannot be written is a
+        missing file, not an ERROR. Otherwise "we tried to help you" would be able to turn a clean
+        HALT into a failure, which is a strictly worse outcome than the brutality it replaced.
+        """
+        d = self._deps
+        bounds = self._bounds
+        agent_account = ""
+
+        if bounds.handoff_reserve_s > 0:
+            agent_account = self._wind_down_turn(
+                lap=lap,
+                reason=reason,
+                rung=rung,
+                trace_id=trace_id,
+                memory_snapshot=memory_snapshot,
+                attempts_spent=attempts_spent,
+            )
+
+        handoff_name = self._write_handoff(
+            reason=reason,
+            lap=lap,
+            rows=rows,
+            attempts_spent=attempts_spent,
+            last_verdict=last_verdict,
+            agent_account=agent_account,
+        )
+
+        entry = _make_entry(
+            lap, "halt", Verdict(False, reason), _snap(d, lap), d.clock,
+            attempted=attempted, handoff=handoff_name,
+        )
+        d.ledger.record(entry)
+        return Outcome(Status.HALT, reason, lap, d.ledger.path())
+
+    def _wind_down_turn(
+        self,
+        *,
+        lap: int,
+        reason: str,
+        rung: Rung,
+        trace_id: str,
+        memory_snapshot: str,
+        attempts_spent: int,
+    ) -> str:
+        """One final turn, paid for out of the reserve, asking only for a handoff.
+
+        `for_handoff=True` measures the remaining time against the FULL declared ceiling — this is
+        the turn the reserve was withheld for. The prompt override is what stops the runner reading
+        the loop's own `PROMPT.md`: an agent handed its original goal again keeps working, and gets
+        cut off part-way, which is exactly the outcome this feature exists to prevent.
+
+        Every failure is swallowed on purpose. See the invariant on `_halt_on_bound`.
+        """
+        d = self._deps
+        try:
+            ctx = LoopContext(
+                workspace=self._workspace,
+                lap=lap,
+                rung=rung,
+                trace_id=trace_id,
+                env=self._env_passthrough,
+                memory_snapshot=memory_snapshot,
+                wallclock=d.budget.wallclock_budget(self._bounds, for_handoff=True),
+                prompt_override=wind_down_prompt(
+                    spec=self._spec, reason=reason, attempts_spent=attempts_spent
+                ),
+            )
+            result = d.runner.run_once(self._spec, ctx)
+            # The wind-down's own tokens are spend and are metered like any other. The budget is
+            # already blown; not counting them would understate what the run cost.
+            d.budget.spend(result.tokens)
+            return result.log
+        except Exception:
+            # Deliberately broad. A runner may raise anything, and the run has already halted on a
+            # bound: there is no failure here worth converting into a different outcome.
+            return ""
+
+    def _write_handoff(
+        self,
+        *,
+        reason: str,
+        lap: int,
+        rows: list[dict],
+        attempts_spent: int,
+        last_verdict: Verdict | None,
+        agent_account: str,
+    ) -> str:
+        """Write the handoff next to the ledger, and return its filename (empty if not written).
+
+        Next to the ledger rather than in the workspace because a scratch workspace is deleted when
+        the run ends — a handoff written there would be destroyed by the same run that produced it.
+        The ledger is the durable receipt, and this belongs with it.
+        """
+        try:
+            document = run_summary(
+                spec=self._spec,
+                bounds=self._bounds,
+                reason=reason,
+                laps=lap,
+                attempts_spent=attempts_spent,
+                rows=rows,
+                last_verdict=last_verdict,
+                agent_handoff=agent_account,
+            )
+            target = self._deps.ledger.path().parent / HANDOFF_FILENAME
+            target.write_text(document, encoding="utf-8")
+            return HANDOFF_FILENAME
+        except OSError:
+            # An unwritable ledger directory is not a reason to change a HALT into an ERROR.
+            return ""
 
     def _cleanup_workspace(self) -> None:
         if not self._cleanup_workspace_on_finish:

@@ -102,7 +102,11 @@ class BudgetMeterPort(Protocol):
     #: Protocol rather than a duck-typed probe for the same reason snapshot() is: `exceeded()` only
     #: runs BETWEEN attempts, so without this the declared ceiling cannot constrain the attempt
     #: itself, and a meter that cannot answer must fail loudly instead of quietly disabling a bound.
-    def wallclock_budget(self, bounds: Bounds) -> WallclockBudget | None: ...
+    #: `for_handoff=True` measures against the FULL declared ceiling rather than the work ceiling,
+    #: which is how the reserved wind-down turn spends the reserve that work was kept out of.
+    def wallclock_budget(
+        self, bounds: Bounds, *, for_handoff: bool = False
+    ) -> WallclockBudget | None: ...
 
 
 @runtime_checkable

@@ -41,7 +41,7 @@ from __future__ import annotations
 import shlex
 
 from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env, output_redactions
-from bounded_loops.adapters.runners._prompt import with_memory_snapshot
+from bounded_loops.adapters.runners._prompt import build_prompt
 from bounded_loops.adapters.runners.attempt_deadline import (
     DEFAULT_AGENT_TURN_TIMEOUT_S,
     attempt_deadline,
@@ -75,33 +75,11 @@ class ShellRunner:
         self.agent_cmd = agent_cmd
         self.timeout_s = timeout_s
 
-    def _build_prompt(self, spec: Spec, ctx: LoopContext) -> str:
-        # Priority: read PROMPT.md from workspace if it exists (canonical
-        # for loop folders).
-        prompt_file = ctx.workspace / "PROMPT.md"
-        if prompt_file.exists():
-            return with_memory_snapshot(prompt_file.read_text(encoding="utf-8"), ctx)
-
-        # Fallback: assemble from Spec fields.
-        lines = [
-            f"# Goal\n{spec.goal}",
-            "",
-            "# Steps",
-        ]
-        for i, step in enumerate(spec.steps, 1):
-            lines.append(f"{i}. {step}")
-        if spec.forbid:
-            lines.append("")
-            lines.append("# Forbidden actions")
-            for f in spec.forbid:
-                lines.append(f"- {f}")
-        return with_memory_snapshot("\n".join(lines), ctx)
-
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
         # Anchor the loop's remaining wallclock budget FIRST, so prompt building and the workspace
         # digest below are spent from the budget rather than added on top of it.
         deadline = attempt_deadline(self.timeout_s, ctx)
-        prompt_text = self._build_prompt(spec, ctx)
+        prompt_text = build_prompt(spec, ctx)
 
         # Snapshot BEFORE the turn and compare AFTER, both within this lap. Scoping the comparison
         # to a single lap is what makes "the agent changed nothing" reportable at all: the previous

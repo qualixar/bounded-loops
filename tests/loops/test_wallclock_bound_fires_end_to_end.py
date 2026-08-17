@@ -94,10 +94,15 @@ def _spec() -> Spec:
 def _bounds() -> Bounds:
     # A lap cap high enough that reaching it cannot be what ends the run, and no-progress disabled
     # for the same reason: exactly one bound must be able to fire.
+    #
+    # `handoff_reserve_s=0` because this file is about the ceiling, not the wind-down. At the default
+    # 90s reserve against a 2s ceiling the reserve would be clamped to 1s and every assertion below
+    # would be measuring the clamp as much as the bound. The wind-down has its own file.
     return Bounds(
         max_iterations=50,
         no_progress_window=999,
         max_wallclock_s=_CEILING_S,
+        handoff_reserve_s=0,
         require_approval=False,
     )
 

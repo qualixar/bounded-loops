@@ -67,7 +67,7 @@ import shlex
 from pathlib import Path
 
 from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env, output_redactions
-from bounded_loops.adapters.runners._prompt import with_memory_snapshot
+from bounded_loops.adapters.runners._prompt import build_prompt as _build_prompt
 from bounded_loops.adapters.runners.attempt_deadline import (
     DEFAULT_AGENT_TURN_TIMEOUT_S,
     attempt_deadline,
@@ -85,21 +85,6 @@ _MAX_AGENT_OUTPUT_BYTES = 64 * 1024
 def _build_subprocess_env(ctx_env: dict[str, str]) -> dict[str, str]:
     return build_subprocess_env(ctx_env)
 
-
-def _build_prompt(spec: Spec, ctx: LoopContext) -> str:
-    """Verbatim copy of ShellRunner._build_prompt's body."""
-    prompt_file = ctx.workspace / "PROMPT.md"
-    if prompt_file.exists():
-        return with_memory_snapshot(prompt_file.read_text(encoding="utf-8"), ctx)
-    lines = [f"# Goal\n{spec.goal}", "", "# Steps"]
-    for i, step in enumerate(spec.steps, 1):
-        lines.append(f"{i}. {step}")
-    if spec.forbid:
-        lines.append("")
-        lines.append("# Forbidden actions")
-        for f in spec.forbid:
-            lines.append(f"- {f}")
-    return with_memory_snapshot("\n".join(lines), ctx)
 
 
 def _write_agent_output(workspace: Path, stdout: str) -> None:

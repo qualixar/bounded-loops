@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from bounded_loops.adapters._env import build_subprocess_env
-from bounded_loops.adapters.runners._prompt import with_memory_snapshot
+from bounded_loops.adapters.runners._prompt import build_prompt as _build_prompt
 from bounded_loops.adapters.runners.attempt_deadline import attempt_deadline
 from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn, TurnState
 from bounded_loops.adapters.runners.workspace_digest import workspace_digest
@@ -89,10 +89,7 @@ def _copy_back(src: Path, dest: Path) -> None:
             raise RunnerError(f"WorktreeRunner: refusing special-file promotion: {rel}")
 
 
-def _build_prompt(spec: Spec, ctx: LoopContext) -> str:
-    prompt_file = ctx.workspace / "PROMPT.md"
-    if prompt_file.exists():
-        return with_memory_snapshot(prompt_file.read_text(encoding="utf-8"), ctx)
-    return with_memory_snapshot("\n".join([spec.goal, *spec.steps]), ctx)
+# _build_prompt lived here and dropped spec.forbid from the fallback prompt. It is now the shared
+# `_prompt.build_prompt`, imported above.
 
 

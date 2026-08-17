@@ -58,6 +58,9 @@ def _serialise(entry: LedgerEntry) -> str:
         "budget_spent": _json_value(entry.budget_spent),
         # Attempts, not laps, are what a budget is denominated in. See LedgerEntry.attempted.
         "attempted": bool(entry.attempted),
+        # Names the handoff file when a bound wound the run down, so the receipt points at the
+        # evidence rather than leaving a reader to know the convention.
+        "handoff": str(entry.handoff or ""),
     }
     return json.dumps(d, ensure_ascii=False, separators=(",", ":"))
 
