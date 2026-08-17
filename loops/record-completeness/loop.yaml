@@ -18,7 +18,13 @@ role:
 rung: L2
 spec: PROMPT.md
 forbid:
+# The gate: an agent that can rewrite its own acceptance criterion is not gated at all.
 - seed/check_records.py
+# The worker script IS the agent, not an artifact the gate certifies. Forbidding it stops an
+# agent rewriting its own body to trivially satisfy the gate, and keeps `records.json` the
+# loop's single mutable artifact -- a second one puts the loop in the evaluation harness's
+# multi-artifact skip bucket, where it contributes nothing to the false-accept rate.
+- seed/worker.py
 runner:
   default: shell
   agent_cmd: python3 seed/worker.py
