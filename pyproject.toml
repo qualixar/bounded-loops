@@ -1,6 +1,6 @@
 [project]
 name = "bounded-loops"
-version = "0.6.5"
+version = "0.6.6"
 description = "A graph engine for reliable AI agents: a DAG of independently-gated bounded loops (69-loop catalog, 65 keyless) with no-secret connectors and receipt-backed audit trails."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -65,6 +65,9 @@ dev = [
 [project.scripts]
 bl = "bounded_loops.cli:main"
 bounded-loops-mcp = "bounded_loops.mcp_server:main"
+# One entry point for every editor hook. See bounded_loops/hooks/cli.py for why the
+# plugin manifests must not invoke `python3 -m` (Task #67).
+bounded-loops-hook = "bounded_loops.hooks.cli:main"
 
 [build-system]
 requires = ["hatchling>=1.27,<1.28"]

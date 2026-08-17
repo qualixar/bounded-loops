@@ -3,6 +3,78 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.6] — 2026-08-17
+
+### Added
+
+- **The verdict ledger is hash-chained, and `bl verify` checks it.** Every row now carries the
+  digest of the row before it, `bl run` prints the resulting head, and a new `bl verify` reads a
+  run directory and reports three things separately: whether the chain is intact, whether the head
+  matches the digest recorded when the run ended, and whether the ledger accounts for every lap the
+  receipt claims.
+
+  Append-only was never tamper-evidence. Opening a file in mode `'a'` constrains this writer and
+  says nothing about anyone else holding a path to it — and the ledger sits beside a workspace an
+  agent can write to. What the chain adds, exactly: an edit by anyone who cannot rewrite the whole
+  file is detected. There is no secret in it, so an adversary who *can* rewrite the whole file can
+  recompute every link; that is why the head is printed, so a terminal or a CI log holds a copy the
+  adversary does not control.
+
+  One consequence is worth knowing before you rely on it. **The chain cannot detect an edit to the
+  final row**, because no successor carries its hash — and the final row holds the terminal verdict,
+  which makes it the most attractive target in the file. For that row the recorded head is the only
+  defence. `bl verify --expect-head <digest>` is the strong check.
+
+  Ledgers written by earlier versions report `UNCHAINED` rather than failing: they carry no `prev`
+  and calling them tampered would be false. A ledger appended to across the upgrade reports `MIXED`,
+  with the boundary named and the chained suffix still verified.
+
+- **`bounded-loops-hook`**, one console-script entry point for the editor hooks. The plugin
+  manifests invoked `python3 -m bounded_loops.hooks.…`, which resolves `python3` against the user's
+  PATH — frequently a different interpreter from the one the package is installed in, and the
+  failure is a bare `ModuleNotFoundError` inside a hook where nobody sees it. The `python3 -m` form
+  still works.
+
+### Fixed
+
+- **A wind-down reserve could no longer make a ceiling unloadable.** `handoff_reserve_s` defaulted
+  to 90 s before the half-ceiling check ran, so any loop declaring `max_wallclock_s: 180` or less
+  was refused outright — by an error quoting a field the author had never written, on a manifest
+  that was valid before the reserve feature existed. The default is now proportional below a 270 s
+  ceiling; every shipped loop keeps the full 90 s. An explicitly authored reserve at or above half
+  the ceiling is still refused.
+
+- **Input quarantine covers the credential stores an agent-era toolchain actually writes**, and
+  says what it withheld. Added `.npmrc`, `.pypirc`, `.docker`, `.kube`, `.azure`, `.gcloud`,
+  `.terraform.d`, service-account key files, shell history, and further keystore suffixes. A
+  registry publish token is the capability to ship a malicious release, so it ranks with an SSH key.
+  Quarantine now names each withheld entry on stderr — a silent exclusion is indistinguishable from
+  a bug.
+
+- **`quarantine_inputs: false` now needs the operator as well as the loop author.** It is a
+  `bounds.yaml` field, so a shared loop could previously waive credential exclusion by itself.
+  Consent is per loop name via `BOUNDED_LOOPS_QUARANTINE_OPT_OUT_ALLOW`, matching the two-key rule
+  `env_passthrough` already uses. Default-closed.
+
+- **Worktree promotion cannot write outside the workspace.** A symlink already at the destination
+  path let promotion overwrite a file outside the workspace, and a symlinked destination directory
+  let it create one. Both are refused. (A source *hardlink* is still promoted: `copy2` writes a
+  fresh file, so the link is broken by the promotion and the content was readable by the agent
+  regardless.)
+
+- **A per-node repair budget is refused instead of silently adopted.** The graph's repair budget is
+  global — one counter bounds the total rounds — and the reader returned the first node that
+  declared one. If the compiler ever stopped distributing uniformly, the run would have quietly used
+  one node's number as the graph's, which is the per-node bound the termination result excludes.
+
+- **A graph node running `agy` gets the same two fixes the base runner already had:** the permission
+  flag, and an explicit `--add-dir` workspace. Both failures were silent — `agy` exits 0 having
+  written its files somewhere the gate does not read. The provider catalog and the plugin boundary
+  carry both new fields, so a catalog-loaded provider cannot lose them.
+
+- Using `BOUNDED_LOOPS_EXTRA_AGENT_CMDS` now says so on stderr. Running a binary outside the
+  reviewed allowlist previously left no trace anywhere.
+
 ## [0.6.5] — 2026-08-17
 
 ### Fixed

@@ -189,8 +189,11 @@ def test_graph_run_stop_hook_wired_in_hooks_json(host: str) -> None:
     hooks_path = REPO_ROOT / "plugins" / host / "hooks" / "hooks.json"
     assert hooks_path.is_file()
     text = hooks_path.read_text(encoding="utf-8")
-    assert "graph_run_stop" in text, (
-        f"plugins/{host}/hooks/hooks.json does not wire graph_run_stop"
+    # Named by the dispatcher's hook name, not the module path: since 0.6.6 the
+    # manifests invoke the `bounded-loops-hook` console script, because `python3 -m`
+    # resolved an interpreter that need not be able to import this package (Task #67).
+    assert "graph-run-stop" in text, (
+        f"plugins/{host}/hooks/hooks.json does not wire the graph-run-stop hook"
     )
 
 
@@ -199,8 +202,8 @@ def test_pretooluse_hook_wired_in_hooks_json(host: str) -> None:
     """The pretooluse_loop_package hook must be wired for every host."""
     hooks_path = REPO_ROOT / "plugins" / host / "hooks" / "hooks.json"
     text = hooks_path.read_text(encoding="utf-8")
-    assert "pretooluse_loop_package" in text, (
-        f"plugins/{host}/hooks/hooks.json does not wire pretooluse_loop_package"
+    assert "pretooluse-loop-package" in text, (
+        f"plugins/{host}/hooks/hooks.json does not wire the pretooluse-loop-package hook"
     )
 
 
@@ -236,7 +239,7 @@ def test_the_pretooluse_hook_is_scoped_to_file_writing_tools(host: str) -> None:
 
     for group in _pretooluse_groups(host):
         commands = [entry.get("command", "") for entry in group.get("hooks", [])]
-        if not any("pretooluse_loop_package" in command for command in commands):
+        if not any("pretooluse-loop-package" in command for command in commands):
             continue
         matcher = group.get("matcher", "")
         assert matcher, f"{host} wires the PreToolUse hook with no tool matcher"
@@ -258,8 +261,8 @@ def test_the_stop_hook_is_wired_for_every_host(host: str) -> None:
         for group in root.get("Stop", [])
         for entry in group.get("hooks", [])
     ]
-    assert any("graph_run_stop" in command for command in commands), (
-        f"{host} does not wire bounded_loops.hooks.graph_run_stop on Stop"
+    assert any("graph-run-stop" in command for command in commands), (
+        f"{host} does not wire the graph-run-stop hook on Stop"
     )
 
 

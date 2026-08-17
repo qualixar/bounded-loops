@@ -74,6 +74,13 @@ def reconstructed(profiles: Mapping[str, CliProfile]) -> dict[str, CliProfile]:
             env_grant=tuple(profile.env_grant),
             usage_args=tuple(profile.usage_args),
             envelope=profile.envelope,
+            # Field-by-field rebuilds silently drop fields added later. These two were
+            # added for Task #68 and this copy lost both, which would have reintroduced
+            # the same silent agy failure through the catalog path — an argv with no
+            # permission flag and no workspace, and a node that succeeds having changed
+            # nothing. Caught by the round-trip equality test, not by review.
+            post_prompt_args=tuple(profile.post_prompt_args),
+            workspace_arg=profile.workspace_arg,
         )
         for name, profile in profiles.items()
     }

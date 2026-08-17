@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
@@ -488,6 +489,20 @@ def _validate_agent_cmd(agent_cmd: object) -> None:
         name.strip() for name in extra_raw.split(",") if name.strip()
     )
     effective = AGENT_CMD_ALLOWLIST | extra
+    if binary_basename in extra and binary_basename not in AGENT_CMD_ALLOWLIST:
+        # SEC-07. The operator extension is a legitimate control — it is how an
+        # enterprise runs its own agent binary without forking the package. What was
+        # missing is that using it left no trace: the run executed a binary outside the
+        # reviewed allowlist and nothing anywhere said so, which is the same shape as a
+        # bound that is declared and not enforced. Named on stderr at the moment it is
+        # exercised, so the widening appears in the operator's log next to the run that
+        # used it.
+        print(
+            f"[bounded-loops] agent_cmd {binary_basename!r} is permitted only by the "
+            f"operator extension {_EXTRA_AGENT_CMDS_ENV}; it is not in the reviewed "
+            f"allowlist shipped with this package.",
+            file=sys.stderr,
+        )
     if binary_basename not in effective:
         raise ManifestError(
             f"runner.agent_cmd first token {binary_basename!r} is not in the "
