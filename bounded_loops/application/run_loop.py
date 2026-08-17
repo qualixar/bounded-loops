@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import uuid
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -158,9 +158,21 @@ class RunLoopUseCase:
 
     def run(self) -> Outcome:
         try:
-            return self._run()
+            return self._stamp_ledger_head(self._run())
         finally:
             self._cleanup_workspace()
+
+    def _stamp_ledger_head(self, outcome: Outcome) -> Outcome:
+        """Attach the ledger head to every terminal outcome, on one code path.
+
+        Deliberately here and not at the ten `return Outcome(...)` sites: a receipt
+        field that each exit branch has to remember to set is a field some branch
+        will eventually forget, and the branches that would forget are the failure
+        paths — exactly the runs whose evidence matters most. Reading the head after
+        `_run` returns also guarantees it commits to the final row, including a
+        wind-down handoff written on the way out.
+        """
+        return replace(outcome, ledger_head=self._deps.ledger.head())
 
     def _run(self) -> Outcome:
         d = self._deps

@@ -28,6 +28,7 @@ def _print_outcome(outcome: Outcome, *, as_json: bool) -> None:
             "reason":       outcome.reason,
             "laps":         outcome.laps,
             "ledger_path":  str(outcome.ledger_path),
+            "ledger_head":  outcome.ledger_head,
         }
         print(json.dumps(data))
     else:
@@ -36,6 +37,11 @@ def _print_outcome(outcome: Outcome, *, as_json: bool) -> None:
             f"{symbol} [{outcome.status.value}] {outcome.reason} "
             f"(laps: {outcome.laps})  ledger: {outcome.ledger_path}"
         )
+        if outcome.ledger_head:
+            # Printed on every terminal status, not only DONE. A run that halted or
+            # errored is the one whose ledger someone may later want to dispute, and
+            # this line is the only copy of the head that leaves the run directory.
+            print(f"Ledger head: {outcome.ledger_head}")
         if outcome.status.value == "DONE":
             lap_word = "lap" if outcome.laps == 1 else "laps"
             print(

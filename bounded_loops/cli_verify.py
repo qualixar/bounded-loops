@@ -1,0 +1,186 @@
+"""``bl verify`` — check a run's receipt without running anything.
+
+The soundness argument's practical content is that a third party holding only a run
+directory can confirm the claim. That was true of the data and false of the tooling:
+nothing shipped let anyone do it, so the property was declared and not exercisable —
+the same shape as a wallclock ceiling that is validated, displayed, and never
+enforced. This command is the exercise.
+
+It reads. It never writes, never re-runs a gate, and never consults the engine that
+produced the run. Three checks, reported separately because they fail for different
+reasons and an operator's next action differs:
+
+1. **Chain** — is the ledger internally consistent (`ledger_chain`)?
+2. **Anchor** — does the head match the head recorded when the run ended? An
+   operator holding the head from their terminal or CI log can pass `--expect-head`
+   and get the stronger check, since the recorded copy shares a filesystem with the
+   ledger and so shares its adversary.
+3. **Completeness** — does the ledger account for every lap the receipt claims? This
+   is the hypothesis the chain-integrity result needs and that hashing alone does not
+   supply: a truncated ledger is a well-formed prefix, and only an independent record
+   of the expected length turns it back into a detectable edit.
+
+Exit status is 0 only when every applicable check passes. A verifier that exits 0 on
+"could not tell" is worse than no verifier, because it converts absence of evidence
+into a passing build step.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from bounded_loops.adapters.io.ledger_chain import ChainStatus, verify_ledger_file
+
+
+def register(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser(
+        "verify",
+        help="Verify a run receipt: ledger chain, recorded head, and lap accounting.",
+        description=(
+            "Reads a run directory (or a ledger file) and reports whether its "
+            "append-only ledger is intact. Reads only; never re-runs a gate."
+        ),
+    )
+    parser.add_argument(
+        "target", type=Path,
+        help="A run directory containing ledger.jsonl, or a path to a ledger file.",
+    )
+    parser.add_argument(
+        "--expect-head", default=None, metavar="SHA256",
+        help=(
+            "The head digest you recorded when the run ended, from the run's output. "
+            "Supplying it is the only check an adversary with write access to the "
+            "whole run directory cannot satisfy."
+        ),
+    )
+    parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+    parser.set_defaults(func=_cmd_verify)
+
+
+def _cmd_verify(args: argparse.Namespace) -> int:
+    ledger_path, metadata = _resolve(args.target)
+    report = verify_ledger_file(ledger_path)
+
+    checks: list[dict] = [{
+        "check": "chain",
+        "passed": report.verified,
+        "status": report.status.value,
+        "detail": report.detail,
+    }]
+
+    expected = args.expect_head or (metadata or {}).get("ledger_head") or ""
+    source = "--expect-head" if args.expect_head else "the run receipt"
+    if expected:
+        checks.append({
+            "check": "anchor",
+            "passed": expected == report.head,
+            "status": "MATCH" if expected == report.head else "MISMATCH",
+            "detail": (
+                f"head matches the digest recorded in {source}"
+                if expected == report.head
+                else f"{source} records {expected} but the ledger now heads at {report.head}"
+            ),
+        })
+    else:
+        checks.append({
+            "check": "anchor",
+            "passed": False,
+            "status": "NO_WITNESS",
+            "detail": (
+                "no recorded head to compare against, so the chain is only evidence "
+                "against an adversary who cannot recompute it: pass --expect-head "
+                "with the digest printed when the run ended"
+            ),
+        })
+
+    claimed = (metadata or {}).get("laps")
+    if isinstance(claimed, int):
+        # A run records one ledger row per lap. Fewer rows than laps is a removed
+        # tail, which is exactly the case a hash chain cannot see on its own.
+        passed = report.lines >= claimed
+        checks.append({
+            "check": "completeness",
+            "passed": passed,
+            "status": "COMPLETE" if passed else "TRUNCATED",
+            "detail": (
+                f"{report.lines} ledger rows for {claimed} claimed laps"
+                if passed
+                else f"receipt claims {claimed} laps but the ledger holds {report.lines} rows"
+            ),
+        })
+    else:
+        checks.append({
+            "check": "completeness",
+            "passed": False,
+            "status": "NO_RECEIPT",
+            "detail": (
+                "no run metadata beside the ledger, so a removed tail would present "
+                "as a shorter run: verify against a receipt written with --run-id"
+            ),
+        })
+
+    ok = all(check["passed"] for check in checks)
+    if args.json:
+        print(json.dumps({
+            "subcommand": "verify",
+            "ledger_path": str(ledger_path),
+            "verified": ok,
+            "head": report.head,
+            "lines": report.lines,
+            "verified_lines": report.verified_lines,
+            "checks": checks,
+        }))
+    else:
+        _print_human(ledger_path, report, checks, ok=ok)
+    return 0 if ok else 1
+
+
+def _print_human(ledger_path: Path, report, checks: list[dict], *, ok: bool) -> None:
+    print(f"Ledger: {ledger_path}")
+    print(f"Head:   {report.head}")
+    print(f"Rows:   {report.lines} ({report.verified_lines} covered by the chain)")
+    print("")
+    for check in checks:
+        symbol = "✓" if check["passed"] else "✗"
+        print(f"{symbol} {check['check']:<13} {check['status']}")
+        print(f"  {check['detail']}")
+    print("")
+    if ok:
+        print("Verified: this receipt is intact and accounts for every lap it claims.")
+        return
+    if report.status is ChainStatus.BROKEN:
+        print("NOT VERIFIED: the ledger was edited after it was written.")
+    elif report.status is ChainStatus.TORN_TAIL:
+        print("NOT VERIFIED: the final row is a partial write — an interrupted run.")
+    elif report.status is ChainStatus.UNCHAINED:
+        print("NOT VERIFIED: written before 0.6.6, which is when chaining began.")
+    elif report.status is ChainStatus.MIXED:
+        print("NOT VERIFIED in full: an unchained prefix predates chaining.")
+    else:
+        print("NOT VERIFIED: one check could not be satisfied. See above.")
+
+
+def _resolve(target: Path) -> tuple[Path, dict | None]:
+    """Accept a run directory or a ledger file; return the ledger and any receipt."""
+    if target.is_dir():
+        ledger = target / "ledger.jsonl"
+        if not ledger.exists():
+            legacy = target / ".ledger.jsonl"
+            if legacy.exists():
+                ledger = legacy
+        metadata_path = target / "metadata.json"
+    else:
+        ledger = target
+        metadata_path = target.parent / "metadata.json"
+
+    metadata: dict | None = None
+    if metadata_path.is_file() and not metadata_path.is_symlink():
+        try:
+            loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata = None
+        else:
+            metadata = loaded if isinstance(loaded, dict) else None
+    return ledger, metadata

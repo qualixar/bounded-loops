@@ -458,6 +458,15 @@ class Outcome:
                     "no-progress", "awaiting-approval", "killed").
       laps        — total laps executed when the loop terminated.
       ledger_path — absolute path to the JSON-Lines ledger file for this run.
+      ledger_head — digest of the ledger's last line at the moment the run ended.
+
+    `ledger_head` is reported rather than merely stored because the hash chain in
+    the ledger has no secret in it: anyone who can rewrite the whole file can
+    recompute every link. What that adversary cannot do is change a value already
+    copied somewhere they do not control, so the head is surfaced on stdout and in
+    the JSON outcome, making an operator's terminal and a CI log into witnesses. A
+    chain with no witness is a weaker claim than it looks, and the field exists to
+    stop us making the stronger one by accident.
 
     Exit-code mapping:
       status == DONE  → exit 0
@@ -475,3 +484,7 @@ class Outcome:
     reason:      str
     laps:        int
     ledger_path: Path
+    #: Defaulted so every existing construction site keeps working, and so a caller
+    #: that never chained anything reports an empty string rather than a plausible
+    #: digest it did not earn.
+    ledger_head: str = ""

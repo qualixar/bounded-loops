@@ -325,6 +325,9 @@ def _build_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
     audit_parser.set_defaults(func=_cmd_audit_loops)
 
+    from bounded_loops.cli_verify import register as _register_verify
+    _register_verify(subparsers)
+
     from bounded_loops.graph.cli_graph import register as _register_graph
     from bounded_loops.cli_loop import register as _register_loop
     from bounded_loops.cli_loops import register as _register_loops

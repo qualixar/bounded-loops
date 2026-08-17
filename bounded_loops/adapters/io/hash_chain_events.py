@@ -6,29 +6,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
-import importlib
 import json
 import os
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, BinaryIO, Mapping
+from typing import Mapping
 import tempfile
 import uuid
 
+from bounded_loops.adapters.io.file_lock import locked_file
 from bounded_loops.domain.errors import EvidenceError
 from bounded_loops.domain.models import Status
-
-_fcntl: Any | None = None
-_msvcrt: Any | None = None
-try:  # POSIX: shared/exclusive advisory locks.
-    _fcntl = importlib.import_module("fcntl")
-except ModuleNotFoundError:  # pragma: no cover - exercised on Windows.
-    pass
-try:  # Windows: exclusive controller lock fallback.
-    _msvcrt = importlib.import_module("msvcrt")
-except ModuleNotFoundError:  # pragma: no cover - exercised on POSIX.
-    pass
-
 
 _GENESIS_HASH = "0" * 64
 
@@ -291,12 +279,8 @@ class HashChainEventStore:
         if lock_path.is_symlink():
             raise EvidenceError("event lock path must not be a symlink")
         try:
-            with lock_path.open("a+b") as fh:
-                _acquire_file_lock(fh, exclusive=exclusive)
-                try:
-                    yield
-                finally:
-                    _release_file_lock(fh)
+            with locked_file(lock_path, exclusive=exclusive):
+                yield
         except OSError as exc:
             raise EvidenceError(f"cannot lock event stream: {exc}") from exc
 
@@ -428,33 +412,6 @@ def _json_value(value: object) -> object:
     if isinstance(value, tuple):
         return [_json_value(child) for child in value]
     return value
-
-
-def _acquire_file_lock(fh: BinaryIO, *, exclusive: bool) -> None:
-    if _fcntl is not None:
-        mode = _fcntl.LOCK_EX if exclusive else _fcntl.LOCK_SH
-        _fcntl.flock(fh.fileno(), mode)
-        return
-    if _msvcrt is not None:
-        # Windows exposes only an exclusive byte-range primitive here. F0.3's
-        # correctness takes precedence over read concurrency on that platform.
-        fh.seek(0, os.SEEK_END)
-        if fh.tell() == 0:
-            fh.write(b"\0")
-            fh.flush()
-        fh.seek(0)
-        _msvcrt.locking(fh.fileno(), _msvcrt.LK_LOCK, 1)
-        return
-    raise EvidenceError("no supported local file-lock implementation is available")
-
-
-def _release_file_lock(fh: BinaryIO) -> None:
-    if _fcntl is not None:
-        _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
-        return
-    if _msvcrt is not None:
-        fh.seek(0)
-        _msvcrt.locking(fh.fileno(), _msvcrt.LK_UNLCK, 1)
 
 
 def _write_json_atomically(path: Path, value: Mapping[str, object]) -> None:

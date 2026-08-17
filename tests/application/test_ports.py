@@ -101,6 +101,13 @@ class FakeLedger:
     def path(self) -> Path:
         return self._path
 
+    def head(self) -> str:
+        # An in-memory ledger has no bytes on disk to commit to, so it reports the
+        # count rather than inventing a digest. Naming what it actually knows is the
+        # point: a fake that answered with a plausible sha256 would let a test pass
+        # on an anchor that never existed.
+        return f"fake-{len(self._entries)}"
+
 
 class FakeTracer:
     def __init__(self):

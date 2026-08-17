@@ -421,7 +421,7 @@ def bl_run(
          "message": str}
     Returns (confirm=True, matched preview, success):
         {"status": "DONE"|"HALT"|"PAUSE"|"KILLED", "reason": str,
-         "laps": int, "ledger_path": str}
+         "laps": int, "ledger_path": str, "ledger_head": str, "run_id": str|None}
     Returns (confirm=True, ManifestError before/during wiring):
         {"status": "error", "error_type": "ManifestError", "message": str}
     Returns (confirm=True, unexpected exception during run()):
@@ -527,6 +527,7 @@ def bl_run(
         "reason": outcome.reason,
         "laps": outcome.laps,
         "ledger_path": str(outcome.ledger_path),
+        "ledger_head": outcome.ledger_head,
         "run_id": run_id,
     }
 
