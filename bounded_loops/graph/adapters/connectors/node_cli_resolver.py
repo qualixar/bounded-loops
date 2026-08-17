@@ -1,7 +1,10 @@
 """Resolve an admitted local-CLI connector node to a concrete agent-CLI invocation (RE).
 
 The compiler-admitted binding names WHICH agent CLI to run: for a ``local_cli`` connection the
-binding's ``provider_id`` is the CLI's name (``claude`` | ``codex`` | ``grok`` | ``muse`` | ``agy``).
+binding's ``provider_id`` is a key of the profile table (``CLI_PROFILES``, plus anything an
+operator's provider catalog adds). Deliberately not enumerated here: this docstring listed five
+names and went stale the first time a sixth shipped, which is the doc-drift class this project
+tests for elsewhere. ``bl graph providers`` prints the live set.
 The prompt is RUN-TIME input, not authoring structure — a portable authoring graph "knows nothing
 about runtime state", and its node schema is closed — so the prompt is supplied per node at execute
 time (``node_id -> prompt``) rather than baked into the manifest. No credential is read here: the

@@ -7,6 +7,14 @@ node error — surface it rather than silently pass.
 
 Run:
     BL_LIVE_CLI=1 uv run pytest -s tests/graph/adapters/connectors/test_local_cli_worker_live.py
+
+One profile spends differently and it is worth knowing before running this. `dsh` is not a
+subscription CLI: it authenticates from its environment and, left at its defaults, bills a
+metered API. It was first probed here through an operator wrapper script pointing its model route
+at a local OpenAI-compatible endpoint, which costs nothing — the pattern the provider-catalog
+tests describe for pointing a profile at a wrapper. It also fails closed without its key variable
+set even against an endpoint that does not authenticate, so a bare install skips or errors rather
+than quietly spending.
 """
 
 from __future__ import annotations

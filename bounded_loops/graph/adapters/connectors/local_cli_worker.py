@@ -229,16 +229,25 @@ CLI_PROFILES: Mapping[str, CliProfile] = MappingProxyType({
     # launcher would not recognise — the launcher stops parsing at the first token it does not
     # own and hands the rest to the booted profile.
     #
-    # NOT LIVE-PROBED. Every other entry above records a live invocation on a real binary; this
-    # one does not, because `dsh` is not installed on the host that added it. The contract below
-    # is read from the vendor's own package documentation at a pinned commit (v0.1.0-rc.7,
-    # 99f6f02): the headless runner submits the task as one user message, waits for quiescence,
-    # writes the last non-empty assistant text to stdout, keeps stderr empty on success, opens no
-    # listening port, and takes its workspace from the invoking directory — so cwd carries it and
-    # no workspace_arg is needed, unlike agy. It exits 0 only when the final turn completed and 1
-    # otherwise, which makes a non-zero exit a real signal rather than noise. Saying "documented,
-    # not probed" costs one line; the codex comment above records what it costs to write an unread
-    # shape up as verified.
+    # PROBED LIVE 2026-08-18 against @deepseek-ai/dsh 0.1.0-rc.7 from npm, driving a local
+    # OpenAI-compatible endpoint so no key and no spend were involved. What the probe established,
+    # rather than what the docs assert:
+    #
+    #   * `dsh --help` documents this exact argv shape in its own examples —
+    #     `dsh --profile headless "run the tests"` — and `dsh --profile headless --help` reports
+    #     `[task...]`, "the task text; multiple words are joined by spaces". Prompt via arg,
+    #     confirmed by the tool itself.
+    #   * A real task returned the assistant's reply on stdout with stderr empty. Exit 0.
+    #   * A whitespace-only task is refused before the runner activates: exit 1, stderr
+    #     `a task is required`. So an empty prompt cannot silently run.
+    #   * Workspace is the invoking directory, so cwd carries it. No workspace_arg, unlike agy.
+    #
+    #   * IT FAILS CLOSED WITHOUT A KEY, even against an endpoint that does not authenticate:
+    #     exit 1, stderr `MISSING_CREDENTIAL: ... no API key for provider route`. This is the
+    #     operationally important one. Combined with the no-pre-grant rule below, a dsh node runs
+    #     only after an operator supplies the name through their own catalog entry AND the operator
+    #     allow-list. A user who adds a dsh node and gets MISSING_CREDENTIAL is not looking at a
+    #     bug here; they are looking at the grant they have not made yet.
     #
     # UNMETERED, and for a more specific reason than codex and muse. That harness does account for
     # tokens — per-step usage records in its own session log — but the headless path writes only
