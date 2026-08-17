@@ -373,6 +373,15 @@ class LedgerEntry:
     verdict:      Verdict
     decision:     Literal["continue", "done", "halt", "pause", "killed", "error"]
     budget_spent: dict
+    #: Whether the worker was actually invoked on this lap. False only for the checks the
+    #: controller performs BEFORE the turn — the kill switch and the budget ceiling — which
+    #: record a lap that spent no attempt.
+    #:
+    #: Without this, a lap count and an attempt count are indistinguishable from the receipt:
+    #: a ceiling halt at `max_iterations: 10` writes an eleventh row, and anyone computing
+    #: consumed/declared from the ledger gets 1.1 for a bound that in fact held exactly. A cost
+    #: claim that cannot be audited from its own receipt is not a cost claim.
+    attempted:    bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "budget_spent", _freeze_value(self.budget_spent))

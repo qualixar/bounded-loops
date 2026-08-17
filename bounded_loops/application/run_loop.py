@@ -79,15 +79,23 @@ def _make_entry(
     verdict: Verdict,
     budget_spent: dict,
     clock: ClockPort,
+    *,
+    attempted: bool = True,
 ) -> LedgerEntry:
     """Build one ledger entry. `decision` is always a plain closed-set value —
-    the halt/pause/kill REASON lives exclusively in Outcome.reason, never here."""
+    the halt/pause/kill REASON lives exclusively in Outcome.reason, never here.
+
+    `attempted=False` is for the two pre-turn checks only (kill switch, budget ceiling). Those
+    record a lap on which the worker was never invoked, so counting rows as attempts overstates
+    consumption by one on exactly the runs where the ceiling bites.
+    """
     return LedgerEntry(
         lap=lap,
         ts=clock.now_iso(),
         verdict=verdict,
         decision=decision,
         budget_spent=budget_spent,
+        attempted=attempted,
     )
 
 
@@ -177,7 +185,9 @@ class RunLoopUseCase:
 
             # ── 1. Kill-switch check (highest priority) ──
             if d.killswitch.tripped():
-                entry = _make_entry(lap, "killed", Verdict(False, "killed"), {}, d.clock)
+                entry = _make_entry(
+                    lap, "killed", Verdict(False, "killed"), {}, d.clock, attempted=False
+                )
                 d.ledger.record(entry)
                 return Outcome(Status.KILLED, "killed", lap, d.ledger.path())
 
@@ -186,7 +196,9 @@ class RunLoopUseCase:
             if tripped:
                 # decision="halt"; the WHY
                 # lives ONLY in Outcome.reason, never encoded into decision.
-                entry = _make_entry(lap, "halt", Verdict(False, why), _snap(d, lap), d.clock)
+                entry = _make_entry(
+                    lap, "halt", Verdict(False, why), _snap(d, lap), d.clock, attempted=False
+                )
                 d.ledger.record(entry)
                 return Outcome(Status.HALT, why, lap, d.ledger.path())
 

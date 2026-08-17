@@ -121,6 +121,45 @@ def test_a_productive_worker_is_not_halted_by_the_soft_bound(tmp_path):
     )
 
 
+def test_the_hard_ceiling_is_never_overspent_as_read_from_the_receipt(tmp_path):
+    """Utilisation computed from the ledger must never exceed 1.
+
+    A ceiling halt writes a row for the lap on which the budget tripped, and the worker is never
+    invoked on that lap -- the check precedes the turn. Counting rows as attempts therefore reports
+    11 attempts against `max_iterations: 10` and a utilisation of 1.1 for a bound that held
+    exactly. `attempted` exists so the receipt answers this without the reader having to reason
+    about controller step order.
+    """
+    # 8 records against a ceiling of 4, so the ceiling is what stops the run.
+    loop_dir = _materialise(tmp_path / "over", "one_per_lap")
+    (loop_dir / "bounds.yaml").write_text(
+        (loop_dir / "bounds.yaml").read_text().replace(
+            f"max_iterations: {_CEILING}", "max_iterations: 4"
+        ),
+        encoding="utf-8",
+    )
+    stdout, entries = _run(loop_dir)
+
+    attempts = sum(1 for entry in entries if entry.get("attempted", True))
+    assert entries[-1]["decision"] == "halt", stdout
+    assert attempts == 4, f"expected exactly the declared 4 attempts, counted {attempts}\n{stdout}"
+    assert attempts / 4 <= 1.0, "utilisation exceeded 1 — the receipt overstates consumption"
+    assert entries[-1]["attempted"] is False, (
+        "the ceiling-halt row must not claim an attempt: the worker never ran on that lap"
+    )
+    assert all(entry["attempted"] for entry in entries[:-1]), (
+        "every lap before the ceiling halt did invoke the worker"
+    )
+
+
+def test_a_converging_run_marks_every_lap_as_attempted(tmp_path):
+    """The complement: no spurious `attempted: False` on a healthy run."""
+    loop_dir = _materialise(tmp_path / "clean", "one_per_lap")
+    _, entries = _run(loop_dir)
+    assert all(entry["attempted"] for entry in entries)
+    assert sum(1 for e in entries if e["attempted"]) == _RECORDS
+
+
 @pytest.mark.parametrize("records", [2, 4, 8])
 def test_attempts_consumed_track_the_declared_workload(tmp_path, records):
     """Bound utilisation is a real quantity: attempts scale with the work, capped by the ceiling."""

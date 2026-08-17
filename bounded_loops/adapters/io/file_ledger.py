@@ -56,6 +56,8 @@ def _serialise(entry: LedgerEntry) -> str:
         },
         "decision": entry.decision,
         "budget_spent": _json_value(entry.budget_spent),
+        # Attempts, not laps, are what a budget is denominated in. See LedgerEntry.attempted.
+        "attempted": bool(entry.attempted),
     }
     return json.dumps(d, ensure_ascii=False, separators=(",", ":"))
 
