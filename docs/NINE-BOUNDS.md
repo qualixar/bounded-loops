@@ -25,6 +25,34 @@ the agent is still running but has stopped actually changing anything
 (`RunResult.changed == False` for `window` consecutive laps) — a spin, not
 a stop.
 
+**How "changed" is decided, and why it used to be wrong.** `changed` comes
+from a content-addressed digest of the whole workspace, taken before the turn
+and again after it, within the same lap
+(`adapters/runners/workspace_digest.py`). Harness-written files —
+`agent_output.txt`, the ledger, the runtime state file — are excluded by
+name, so the engine's own bookkeeping can never be mistaken for the agent's
+work.
+
+Before 0.6.5 each runner compared `git status` against a snapshot taken once
+when the loop was wired and never refreshed. From lap 2 onward any write by
+any earlier lap made every later lap look busy, so `changed` could not report
+`False` and this soft bound **could not fire at all** for any runner that
+shells out. Six runners each carried their own copy of that detector, three
+of them annotated as mirrored-not-imported. The digest is now a single shared
+function, and git is no longer required by the engine for anything.
+
+**Reading utilisation off the receipt.** Every ledger row carries
+`attempted`, which is `false` only for the two checks the controller performs
+*before* a turn — the kill switch and the budget ceiling. Those record a lap
+on which the worker was never invoked. Without the flag, a lap count and an
+attempt count are indistinguishable: a ceiling halt at `max_iterations: 10`
+writes an eleventh row, and anyone computing consumed-over-declared from the
+ledger gets 1.1 for a bound that in fact held exactly. A cost claim that
+cannot be audited from its own receipt is not a cost claim.
+
+A wallclock halt keeps `attempted: true` — the worker did run, and ran out of
+budget, which is the opposite of never having started.
+
 ## 2. Sandboxing — isolated scratch copy, symlinks refused
 
 **Field:** `bounds.sandbox` (default `true`). **Enforced by:**
@@ -135,13 +163,15 @@ default, because "the mechanical gate agreed" and "a human is comfortable
 merging this" are different bars. `bounds.require_approval` can override
 the rung-derived default explicitly in either direction.
 
-## 9. Wall-clock timeout — inter-lap ceiling, not "unbounded" on null
+## 9. Wall-clock timeout — enforced inside an attempt, not only between them
 
 **Field:** `bounds.max_wallclock_s` (an int, or `null`). **Enforced by:**
-`BudgetMeterPort.exceeded()` for the *inter-lap* ceiling (checked before
-each lap begins, via `time.monotonic()` since the meter was constructed);
-the runner's and gate's own subprocess `timeout_s` for the *in-lap* guard
-against a single long turn.
+`BudgetMeterPort.exceeded()` before each lap begins, *and*
+`BudgetMeterPort.wallclock_budget()` inside each attempt: the controller
+measures the remaining budget immediately before handing off to the runner,
+and the runner clamps its own wait to it
+(`adapters/runners/attempt_deadline.py`). No attempt starts after the
+ceiling and none continues past it.
 
 Why it matters: `manifest.py`'s `_load_bounds()` is explicit that
 `max_wallclock_s: null` in `bounds.yaml` does **not** mean "run forever" —
@@ -151,6 +181,59 @@ manifest-load time. This is a deliberate security fix: an unbounded
 wallclock and token budget would still describe an effectively-unlimited-
 cost loop. A loop that genuinely needs longer than an hour must say so
 explicitly, not get it by omission.
+
+### What changed in 0.6.5, and what the bound now actually promises
+
+Until 0.6.5 this ceiling was compared against elapsed time **only at the top
+of a lap**, so it bounded the gap between attempts rather than an attempt. A
+loop declaring `max_wallclock_s: 120` was observed running a single attempt
+for over 300 seconds, terminated in the end by a runner default it had never
+declared. The number was in the manifest and readable; it just did not
+constrain anything an operator would recognise as the run.
+
+The promise now, stated exactly:
+
+> Worker time is bounded by `max_wallclock_s`. Total run time is bounded by
+> `max_wallclock_s` **plus at most one gate timeout**.
+
+That second clause is deliberate and is not a gap left open by accident.
+Gates are **not** clamped to the remaining budget: cutting a gate off
+mid-check yields no verdict, and a check that could not run must never be
+recorded as having judged. A verdict that cost a few extra seconds is worth
+strictly more than no verdict at all.
+
+### Two limits on one attempt, and which one bit
+
+| Limit | Whose decision | Exceeding it means | Status |
+|---|---|---|---|
+| `bounds.max_wallclock_s` | the loop author's, declared in the manifest | the declared spend ceiling was reached | `HALT`, reason names the bound |
+| the runner's `timeout_s` | the operator's, set on the adapter | one turn ran longer than this deployment tolerates | `ERROR` |
+
+The tighter limit binds, and the receipt says which. They are reported
+differently on purpose: a run that stopped because it was told to is not a
+run that broke, and filing both under one heading is how a budget ceiling
+gets mistaken for a crash.
+
+The agent-CLI runners default to a 600-second per-turn timeout. That number
+is measured, not guessed: across four providers driving four loops,
+completed turns ran to 178 seconds and one was still working when a previous
+300-second default killed it, so 300 was truncating work that was still
+progressing.
+
+### Sizing the ceiling for a real provider
+
+The shipped catalogue uses **`max_wallclock_s = max_iterations × 90`**.
+The 90 seconds per attempt comes from the same measurement (median turn
+44.6s, 75th percentile 72.5s), and sits deliberately *below* the slowest
+turn observed. That is a choice: a run whose every turn is as slow as the
+worst one measured will halt on budget before reaching its lap cap, which is
+what a spend limit is for. Sizing it to the slowest turn instead would make
+the ceiling arithmetically incapable of firing — present in the manifest and
+unable to affect a run, which is the defect this release closes.
+
+`tests/loops/test_wallclock_ceilings_fit_a_real_agent.py` enforces the rule
+across the catalogue and refuses to let the per-attempt allowance be raised
+past the slowest measured turn.
 
 ## The kill switch — highest priority, polled first
 

@@ -55,6 +55,22 @@ from dataclasses import dataclass
 from bounded_loops.domain.errors import RunnerError, WallclockExceeded
 from bounded_loops.domain.models import LoopContext
 
+#: Default per-attempt timeout for the runners that drive an interactive agent CLI.
+#:
+#: This is the "one turn has hung" guard, and it is a different question from the loop's declared
+#: spend ceiling — see the module docstring. It was 300s, which measurement showed was cutting off
+#: work that was still progressing: across four providers driving four loops, completed turns ran to
+#: 178s and one was still working when 300s killed it, so its true duration is unknown. A limit that
+#: truncates legitimate work is not a safety guard, it is a source of false failures.
+#:
+#: 600s is therefore the default: comfortably past every completed turn measured, and still short
+#: enough that a genuinely wedged CLI does not hold a run open indefinitely. Operators lower it by
+#: passing `timeout_s` explicitly.
+#:
+#: Runners that do NOT drive an agent CLI — docker, worktree, python_callable — keep their own 300s,
+#: because this measurement says nothing about them.
+DEFAULT_AGENT_TURN_TIMEOUT_S = 600
+
 
 @dataclass(frozen=True)
 class WaitBudget:

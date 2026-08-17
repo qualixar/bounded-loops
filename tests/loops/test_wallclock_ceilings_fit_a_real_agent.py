@@ -6,9 +6,15 @@ Enforcing `max_wallclock_s` inside an attempt immediately exposed that the numbe
 almost everywhere: 65 of 69 shipped loops declared a 60s total budget against `max_iterations: 10`,
 which is **6 seconds per attempt**. The shipped demo worker runs in about 0.4s a lap, so nothing ever
 noticed. A real agent CLI takes far longer, and the measurements below are from four of them running
-four loops in the cross-model convergence experiment:
+four loops in the cross-model convergence experiment, over two independent runs:
 
-    n=15 completed turns   min 20.1s   median 44.6s   p75 72.5s   max 177.6s
+    n=31 completed turns   min 20.1s   median 48.3s   p75 72.5s   p90 145.3s   max 270.6s
+
+**The p75 came out at 72.5s in both runs independently.** The tail moved substantially between
+them — the slowest turn went from 177.6s to 270.6s, and one cell nearly doubled at 1.86x — while
+the body of the distribution did not move. That is the justification for sizing from the p75 rather
+than the maximum: the typical turn is a stable quantity across runs and the tail demonstrably is
+not, so a ceiling derived from the tail would be derived from noise.
 
 So the previous ceilings could not accommodate a single real turn, let alone ten. While the bound was
 unenforced that was invisible; once enforced it would have halted every real-agent run mid-first
@@ -43,9 +49,10 @@ LOOPS_ROOT = Path(__file__).resolve().parents[2] / "loops"
 #: see the module docstring for the sample.
 PER_ATTEMPT_ALLOWANCE_S = 90
 
-#: Slowest single real-agent turn observed. A ceiling below this cannot complete that turn, which is
-#: acceptable for a spend limit but must be a conscious choice, so it is named here.
-SLOWEST_OBSERVED_TURN_S = 177.6
+#: Slowest single real-agent turn observed, over both runs. A ceiling below this cannot complete
+#: that turn, which is acceptable for a spend limit but must be a conscious choice, so it is named
+#: here. Raising it requires a new measurement and a note saying where the sample came from.
+SLOWEST_OBSERVED_TURN_S = 270.6
 
 
 def _manifests() -> list[Path]:

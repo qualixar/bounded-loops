@@ -42,7 +42,10 @@ import shlex
 
 from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env, output_redactions
 from bounded_loops.adapters.runners._prompt import with_memory_snapshot
-from bounded_loops.adapters.runners.attempt_deadline import attempt_deadline
+from bounded_loops.adapters.runners.attempt_deadline import (
+    DEFAULT_AGENT_TURN_TIMEOUT_S,
+    attempt_deadline,
+)
 from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn, TurnState
 from bounded_loops.adapters.runners.workspace_digest import workspace_digest
 from bounded_loops.domain.errors import RunnerError
@@ -68,7 +71,7 @@ class ShellRunner:
     agent_cmd: str
     timeout_s: int
 
-    def __init__(self, agent_cmd: str, timeout_s: int = 300) -> None:
+    def __init__(self, agent_cmd: str, timeout_s: int = DEFAULT_AGENT_TURN_TIMEOUT_S) -> None:
         self.agent_cmd = agent_cmd
         self.timeout_s = timeout_s
 
