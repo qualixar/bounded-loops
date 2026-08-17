@@ -1,3 +1,21 @@
+# Migrating from 0.6.6 to 0.6.7
+
+**Nothing to do.** All three additions are opt-in or additive, and no existing command
+changes its behaviour, output format, or exit code.
+
+| If you | Then |
+|---|---|
+| run `bl run` in CI and branch on the exit code | no change — HALT, PAUSE and KILLED still exit 1, ERROR still exits 3 |
+| parse `bl run` stderr | you will see one new `BL_EVENT {...}` line per run. Set `BOUNDED_LOOPS_NO_EVENTS=1` to suppress it |
+| need receipts pruned | new `bl prune <loop-dir> --older-than DAYS --keep N`. Dry run by default; `--yes` deletes |
+| need receipts redacted | new `bl run --redact paths\|strict`. Cannot be applied to ledgers already written — the redacted fields are inside the hash chain |
+
+Redaction is deliberately not retroactive. Rewriting a row that is already chained
+would break verification for every row after it, so a ledger written without
+`--redact` stays as written.
+
+---
+
 # Migrating from 0.6.5 to 0.6.6
 
 Most 0.6.5 setups need **no changes**. Two groups do, and one of them fails loudly on the

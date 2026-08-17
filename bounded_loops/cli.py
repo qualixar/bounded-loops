@@ -41,6 +41,9 @@ from bounded_loops.graph.adapters.preflight.runner_preflight import (
 from bounded_loops import __version__
 from bounded_loops.composition import wire
 from bounded_loops.cli_preconditions import _confirm_trust, check_run_preconditions
+from bounded_loops.cli_retention import add_prune_parser
+from bounded_loops.cli_privacy import add_redact_argument, policy_from_args
+from bounded_loops.adapters.io.terminal_event import emit_terminal_event
 from bounded_loops.domain.errors import BoundedLoopsError, ManifestError
 from bounded_loops.domain.models import Status
 from bounded_loops.trust_store import revoke_trust
@@ -169,6 +172,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Resume an existing persistent run workspace selected by --run-id.",
     )
+    add_redact_argument(run_parser)
     run_parser.set_defaults(func=_cmd_run)
 
     # ── bl lint ───────────────────────────────────────────────────────────────
@@ -270,6 +274,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Pretty-print the per-lap receipt for one persisted run.",
     )
     runs_parser.set_defaults(func=_cmd_runs)
+
+    # ── bl prune ──────────────────────────────────────────────────────────────
+    # Top-level rather than `bl runs prune`; `cli_retention.add_prune_parser`
+    # records why (argparse binds `prune` to the `runs` positional).
+    add_prune_parser(subparsers)
 
     # ── bl trust ──────────────────────────────────────────────────────────────
     trust_parser = subparsers.add_parser(
@@ -401,6 +410,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             keep_workspace=args.keep_workspace,
             run_id=args.run_id,
             resume=args.resume,
+            redaction=policy_from_args(args, workspace_root=loop_dir),
         )
     except BoundedLoopsError as e:
         # `ManifestError` alone let every other BoundedLoopsError out of `wire()` as a raw
@@ -428,6 +438,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 3
 
     _print_outcome(outcome, as_json=args.json)
+
+    # One machine-readable line on stderr for every terminal status, so a HALT at
+    # 3am is greppable rather than prose. Exit codes below are unchanged: handing
+    # PAUSE a distinct code would silently reclassify it for anyone already
+    # branching on zero-versus-non-zero. See `terminal_event`.
+    emit_terminal_event(
+        status=outcome.status.value,
+        reason=outcome.reason,
+        subject=manifest.loop_dir.name,
+        run_id=args.run_id or "",
+        laps=outcome.laps,
+        ledger_head=outcome.ledger_head,
+    )
 
     if args.run_id is not None:
         write_run_metadata(

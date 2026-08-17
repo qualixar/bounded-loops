@@ -7,7 +7,7 @@ All filesystem I/O is directed to tmp_path fixtures.
 import json
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from bounded_loops.cli import _print_outcome, main
 from bounded_loops.application.loop_audit import LoopAuditResult
@@ -219,6 +219,7 @@ class TestBLRunFlagPassthrough:
             keep_workspace=False,
             run_id=None,
             resume=False,
+            redaction=ANY,
         )
 
     def test_runner_flag_accepts_python_callable(self, tmp_path):
@@ -241,6 +242,7 @@ class TestBLRunFlagPassthrough:
             keep_workspace=False,
             run_id=None,
             resume=False,
+            redaction=ANY,
         )
 
     def test_runner_flag_accepts_antigravity(self, tmp_path):
@@ -263,6 +265,7 @@ class TestBLRunFlagPassthrough:
             keep_workspace=False,
             run_id=None,
             resume=False,
+            redaction=ANY,
         )
 
     def test_cli_runner_choices_include_all_new_kinds(self, capsys):
@@ -292,6 +295,7 @@ class TestBLRunFlagPassthrough:
             keep_workspace=False,
             run_id=None,
             resume=False,
+            redaction=ANY,
         )
 
     def test_max_iterations_passed_to_wire(self, tmp_path):
@@ -314,6 +318,7 @@ class TestBLRunFlagPassthrough:
             keep_workspace=False,
             run_id=None,
             resume=False,
+            redaction=ANY,
         )
 
     def test_run_id_and_resume_passed_to_wire(self, tmp_path):
@@ -340,6 +345,7 @@ class TestBLRunFlagPassthrough:
             keep_workspace=False,
             run_id="r1",
             resume=True,
+            redaction=ANY,
         )
         mock_begin.assert_called_once_with(
             loop_dir=tmp_path,

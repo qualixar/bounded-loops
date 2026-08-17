@@ -77,6 +77,7 @@ from bounded_loops.adapters.gates.great_expectations import GreatExpectationsGat
 # I/O adapters
 from bounded_loops.adapters.io.file_memory import FileMemory
 from bounded_loops.adapters.io.file_ledger import FileLedger
+from bounded_loops.adapters.io.receipt_redaction import RedactionPolicy, wrap_if_active
 from bounded_loops.adapters.io.noop_tracer import NoopTracer
 from bounded_loops.adapters.io.otel_tracer import OtelTracer
 from bounded_loops.adapters.io.budget import BudgetMeter
@@ -185,6 +186,7 @@ def wire(
     resume: bool = False,
     controller_root: Path | None = None,
     memory_snapshot: str | None = None,
+    redaction: RedactionPolicy | None = None,
 ) -> RunLoopUseCase:
     """
     Given a loaded+validated LoopManifest, instantiate and wire all concrete
@@ -325,7 +327,14 @@ def wire(
         run_ledger(manifest.loop_dir, run_id, storage_root=controller_root)
         if run_id else manifest.loop_dir / ".ledger.jsonl"
     )
-    ledger: LedgerPort = FileLedger(ledger_path)
+    # Redaction wraps the ledger here, at the one place a ledger is constructed,
+    # rather than at each of `run_loop`'s seven `record()` sites. A guarantee that
+    # holds only when every call site remembers is the defect class this project
+    # publishes about; see `receipt_redaction`. OFF is the default and is a no-op.
+    ledger: LedgerPort = wrap_if_active(
+        FileLedger(ledger_path),
+        redaction if redaction is not None else RedactionPolicy(),
+    )  # type: ignore[assignment]
 
     tracer: TracerPort = (
         # NOTE: the  pseudocode passes loop_name= here, but the real,

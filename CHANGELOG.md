@@ -3,6 +3,43 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.7] — 2026-08-18
+
+Closes the three enterprise-review commitments left open in 0.6.6. All three are
+additive: no existing command changes its behaviour, its output, or its exit code.
+
+### Added
+
+- **`bl prune` — receipt retention.** Deletes old persisted runs, with `--older-than DAYS`
+  and `--keep N`. It prunes **whole runs, never individual ledger rows**: a ledger is a hash
+  chain over its own lines, so removing a row would leave a file that fails verification and
+  looks indistinguishable from tampering. A dry run is the default and `--yes` is required to
+  delete; runs that have not reached a terminal status are never eligible, and the number
+  skipped for that reason is always reported. Symlinked run directories and any path that
+  resolves outside the runs root are refused.
+
+- **`--redact` — receipt redaction, applied before writing.** `off` (default) keeps the full
+  audit record; `paths` rewrites absolute filesystem paths, which on most systems embed an
+  account name, while keeping workspace-relative paths readable; `strict` additionally
+  replaces captured gate output with its SHA-256, so a verdict stays re-derivable without the
+  content. Redaction happens **before** the row is serialised and hashed, because those fields
+  are inside the chain and editing one afterwards would break it — which also means it cannot
+  be applied retroactively to an existing ledger. An unrecognised mode is rejected rather than
+  silently treated as `off`.
+
+- **Structured terminal events on stderr.** Every run now emits one machine-readable
+  `BL_EVENT {...}` line at its terminal status, carrying the status, reason, run id, lap count
+  and ledger head, plus an `alert` flag that is true for HALT, PAUSE, KILLED and ERROR. This is
+  how a HALT reaches on-call without anyone parsing prose. **Exit codes are unchanged** —
+  giving PAUSE its own code would silently reclassify it for anyone already branching on
+  zero-versus-non-zero. Suppress with `BOUNDED_LOOPS_NO_EVENTS=1`.
+
+### Fixed
+
+- The terminal-event path could raise while serialising a non-JSON-native field, which would
+  have failed a run at its final step — an alerting path taking down the run it was added to
+  observe. It now degrades instead of raising.
+
 ## [0.6.6] — 2026-08-17
 
 ### Added
