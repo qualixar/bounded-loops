@@ -179,10 +179,20 @@ def unguarded_tests(path: Path, root: Path | None = None) -> list[str]:
 
 def test_no_test_asserts_only_inside_a_loop_over_a_discovered_collection() -> None:
     """Every such test must prove its collection is non-empty before concluding anything from it."""
+    scanned = [p for p in sorted(_TESTS.rglob("test_*.py")) if p != Path(__file__)]
+
+    # THE GUARD'S OWN GUARD. Everything below concludes from an accumulator, which is shape 2 of the
+    # very defect this file detects: if discovery returned nothing -- a moved tests/ directory, a
+    # wrong _TESTS root, a renamed convention -- `offenders` would be empty, the assertion would
+    # pass, and this test would report the suite clean having scanned zero files. Found by running
+    # the E6 scanner against its own file, which had been excluded from every previous pass.
+    assert len(scanned) >= 200, (
+        f"discovery found only {len(scanned)} test files under {_TESTS}; expected at least 200. "
+        "Refusing to report the suite clean from a scan that did not happen."
+    )
+
     offenders: list[str] = []
-    for path in sorted(_TESTS.rglob("test_*.py")):
-        if path == Path(__file__):
-            continue
+    for path in scanned:
         offenders.extend(_unguarded_tests(path))
 
     assert not offenders, (
