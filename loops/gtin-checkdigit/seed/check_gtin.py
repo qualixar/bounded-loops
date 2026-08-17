@@ -32,6 +32,15 @@ def _expected_check_digit(digits12: str) -> int:
 def check(products_path: str) -> int:
     try:
         products = json.loads(Path(products_path).read_text(encoding="utf-8"))
+
+        # EXISTENCE OBLIGATION. A universal requirement -- "every X satisfies P" -- is
+        # vacuously true over zero X, so without this the gate certifies an emptied artifact:
+        # adjudicated a genuine false accept in the post-freeze corpus. The gate cannot tell an
+        # intentionally-empty artifact from a destroyed one, and a gate certifying a universal
+        # while unable to observe whether any subject exists certifies nothing.
+        if not products:
+            print("check_gtin: product feed lists no products -- refusing to certify an empty artifact")
+            return 1
     except (OSError, json.JSONDecodeError) as exc:
         print(f"check_gtin: cannot run: {exc}", file=sys.stderr)
         return 1  # the worker owns this artifact: a REJECT, not an inability to run

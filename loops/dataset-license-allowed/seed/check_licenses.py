@@ -43,6 +43,15 @@ def check(datasets_path: str, allowlist_path: str) -> int:
 
     try:
         datasets = json.loads(Path(datasets_path).read_text(encoding="utf-8"))
+
+        # EXISTENCE OBLIGATION. A universal requirement -- "every X satisfies P" -- is
+        # vacuously true over zero X, so without this the gate certifies an emptied artifact:
+        # adjudicated a genuine false accept in the post-freeze corpus. The gate cannot tell an
+        # intentionally-empty artifact from a destroyed one, and a gate certifying a universal
+        # while unable to observe whether any subject exists certifies nothing.
+        if not datasets:
+            print("check_licenses: training manifest lists no datasets -- refusing to certify an empty artifact")
+            return 1
     except (OSError, json.JSONDecodeError) as exc:
         print(
             f"check_licenses: {datasets_path} is not readable JSON ({exc}) — every dataset entry "

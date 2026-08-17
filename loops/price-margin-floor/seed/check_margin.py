@@ -38,6 +38,15 @@ def check(catalog_path: str, policy_path: str) -> int:
 
     try:
         catalog = _load(catalog_path)
+
+        # EXISTENCE OBLIGATION. A universal requirement -- "every X satisfies P" -- is
+        # vacuously true over zero X, so without this the gate certifies an emptied artifact:
+        # adjudicated a genuine false accept in the post-freeze corpus. The gate cannot tell an
+        # intentionally-empty artifact from a destroyed one, and a gate certifying a universal
+        # while unable to observe whether any subject exists certifies nothing.
+        if not catalog:
+            print("check_margin: retail catalog lists no SKUs -- refusing to certify an empty artifact")
+            return 1
     except (OSError, json.JSONDecodeError) as exc:
         print(
             f"check_margin: {catalog_path} is not readable JSON ({exc}) — the catalog must be a "

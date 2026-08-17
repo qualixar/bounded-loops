@@ -46,6 +46,13 @@ def check(manifest_path: str) -> int:
         )
         return 1  # the worker owns this artifact: a REJECT, not an inability to run
 
+    # EXISTENCE OBLIGATION on `objects`, NOT on `dependencies`. A transport with no dependencies
+    # is legitimate and vacuously satisfies the rule; a transport with no OBJECTS is a manifest
+    # describing nothing, and certifying it is the vacuous pass adjudicated in the corpus.
+    if not objects:
+        print("check_transport: manifest lists no objects -- refusing to certify an empty transport")
+        return 1
+
     object_set = set(objects)
     dangling = [dep for dep in dependencies if dep not in object_set]
 

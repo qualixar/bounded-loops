@@ -144,3 +144,28 @@ def test_the_predicate_allowlist_names_only_real_predicates() -> None:
             f"{name} now reports a count, so it is no longer a predicate gate. Remove it from "
             f"_PREDICATE_GATES rather than leaving a standing exemption.\nOutput:\n  {output}"
         )
+
+
+def test_every_shipped_gate_script_compiles() -> None:
+    """Syntax alone, but nothing else was checking it.
+
+    `ruff` is configured over `bounded_loops/`, `tests/` and `scripts/` — not `loops/`. So the 44
+    shipped gate scripts, all Python, had no static check at all. A SyntaxError in one of them was
+    caught only by whichever end-to-end test happened to run that loop, and during this session an
+    edit that split a `try` from its `except` in five gates passed `ruff` cleanly.
+
+    Compiling is the cheapest possible floor and it belongs here rather than in lint config, so it
+    holds whatever a future tool is pointed at.
+    """
+    import py_compile
+
+    scripts = sorted(LOOPS_ROOT.glob("*/seed/*.py"))
+    assert len(scripts) >= 44, f"only {len(scripts)} gate scripts found; the catalogue changed"
+
+    broken = []
+    for script in scripts:
+        try:
+            py_compile.compile(str(script), doraise=True, cfile=None)
+        except py_compile.PyCompileError as exc:
+            broken.append(f"{script.relative_to(LOOPS_ROOT)}: {exc.msg.strip().splitlines()[-1]}")
+    assert not broken, "shipped gate scripts do not compile:\n  " + "\n  ".join(broken)
