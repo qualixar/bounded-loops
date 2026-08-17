@@ -120,12 +120,15 @@ def repair_budget(plan: ExecutionPlan) -> int:
     among conflicting global budgets, and picking the first is only defensible while
     nobody looks.
     """
-    declared = {
-        node.approval_policy["repair_budget"]
-        for node in plan.nodes
-        if isinstance(node.approval_policy.get("repair_budget"), int)
-        and not isinstance(node.approval_policy.get("repair_budget"), bool)
-    }
+    # Bound once per node rather than tested through `.get` and read through `[]`. Those were
+    # two expressions for the same key, so the isinstance guard narrowed one and the element
+    # kept the declared `object` type — correct at runtime, unprovable to a reader or a checker.
+    declared: set[int] = set()
+    for node in plan.nodes:
+        budget = node.approval_policy.get("repair_budget")
+        # `bool` is a subclass of `int`, and `repair_budget: true` must not read as a budget of 1.
+        if isinstance(budget, int) and not isinstance(budget, bool):
+            declared.add(budget)
     if not declared:
         return 0
     if len(declared) > 1:

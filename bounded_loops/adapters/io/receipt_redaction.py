@@ -118,10 +118,17 @@ def _redact_text(text: str, policy: RedactionPolicy) -> str:
         # Longest-first so a nested root does not shadow its parent.
         for candidate in sorted({str(root), str(root.resolve())}, key=len, reverse=True):
             whole = re.compile(re.escape(candidate) + r"(?:[/\\][\w.@+-]+)*")
-            result = whole.sub(
-                lambda m, n=len(candidate): _park(PLACEHOLDER_WORKSPACE + m.group(0)[n:]),
-                result,
-            )
+
+            def _park_workspace_path(match: re.Match[str], prefix: int = len(candidate)) -> str:
+                """Replace the root with the placeholder, keeping the tail.
+
+                A named function rather than a lambda only so the types are inferrable; the
+                default argument still binds this iteration's prefix length, which a closure
+                over `candidate` would not.
+                """
+                return _park(PLACEHOLDER_WORKSPACE + match.group(0)[prefix:])
+
+            result = whole.sub(_park_workspace_path, result)
 
     result = _ABS_POSIX.sub(PLACEHOLDER_PATH, result)
     result = _ABS_WINDOWS.sub(PLACEHOLDER_PATH, result)
