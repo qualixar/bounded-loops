@@ -24,7 +24,10 @@ from bounded_loops.graph.adapters.enforcement.providers.host_managed import Host
 from bounded_loops.graph.adapters.enforcement.providers.microvm import MicroVMProvider
 from bounded_loops.graph.adapters.enforcement.providers.native import NativeProvider
 from bounded_loops.graph.adapters.enforcement.providers.openshell import OpenShellProvider
-from bounded_loops.graph.adapters.enforcement.providers.remote_exec import RemoteExecTransport
+from bounded_loops.graph.adapters.enforcement.providers.remote_exec import (
+    RemoteExecTransport,
+    RemoteIsolationProvider,
+)
 from bounded_loops.graph.application.execution_policy import NetworkMode
 from bounded_loops.graph.domain.authoring import IsolationLevel
 from bounded_loops.graph.domain.errors import GraphValidationError
@@ -74,6 +77,7 @@ def default_registry(
     container_image: str | None = None,
     microvm_transport: RemoteExecTransport | None = None,
     openshell_transport: RemoteExecTransport | None = None,
+    sandbox_platform_transport: RemoteExecTransport | None = None,
     include_host_managed: bool = True,
 ) -> IsolationProviderRegistry:
     """Assemble the full fail-closed provider chain (ADR-12 D1).
@@ -107,4 +111,17 @@ def default_registry(
     providers.append(ContainerProvider(caps, image=container_image))
     providers.append(MicroVMProvider(transport=microvm_transport))
     providers.append(OpenShellProvider(transport=openshell_transport))
+    # A managed sandbox platform (OpenSandbox and anything else speaking the same seam). Placed
+    # LAST on purpose: it is the enterprise opt-in tier, and a deployment that already runs the
+    # platform should still get the cheap native cage for a tier native can deliver. It does not
+    # require own-kernel isolation, because a platform that reports per-session hardening without
+    # naming its container runtime can prove filesystem and process confinement and cannot prove a
+    # kernel boundary. Declines fail-closed with no transport, like every other remote provider.
+    providers.append(
+        RemoteIsolationProvider(
+            provider_id="sandbox_platform",
+            transport=sandbox_platform_transport,
+            require_kernel=False,
+        )
+    )
     return IsolationProviderRegistry(providers)
