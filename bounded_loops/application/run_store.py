@@ -116,6 +116,12 @@ def write_run_metadata(
             "status": outcome.status.value,
             "reason": outcome.reason,
             "laps": outcome.laps,
+            # Recorded here as well as printed. Same-filesystem storage is a weak
+            # witness — an adversary rewriting the ledger can rewrite this too — but
+            # it raises the cost from one edit to two coordinated ones, and it gives
+            # `bl verify` something to compare against without the operator having
+            # kept their terminal.
+            "ledger_head": outcome.ledger_head,
         },
     )
     _upsert_run_values(

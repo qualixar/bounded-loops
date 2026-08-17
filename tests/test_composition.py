@@ -628,11 +628,50 @@ def test_quarantine_excludes_secret_files_from_sandbox(tmp_path):
     assert not (seed / "sub" / ".env.production").exists()   # nested too
 
 
-def test_quarantine_false_includes_them_for_legitimate_secret_scanning(tmp_path):
+def test_quarantine_false_includes_them_for_legitimate_secret_scanning(tmp_path, monkeypatch):
     """quarantine_inputs=False is a real opt-out for a loop that genuinely needs
-    such a file in its sandbox (e.g. a secret-scanning demo)."""
+    such a file in its sandbox (e.g. a secret-scanning demo).
+
+    SEC-06: it now takes two keys. The loop declares the opt-out and the operator
+    names that loop, so neither the author of a shared loop nor an ambient variable
+    can open the sandbox to credentials alone.
+    """
     loop_dir = _seed_with_secrets(tmp_path)
+    monkeypatch.setenv("BOUNDED_LOOPS_QUARANTINE_OPT_OUT_ALLOW", loop_dir.resolve().name)
     ws = comp._make_scratch_workspace(loop_dir, quarantine_inputs=False)
     seed = ws / "seed"
     assert (seed / ".env").exists()
     assert (seed / "id_rsa").exists()
+
+
+def test_quarantine_false_without_operator_consent_is_refused(tmp_path, monkeypatch):
+    """The author's switch alone is not enough (SEC-06)."""
+    from bounded_loops.domain.errors import ManifestError
+
+    loop_dir = _seed_with_secrets(tmp_path)
+    monkeypatch.delenv("BOUNDED_LOOPS_QUARANTINE_OPT_OUT_ALLOW", raising=False)
+    with pytest.raises(ManifestError, match="operator's consent"):
+        comp._make_scratch_workspace(loop_dir, quarantine_inputs=False)
+
+
+def test_operator_consent_for_one_loop_does_not_cover_another(tmp_path, monkeypatch):
+    """Consent is per loop name. A global boolean would have made this impossible."""
+    from bounded_loops.domain.errors import ManifestError
+
+    allowed = _seed_with_secrets(tmp_path / "allowed")
+    other = _seed_with_secrets(tmp_path / "other")
+    monkeypatch.setenv("BOUNDED_LOOPS_QUARANTINE_OPT_OUT_ALLOW", allowed.resolve().name)
+
+    comp._make_scratch_workspace(allowed, quarantine_inputs=False)
+    with pytest.raises(ManifestError, match="operator's consent"):
+        comp._make_scratch_workspace(other, quarantine_inputs=False)
+
+
+def test_quarantine_names_what_it_withheld(tmp_path, capsys):
+    """An exclusion the operator cannot see is indistinguishable from a bug."""
+    loop_dir = _seed_with_secrets(tmp_path)
+    comp._make_scratch_workspace(loop_dir, quarantine_inputs=True)
+    printed = capsys.readouterr().err
+    assert "quarantine withheld" in printed
+    assert ".env" in printed and "id_rsa" in printed
+    assert "quarantine_inputs: false" in printed, "and says how to opt out deliberately"

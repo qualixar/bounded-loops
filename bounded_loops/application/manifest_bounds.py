@@ -25,6 +25,26 @@ from bounded_loops.domain.models import Bounds
 
 MAX_ITERATIONS_CEILING = 1000
 
+#: Wind-down reserve for a loop that does not declare one. Enough for one measured
+#: turn (p75 = 72.5 s over n = 31), because a reserve too small to finish a summary
+#: buys nothing but a second timeout.
+NOMINAL_HANDOFF_RESERVE_S = 90
+
+
+def default_handoff_reserve_s(max_wallclock_s: int) -> int:
+    """The reserve to withhold when the author declared none.
+
+    Proportional below the point where the nominal reserve would dominate, so that
+    adding this feature could never invalidate a ceiling that was legal before it
+    existed. A third is the bound rather than a half because `prop:spend-bound`
+    requires `r < W/2` strictly, and a defaulted value sitting exactly on the
+    boundary would make the manifest check fire on a number nobody chose.
+
+    Every ceiling at or above 270 s — which is all 69 shipped loops — gets the
+    nominal 90 s, so this changes no declared bound in the catalogue.
+    """
+    return min(NOMINAL_HANDOFF_RESERVE_S, max_wallclock_s // 3)
+
 _BOUNDS_KEYS = frozenset({
     "max_iterations", "no_progress_window", "max_tokens", "max_wallclock_s",
     "sandbox", "quarantine_inputs", "schema", "trace", "require_approval",
@@ -59,13 +79,21 @@ def _load_bounds(bounds_path: Path, loop_dir: Path) -> Bounds:
     if max_wallclock_s is None:
         max_wallclock_s = 3600
     # Reserved OUT OF max_wallclock_s for the wind-down turn, never added to it. 0 declines it.
+    authored_reserve = raw.get("handoff_reserve_s")
     handoff_reserve_s = _positive_int(
-        raw.get("handoff_reserve_s", 90), "handoff_reserve_s", allow_zero=True
+        default_handoff_reserve_s(max_wallclock_s) if authored_reserve is None
+        else authored_reserve,
+        "handoff_reserve_s", allow_zero=True,
     )
     assert handoff_reserve_s is not None
     # A reserve at or past half the ceiling starves the work it is supposed to be summarising, and
     # the manifest is the right place to be told so — at load time, not by a run that gets one
     # attempt and then writes a handoff about having had no time to do anything.
+    #
+    # This can now only fire on a number the author actually wrote. Until 0.6.6 the default of 90
+    # was substituted first, so `max_wallclock_s: 180` or lower was refused outright — with an error
+    # quoting a field the author had never written, on a manifest that had been valid before the
+    # reserve existed. A courtesy the operator did not ask for must not invalidate their ceiling.
     if handoff_reserve_s * 2 >= max_wallclock_s:
         raise ManifestError(
             f"handoff_reserve_s={handoff_reserve_s} is at least half of "

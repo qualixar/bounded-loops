@@ -24,7 +24,7 @@ import re
 import sys
 from pathlib import Path
 
-from bounded_loops.application.manifest import LoopManifest, load as manifest_load
+from bounded_loops.application.manifest import load as manifest_load
 from bounded_loops.application.doctor import diagnose_environment
 from bounded_loops.application.loop_audit import audit_contribution, audit_loops
 from bounded_loops.application.introspection import list_gates, show_loop
@@ -40,9 +40,10 @@ from bounded_loops.graph.adapters.preflight.runner_preflight import (
 )
 from bounded_loops import __version__
 from bounded_loops.composition import wire
+from bounded_loops.cli_preconditions import _confirm_trust, check_run_preconditions
 from bounded_loops.domain.errors import BoundedLoopsError, ManifestError
 from bounded_loops.domain.models import Status
-from bounded_loops.trust_store import record_trust, revoke_trust
+from bounded_loops.trust_store import revoke_trust
 
 # fix: a single, non-traversing path-segment shape. Rejects
 # "..", "/", absolute paths, and empty strings BEFORE any path is ever built
@@ -325,6 +326,9 @@ def _build_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
     audit_parser.set_defaults(func=_cmd_audit_loops)
 
+    from bounded_loops.cli_verify import register as _register_verify
+    _register_verify(subparsers)
+
     from bounded_loops.graph.cli_graph import register as _register_graph
     from bounded_loops.cli_loop import register as _register_loop
     from bounded_loops.cli_loops import register as _register_loops
@@ -373,6 +377,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
         _err(f"bl run: manifest error — {e}")
         return 2
 
+    # Preconditions the operator cannot act on go before the trust prompt. See
+    # `_check_run_preconditions`.
+    precondition_error = check_run_preconditions(loop_dir, manifest)
+    if precondition_error is not None:
+        _err(precondition_error)
+        return 2
+
     if args.gate_override is None and not _confirm_trust(
         manifest,
         args.yes,
@@ -391,8 +402,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
             run_id=args.run_id,
             resume=args.resume,
         )
-    except ManifestError as e:
-        _err(f"bl run: wiring error — {e}")
+    except BoundedLoopsError as e:
+        # `ManifestError` alone let every other BoundedLoopsError out of `wire()` as a raw
+        # traceback: a loop whose stub runner has no cassette raises `RunnerError` here, and
+        # a user saw a Python stack instead of a sentence. Caught by a usability review
+        # running the actual command. Widened to the base class, which is what a wiring
+        # failure is — the specific subclass is already in the message.
+        _err(f"bl run: wiring error — {type(e).__name__}: {e}")
         return 2
 
     try:
@@ -426,45 +442,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if outcome.status == Status.ERROR:
         return 3
     return 1
-
-
-def _confirm_trust(
-    manifest: LoopManifest,
-    skip_prompt: bool,
-    *,
-    runner_override: str | None = None,
-) -> bool:
-    """
-    Security fix: a
-    loop.yaml's gate.run (or runner.agent_cmd for shell) is arbitrary shell
-    code, sourced from a folder bounded-loops explicitly invites as a
-    community PR. Print exactly what will run before running it — a
-    direnv-style trust gate — rather than silently executing an unfamiliar
-    loop's command.
-
-    Fails CLOSED: if stdin is not a TTY and --yes was not passed (the CI
-    case), this returns False rather than guessing "probably fine."
-
-    Trust recording: a genuine interactive 'y' answer is a
-    real human review event, so it records a trust entry that the
-    verify-on-stop hook will later recognize for this exact loop_dir + gate
-    command. --yes (skip_prompt) is a CI bypass, NOT a human review event —
-    it must never record trust on its own.
-    """
-    gate_cmd = manifest.gate_config.get("run", f"<{manifest.gate_kind} gate>")
-    effective_runner = runner_override or manifest.runner_kind
-    print(f"[bounded-loops] About to run loop '{manifest.name}':")
-    print(f"  runner : {effective_runner}")
-    print(f"  gate   : {gate_cmd}")
-    if skip_prompt:
-        return True   # --yes: CI bypass, NOT a human review — no trust recorded
-    if not sys.stdin.isatty():
-        return False   # non-interactive + no --yes → fail closed, never fail open
-    answer = input("Proceed? [y/N] ").strip().lower()
-    confirmed = answer in ("y", "yes")
-    if confirmed:
-        record_trust(manifest.loop_dir, gate_cmd)   # NEW — the only line added
-    return confirmed
 
 
 def _cmd_lint(args: argparse.Namespace) -> int:

@@ -36,6 +36,11 @@ from bounded_loops.application.ports import (
     RunnerPort,
     TracerPort,
 )
+from bounded_loops.application.quarantine_consent import (
+    QuarantineIgnore,
+    report_quarantine,
+    require_quarantine_consent,
+)
 from bounded_loops.application.run_store import run_ledger, run_workspace, validate_run_id
 from bounded_loops.application.run_loop import RunLoopDeps, RunLoopUseCase
 from bounded_loops.application.manifest import LoopManifest
@@ -469,33 +474,12 @@ def _otel_requested() -> bool:
     return os.environ.get("BOUNDED_LOOPS_OTEL", "") not in ("", "0")
 
 
-# Bound #3 (input quarantine — the "governed workspace" guarantee): known
-# secret-bearing paths that must never be copied into the agent's sandbox.
-# bounded-loops explicitly invites community loop PRs, so a shared loop's
-# seed/ is not fully trusted: without this, a malicious loop could plant a
-# reader for these, or a careless one could ship real credentials that then
-# reach an agent. Excluded by NAME at every directory level of the copy.
-_QUARANTINE_DENY_NAMES = frozenset({
-    ".git", ".env", ".ssh", ".aws", ".gnupg", ".netrc",
-    "credentials", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
-})
-_QUARANTINE_DENY_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
-
-
-def _quarantine_ignore(_dirpath: str, names: list[str]) -> set[str]:
-    """shutil.copytree `ignore` callback: the set of entries to skip. Matches
-    the secret-bearing denylist by exact name, `.env*` prefix, or key/cert
-    suffix — case-insensitively."""
-    skip: set[str] = set()
-    for n in names:
-        low = n.lower()
-        if (
-            low in _QUARANTINE_DENY_NAMES
-            or low.startswith(".env")
-            or low.endswith(_QUARANTINE_DENY_SUFFIXES)
-        ):
-            skip.add(n)
-    return skip
+# Bound #3 (input quarantine — the "governed workspace" guarantee) lives in
+# `application/quarantine_consent.py`: the denylist of credential-bearing names, the
+# copytree callback that reports what it withheld, and the operator-consent rule for a
+# loop that waives it. Moved there when SEC-05's additions took this file past the
+# 800-line cap, and it belongs there regardless — what counts as a credential is policy,
+# and this file is wiring.
 
 
 def _make_scratch_workspace(loop_dir: Path, quarantine_inputs: bool = True) -> Path:
@@ -519,6 +503,9 @@ def _make_scratch_workspace(loop_dir: Path, quarantine_inputs: bool = True) -> P
     compared against this one commit, which nothing ever refreshed, so from lap 2 onward every lap
     looked busy and the soft bound could not fire at all.
     """
+    # Both workspace builders gate here rather than at the caller, so no future call
+    # path can reach a seed copy without passing the consent check (SEC-06).
+    require_quarantine_consent(loop_dir, quarantine_inputs)
     seed_dir = loop_dir / "seed"
     # Hardening: `rglob("*")` only iterates the CHILDREN of
     # seed_dir — it never tests whether seed_dir ITSELF is a symlink. A malicious
@@ -545,10 +532,12 @@ def _make_scratch_workspace(loop_dir: Path, quarantine_inputs: bool = True) -> P
     have_git = shutil.which("git") is not None
     scratch = Path(tempfile.mkdtemp(prefix="bounded-loops-"))
     if seed_dir.exists():
+        quarantine = QuarantineIgnore()
         shutil.copytree(
             seed_dir, scratch / "seed", symlinks=False, dirs_exist_ok=True,
-            ignore=(_quarantine_ignore if quarantine_inputs else None),
+            ignore=(quarantine if quarantine_inputs else None),
         )
+        report_quarantine(quarantine.withheld)
     (scratch / _SCRATCH_MARKER).write_text("bounded-loops scratch workspace\n", encoding="utf-8")
     if have_git:
         subprocess.run(["git", "init", "-q"], cwd=str(scratch), capture_output=True)
@@ -565,6 +554,7 @@ def _make_persistent_run_workspace(
     controller_root: Path | None = None,
 ) -> Path:
     validate_run_id(run_id)
+    require_quarantine_consent(loop_dir, quarantine_inputs)
     workspace = run_workspace(loop_dir, run_id, storage_root=controller_root)
     if resume:
         if not workspace.is_dir():
@@ -583,10 +573,12 @@ def _make_persistent_run_workspace(
     for p in seed_dir.rglob("*"):
         if p.is_symlink():
             raise ManifestError(f"{loop_dir}/seed contains a symlink ({p}) — refused.")
+    quarantine = QuarantineIgnore()
     shutil.copytree(
         seed_dir, workspace / "seed", symlinks=False, dirs_exist_ok=False,
-        ignore=(_quarantine_ignore if quarantine_inputs else None),
+        ignore=(quarantine if quarantine_inputs else None),
     )
+    report_quarantine(quarantine.withheld)
     (workspace / _SCRATCH_MARKER).write_text("bounded-loops persistent run workspace\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=str(workspace), capture_output=True)
     subprocess.run(["git", "add", "-A"], cwd=str(workspace), capture_output=True)

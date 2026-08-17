@@ -74,9 +74,22 @@ class MemoryPort(Protocol):
 
 @runtime_checkable
 class LedgerPort(Protocol):
-    """Append-only audit trail of every lap decision."""
+    """Append-only, tamper-evident audit trail of every lap decision."""
     def record(self, entry: LedgerEntry) -> None: ...  # append-only
+
     def path(self) -> Path: ...
+
+    def head(self) -> str:
+        """Digest committing to everything recorded so far.
+
+        Part of the contract rather than an adapter detail: a ledger whose head
+        cannot be named cannot be witnessed outside the run directory, and without
+        an outside witness a hash chain is only evidence against an adversary who
+        does not bother to recompute it. Any implementation that cannot answer this
+        cannot support the tamper-evidence claim, and should fail here rather than
+        let a caller believe a run was anchored when it was not.
+        """
+        ...
 
 
 @runtime_checkable

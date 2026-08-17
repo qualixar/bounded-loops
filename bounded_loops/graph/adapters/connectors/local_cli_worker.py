@@ -128,6 +128,16 @@ class CliProfile:
     # metered as free. Per provider because each CLI's flag and output shape differ.
     usage_args: tuple[str, ...] = ()
     envelope: str = ""
+    # Flags that must follow the PROMPT rather than precede it. Not cosmetic: for a
+    # profile with ``prompt_via="arg"`` and ``args=("-p",)``, anything placed in ``args``
+    # lands between ``-p`` and its value and is swallowed as the prompt. That is the
+    # Grok failure recorded in `build_cli_argv`, and it applies to every such flag.
+    post_prompt_args: tuple[str, ...] = ()
+    # Flag through which this CLI must be told where its workspace is. Empty means the
+    # CLI takes its workspace from the process cwd, which is true of every shipped
+    # profile except agy — and agy's divergence is silent, so it needs the field rather
+    # than a comment. See the base AntigravityRunner for what it does instead.
+    workspace_arg: str = ""
 
     def __post_init__(self) -> None:
         if self.prompt_via not in ("stdin", "arg"):
@@ -194,15 +204,31 @@ CLI_PROFILES: Mapping[str, CliProfile] = MappingProxyType({
     # Verified live (2026-08-13): reply under `response`, usage.total_tokens = input + output
     # (22501 + 237 = 22738). agy reports NO cost, so a cost cap on it needs an operator price
     # table and fails closed without one — tokens are metered, money is not.
+    # Task #68. The base AntigravityRunner was fixed for both of agy's divergences and
+    # this profile was not, so a graph node running agy had neither. Both matter, and
+    # both fail SILENTLY — the node succeeds having changed nothing, which a gate cannot
+    # tell apart from an agent that tried and failed:
+    #
+    #   * agy offers no graded approval policy. Without --dangerously-skip-permissions
+    #     its tools are denied in headless mode and it still exits 0.
+    #   * agy does not treat the process cwd as its workspace. Asked to create a file
+    #     "in the current working directory" with cwd set to an empty temp dir, it
+    #     created one under its own scratch directory and reported success. Every other
+    #     shipped CLI inherits cwd; this one has to be told.
+    #
+    # Both go in post_prompt_args / workspace_arg rather than args, because `-p` takes
+    # the prompt as its value and anything before the prompt is consumed as that value.
     "agy": CliProfile(
         "agy", ("-p",), prompt_via="arg",
+        post_prompt_args=("--dangerously-skip-permissions",),
+        workspace_arg="--add-dir",
         usage_args=("--output-format", "json"), envelope="agy",
     ),
 })
 
 
 def build_cli_argv(
-    profile: CliProfile, prompt: str, *, binary: str
+    profile: CliProfile, prompt: str, *, binary: str, workspace: Path | None = None
 ) -> tuple[list[str], str | None]:
     """Assemble one CLI launch: ``(argv, stdin_text)``. Pure — no filesystem, no subprocess.
 
@@ -220,6 +246,11 @@ def build_cli_argv(
 
     The returned argv is also what the Seatbelt cage wraps, so a sandboxed run cannot silently drop
     back to unmetered text output.
+
+    ``workspace`` is required only by a profile declaring ``workspace_arg`` (agy alone), and refusing
+    to assemble without it is deliberate: agy silently writes outside the workspace when not told
+    where it is, so a caller that forgot must fail here rather than produce a run whose edits the
+    gate cannot see.
     """
     argv = [binary, *profile.args]
     stdin_text: str | None = None
@@ -227,6 +258,16 @@ def build_cli_argv(
         argv.append(prompt)
     else:
         stdin_text = prompt
+    argv.extend(profile.post_prompt_args)
+    if profile.workspace_arg:
+        if workspace is None:
+            raise GraphIntegrityError(
+                f"CLI profile {profile.binary!r} requires an explicit workspace "
+                f"({profile.workspace_arg}) because it does not take one from the process "
+                "cwd; assembling its argv without one would produce a run whose edits land "
+                "outside the workspace the gate reads"
+            )
+        argv.extend([profile.workspace_arg, str(workspace)])
     argv.extend(profile.usage_args)
     return argv, stdin_text
 
@@ -301,7 +342,7 @@ class LocalCliConnectorWorker:
         workdir = self._workdir(node)
         deadline = (node.hard_deadline_ms / 1000.0) if node.hard_deadline_ms else self._default_deadline_s
         inner_argv, stdin_text = build_cli_argv(
-            invocation.profile, invocation.prompt, binary=binary,
+            invocation.profile, invocation.prompt, binary=binary, workspace=workdir,
         )
 
         env = self._child_env(invocation.profile)

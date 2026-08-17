@@ -68,6 +68,31 @@ def _run_git(args: list[str], cwd: Path) -> None:
 
 
 def _copy_back(src: Path, dest: Path) -> None:
+    """Promote the worktree's files into the workspace, refusing anything that escapes.
+
+    Both ends are checked. The source checks were here already: no symlinks, no
+    special files, no oversized files. The DESTINATION checks were not, and that was
+    the actual escape — measured, not reasoned about:
+
+      * a symlink at `dest/rel` made `copy2` write *through* it, replacing the content
+        of a file outside the workspace with the agent's;
+      * a symlinked directory at `dest/sub` made `mkdir(exist_ok=True)` succeed
+        against the link and then placed a new file wherever it pointed.
+
+    Reaching either needs a symlink already inside the workspace, which the seed copy
+    refuses to create — so this is defence in depth rather than a live exploit, and it
+    is written as such rather than dressed up.
+
+    On hardlinks, which is what the audit finding named: a source file with
+    `st_nlink > 1` is deliberately NOT refused. `copy2` writes a fresh file, so the
+    promoted copy shares no inode with anything and the link is broken by the
+    promotion itself — verified, `st_nlink == 1` on the result. The content it carries
+    was readable by the agent through plain `cp` regardless, so refusing the link adds
+    no protection while breaking every toolchain that hardlinks from a package store,
+    pnpm being the common one. A check that costs a real workflow and buys nothing is
+    worse than no check, because the next reader assumes it bought something.
+    """
+    dest_root = dest.resolve()
     for path in src.rglob("*"):
         rel = path.relative_to(src)
         if rel.parts and rel.parts[0] == ".git":
@@ -76,17 +101,37 @@ def _copy_back(src: Path, dest: Path) -> None:
         mode = path.lstat().st_mode
         if stat.S_ISLNK(mode):
             raise RunnerError(f"WorktreeRunner: refusing symlink promotion: {rel}")
+        if target.is_symlink():
+            raise RunnerError(
+                f"WorktreeRunner: refusing to promote through a symlink already at the "
+                f"destination: {rel}"
+            )
         if path.is_dir():
             target.mkdir(parents=True, exist_ok=True)
+            _require_inside(target, dest_root, rel)
         elif stat.S_ISREG(mode):
             if path.stat().st_size > _MAX_PROMOTED_FILE_BYTES:
                 raise RunnerError(
                     f"WorktreeRunner: refusing oversized promotion ({path.stat().st_size} bytes): {rel}"
                 )
             target.parent.mkdir(parents=True, exist_ok=True)
+            _require_inside(target.parent, dest_root, rel)
             shutil.copy2(path, target)
         else:
             raise RunnerError(f"WorktreeRunner: refusing special-file promotion: {rel}")
+
+
+def _require_inside(path: Path, dest_root: Path, rel: Path) -> None:
+    """Refuse a promotion destination that resolves outside the workspace.
+
+    Checked after the directory exists, because resolving a path whose parents are not
+    yet created cannot tell whether the eventual parent is a link.
+    """
+    if not path.resolve().is_relative_to(dest_root):
+        raise RunnerError(
+            f"WorktreeRunner: refusing promotion that resolves outside the workspace: "
+            f"{rel} -> {path.resolve()}"
+        )
 
 
 # _build_prompt lived here and dropped spec.forbid from the fallback prompt. It is now the shared

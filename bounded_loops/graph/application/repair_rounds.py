@@ -105,12 +105,38 @@ def repair_targets(plan: ExecutionPlan) -> Mapping[str, str]:
 
 
 def repair_budget(plan: ExecutionPlan) -> int:
-    """The graph's GLOBAL repair-round budget, 0 when repair is off."""
-    for node in plan.nodes:
-        declared = node.approval_policy.get("repair_budget")
-        if isinstance(declared, int) and not isinstance(declared, bool):
-            return declared
-    return 0
+    """The graph's GLOBAL repair-round budget, 0 when repair is off.
+
+    Stored per node — the compiler copies `graph.policies.repair_budget` onto every
+    node — but read as a single global number, because condition 3 above is what
+    carries the termination proof. ENG-05: this used to `return` on the first node
+    carrying a value, so if the compiler ever stopped distributing uniformly the run
+    would silently adopt one node's budget as the graph's. That is precisely the
+    per-node bound the proof forbids, arrived at by accident rather than by design, and
+    it would not have shown up as an error anywhere — the run would simply have a
+    different bound than the one `bl graph plan` printed.
+
+    So disagreement is refused rather than resolved. There is no correct way to pick
+    among conflicting global budgets, and picking the first is only defensible while
+    nobody looks.
+    """
+    declared = {
+        node.approval_policy["repair_budget"]
+        for node in plan.nodes
+        if isinstance(node.approval_policy.get("repair_budget"), int)
+        and not isinstance(node.approval_policy.get("repair_budget"), bool)
+    }
+    if not declared:
+        return 0
+    if len(declared) > 1:
+        raise GraphIntegrityError(
+            "nodes declare different repair budgets "
+            f"({sorted(declared)}); the repair budget is GLOBAL — one counter bounds the "
+            "total rounds for the whole graph. A per-node budget lets two nodes repair "
+            "each other indefinitely with both counters showing credit, which is the "
+            "construction the termination bound excludes. Recompile the plan."
+        )
+    return declared.pop()
 
 
 def total_execution_bound(plan: ExecutionPlan) -> int:

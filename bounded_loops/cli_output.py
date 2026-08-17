@@ -28,6 +28,7 @@ def _print_outcome(outcome: Outcome, *, as_json: bool) -> None:
             "reason":       outcome.reason,
             "laps":         outcome.laps,
             "ledger_path":  str(outcome.ledger_path),
+            "ledger_head":  outcome.ledger_head,
         }
         print(json.dumps(data))
     else:
@@ -36,15 +37,25 @@ def _print_outcome(outcome: Outcome, *, as_json: bool) -> None:
             f"{symbol} [{outcome.status.value}] {outcome.reason} "
             f"(laps: {outcome.laps})  ledger: {outcome.ledger_path}"
         )
+        if outcome.ledger_head:
+            # Printed on every terminal status, not only DONE. A run that halted or
+            # errored is the one whose ledger someone may later want to dispute, and
+            # this line is the only copy of the head that leaves the run directory.
+            print(f"Ledger head: {outcome.ledger_head}")
         if outcome.status.value == "DONE":
             lap_word = "lap" if outcome.laps == 1 else "laps"
             print(
                 "Gate verified: the independent acceptance gate passed "
                 f"after {outcome.laps} {lap_word}."
             )
+            # Naming the exact command closes a real discovery gap: the head is
+            # printed, `bl verify` exists, and nothing connected the two. A user's
+            # only route to --expect-head was the CHANGELOG or --help.
+            print("Next: prove this receipt was not edited after the run ended —")
+            print(f"  bl verify {outcome.ledger_path.parent} \\")
+            print(f"    --expect-head {outcome.ledger_head}")
             print(
-                "Next: inspect the ledger above; use --keep-workspace "
-                "when you need to debug the resulting files."
+                "Use --keep-workspace when you need to debug the resulting files."
             )
 
 

@@ -4,11 +4,11 @@
       "hooks": [
         {
           "type": "command",
-          "command": "python3 -m bounded_loops.hooks.verify_bounded_loop antigravity"
+          "command": "bounded-loops-hook verify antigravity"
         },
         {
           "type": "command",
-          "command": "python3 -m bounded_loops.hooks.graph_run_stop antigravity"
+          "command": "bounded-loops-hook graph-run-stop antigravity"
         }
       ]
     }
@@ -19,7 +19,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "python3 -m bounded_loops.hooks.pretooluse_loop_package antigravity"
+          "command": "bounded-loops-hook pretooluse-loop-package antigravity"
         }
       ]
     }

@@ -22,6 +22,8 @@ the guard was missing.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from bounded_loops.graph.adapters.connectors.local_cli_worker import (
@@ -31,6 +33,10 @@ from bounded_loops.graph.adapters.connectors.local_cli_worker import (
 )
 
 _PROMPT = "write the thing"
+#: Supplied to every assembly, because a profile declaring `workspace_arg` refuses to
+#: assemble without one. Never `Path(".")`: the whole point of the field is that cwd is
+#: not the workspace for the CLI that needs it.
+_WORKSPACE = Path("/tmp/graph-run/node-1/workspace")
 
 # There is deliberately NO global "these flags take a value" table here, and the absence is the
 # point. An earlier version of this file carried one containing `-p`, which is correct for grok
@@ -50,7 +56,9 @@ def test_usage_args_come_after_the_prompt_for_every_shipped_profile(name: str) -
     `CliProfile` and flows through the same function.
     """
     profile = CLI_PROFILES[name]
-    argv, stdin_text = build_cli_argv(profile, _PROMPT, binary=f"/usr/local/bin/{profile.binary}")
+    argv, stdin_text = build_cli_argv(
+        profile, _PROMPT, binary=f"/usr/local/bin/{profile.binary}", workspace=_WORKSPACE,
+    )
 
     if not profile.usage_args:
         pytest.skip(f"{name} declares no usage_args — unmetered by design, nothing to order")
@@ -85,7 +93,9 @@ def test_an_arg_prompt_lands_immediately_after_the_profiles_own_args(name: str) 
     if profile.prompt_via != "arg":
         pytest.skip(f"{name} passes its prompt on stdin — covered by the stdin test below")
 
-    argv, _ = build_cli_argv(profile, _PROMPT, binary=f"/usr/local/bin/{profile.binary}")
+    argv, _ = build_cli_argv(
+        profile, _PROMPT, binary=f"/usr/local/bin/{profile.binary}", workspace=_WORKSPACE,
+    )
 
     expected_index = 1 + len(profile.args)  # argv[0] is the binary
     assert argv[expected_index] == _PROMPT, (
@@ -146,3 +156,54 @@ def test_the_resolved_binary_path_is_used_not_the_bare_name() -> None:
     argv, _ = build_cli_argv(profile, _PROMPT, binary="/opt/homebrew/bin/claude")
 
     assert argv[0] == "/opt/homebrew/bin/claude"
+
+
+def test_agy_gets_both_of_its_divergences_in_the_graph_path() -> None:
+    """Task #68. The base runner was fixed for agy and this profile was not.
+
+    Both failures are silent — agy exits 0 having changed nothing — so neither shows up
+    as an error anywhere. Asserted on the shipped profile rather than a fixture, and by
+    position, because `-p` consumes whatever follows it as the prompt.
+    """
+    profile = CLI_PROFILES["agy"]
+    argv, stdin_text = build_cli_argv(
+        profile, _PROMPT, binary="/usr/local/bin/agy", workspace=_WORKSPACE,
+    )
+
+    assert stdin_text is None, "agy takes its prompt as an argument"
+    assert argv.index(_PROMPT) == 2, "-p must be immediately followed by the prompt"
+    assert "--dangerously-skip-permissions" in argv
+    assert argv.index("--dangerously-skip-permissions") > argv.index(_PROMPT)
+
+    add_dir = argv.index("--add-dir")
+    assert add_dir > argv.index(_PROMPT)
+    assert argv[add_dir + 1] == str(_WORKSPACE), "the flag and its value must stay adjacent"
+    assert argv.index("--output-format") > add_dir, "usage args stay last"
+
+
+def test_a_profile_needing_a_workspace_refuses_to_assemble_without_one() -> None:
+    """Failing loudly beats producing a run whose edits the gate cannot see."""
+    from bounded_loops.graph.domain.errors import GraphIntegrityError
+
+    with pytest.raises(GraphIntegrityError, match="requires an explicit workspace"):
+        build_cli_argv(CLI_PROFILES["agy"], _PROMPT, binary="/usr/local/bin/agy")
+
+
+@pytest.mark.parametrize("name", sorted(CLI_PROFILES))
+def test_no_profile_hides_a_value_taking_flag_before_the_prompt(name: str) -> None:
+    """The invariant behind `post_prompt_args`, checked across every shipped profile.
+
+    A flag placed in `args` for an `arg`-prompt profile is consumed as the prompt's
+    value. So `args` for those profiles must end with the flag the prompt belongs to and
+    contain nothing after it — which is what `post_prompt_args` exists to make possible.
+    """
+    profile = CLI_PROFILES[name]
+    if profile.prompt_via != "arg":
+        pytest.skip(f"{name} passes its prompt on stdin")
+    argv, _ = build_cli_argv(
+        profile, _PROMPT, binary=f"/usr/local/bin/{profile.binary}",
+        workspace=_WORKSPACE if profile.workspace_arg else None,
+    )
+    assert argv[1 + len(profile.args)] == _PROMPT
+    for flag in profile.post_prompt_args:
+        assert argv.index(flag) > argv.index(_PROMPT)

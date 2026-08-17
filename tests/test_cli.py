@@ -681,7 +681,7 @@ class TestTrustConfirmation:
         fake_use_case.run.return_value = outcome
         with patch("bounded_loops.cli.manifest_load", return_value=fake_manifest), \
              patch("bounded_loops.cli.wire", return_value=fake_use_case), \
-             patch("bounded_loops.cli.record_trust") as mock_record_trust, \
+             patch("bounded_loops.cli_preconditions.record_trust") as mock_record_trust, \
              patch("sys.stdin.isatty", return_value=True), \
              patch("builtins.input", return_value="y"):
             code = main(["run", str(tmp_path)])
@@ -699,7 +699,7 @@ class TestTrustConfirmation:
         fake_manifest.gate_config = {"run": "true"}
         fake_manifest.loop_dir = tmp_path
         with patch("bounded_loops.cli.manifest_load", return_value=fake_manifest), \
-             patch("bounded_loops.cli.record_trust") as mock_record_trust, \
+             patch("bounded_loops.cli_preconditions.record_trust") as mock_record_trust, \
              patch("sys.stdin.isatty", return_value=True), \
              patch("builtins.input", return_value="n"):
             code = main(["run", str(tmp_path)])

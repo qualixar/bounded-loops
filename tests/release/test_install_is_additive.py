@@ -78,8 +78,11 @@ def test_each_host_pack_ships_its_own_hooks_file_rather_than_editing_the_users(h
         for group in groups:
             for entry in group.get("hooks", []):
                 assert entry.get("type") == "command", f"{host}/{event} has a non-command hook"
-                assert "bounded_loops.hooks." in entry.get("command", ""), (
-                    f"{host}/{event} wires something other than a bounded-loops hook"
+                # The console script, not `python3 -m` (Task #67): a hook must not
+                # depend on which interpreter happens to be first on the user's PATH.
+                assert entry.get("command", "").startswith("bounded-loops-hook "), (
+                    f"{host}/{event} wires something other than the bounded-loops hook "
+                    f"entry point: {entry.get('command', '')!r}"
                 )
 
 

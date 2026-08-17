@@ -6,12 +6,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m bounded_loops.hooks.verify_bounded_loop codex",
+            "command": "bounded-loops-hook verify codex",
             "timeout": 130
           },
           {
             "type": "command",
-            "command": "python3 -m bounded_loops.hooks.graph_run_stop codex",
+            "command": "bounded-loops-hook graph-run-stop codex",
             "timeout": 30
           }
         ]
@@ -23,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m bounded_loops.hooks.pretooluse_loop_package codex",
+            "command": "bounded-loops-hook pretooluse-loop-package codex",
             "timeout": 10
           }
         ]

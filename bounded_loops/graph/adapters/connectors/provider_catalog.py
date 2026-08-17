@@ -52,9 +52,14 @@ from bounded_loops.graph.domain.errors import GraphValidationError
 #: minus ``set_env`` — see ``_SET_ENV_REFUSED`` below for why that one is not operator-writable.
 _ALLOWED_KEYS = frozenset({
     "binary", "args", "prompt_via", "unset_env", "usage_args", "envelope", "env_grant",
+    # Task #68. An operator's own CLI can diverge exactly as agy does — needing a flag
+    # after the prompt, or an explicit workspace because it does not use the process cwd.
+    # Without these keys the catalog could describe every shipped provider except the one
+    # that most needed describing.
+    "post_prompt_args", "workspace_arg",
 })
-_LIST_KEYS = frozenset({"args", "unset_env", "usage_args", "env_grant"})
-_STRING_KEYS = frozenset({"binary", "prompt_via", "envelope"})
+_LIST_KEYS = frozenset({"args", "unset_env", "usage_args", "env_grant", "post_prompt_args"})
+_STRING_KEYS = frozenset({"binary", "prompt_via", "envelope", "workspace_arg"})
 
 #: Substring match, same word list the authoring validator uses. Catching ``auth_token`` and
 #: ``x-api-key`` matters more than the false positive on a variable legitimately named
@@ -190,6 +195,10 @@ def profile_from_mapping(name: str, raw: object, *, pointer: str) -> CliProfile:
         env_grant=_string_list(raw.get("env_grant", []), f"{pointer}/env_grant"),
         usage_args=_string_list(raw.get("usage_args", []), f"{pointer}/usage_args"),
         envelope=envelope,
+        post_prompt_args=_string_list(
+            raw.get("post_prompt_args", []), f"{pointer}/post_prompt_args",
+        ),
+        workspace_arg=str(raw.get("workspace_arg", "")),
     )
 
 

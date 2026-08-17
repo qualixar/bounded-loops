@@ -211,6 +211,12 @@ class Bounds:
     #: mid-task discards everything the attempt had worked out, and the next run starts from the same
     #: seed with the same budget and no knowledge of what the last one learned — so a task needing
     #: more than one budget window can never finish, however many times it is run.
+    #:
+    #: This default is the *dataclass* default, for bounds assembled in code. The manifest path
+    #: computes `default_handoff_reserve_s(max_wallclock_s)` instead, which is proportional below a
+    #: 270 s ceiling. The reason is ENG-02: substituting a flat 90 here made every ceiling at or
+    #: below 180 s unloadable, because the reserve then sat at or past half the declared total. A
+    #: courtesy the operator never asked for must not invalidate the number they did write.
     handoff_reserve_s:  int           = 90
 
 
@@ -458,6 +464,15 @@ class Outcome:
                     "no-progress", "awaiting-approval", "killed").
       laps        — total laps executed when the loop terminated.
       ledger_path — absolute path to the JSON-Lines ledger file for this run.
+      ledger_head — digest of the ledger's last line at the moment the run ended.
+
+    `ledger_head` is reported rather than merely stored because the hash chain in
+    the ledger has no secret in it: anyone who can rewrite the whole file can
+    recompute every link. What that adversary cannot do is change a value already
+    copied somewhere they do not control, so the head is surfaced on stdout and in
+    the JSON outcome, making an operator's terminal and a CI log into witnesses. A
+    chain with no witness is a weaker claim than it looks, and the field exists to
+    stop us making the stronger one by accident.
 
     Exit-code mapping:
       status == DONE  → exit 0
@@ -475,3 +490,7 @@ class Outcome:
     reason:      str
     laps:        int
     ledger_path: Path
+    #: Defaulted so every existing construction site keeps working, and so a caller
+    #: that never chained anything reports an empty string rather than a plausible
+    #: digest it did not earn.
+    ledger_head: str = ""
