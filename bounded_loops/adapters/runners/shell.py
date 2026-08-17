@@ -35,12 +35,11 @@ Invariants:
 from __future__ import annotations
 
 import shlex
-import subprocess
-from pathlib import Path
 
 from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env, output_redactions
 from bounded_loops.adapters.runners._prompt import with_memory_snapshot
 from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn, TurnState
+from bounded_loops.adapters.runners.workspace_digest import workspace_digest
 from bounded_loops.domain.errors import RunnerError
 from bounded_loops.domain.models import LoopContext, RunResult, Spec
 
@@ -53,29 +52,9 @@ def _build_subprocess_env(ctx_env: dict[str, str]) -> dict[str, str]:
     return build_subprocess_env(ctx_env)
 
 
-def _workspace_changed(workspace: Path) -> bool:
-    # Conservative: run `git status --porcelain` if workspace is a git repo;
-    # else return True (assuming the agent changed something — the gate
-    # will determine correctness).
-    # NOTE: composition.py git-inits the scratch workspace at
-    # copy time specifically so this check is meaningful in the common
-    # case, not just a permanent fallback.
-    try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=str(workspace),
-            capture_output=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            return True
-        return bool(result.stdout.strip())
-    except (subprocess.SubprocessError, FileNotFoundError):
-        # Not a git repo or git not installed — assume changed (safe
-        # default). This silently disables no-progress detection when it
-        # fires, which is why composition.py now git-inits the workspace
-        # to avoid relying on this fallback in the normal engine path.
-        return True
+#: Change detection is content-addressed; see `workspace_digest` for why the previous
+#: `git status --porcelain` version could not report "unchanged" after lap 1 and therefore disabled
+#: the no-progress soft bound outright.
 
 
 class ShellRunner:
@@ -112,6 +91,12 @@ class ShellRunner:
 
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
         prompt_text = self._build_prompt(spec, ctx)
+
+        # Snapshot BEFORE the turn and compare AFTER, both within this lap. Scoping the comparison
+        # to a single lap is what makes "the agent changed nothing" reportable at all: the previous
+        # detector compared against a snapshot taken once at wire time and never refreshed, so any
+        # write by any earlier lap made every later lap look busy.
+        digest_before = workspace_digest(ctx.workspace)
 
         try:
             argv = shlex.split(self.agent_cmd)
@@ -151,9 +136,10 @@ class ShellRunner:
         # may exit non-zero while still having produced output. The gate
         # decides whether work is done. Only propagate stderr as part of
         # log, not as an exception.
-        changed = _workspace_changed(ctx.workspace)
+        changed = workspace_digest(ctx.workspace) != digest_before
 
-        # Write captured output for gate inspection.
+        # Write captured output for gate inspection. `agent_output.txt` is in HARNESS_ARTIFACTS, so
+        # this write cannot be mistaken for agent work product on this lap or any later one.
         output_file = ctx.workspace / "agent_output.txt"
         output_file.write_text(stdout, encoding="utf-8")
 

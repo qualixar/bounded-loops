@@ -513,10 +513,11 @@ def _make_scratch_workspace(loop_dir: Path, quarantine_inputs: bool = True) -> P
     only for a loop that legitimately needs such a file in its sandbox (e.g. a
     secret-scanning demo with a deliberately-planted fake key).
 
-    Also git-inits the scratch copy so ShellRunner._workspace_changed's
-    `git diff --quiet` check is meaningful instead of
-    permanently falling back to its "assume changed" default — this snapshot
-    is also the pristine rollback baseline of the governed workspace.
+    Also git-inits the scratch copy, best-effort, as a convenience for agents that expect to run
+    inside a repository. It is NO LONGER load-bearing for the no-progress bound: change detection is
+    content-addressed (`adapters/runners/workspace_digest.py`). The previous git-based detector
+    compared against this one commit, which nothing ever refreshed, so from lap 2 onward every lap
+    looked busy and the soft bound could not fire at all.
     """
     seed_dir = loop_dir / "seed"
     # Hardening: `rglob("*")` only iterates the CHILDREN of
@@ -537,17 +538,11 @@ def _make_scratch_workspace(loop_dir: Path, quarantine_inputs: bool = True) -> P
                 "No legitimate loop needs one; this is rejected as a "
                 "sandbox-escape precaution."
             )
-    # Hardening: the scratch git-init below is what makes the
-    # no-progress bound's `git diff --quiet` check meaningful. If git is absent
-    # from PATH, the git calls would raise an opaque FileNotFoundError mid-wire.
-    # Fail early with an actionable message instead — git is a hard engine
-    # dependency for change detection, not an optional nicety.
-    if shutil.which("git") is None:
-        raise ManifestError(
-            "git was not found on PATH. bounded-loops requires git to snapshot "
-            "the scratch workspace for no-progress detection. Install git and "
-            "retry."
-        )
+    # git is no longer a hard engine dependency. It was required here solely to make the old
+    # `git status --porcelain` change detector work, and that detector has been replaced by a
+    # content digest that needs no subprocess. Refusing to run without git would now reject a
+    # perfectly serviceable environment for a capability nothing depends on.
+    have_git = shutil.which("git") is not None
     scratch = Path(tempfile.mkdtemp(prefix="bounded-loops-"))
     if seed_dir.exists():
         shutil.copytree(
@@ -555,9 +550,10 @@ def _make_scratch_workspace(loop_dir: Path, quarantine_inputs: bool = True) -> P
             ignore=(_quarantine_ignore if quarantine_inputs else None),
         )
     (scratch / _SCRATCH_MARKER).write_text("bounded-loops scratch workspace\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-q"], cwd=str(scratch), capture_output=True)
-    subprocess.run(["git", "add", "-A"], cwd=str(scratch), capture_output=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(scratch), capture_output=True)
+    if have_git:
+        subprocess.run(["git", "init", "-q"], cwd=str(scratch), capture_output=True)
+        subprocess.run(["git", "add", "-A"], cwd=str(scratch), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(scratch), capture_output=True)
     return scratch
 
 

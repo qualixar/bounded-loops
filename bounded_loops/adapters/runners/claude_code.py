@@ -64,12 +64,12 @@ from __future__ import annotations
 
 import json
 import shlex
-import subprocess
 from pathlib import Path
 
 from bounded_loops.adapters._env import ENV_ALLOWLIST, build_subprocess_env, output_redactions
 from bounded_loops.adapters.runners._prompt import with_memory_snapshot
 from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn, TurnState
+from bounded_loops.adapters.runners.workspace_digest import workspace_digest
 from bounded_loops.domain.errors import RunnerError
 from bounded_loops.domain.models import LoopContext, RunResult, Spec
 
@@ -123,20 +123,6 @@ def _sum_usage_tokens(usage: dict) -> int:
     return total
 
 
-def _workspace_changed(workspace: Path) -> bool:
-    """Mirrored from shell.py, not imported."""
-    try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=str(workspace),
-            capture_output=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            return True
-        return bool(result.stdout.strip())
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return True
 
 
 class ClaudeCodeRunner:
@@ -156,6 +142,9 @@ class ClaudeCodeRunner:
 
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
         prompt_text = _build_prompt(spec, ctx)
+        # Snapshot before the turn; compare after. Scoped to this lap so that a write by an
+        # earlier lap cannot make this one look busy -- see workspace_digest.
+        digest_before = workspace_digest(ctx.workspace)
         argv = shlex.split(self.agent_cmd) + ["-p", "--output-format", "json"]
         env = _build_subprocess_env({**ctx.env, **self.extra_env})
         try:
@@ -174,7 +163,7 @@ class ClaudeCodeRunner:
         if completed.state is TurnState.CANCELLED:
             raise RunnerError("ClaudeCodeRunner: cancelled before completion")
 
-        changed = _workspace_changed(ctx.workspace)
+        changed = workspace_digest(ctx.workspace) != digest_before
 
         tokens = 0
         log = completed.stdout

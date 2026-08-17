@@ -16,7 +16,7 @@ from bounded_loops import mcp_server
 from bounded_loops.adapters.gates.command import CommandGate
 from bounded_loops.adapters.runners.stub import StubRunner
 from bounded_loops.cli import _discover_loop_yamls
-from bounded_loops.domain.errors import ManifestError, RunnerError
+from bounded_loops.domain.errors import RunnerError
 from bounded_loops.domain.models import LoopContext, Rung, Spec
 from bounded_loops.trust_store import (
     is_trusted,
@@ -204,11 +204,37 @@ def test_discover_loops_in_explicit_dir(tmp_path):
     assert found == {"alpha", "beta"}
 
 
-# ── git precheck raises a clear error, not an opaque FileNotFoundError ────
+# ── git is NOT a hard engine dependency ───────────────────────────────────
 
-def test_scratch_workspace_requires_git(tmp_path, monkeypatch):
+def test_scratch_workspace_works_without_git(tmp_path, monkeypatch):
+    """git absent must not refuse the run.
+
+    This test previously asserted the opposite. The refusal existed for exactly one reason: the old
+    change detector shelled `git status --porcelain`, so a workspace without a repository could not
+    report "the agent changed nothing" and the no-progress bound silently died. That detector is
+    gone -- change detection is a content digest (`adapters/runners/workspace_digest.py`) with no
+    subprocess -- so refusing to run without git would now reject a serviceable environment for a
+    capability nothing depends on.
+    """
     from bounded_loops import composition
     (tmp_path / "seed").mkdir()
+    (tmp_path / "seed" / "input.txt").write_text("payload", encoding="utf-8")
     monkeypatch.setattr(composition.shutil, "which", lambda name: None)
-    with pytest.raises(ManifestError, match="git"):
-        composition._make_scratch_workspace(tmp_path)
+
+    scratch = composition._make_scratch_workspace(tmp_path)
+
+    assert (scratch / "seed" / "input.txt").read_text(encoding="utf-8") == "payload"
+    assert not (scratch / ".git").exists(), "git-init must be skipped, not attempted, without git"
+
+
+def test_change_detection_needs_no_repository(tmp_path):
+    """The bound's detector must work in a plain directory -- the case that used to disable it."""
+    from bounded_loops.adapters.runners.workspace_digest import workspace_digest
+
+    (tmp_path / "seed").mkdir()
+    (tmp_path / "seed" / "input.txt").write_text("before", encoding="utf-8")
+    unchanged = workspace_digest(tmp_path)
+
+    assert workspace_digest(tmp_path) == unchanged
+    (tmp_path / "seed" / "input.txt").write_text("after", encoding="utf-8")
+    assert workspace_digest(tmp_path) != unchanged

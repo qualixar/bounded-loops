@@ -12,6 +12,7 @@ from pathlib import Path
 from bounded_loops.adapters._env import build_subprocess_env
 from bounded_loops.adapters.runners._prompt import with_memory_snapshot
 from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn, TurnState
+from bounded_loops.adapters.runners.workspace_digest import workspace_digest
 from bounded_loops.domain.errors import RunnerError
 from bounded_loops.domain.models import LoopContext, RunResult, Spec
 
@@ -25,6 +26,9 @@ class WorktreeRunner:
         self.timeout_s = timeout_s
 
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
+        # Snapshot before the turn; compare after. Scoped to this lap so that a write by an
+        # earlier lap cannot make this one look busy -- see workspace_digest.
+        digest_before = workspace_digest(ctx.workspace)
         if shutil.which("git") is None:
             raise RunnerError("WorktreeRunner: git not found on PATH")
         worktree_parent = Path(tempfile.mkdtemp(prefix="bounded-loops-worktree-"))
@@ -44,7 +48,7 @@ class WorktreeRunner:
                 raise RunnerError("WorktreeRunner: cancelled before completion")
             _copy_back(worktree, ctx.workspace)
             (ctx.workspace / "agent_output.txt").write_text(completed.stdout, encoding="utf-8")
-            return RunResult(changed=_workspace_changed(ctx.workspace), agent_claimed_done=False, tokens=0, log=completed.stdout[-2000:])
+            return RunResult(changed=workspace_digest(ctx.workspace) != digest_before, agent_claimed_done=False, tokens=0, log=completed.stdout[-2000:])
         except OSError as exc:
             raise RunnerError(f"WorktreeRunner: could not launch agent command: {exc}") from exc
         finally:
@@ -87,8 +91,3 @@ def _build_prompt(spec: Spec, ctx: LoopContext) -> str:
     return with_memory_snapshot("\n".join([spec.goal, *spec.steps]), ctx)
 
 
-def _workspace_changed(workspace: Path) -> bool:
-    result = subprocess.run(["git", "status", "--porcelain"], cwd=str(workspace), capture_output=True, timeout=10)
-    if result.returncode != 0:
-        return True
-    return bool(result.stdout.strip())

@@ -5,12 +5,11 @@ from __future__ import annotations
 import shlex
 import shutil
 import os
-import subprocess
-from pathlib import Path
 
 from bounded_loops.adapters._env import build_subprocess_env, output_redactions
 from bounded_loops.adapters.runners._prompt import with_memory_snapshot
 from bounded_loops.adapters.runners.process_lifecycle import ProcessTurn, TurnState
+from bounded_loops.adapters.runners.workspace_digest import workspace_digest
 from bounded_loops.domain.errors import RunnerError
 from bounded_loops.domain.models import LoopContext, RunResult, Spec
 
@@ -32,6 +31,9 @@ class DockerRunner:
         self.cpus = cpus
 
     def run_once(self, spec: Spec, ctx: LoopContext) -> RunResult:
+        # Snapshot before the turn; compare after. Scoped to this lap so that a write by an
+        # earlier lap cannot make this one look busy -- see workspace_digest.
+        digest_before = workspace_digest(ctx.workspace)
         if shutil.which("docker") is None:
             raise RunnerError("DockerRunner: docker not found on PATH")
         if "@sha256:" not in self.image:
@@ -75,7 +77,7 @@ class DockerRunner:
         if completed.state is TurnState.CANCELLED:
             raise RunnerError("DockerRunner: cancelled before completion")
         (ctx.workspace / "agent_output.txt").write_text(completed.stdout, encoding="utf-8")
-        return RunResult(changed=_workspace_changed(ctx.workspace), agent_claimed_done=False, tokens=0, log=completed.stdout[-2000:])
+        return RunResult(changed=workspace_digest(ctx.workspace) != digest_before, agent_claimed_done=False, tokens=0, log=completed.stdout[-2000:])
 
 
 def _build_prompt(spec: Spec, ctx: LoopContext) -> str:
@@ -85,11 +87,3 @@ def _build_prompt(spec: Spec, ctx: LoopContext) -> str:
     return with_memory_snapshot("\n".join([spec.goal, *spec.steps]), ctx)
 
 
-def _workspace_changed(workspace: Path) -> bool:
-    try:
-        result = subprocess.run(["git", "status", "--porcelain"], cwd=str(workspace), capture_output=True, timeout=10)
-    except (subprocess.SubprocessError, OSError):
-        return True
-    if result.returncode != 0:
-        return True
-    return bool(result.stdout.strip())
