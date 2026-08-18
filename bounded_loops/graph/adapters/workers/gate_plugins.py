@@ -1,5 +1,22 @@
 """Third-party gate packages, discovered through entry points (ADR-13 B1).
 
+.. warning::
+   **NOT WIRED, AND AT THE WRONG LAYER. Do not treat this as a working feature.**
+
+   Nothing in the engine calls ``load_gate_plugins``, so declaring the entry point has no
+   effect today. It was also built against the graph's per-node-kind ``IndependentGatePort``
+   (loop / join / publish), which is a different axis from the thing a third-party gate
+   actually extends: ``composition.GATE_REGISTRY`` maps a loop manifest's ``gate_kind`` to a
+   gate class, and that registry already merges two optional registries, so it is the real
+   extension point. ``RESERVED_GATE_KINDS`` below is correspondingly incomplete — it was
+   derived from the kinds the shipped catalogue happens to USE rather than from the registry
+   of what EXISTS, so five real kinds are missing from it.
+
+   The verdict validation, the ``BaseException`` discipline and the truthy-non-bool guard below
+   are sound and worth carrying forward; the layer, the port and the reserved set are not.
+   Rewrite tracked as a task. The 0.6.8 changelog deliberately does not advertise any of this.
+
+
 The independent gate is what this engine sells, so being able to publish one is the extensibility
 that matters. Until now a third party could only ship a whole loop package; this module lets one
 ship a gate.

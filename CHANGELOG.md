@@ -18,13 +18,6 @@ Additive. No existing command changes its behaviour, its output, or its exit cod
   add the variable name to your own provider catalog entry and your operator allow-list, or
   point its base URL at a local endpoint.
 
-- **Gate plugins.** A package can publish a gate through the `bounded_loops.gates` entry-point
-  group, keyed by gate kind. A third-party gate cannot claim a gate kind the shipped catalogue
-  already uses, cannot supply both a node's worker and that node's gate, and is reported as
-  unmeasured — the false-accept rates in this project's evaluation are properties of the gates
-  measured, and do not transfer. A gate that raises, or returns a verdict whose `passed` is not
-  a real boolean, is recorded as a failure rather than a pass.
-
 - **Managed sandbox platforms as an isolation provider.** An OpenSandbox-compatible server can
   be supplied as a remote execution backend. It is the last provider tried, so a local sandbox
   is still used wherever it can deliver the requested isolation, and it publishes only the
