@@ -23,13 +23,17 @@ from bounded_loops.graph.application.arena_projection import (
     read_arena_projection,
 )
 from bounded_loops.graph.application.compile_graph import CompileSnapshot, compile_graph
+from bounded_loops.graph.application.repair_rounds import repair_budget, total_execution_bound
 from bounded_loops.graph.application.validate_graph import (
     parse_authoring_graph_json,
     parse_authoring_graph_yaml,
 )
 from bounded_loops.graph.domain.authoring import _NULL_POLICY_DIGEST
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
-from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
+from bounded_loops.graph.loop_node_wiring import (
+    admitted_loop_package_digests,
+    parse_loop_roots,
+)
 from bounded_loops.graph.domain.errors import GraphValidationError
 
 
@@ -139,13 +143,30 @@ def cmd_graph_plan(args: argparse.Namespace) -> int:
     try:
         snapshot = CompileSnapshot(
             policy_digest=_NULL_POLICY_DIGEST,
-            package_digests=frozenset(),
+            # Was ``frozenset()``, which refused every ``kind: loop`` node and so refused all
+            # six shipped reference graphs — while ``bl graph run`` admitted the local
+            # catalogue. The pre-run command could not inspect the graphs the runner accepts.
+            package_digests=admitted_loop_package_digests(
+                parse_loop_roots(getattr(args, "loop_roots", None))
+            ),
             connections=tuple(connections_raw),  # type: ignore[arg-type]
         )
         plan = compile_graph(graph, snapshot)
     except GraphValidationError as exc:
         _err(f"graph plan: compile failed [{exc.code}] {exc.pointer} — {exc.message}")
         return 2
+
+    # The pre-run work bound — the number this command exists to report, and the one a reader
+    # arriving from the paper looks for. ``total_execution_bound`` is the sole authority for the
+    # formula; the two components below are DERIVED from it rather than recomputed, because two
+    # expressions for one truth is how a bound and its display drift apart.
+    #
+    # ``repair_budget`` raises on conflicting per-node budgets. ``compile_graph`` cannot produce
+    # that state — it copies ONE global ``policies.repair_budget`` onto every node — so the raise
+    # is a tamper check on a hand-forged plan and is unreachable from a plan compiled here.
+    bound = total_execution_bound(plan)
+    rounds = repair_budget(plan)
+    attempts_per_round = bound // (1 + rounds)  # exact: bound == (1 + rounds) * attempts_per_round
 
     if getattr(args, "json", False):
         nodes_out = [
@@ -169,6 +190,11 @@ def cmd_graph_plan(args: argparse.Namespace) -> int:
         print(json.dumps(
             {
                 "bindings": bindings_out,
+                "execution_bound": {
+                    "attempts_per_round": attempts_per_round,
+                    "repair_rounds": rounds,
+                    "total_node_executions": bound,
+                },
                 "levels": [list(level) for level in plan.levels],
                 "nodes": nodes_out,
                 "plan_id": plan.plan_id,
@@ -182,6 +208,10 @@ def cmd_graph_plan(args: argparse.Namespace) -> int:
         print(f"plan_id : {plan.plan_id}")
         print(f"graph   : {plan.source_graph_digest}")
         print(f"policy  : {plan.policy_digest}")
+        print(
+            f"bound   : {bound} node executions max "
+            f"= (1 + {rounds} repair rounds) x {attempts_per_round} attempts/round"
+        )
         for i, level in enumerate(plan.levels):
             nodes_in_level = ", ".join(level)
             print(f"wave {i}  : [{nodes_in_level}]")

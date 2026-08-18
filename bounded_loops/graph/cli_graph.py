@@ -26,7 +26,10 @@ import sys
 from pathlib import Path
 
 from bounded_loops.domain.errors import ManifestError
-from bounded_loops.graph.loop_node_wiring import admitted_loop_package_digests
+from bounded_loops.graph.loop_node_wiring import (
+    admitted_loop_package_digests,
+    parse_loop_roots,
+)
 from bounded_loops.graph.application.compile_graph import (
     CompileSnapshot,
     compile_graph,
@@ -79,11 +82,6 @@ from bounded_loops.graph.graph_composition import (  # noqa: E402
 
 def _err(msg: str) -> None:
     print(f"error: {msg}", file=sys.stderr)
-
-
-def _parse_loop_roots(raw: list[str] | None) -> "tuple[Path, ...] | None":
-    """Convert an argparse append-list of root dirs to a Path tuple, or None (use defaults)."""
-    return tuple(Path(p) for p in raw) if raw else None
 
 
 # ── handlers ───────────────────────────────────────────────────────────────────
@@ -224,7 +222,7 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
         audit_plan_json=audit_plan_json_text,
         run_budget=run_budget,
         price_table=price_table,
-        loop_package_roots=_parse_loop_roots(getattr(args, "loop_roots", None)),
+        loop_package_roots=parse_loop_roots(getattr(args, "loop_roots", None)),
     )
 
 
@@ -315,7 +313,7 @@ def cmd_graph_run(args: argparse.Namespace) -> int:
         snapshot = CompileSnapshot(
             policy_digest=_NULL_POLICY_DIGEST,
             package_digests=admitted_loop_package_digests(
-                _parse_loop_roots(getattr(args, "loop_roots", None))
+                parse_loop_roots(getattr(args, "loop_roots", None))
             ),
             connections=tuple(connections_raw),  # type: ignore[arg-type]
         )
@@ -403,6 +401,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     plan_p.add_argument("--connections", default=None, metavar="<json>",
                         help="Path to a JSON file containing connection candidates.")
     plan_p.add_argument("--json", action="store_true", help="Emit JSON output.")
+    plan_p.add_argument(
+        "--loop-roots", action="append", dest="loop_roots", default=None, metavar="<dir>",
+        help="Extra loop-package root (repeatable). MUST match the roots you will pass to "
+             "`bl graph run`, or this plan describes an admission set the run will not use.",
+    )
     plan_p.set_defaults(func=cmd_graph_plan)
 
     # demo

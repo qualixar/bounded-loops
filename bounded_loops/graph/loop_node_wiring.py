@@ -433,6 +433,17 @@ def build_kind_dispatchers(
     )
 
 
+def parse_loop_roots(raw: list[str] | None) -> "tuple[Path, ...] | None":
+    """An argparse append-list of root dirs as a Path tuple, or None to use the defaults.
+
+    Lives here rather than in a CLI module because EVERY command that compiles a graph has to
+    resolve roots the same way. ``bl graph plan`` once parsed nothing and admitted nothing while
+    ``bl graph run`` admitted the local catalogue, so plan refused graphs run accepted. One
+    function, imported by both, is what keeps a plan honest about the run it describes.
+    """
+    return tuple(Path(p) for p in raw) if raw else None
+
+
 def admitted_loop_package_digests(roots: tuple[Path, ...] | None = None) -> frozenset[str]:
     """Every loop-package digest resolvable on this host, in the ``sha256:`` form a plan declares.
 
