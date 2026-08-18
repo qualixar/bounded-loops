@@ -65,6 +65,11 @@ from bounded_loops.adapters.runners.anchor_guard import AnchorGuardRunner
 #. All
 # three are real, stdlib-or-jsonschema-only dependencies, imported directly.
 from bounded_loops.adapters.gates.command import CommandGate
+from bounded_loops.adapters.gates.plugins import (
+    GatePluginRefused,
+    merged_gate_registry,
+)
+from bounded_loops.adapters.gates import plugins as _gate_plugins
 from bounded_loops.adapters.gates.pytest import PytestGate
 from bounded_loops.adapters.gates.jsonschema import JsonSchemaGate
 from bounded_loops.adapters.gates.composite import CompositeGate
@@ -172,6 +177,10 @@ GATE_REGISTRY: dict[str, type] = {
     **_QUALIXAR_GATE_REGISTRY,
 }
 
+# Third-party gate kinds merged in, so `gate.kind` resolves to them. Plugins go UNDER shipped, and
+# the kind set is bound beside the registry it describes. Rules and reasoning: adapters/gates/plugins.
+GATE_REGISTRY, PLUGIN_GATE_KINDS = merged_gate_registry(GATE_REGISTRY)
+
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
@@ -257,6 +266,14 @@ def wire(
                 f"gate.kind '{gate_key}' not yet implemented in bounded-loops "
                 f"(no adapter authored). Valid values today: {sorted(GATE_REGISTRY)}"
             )
+        # Rule 4 (disjoint write authority) is enforced here because this is the only point where
+        # BOTH runner and gate are known. Plugin kinds only — see adapters/gates/plugins.
+        if gate_key in PLUGIN_GATE_KINDS:
+            refusal = _gate_plugins.same_distribution_refusal(
+                gate_kind=gate_key, runner_module=type(runner).__module__,
+            )
+            if refusal is not None:
+                raise ManifestError(f"gate.kind '{gate_key}' cannot certify this loop: {refusal}")
         gate = _instantiate_gate(gate_key, manifest)
 
     # ── 3. Resolve bounds (with optional CLI override) ───────────────────────
@@ -706,6 +723,13 @@ def _instantiate_gate(gate_key: str, manifest: LoopManifest) -> GatePort:
             checkpoint=str(checkpoint) if checkpoint else None,
             timeout_s=timeout_s,  # type: ignore[arg-type]
         )
+
+    if gate_key in PLUGIN_GATE_KINDS:
+        # `instantiate_guarded` owns the wrap-always invariant and fails closed on a bad constructor.
+        try:
+            return _gate_plugins.instantiate_guarded(gate_key, GATE_REGISTRY[gate_key], gate_extra)
+        except GatePluginRefused as refused:
+            raise ManifestError(str(refused)) from refused
 
     if gate_key in _P2_GATE_REGISTRY or gate_key in _QUALIXAR_GATE_REGISTRY:
         cls = GATE_REGISTRY[gate_key]
