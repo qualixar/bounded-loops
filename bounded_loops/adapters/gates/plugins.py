@@ -47,7 +47,9 @@ verdict passes through ``GuardedGate`` before the rules layer sees it.
 
 from __future__ import annotations
 
-from importlib.metadata import EntryPoint, entry_points
+from dataclasses import dataclass
+from importlib.metadata import EntryPoint, entry_points, packages_distributions
+from types import MappingProxyType
 import inspect
 import logging
 import re
@@ -146,18 +148,50 @@ def _load_one(entry: EntryPoint, *, shipped: frozenset[str]) -> Mapping[str, typ
     return accepted
 
 
+@dataclass(frozen=True)
+class LoadedPlugins:
+    """What discovery produced: the gates, and which distribution supplied each kind.
+
+    The distribution map is recorded from ``entry.dist`` HERE, at load time, because that is the only
+    place the association is known for certain. The first version tried to recover it later by
+    checking whether the gate kind appeared in ``entry.value`` — but a real entry point is
+    ``name="acme", value="acme_gates:gates"`` for a kind like ``invoice-check``, so the kind is never
+    in either field and the check matched nothing at all.
+    """
+
+    gates: Mapping[str, type]
+    distributions: Mapping[str, str]
+
+
 def load_gate_plugins(
     *,
     shipped: frozenset[str],
     group: str = GATE_ENTRY_POINT_GROUP,
-) -> Mapping[str, type]:
+) -> LoadedPlugins:
     """Every gate offered by installed third-party packages, fail-safe. Never raises.
 
     ``shipped`` is taken as a frozenset by the CALLER, before this function runs, so plugin code
     that mutates the live registry on import cannot widen what it is allowed to claim.
+
+    ``entry_points()`` is INSIDE the try: enumerating installed metadata touches the filesystem, so a
+    corrupt or unreadable ``.dist-info`` raises OSError there. With that call outside, "never raises"
+    was false in the worst place — this runs at ``import bounded_loops.composition``, so the traceback
+    landed on any user with damaged metadata, whether or not they had a gate plugin at all.
     """
     discovered: dict[str, type] = {}
-    for entry in entry_points(group=group):
+    distributions: dict[str, str] = {}
+    try:
+        entries = list(entry_points(group=group))
+    except KeyboardInterrupt:
+        raise
+    except BaseException as broken:  # noqa: BLE001 — discovery itself must not be fatal
+        _LOGGER.warning(
+            "could not enumerate %r entry points (%s): %s; no gate plugins loaded",
+            group, type(broken).__name__, broken,
+        )
+        return LoadedPlugins(gates=MappingProxyType({}), distributions=MappingProxyType({}))
+
+    for entry in entries:
         try:
             accepted = _load_one(entry, shipped=shipped)
         except GatePluginRefused as refused:
@@ -180,33 +214,58 @@ def load_gate_plugins(
             )
             continue
         discovered.update(accepted)
-    return discovered
+        dist_name = getattr(getattr(entry, "dist", None), "name", None)
+        if dist_name is not None:
+            for kind in accepted:
+                distributions[kind] = dist_name
+    return LoadedPlugins(
+        gates=MappingProxyType(discovered), distributions=MappingProxyType(distributions),
+    )
+
+
+def _pep503(name: str) -> str:
+    """PEP 503 normalised name. ``acme.gates``, ``acme_gates`` and ``Acme-Gates`` are one project."""
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def same_distribution_refusal(
-    *, gate_kind: str, gate_group: str = GATE_ENTRY_POINT_GROUP, runner_module: str | None,
+    *, gate_kind: str, gate_distributions: Mapping[str, str], worker_module: str | None,
 ) -> str | None:
-    """Rule 4: the reason to refuse when one distribution supplies both runner and gate.
+    """Rule 4: refuse when one distribution supplies both the loop's worker and its gate.
 
-    Returns a message, or None when the pairing is legitimate. Compared by DISTRIBUTION rather than
-    by module name, because a package is free to split its runner and its gate across modules and
-    the independence requirement is about who can write, not about file layout.
+    ``def:independence`` requires write authority disjoint from the worker, so a package that
+    provides the thing being certified AND the thing certifying it is the configuration the soundness
+    argument excludes. An author cannot be relied on to notice.
+
+    Compared BY DISTRIBUTION, resolved through ``packages_distributions()``, which is the real
+    module-to-project map the installer wrote. Three defects in the first version came from doing this
+    with string surgery instead: it matched on entry-point name and value so it never fired; it
+    compared ``type(runner).__module__``, which for every shipped runner is
+    ``bounded_loops.adapters.runners.*`` and so could never match a third party; and normalising by
+    hand made ``acme.gates`` differ from ``acme_gates`` while letting an unrelated ``posix-ipc``
+    package be blamed for a gate kind called ``os``.
+
+    ``worker_module`` is the module the WORKER will import and execute — ``runner.module_path`` for a
+    ``python_callable`` loop. That is the only runner form that names a Python module the graph author
+    controls, so it is the only case this can decide. For ``shell`` and ``agent_cmd`` runners the
+    worker is an opaque subprocess with no distribution to compare, and returning None there is
+    honest rather than a silent pass: nothing was checked because nothing is checkable.
     """
-    if runner_module is None:
+    if worker_module is None:
         return None
-    for entry in entry_points(group=gate_group):
-        if entry.name != gate_kind and gate_kind not in (entry.value or ""):
-            continue
-        gate_dist = getattr(getattr(entry, "dist", None), "name", None)
-        if gate_dist is None:
-            continue
-        runner_root = runner_module.split(".", 1)[0].replace("_", "-").lower()
-        if runner_root == gate_dist.replace("_", "-").lower():
-            return (
-                f"distribution {gate_dist!r} supplies both this loop's runner ({runner_module}) "
-                f"and its gate ({gate_kind!r}). An independent gate requires write authority "
-                "disjoint from the worker it certifies, so one package cannot be both."
-            )
+    gate_dist = gate_distributions.get(gate_kind)
+    if gate_dist is None:
+        return None  # a shipped gate, or a plugin whose distribution metadata was unreadable
+    try:
+        worker_dists = packages_distributions().get(worker_module.split(".", 1)[0], [])
+    except OSError:
+        return None  # unreadable metadata is not evidence of a violation
+    if _pep503(gate_dist) in {_pep503(d) for d in worker_dists}:
+        return (
+            f"distribution {gate_dist!r} supplies both this loop's worker module "
+            f"({worker_module}) and its gate ({gate_kind!r}). An independent gate requires write "
+            "authority disjoint from the worker it certifies, so one package cannot be both."
+        )
     return None
 
 
@@ -269,12 +328,14 @@ class GuardedGate:
                 evidence={"gate_kind": self._kind, "offered_passed": repr(raw.passed)},
             )
 
-        if not (isinstance(raw.detail, str) and raw.detail.strip()):
-            # Verdict documents detail as required and non-empty. A passing verdict with no detail
-            # leaves the ledger with an unexplainable DONE, which is unreviewable after the fact.
+        if raw.passed and not (isinstance(raw.detail, str) and raw.detail.strip()):
+            # Only a PASSING verdict is blocked, which is what the documented rule says. A passing
+            # verdict with no detail leaves the ledger with an unexplainable DONE — unreviewable
+            # after the fact. A FAILING verdict with a thin detail is merely unhelpful, and
+            # converting it to a different failure would discard the gate's own reason for nothing.
             return Verdict(
                 passed=False,
-                detail=f"gate {self._kind!r} returned a verdict with no detail",
+                detail=f"gate {self._kind!r} passed but returned no detail, so nothing explains it",
                 evidence={"gate_kind": self._kind},
             )
 
@@ -283,7 +344,7 @@ class GuardedGate:
 
 def merged_gate_registry(
     shipped: Mapping[str, type], *, group: str = GATE_ENTRY_POINT_GROUP,
-) -> tuple[dict[str, type], frozenset[str]]:
+) -> "LoadedGates":
     """``(registry, plugin_kinds)`` — the registry the loop engine uses, and which kinds are foreign.
 
     Precedence is expressed by ORDER, not only by the loader's name check: plugins go in first and
@@ -302,11 +363,28 @@ def merged_gate_registry(
     itself as measured against a corpus it has never run. A third-party gate is installed, usable,
     and reported UNMEASURED.
     """
-    shipped_names = frozenset(shipped)
-    merged: dict[str, type] = dict(load_gate_plugins(shipped=shipped_names, group=group))
+    # SNAPSHOT THE CLASSES, not just the names, and do it BEFORE any plugin code runs.
+    # `shipped` is a live dict the caller still holds, and `load_gate_plugins` executes
+    # third-party factories. The first version snapshotted only the NAME set and then merged the
+    # live dict back, so a plugin that popped a shipped key during load defeated the merge — the
+    # name check passed while the class went missing or was replaced.
+    snapshot: dict[str, type] = dict(shipped)
+    shipped_names = frozenset(snapshot)
+
+    loaded = load_gate_plugins(shipped=shipped_names, group=group)
+    merged: dict[str, type] = dict(loaded.gates)
     plugin_kinds = frozenset(merged) - shipped_names
-    merged.update(shipped)
-    return merged, plugin_kinds
+    merged.update(snapshot)  # the SNAPSHOT wins, so shipped classes are the ones taken pre-plugin
+
+    # Returned FROZEN. `MappingProxyType` is a view, so the backing dict must be unreachable for the
+    # freeze to mean anything — `merged` is a local, and the proxy is its only remaining reference
+    # once this returns. `_instantiate_gate` reads shipped classes straight out of this registry
+    # WITHOUT GuardedGate, so a mutable one is a path to an unchecked verdict.
+    return LoadedGates(
+        registry=MappingProxyType(merged),
+        plugin_kinds=plugin_kinds,
+        distributions=loaded.distributions,
+    )
 
 
 def instantiate_guarded(kind: str, gate_cls: type, gate_extra: Mapping[str, object]) -> GuardedGate:
@@ -332,3 +410,54 @@ def instantiate_guarded(kind: str, gate_cls: type, gate_extra: Mapping[str, obje
             "without an independent gate."
         ) from exc
     return GuardedGate(instance, kind=kind)
+
+
+@dataclass(frozen=True)
+class LoadedGates:
+    """The gate registry the loop engine uses, plus what a caller needs to police it.
+
+    A dataclass rather than a tuple because three values were already one too many to read at a call
+    site, and rule 4 needs the distribution map that a two-tuple had nowhere to put — which is part of
+    why the first version tried to re-derive it from entry-point strings and got it wrong.
+    """
+
+    registry: Mapping[str, type]
+    plugin_kinds: frozenset[str]
+    distributions: Mapping[str, str]
+
+
+def refuse_if_same_distribution(
+    *,
+    gate_kind: str,
+    plugin_kinds: frozenset[str],
+    gate_distributions: Mapping[str, str],
+    worker_module: str | None,
+) -> None:
+    """Rule 4 as a guard: raise ``GatePluginRefused`` or return. Shipped kinds are skipped.
+
+    Lives here rather than in ``composition`` because that module is under an 800-line cap enforced
+    by ``test_no_module_exceeds_the_line_cap``, and this feature pushed it over twice. The cap is
+    doing its job: gate concerns belong with the gates.
+    """
+    if gate_kind not in plugin_kinds:
+        return  # a shipped gate cannot belong to a third party's distribution
+    refusal = same_distribution_refusal(
+        gate_kind=gate_kind, gate_distributions=gate_distributions, worker_module=worker_module,
+    )
+    if refusal is not None:
+        raise GatePluginRefused(f"gate.kind {gate_kind!r} cannot certify this loop: {refusal}")
+
+
+def guarded_child_or_none(
+    *, child_kind: object, plugin_kinds: frozenset[str], registry: Mapping[str, type],
+    child_config: Mapping[str, object],
+) -> GuardedGate | None:
+    """A wrapped composite CHILD when the kind is third-party, else None so shipped branches run.
+
+    Wrapping matters doubly under composite: an unchecked child verdict is aggregated into the
+    parent's, so a truthy non-bool from one child could carry the whole composite to a pass.
+    """
+    if not (isinstance(child_kind, str) and child_kind in plugin_kinds):
+        return None
+    extra = {k: v for k, v in child_config.items() if k != "kind"}
+    return instantiate_guarded(child_kind, registry[child_kind], extra)

@@ -123,9 +123,11 @@ def test_shipped_wins_structurally_even_if_the_name_check_were_wrong(
         def check(self, ctx: LoopContext) -> Verdict:
             return Verdict(passed=True, detail="hijacked", evidence={})
 
-    monkeypatch.setattr(gp, "load_gate_plugins", lambda **kw: {"pytest": _Hijack})
-    registry, _ = merged_gate_registry({"pytest": _MarkerGate})
-    assert registry["pytest"] is _MarkerGate
+    monkeypatch.setattr(
+        gp, "load_gate_plugins",
+        lambda **kw: gp.LoadedPlugins(gates={"pytest": _Hijack}, distributions={}),
+    )
+    assert merged_gate_registry({"pytest": _MarkerGate}).registry["pytest"] is _MarkerGate
 
 
 # ── rule 1: a broken plugin is skipped, never fatal ─────────────────────────────────────────────
@@ -141,7 +143,7 @@ def test_a_plugin_that_raises_on_load_is_skipped_not_fatal(
     ])
     with caplog.at_level(logging.WARNING):
         loaded = load_gate_plugins(shipped=frozenset())
-    assert dict(loaded) == {"good-kind": _MarkerGate}, "a broken plugin must not block a good one"
+    assert dict(loaded.gates) == {"good-kind": _MarkerGate}, "a broken plugin must not block a good one"
     assert "broken" in caplog.text
 
 
@@ -155,7 +157,7 @@ def test_a_plugin_calling_sys_exit_is_skipped_not_fatal(
 
     _patch_entry_points(monkeypatch, [_entry("exiting", _exiting)])
     with caplog.at_level(logging.WARNING):
-        assert dict(load_gate_plugins(shipped=frozenset())) == {}
+        assert dict(load_gate_plugins(shipped=frozenset()).gates) == {}
     assert "SystemExit" in caplog.text
 
 
@@ -169,18 +171,24 @@ def test_keyboard_interrupt_still_propagates(monkeypatch: pytest.MonkeyPatch) ->
         load_gate_plugins(shipped=frozenset())
 
 
-def test_two_plugins_claiming_one_kind_means_neither_is_registered(
+def test_a_colliding_second_plugin_is_skipped_entirely_and_the_first_keeps_its_kind(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Load order must not decide which of two packages owns a gate kind."""
+    """Named for what the code DOES. The earlier name claimed "neither is registered" while the
+    assertion checked first-wins — the same declared-vs-enforced gap this project keeps finding,
+    living in a test name. Registration order is deterministic (entry-point iteration), so the
+    first registrant keeps the kind and the LATER plugin contributes nothing at all, including its
+    non-colliding kinds. That is rule 2, and it is what stops load order deciding a partial set.
+    """
     _patch_entry_points(monkeypatch, [
         _entry("first", lambda: {"dup": _MarkerGate}),
         _entry("second", lambda: {"dup": _MarkerGate, "unique": _MarkerGate}),
     ])
     with caplog.at_level(logging.WARNING):
         loaded = load_gate_plugins(shipped=frozenset())
-    assert dict(loaded) == {"dup": _MarkerGate}, "the first wins; the colliding plugin is skipped"
-    assert "unique" not in loaded, "rule 2: the whole colliding plugin contributes nothing"
+    assert dict(loaded.gates) == {"dup": _MarkerGate}
+    assert "unique" not in loaded.gates, "rule 2: the colliding plugin contributes NOTHING"
+    assert "second" in caplog.text, "the skip must be visible to an operator"
 
 
 # ── GuardedGate: what constrains a plugin's BEHAVIOUR ───────────────────────────────────────────
@@ -256,6 +264,21 @@ def test_a_passing_verdict_with_no_detail_is_refused(tmp_path: Path) -> None:
     assert "no detail" in verdict.detail
 
 
+def test_a_failing_verdict_with_a_thin_detail_keeps_its_own_reason(tmp_path: Path) -> None:
+    """Calibration for the rule above, and a correction: the guard applies to PASSES only.
+
+    The first version rejected any empty detail regardless of `passed`, which is stricter than the
+    documented rule and would replace a gate's own failure reason with a generic one for nothing.
+    """
+    class _Terse:
+        def check(self, ctx: LoopContext) -> Verdict:
+            return Verdict(passed=False, detail="   ", evidence={"why": "kept"})
+
+    verdict = GuardedGate(_Terse(), kind="terse").check(_ctx(tmp_path))
+    assert verdict.passed is False
+    assert verdict.evidence == {"why": "kept"}, "the gate's own evidence must survive"
+
+
 # ── measurement is written by the loader, never by the plugin ───────────────────────────────────
 
 def test_plugin_kinds_are_recorded_by_the_loader_and_exclude_shipped(
@@ -263,17 +286,167 @@ def test_plugin_kinds_are_recorded_by_the_loader_and_exclude_shipped(
 ) -> None:
     """A package must not be able to describe itself as measured against a corpus it never ran."""
     _patch_entry_points(monkeypatch, [_entry("p", lambda: {"third-party": _MarkerGate})])
-    registry, plugin_kinds = merged_gate_registry({"pytest": _MarkerGate})
-    assert set(registry) == {"pytest", "third-party"}
-    assert plugin_kinds == frozenset({"third-party"})
-    assert "pytest" not in plugin_kinds, "a shipped kind is never reported as third-party"
+    loaded = merged_gate_registry({"pytest": _MarkerGate})
+    assert set(loaded.registry) == {"pytest", "third-party"}
+    assert loaded.plugin_kinds == frozenset({"third-party"})
+    assert "pytest" not in loaded.plugin_kinds, "a shipped kind is never reported as third-party"
 
 
 def test_merging_leaks_no_state_between_callers(monkeypatch: pytest.MonkeyPatch) -> None:
     """The first version rebound a module global, so one caller's plugins leaked into the next."""
     _patch_entry_points(monkeypatch, [_entry("p", lambda: {"first-only": _MarkerGate})])
-    _, first = merged_gate_registry({"pytest": _MarkerGate})
+    first = merged_gate_registry({"pytest": _MarkerGate}).plugin_kinds
     _patch_entry_points(monkeypatch, [])
-    _, second = merged_gate_registry({"pytest": _MarkerGate})
+    second = merged_gate_registry({"pytest": _MarkerGate}).plugin_kinds
     assert first == frozenset({"first-only"})
     assert second == frozenset(), "the previous call's plugin kinds leaked into this one"
+
+
+# ── INTEGRATION: through manifest.load and composition, in the DEFAULT suite ────────────────────
+#
+# This section exists because both auditors made the same point about the tests above: delete the
+# call in composition and every one of them still passes. They exercise the loader; they cannot
+# detect that nothing calls it, or that `manifest.load` refuses the kind before the engine is ever
+# reached — which is exactly the blocker that shipped. These go through the real entry points and
+# run WITHOUT the opt-in env var, so a regression fails the ordinary suite.
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+_REAL_LOOP = REPO_ROOT / "loops" / "osv-scanner-example"
+
+
+def _extend_registry(monkeypatch: pytest.MonkeyPatch, comp: object, kind: str) -> None:
+    """Add one plugin kind by rebinding a fresh frozen proxy, as composition itself does."""
+    from types import MappingProxyType
+    extended = dict(comp.GATE_REGISTRY) | {kind: _MarkerGate}  # type: ignore[attr-defined]
+    monkeypatch.setattr(comp, "GATE_REGISTRY", MappingProxyType(extended))
+    monkeypatch.setattr(comp, "PLUGIN_GATE_KINDS", frozenset({kind}))
+
+
+def _loop_dir_with_gate_kind(tmp_path: Path, kind: str) -> Path:
+    """A copy of a SHIPPED loop package with only `gate.kind` changed.
+
+    Copying the whole package matters: `loop.yaml` alone leaves PROMPT.md and bounds.yaml behind and
+    the manifest fails for an unrelated reason, which is how a repro accidentally 'confirms' a bug
+    that is not there. The baseline assertion below is what makes the substitution the only variable.
+    """
+    import re
+    import shutil as _shutil
+    dest = tmp_path / "pkg"
+    _shutil.copytree(_REAL_LOOP, dest)
+    manifest = dest / "loop.yaml"
+    original = manifest.read_text(encoding="utf-8")
+    manifest.write_text(
+        re.sub(r"(?m)^(\s*)kind:\s*osv\s*$", rf"\1kind: {kind}", original, count=1),
+        encoding="utf-8",
+    )
+    assert f"kind: {kind}" in manifest.read_text(encoding="utf-8"), "substitution did not apply"
+    return dest
+
+
+def test_the_baseline_loop_package_loads_unmodified() -> None:
+    """Guard for every test below: if the shipped package stopped loading they would prove nothing."""
+    from bounded_loops.application.manifest import load
+    assert load(_REAL_LOOP).gate_kind == "osv"
+
+
+def test_the_registration_push_is_what_makes_a_plugin_kind_loadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The push must be LOAD-BEARING: refused before it, accepted after, nothing else changed.
+
+    An earlier version of this test asserted `comp.PLUGIN_GATE_KINDS <= recognized_gate_kinds()`.
+    With no plugin installed that set is empty, and the empty set is a subset of everything — so it
+    passed with the registration call commented out. Proved by doing exactly that. A tautology of the
+    same family the audits keep finding, written while trying to close one.
+
+    `_PLUGIN_GATE_KINDS` is reset to empty first so the assertion cannot ride on real state, and the
+    ONLY statement between the two `load` calls is the push.
+    """
+    from bounded_loops.application import manifest as manifest_mod
+
+    _patch_entry_points(monkeypatch, [_entry("p", lambda: {"acme-check": _MarkerGate})])
+    loaded = merged_gate_registry({"pytest": _MarkerGate})
+    assert loaded.plugin_kinds == frozenset({"acme-check"}), "discovery itself failed"
+
+    monkeypatch.setattr(manifest_mod, "_PLUGIN_GATE_KINDS", frozenset())
+    loop_dir = _loop_dir_with_gate_kind(tmp_path, "acme-check")
+    with pytest.raises(manifest_mod.ManifestError, match="not a recognized kind"):
+        manifest_mod.load(loop_dir)
+
+    manifest_mod.register_plugin_gate_kinds(loaded.plugin_kinds)  # <- the only change
+
+    assert manifest_mod.load(loop_dir).gate_kind == "acme-check"
+
+
+def test_shipped_kinds_survive_a_registration_push() -> None:
+    """The push REPLACES the plugin set; it must not disturb the shipped allowlist."""
+    from bounded_loops.application import manifest as manifest_mod
+    import bounded_loops.composition  # noqa: F401 — importing is what performs the real push
+
+    assert {"pytest", "command", "composite", "osv"} <= manifest_mod.recognized_gate_kinds()
+
+
+def test_a_plugin_kind_passes_manifest_load_and_instantiates_wrapped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end on the path a USER takes: a real loop.yaml naming a third-party gate.
+
+    The live test proved discovery from a real installed distribution but built its manifest with a
+    SimpleNamespace, so it never touched `manifest.load` — and that is precisely where the feature
+    was broken. Discovery is faked here so this can run in the default suite; the validation and
+    instantiation paths are real.
+    """
+    import bounded_loops.composition as comp
+    from bounded_loops.application import manifest as manifest_mod
+
+    # setitem is impossible here BY DESIGN — the registry is a frozen proxy — so extend it the way
+    # composition does, by binding a new proxy. That the naive form fails is itself the guarantee.
+    _extend_registry(monkeypatch, comp, "acme-check")
+    monkeypatch.setattr(manifest_mod, "_PLUGIN_GATE_KINDS", frozenset({"acme-check"}))
+
+    loaded = manifest_mod.load(_loop_dir_with_gate_kind(tmp_path, "acme-check"))
+    assert loaded.gate_kind == "acme-check"
+
+    gate = comp._instantiate_gate("acme-check", loaded)
+    assert isinstance(gate, GuardedGate), "a third-party gate reached the engine UNWRAPPED"
+    assert gate.gate_kind == "acme-check"
+
+
+def test_an_unknown_gate_kind_is_still_refused_so_the_allowlist_did_not_become_a_no_op(
+    tmp_path: Path,
+) -> None:
+    """Calibration: widening for plugins must not accept anything a user typos."""
+    from bounded_loops.application.manifest import ManifestError, load
+    with pytest.raises(ManifestError, match="not a recognized kind"):
+        load(_loop_dir_with_gate_kind(tmp_path, "no-such-gate"))
+
+
+def test_a_plugin_kind_is_usable_as_a_composite_child_and_is_wrapped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Composite is the only way to combine a shipped gate with a third-party one."""
+    import bounded_loops.composition as comp
+
+    _extend_registry(monkeypatch, comp, "acme-check")
+
+    import types
+    fake_manifest = types.SimpleNamespace(
+        bounds=types.SimpleNamespace(max_wallclock_s=30, schema=None), loop_dir=Path("."),
+    )
+    child = comp._instantiate_gate_from_config({"kind": "acme-check"}, fake_manifest)
+    assert isinstance(child, GuardedGate), "a composite CHILD reached the aggregator unwrapped"
+
+
+def test_the_shipped_registry_cannot_be_mutated_by_anything_at_all() -> None:
+    """Rule 3's structural half, at the object level: the live registries are frozen.
+
+    A gate plugin's factory runs arbitrary code in this process, and `_instantiate_gate` reads shipped
+    classes straight out of these registries WITHOUT GuardedGate — so a mutable registry is a path to
+    an unchecked verdict on the rules layer. Freezing is only meaningful because the backing dicts are
+    built inside functions and are unreachable once the proxies exist.
+    """
+    import bounded_loops.composition as comp
+    for name in ("GATE_REGISTRY", "_P2_GATE_REGISTRY", "_QUALIXAR_GATE_REGISTRY"):
+        with pytest.raises(TypeError):
+            comp.__dict__[name]["osv"] = _MarkerGate
+    assert not hasattr(comp, "built"), "a backing dict leaked to module scope; the freeze is a no-op"

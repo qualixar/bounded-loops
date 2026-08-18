@@ -101,7 +101,7 @@ def _pip(*args: str) -> subprocess.CompletedProcess[str]:
 # The plugin must be exercised in a CHILD process: composition binds GATE_REGISTRY at import time,
 # so a package installed after this test session started is invisible to the already-imported
 # module. A subprocess imports it fresh, which is also exactly what a real user's next command does.
-_CHILD = textwrap.dedent('''
+_CHILD = textwrap.dedent(r'''
     import json, sys, tempfile, types
     from pathlib import Path
     from bounded_loops.composition import GATE_REGISTRY, PLUGIN_GATE_KINDS, _instantiate_gate
@@ -120,6 +120,32 @@ _CHILD = textwrap.dedent('''
     out = {"plugin_kinds": sorted(PLUGIN_GATE_KINDS), "registry_has": {}}
     for kind in ("live-marker", "live-exiting"):
         out["registry_has"][kind] = kind in GATE_REGISTRY
+
+    # THE CHECK NO DEFAULT-SUITE TEST CAN MAKE. With zero plugins installed the registration push is
+    # a no-op, so `PLUGIN_GATE_KINDS <= recognized_gate_kinds()` is vacuously true and passes even
+    # with the push deleted — verified by deleting it. Only a REAL installed distribution makes the
+    # two sets differ, so this is the one place a missing push is detectable. That is the strongest
+    # argument for this file existing.
+    from bounded_loops.application.manifest import load as manifest_load, recognized_gate_kinds
+    out["manifest_recognizes"] = "live-marker" in recognized_gate_kinds()
+
+    # And the full user path: a real loop.yaml naming the installed gate, through manifest.load.
+    import re, shutil
+    src = Path(sys.argv[1])
+    pkg = Path(tempfile.mkdtemp()) / "pkg"
+    shutil.copytree(src, pkg)
+    mf = pkg / "loop.yaml"
+    mf.write_text(re.sub(r"(?m)^(\s*)kind:\s*osv\s*$", r"\1kind: live-marker",
+                         mf.read_text(encoding="utf-8"), count=1), encoding="utf-8")
+    try:
+        loaded = manifest_load(pkg)
+        out["manifest_load"] = loaded.gate_kind
+        out["wired_gate_wrapped"] = isinstance(
+            _instantiate_gate(loaded.gate_kind, loaded), GuardedGate
+        )
+    except Exception as exc:
+        out["manifest_load"] = f"REJECTED: {type(exc).__name__}: {exc}"
+        out["wired_gate_wrapped"] = False
 
     marker = _instantiate_gate("live-marker", manifest("live-marker"))
     out["wrapped"] = isinstance(marker, GuardedGate)
@@ -148,8 +174,10 @@ def test_a_real_installed_distribution_supplies_a_working_gate(tmp_path: Path) -
     installed = _pip("install", "--quiet", str(pkg))
     assert installed.returncode == 0, f"install failed: {installed.stderr}"
     try:
+        real_loop = Path(__file__).resolve().parents[3] / "loops" / "osv-scanner-example"
         child = subprocess.run(
-            [sys.executable, "-c", _CHILD], capture_output=True, text=True, check=False,
+            [sys.executable, "-c", _CHILD, str(real_loop)],
+            capture_output=True, text=True, check=False,
         )
         assert child.returncode == 0, f"child failed: {child.stdout}\n{child.stderr}"
         line = next(ln for ln in child.stdout.splitlines() if ln.startswith("BL_RESULT "))
@@ -168,6 +196,14 @@ def test_a_real_installed_distribution_supplies_a_working_gate(tmp_path: Path) -
         # And the misbehaving one fails the lap instead of killing the process.
         assert result["exiting_passed"] is False
         assert "SystemExit" in result["exiting_detail"]
+        # The blocker that shipped: registry had it, manifest.load refused it.
+        assert result["manifest_recognizes"] is True, (
+            "composition did not push plugin kinds into the manifest validator"
+        )
+        assert result["manifest_load"] == "live-marker", (
+            f"a real loop.yaml could not name the installed gate: {result['manifest_load']}"
+        )
+        assert result["wired_gate_wrapped"] is True
     finally:
         removed = _pip("uninstall", "--quiet", _DIST)
         assert removed.returncode == 0, (

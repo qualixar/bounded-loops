@@ -14,6 +14,8 @@ Anti-drift contract:
 from __future__ import annotations
 
 import os
+from types import MappingProxyType
+from typing import Mapping
 import shutil
 import subprocess
 import tempfile
@@ -43,7 +45,10 @@ from bounded_loops.application.quarantine_consent import (
 )
 from bounded_loops.application.run_store import run_ledger, run_workspace, validate_run_id
 from bounded_loops.application.run_loop import RunLoopDeps, RunLoopUseCase
-from bounded_loops.application.manifest import LoopManifest
+from bounded_loops.application.manifest import (
+    LoopManifest,
+    register_plugin_gate_kinds as _register_plugin_gate_kinds,
+)
 from bounded_loops.application.memory_snapshot import SnapshotMemory
 
 # Concrete runner adapters — P0/P1 keyless (stub/shell/python_callable)
@@ -98,39 +103,57 @@ from bounded_loops.application.env_passthrough import resolve_env_passthrough as
 # the original draft imported these four unconditionally at module level,
 # which would have made composition.py unimportable until every P2 gate
 # module existed, blocking import entirely.
-_P2_GATE_REGISTRY: dict[str, type] = {}
-for _mod, _cls_name, _key in [
-    ("axe", "AxeGate", "axe"),
-    ("osv", "OsvGate", "osv"),
-    ("checkov", "CheckovGate", "checkov"),   # added —  
-]:
-    try:
-        _module = __import__(f"bounded_loops.adapters.gates.{_mod}", fromlist=[_cls_name])
-        _P2_GATE_REGISTRY[_key] = getattr(_module, _cls_name)
-    except ImportError:
-        pass  # not yet implemented — composition.wire() raises ManifestError at instantiation
+def _build_p2_registry() -> Mapping[str, type]:
+    """Built in a function so the backing dict is UNREACHABLE once the proxy exists.
+
+    ``MappingProxyType`` is a VIEW: freezing a dict that is still a module attribute protects
+    nothing, because mutating the backing object changes what the proxy reports. This matters because
+    ``_instantiate_gate`` reads ``_P2_GATE_REGISTRY['osv']`` directly and those gates are NOT wrapped,
+    so a plugin factory setting ``_P2_GATE_REGISTRY['osv'] = Hijack`` would land an unchecked verdict.
+    """
+    built: dict[str, type] = {}
+    for _mod, _cls_name, _key in [
+        ("axe", "AxeGate", "axe"),
+        ("osv", "OsvGate", "osv"),
+        ("checkov", "CheckovGate", "checkov"),
+    ]:
+        try:
+            _module = __import__(f"bounded_loops.adapters.gates.{_mod}", fromlist=[_cls_name])
+            built[_key] = getattr(_module, _cls_name)
+        except ImportError:
+            pass  # not yet implemented — wire() raises ManifestError at instantiation
+    return MappingProxyType(built)
+
+
+_P2_GATE_REGISTRY: Mapping[str, type] = _build_p2_registry()
 
 # Optional Qualixar gates — only when [qualixar-gates] extra is installed.
 # The default install NEVER reaches these lines.
-_QUALIXAR_GATE_REGISTRY: dict[str, type] = {}
-try:
-    # These modules genuinely don't exist yet —
-    # confirmed by a real ModuleNotFoundError at runtime, correctly caught
-    # below. mypy reports import-untyped rather than import-not-found for
-    # a missing dotted submodule inside a try/except ImportError block;
-    # narrow ignores keep the rest of the codebase's mypy output clean.
-    from bounded_loops.adapters.gates.qualixar.agentassert import AgentAssertGate  # type: ignore[import-untyped]
-    from bounded_loops.adapters.gates.qualixar.agentassay import AgentAssayGate  # type: ignore[import-untyped]
-    from bounded_loops.adapters.gates.qualixar.skillfortify import SkillFortifyGate  # type: ignore[import-untyped]
-    from bounded_loops.adapters.gates.qualixar.attestar import AttestorGate  # type: ignore[import-untyped]
-    _QUALIXAR_GATE_REGISTRY = {
-        "agentassert": AgentAssertGate,
-        "agentassay": AgentAssayGate,
-        "skillfortify": SkillFortifyGate,
-        "attestar": AttestorGate,
-    }
-except ImportError:
-    pass  # [qualixar-gates] not installed — correct default
+def _build_qualixar_registry() -> Mapping[str, type]:
+    """Frozen for the same reason as ``_build_p2_registry``; see its docstring."""
+    built: dict[str, type] = {}
+    try:
+        # These modules genuinely don't exist yet — confirmed by a real ModuleNotFoundError at
+        # runtime, correctly caught below. mypy reports import-untyped rather than
+        # import-not-found for a missing dotted submodule inside a try/except ImportError block;
+        # narrow ignores keep the rest of the codebase's mypy output clean.
+        from bounded_loops.adapters.gates.qualixar.agentassert import AgentAssertGate  # type: ignore[import-untyped]
+        from bounded_loops.adapters.gates.qualixar.agentassay import AgentAssayGate  # type: ignore[import-untyped]
+        from bounded_loops.adapters.gates.qualixar.skillfortify import SkillFortifyGate  # type: ignore[import-untyped]
+        from bounded_loops.adapters.gates.qualixar.attestar import AttestorGate  # type: ignore[import-untyped]
+
+        built = {
+            "agentassert": AgentAssertGate,
+            "agentassay": AgentAssayGate,
+            "skillfortify": SkillFortifyGate,
+            "attestar": AttestorGate,
+        }
+    except ImportError:
+        pass  # [qualixar-gates] not installed — correct default
+    return MappingProxyType(built)
+
+
+_QUALIXAR_GATE_REGISTRY: Mapping[str, type] = _build_qualixar_registry()
 
 
 # ── Registries ──────────────────────────────────────────────────────────────
@@ -163,7 +186,7 @@ _SCRATCH_MARKER = ".bounded-loops-scratch"
 # Universal gate registry: command/pytest/jsonschema unconditionally (v1
 # scope, all three real), merged with whichever P2 gates have landed and
 # the optionally-present Qualixar gate registry.
-GATE_REGISTRY: dict[str, type] = {
+_SHIPPED_GATES: dict[str, type] = {
     "command": CommandGate,
     "pytest": PytestGate,
     "jsonschema": JsonSchemaGate,
@@ -177,9 +200,18 @@ GATE_REGISTRY: dict[str, type] = {
     **_QUALIXAR_GATE_REGISTRY,
 }
 
-# Third-party gate kinds merged in, so `gate.kind` resolves to them. Plugins go UNDER shipped, and
-# the kind set is bound beside the registry it describes. Rules and reasoning: adapters/gates/plugins.
-GATE_REGISTRY, PLUGIN_GATE_KINDS = merged_gate_registry(GATE_REGISTRY)
+# Third-party kinds merged in, so `gate.kind` resolves to them. Plugins go UNDER shipped, the kind
+# set is bound beside the registry it describes, and the result is FROZEN — `_instantiate_gate` reads
+# shipped classes straight out of it without GuardedGate, so a mutable registry is a path to an
+# unchecked verdict. Rules and reasoning: adapters/gates/plugins.
+_LOADED_GATES = merged_gate_registry(_SHIPPED_GATES)
+GATE_REGISTRY: Mapping[str, type] = _LOADED_GATES.registry
+PLUGIN_GATE_KINDS: frozenset[str] = _LOADED_GATES.plugin_kinds
+
+# Tell the manifest validator which kinds exist, or `load()` refuses every plugin gate before
+# `wire()` is ever reached and the whole extension point is dead. Pushed here because the
+# application layer must not import this module.
+_register_plugin_gate_kinds(PLUGIN_GATE_KINDS)
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
@@ -266,14 +298,17 @@ def wire(
                 f"gate.kind '{gate_key}' not yet implemented in bounded-loops "
                 f"(no adapter authored). Valid values today: {sorted(GATE_REGISTRY)}"
             )
-        # Rule 4 (disjoint write authority) is enforced here because this is the only point where
-        # BOTH runner and gate are known. Plugin kinds only — see adapters/gates/plugins.
-        if gate_key in PLUGIN_GATE_KINDS:
-            refusal = _gate_plugins.same_distribution_refusal(
-                gate_kind=gate_key, runner_module=type(runner).__module__,
+        # Rule 4: the WORKER's module (runner.module_path), never the runner ADAPTER's — see
+        # adapters/gates/plugins.same_distribution_refusal for why that distinction is the fix.
+        _worker = (manifest.raw.get("runner") or {}).get("module_path")
+        try:
+            _gate_plugins.refuse_if_same_distribution(
+                gate_kind=gate_key, plugin_kinds=PLUGIN_GATE_KINDS,
+                gate_distributions=_LOADED_GATES.distributions,
+                worker_module=_worker if isinstance(_worker, str) else None,
             )
-            if refusal is not None:
-                raise ManifestError(f"gate.kind '{gate_key}' cannot certify this loop: {refusal}")
+        except GatePluginRefused as refused:
+            raise ManifestError(str(refused)) from refused
         gate = _instantiate_gate(gate_key, manifest)
 
     # ── 3. Resolve bounds (with optional CLI override) ───────────────────────
@@ -741,6 +776,15 @@ def _instantiate_gate(gate_key: str, manifest: LoopManifest) -> GatePort:
 
 def _instantiate_gate_from_config(gate_config: dict, manifest: LoopManifest) -> GatePort:
     child_kind = gate_config.get("kind")
+    try:
+        _plugin_child = _gate_plugins.guarded_child_or_none(
+            child_kind=child_kind, plugin_kinds=PLUGIN_GATE_KINDS,
+            registry=GATE_REGISTRY, child_config=gate_config,
+        )
+    except GatePluginRefused as refused:
+        raise ManifestError(str(refused)) from refused
+    if _plugin_child is not None:
+        return _plugin_child
     if child_kind == "command":
         gate_run = gate_config.get("run")
         if not gate_run:

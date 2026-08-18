@@ -69,6 +69,35 @@ VALID_GATE_KINDS = {
     "gitleaks", "semgrep", "trivy", "promptfoo", "great_expectations", "jsonschema",
 } | QUALIXAR_GATE_KINDS
 
+#: Gate kinds contributed by installed third-party packages. EMPTY here and PUSHED IN by
+#: ``composition`` at import time via ``register_plugin_gate_kinds``.
+#:
+#: Pushed rather than pulled because this layer must not import ``composition`` — that module
+#: imports this one — nor any concrete adapter, which ``test_layering`` forbids. And pushed
+#: rather than passed as a ``load()`` parameter because a parameter can be forgotten: the CLI
+#: would accept a plugin gate while the public ``load_loop`` API silently refused it. One
+#: writer, at import, so every caller of ``load()`` sees the same answer.
+#:
+#: Until this existed, a gate could be installed, discovered, and present in GATE_REGISTRY
+#: while ``load()`` refused the kind — so no real loop.yaml could name it. Found by audit.
+_PLUGIN_GATE_KINDS: frozenset[str] = frozenset()
+
+
+def register_plugin_gate_kinds(kinds: frozenset[str]) -> None:
+    """Declare which gate kinds third-party packages supplied. Called by ``composition``.
+
+    Idempotent and safe to call again — a later call REPLACES the set rather than adding to it,
+    so a test that installs a fake plugin can restore the real value by calling with it.
+    """
+    global _PLUGIN_GATE_KINDS
+    _PLUGIN_GATE_KINDS = frozenset(kinds)
+
+
+def recognized_gate_kinds() -> frozenset[str]:
+    """Every gate kind a loop.yaml may name: shipped plus installed third-party."""
+    return frozenset(VALID_GATE_KINDS) | _PLUGIN_GATE_KINDS
+
+
 VALID_RUNGS = {"L1", "L2", "L3"}
 
 VALID_PATTERNS = {
@@ -309,8 +338,8 @@ def load(loop_dir: Path) -> LoopManifest:
         )
     _validate_gate_config(gate_block, "gate")
     gate_kind = gate_block["kind"]
-    if not isinstance(gate_kind, str) or gate_kind not in VALID_GATE_KINDS:
-        user_visible_kinds = sorted(VALID_GATE_KINDS - QUALIXAR_GATE_KINDS)
+    if not isinstance(gate_kind, str) or gate_kind not in recognized_gate_kinds():
+        user_visible_kinds = sorted(recognized_gate_kinds() - QUALIXAR_GATE_KINDS)
         raise ManifestError(
             f"loop.yaml: gate.kind {gate_kind!r} is not a recognized kind. "
             f"Valid kinds: {user_visible_kinds}. "
@@ -450,7 +479,10 @@ def _validate_composite_gate(gate_block: dict) -> None:
         child_kind = child.get("kind")
         if child_kind == "composite":
             raise ManifestError("nested composite gates are not supported in v1")
-        if child_kind not in VALID_GATE_KINDS:
+        # E: a composite child may also be a third-party kind. Composite is the only way to
+        # combine a shipped gate with a plugin one, so excluding plugins here made the
+        # extension point useless for the case it is most wanted in.
+        if child_kind not in recognized_gate_kinds():
             raise ManifestError(f"gate.gates[{index}].kind {child_kind!r} is not recognized")
         if child_kind in QUALIXAR_GATE_KINDS:
             raise ManifestError(

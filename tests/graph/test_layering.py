@@ -175,7 +175,20 @@ def test_the_composition_tier_modules_all_exist() -> None:
 
 
 #: Hard cap from the project's engineering rules: many small files beat few large ones.
-_MAX_LINES = 800
+#: Raised from 800 to 900 on 2026-08-19 by Varun's explicit decision ("I do not care about 800
+#: lines. It is not a hard cap.") after the gate-plugin work took composition.py past it twice.
+#:
+#: Recorded as a decision rather than applied silently, because the alternative on the table was
+#: trimming comments until the number fit — which games the tripwire instead of respecting it,
+#: and is the exact accumulation this test was written to catch. The cap still holds for every
+#: other module; only the ceiling moved.
+#:
+#: The clean fix if this is revisited is already scoped: `_make_scratch_workspace` and
+#: `_make_persistent_run_workspace` are 106 lines of pure filesystem work, verified to touch
+#: nothing in composition but `_SCRATCH_MARKER` and no sibling function, so they move out
+#: cleanly — re-exported from composition so existing `composition._make_scratch_workspace`
+#: references in tests and docs keep resolving.
+_MAX_LINES = 900
 
 
 def test_no_module_exceeds_the_line_cap() -> None:
