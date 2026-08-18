@@ -1,144 +1,154 @@
-"""Find surfaces that exist and are never used: the defect class that shipped in the 0.6.8 attempt.
+"""Find engine surfaces that no reachable code path can ever use.
 
 `load_gate_plugins` was written, tested, documented and released, and nothing called it. That is
-mechanically detectable, so it should never have needed a human to notice. This script reports:
+mechanically detectable, so it should never have taken a human to notice.
 
-  1. public module-level functions/classes defined in bounded_loops/ and referenced NOWHERE else
-     inside bounded_loops/ (tests do not count -- a test-only caller is exactly the trap);
-  2. dataclass fields never read outside their defining module;
-  3. entry-point groups declared as constants but never passed to entry_points().
+**Transitive, not one-hop.** The first version of this script asked "is this symbol referenced from
+another module?" and reported 164 symbols, most of them fine: `cmd_graph_run` is referenced only at
+`set_defaults(func=cmd_graph_run)` inside its own module, and that parser builder is called from the
+CLI entry point, so it is perfectly reachable. Answering the real question means a closure:
 
-Every category has legitimate members (CLI entry points, Protocol methods, __all__ exports), so the
-output is a triage list, not a verdict. It is still the right shape: a reviewer reads a bounded list
-instead of hoping to spot an absence.
+  roots      = console-script targets, `__all__` exports, and every module's top-level references
+               (module bodies execute on import, so a decorator registration is a root)
+  reachable  = everything transitively referenced from those roots
+  residual   = defined and never reached  <- the defect list
+
+The residual is intended to be EMPTY, or to consist only of symbols carrying an explicit
+declaration in `scripts/unreachable_allowlist.py` with a reason. A declaration is the point: the
+absence of a caller becomes something a person had to write down and a reviewer can see, rather
+than something nobody noticed.
 """
 
 from __future__ import annotations
 
 import ast
 import pathlib
-import re
 import sys
+import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PKG = ROOT / "bounded_loops"
-TESTS = ROOT / "tests"
-
-# Names that are legitimately referenced only from outside the package.
-ENTRYPOINT_HINTS = ("main", "cli", "app", "mcp")
 
 
-def py_files(base: pathlib.Path) -> list[pathlib.Path]:
-    return [p for p in base.rglob("*.py") if "__pycache__" not in p.parts]
+def py_files() -> list[pathlib.Path]:
+    return sorted(p for p in PKG.rglob("*.py") if "__pycache__" not in p.parts)
 
 
-def public_defs() -> dict[str, list[tuple[str, int, str]]]:
-    """symbol -> [(module, lineno, kind)] for public module-level defs and classes."""
-    out: dict[str, list[tuple[str, int, str]]] = {}
-    for path in py_files(PKG):
+def names_in(node: ast.AST) -> set[str]:
+    """Every identifier mentioned anywhere under `node`, including attribute tails.
+
+    Attribute tails matter: `mod.helper()` should count as a reference to `helper`, because the
+    import style in this package mixes `from x import y` and `import x`.
+    """
+    found: set[str] = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name):
+            found.add(sub.id)
+        elif isinstance(sub, ast.Attribute):
+            found.add(sub.attr)
+        elif isinstance(sub, (ast.ImportFrom, ast.Import)):
+            for alias in sub.names:
+                found.add((alias.asname or alias.name).split(".")[-1])
+        elif isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+            # A string can be a dynamic dispatch key or a forward-ref annotation.
+            token = sub.value.strip()
+            if token.isidentifier():
+                found.add(token)
+    return found
+
+
+def build() -> tuple[dict[str, set[str]], dict[str, list[tuple[str, int]]], set[str]]:
+    """Return (symbol -> referenced names, symbol -> definition sites, root names)."""
+    refs: dict[str, set[str]] = {}
+    sites: dict[str, list[tuple[str, int]]] = {}
+    roots: set[str] = set()
+
+    for path in py_files():
+        rel = str(path.relative_to(ROOT))
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
-        rel = str(path.relative_to(ROOT))
-        for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                if node.name.startswith("_"):
-                    continue
-                out.setdefault(node.name, []).append((rel, node.lineno, type(node).__name__))
+        # Module-level references: the body minus the def/class bodies. Executed on import, so
+        # anything named here is a root (this is how decorator registrations stay reachable).
+        for stmt in tree.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                key = stmt.name
+                sites.setdefault(key, []).append((rel, stmt.lineno))
+                refs.setdefault(key, set()).update(names_in(stmt) - {key})
+                # A decorated top-level def is registered at import time.
+                if stmt.decorator_list:
+                    roots.add(key)
+                # Its decorators and default values evaluate at import time.
+                for dec in stmt.decorator_list:
+                    roots.update(names_in(dec))
+            else:
+                roots.update(names_in(stmt))
+    return refs, sites, roots
+
+
+def declared_roots() -> set[str]:
+    data = tomllib.load(open(ROOT / "pyproject.toml", "rb"))
+    project = data.get("project", {})
+    out: set[str] = set()
+    for target in project.get("scripts", {}).values():
+        out.add(target.split(":")[-1])
+    for group in project.get("entry-points", {}).values():
+        for target in group.values():
+            out.add(target.split(":")[-1])
+    init = ast.parse((PKG / "__init__.py").read_text(encoding="utf-8"))
+    for node in ast.walk(init):
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", "") == "__all__" for t in node.targets
+        ):
+            for element in getattr(node.value, "elts", []):
+                if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                    out.add(element.value)
     return out
 
 
-def reference_counts(symbols: set[str], base: pathlib.Path) -> dict[str, dict[str, int]]:
-    """symbol -> {module: count} of textual word-boundary references."""
-    counts: dict[str, dict[str, int]] = {s: {} for s in symbols}
-    patterns = {s: re.compile(rf"\b{re.escape(s)}\b") for s in symbols}
-    for path in py_files(base):
-        rel = str(path.relative_to(ROOT))
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for sym, pat in patterns.items():
-            n = len(pat.findall(text))
-            if n:
-                counts[sym][rel] = n
-    return counts
-
-
 def main() -> int:
-    defs = public_defs()
-    symbols = set(defs)
-    in_pkg = reference_counts(symbols, PKG)
-    in_tests = reference_counts(symbols, TESTS)
+    refs, sites, import_roots = build()
+    roots = import_roots | declared_roots()
 
-    orphans: list[tuple[str, str, int, int]] = []
-    for sym, sites in defs.items():
-        defining = {m for m, _, _ in sites}
-        # References inside the package, excluding the modules that define it.
-        external = {m: n for m, n in in_pkg[sym].items() if m not in defining}
-        if external:
+    reachable: set[str] = set()
+    queue = [r for r in roots]
+    while queue:
+        name = queue.pop()
+        if name in reachable:
             continue
-        if any(h in sym.lower() for h in ENTRYPOINT_HINTS):
-            continue
-        test_refs = sum(in_tests[sym].values())
-        for module, lineno, _kind in sites:
-            orphans.append((sym, module, lineno, test_refs))
+        reachable.add(name)
+        queue.extend(refs.get(name, frozenset()) - reachable)
 
-    orphans.sort(key=lambda r: (-r[3], r[1], r[0]))
-    print(f"=== [1] public symbols never referenced elsewhere in bounded_loops/ ({len(orphans)}) ===")
-    print("     (test_refs > 0 is the DANGEROUS case: tested, but nothing in the engine calls it)")
-    for sym, module, lineno, test_refs in orphans:
-        flag = "  <-- TESTED BUT UNREACHABLE" if test_refs else ""
-        print(f"  {module}:{lineno}  {sym}  test_refs={test_refs}{flag}")
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from unreachable_allowlist import ALLOWED  # type: ignore[import-not-found]
+    except Exception:
+        ALLOWED = {}
 
-    # [3] entry-point groups declared but never loaded.
-    print("\n=== [3] entry-point group constants vs entry_points() calls ===")
-    group_defs: list[tuple[str, str, str]] = []
-    loaders: set[str] = set()
-    for path in py_files(PKG):
-        rel = str(path.relative_to(ROOT))
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for m in re.finditer(r'^([A-Z0-9_]*ENTRY_POINT[A-Z0-9_]*)\s*=\s*"([^"]+)"', text, re.M):
-            group_defs.append((m.group(1), m.group(2), rel))
-        if "entry_points(" in text:
-            loaders.add(rel)
-    for const, value, rel in group_defs:
-        # A group is genuinely loaded only if some module calls entry_points() with it AND the
-        # function doing so is itself reachable from elsewhere in the package. Without the second
-        # half, a module that declares a group and loads it while nobody calls that loader reports
-        # as LOADED -- which is exactly the 0.6.8 gate-plugin defect this check exists to catch.
-        loaded_by = []
-        for cand in sorted(loaders):
-            text = (ROOT / cand).read_text(encoding="utf-8", errors="replace")
-            if const not in text or "entry_points(" not in text:
-                continue
-            # Which public loader functions does that module define, and is any of them called
-            # from outside it?
-            try:
-                tree = ast.parse(text)
-            except SyntaxError:
-                continue
-            fns = [
-                n.name for n in tree.body
-                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.name.startswith("_")
-            ]
-            reachable = any(
-                fn in in_pkg and any(m != cand for m in in_pkg[fn])
-                for fn in fns
-            )
-            loaded_by.append((cand, reachable))
-        if any(reachable for _c, reachable in loaded_by):
-            who = ", ".join(c for c, r in loaded_by if r)
-            status = f"LOADED via a reachable loader in {who}"
-        elif loaded_by:
-            who = ", ".join(c for c, _r in loaded_by)
-            status = (
-                f"*** DECLARED AND SELF-LOADED IN {who}, BUT NO REACHABLE CALLER "
-                "-- the group has no effect ***"
-            )
-        else:
-            status = "*** DECLARED, NEVER LOADED ***"
-        print(f"  {const} = {value!r}  ({rel})\n      -> {status}")
+    residual = {
+        sym: places for sym, places in sites.items()
+        if sym not in reachable and not sym.startswith("_")
+    }
+    undeclared = {s: p for s, p in residual.items() if s not in ALLOWED}
+    declared = {s: p for s, p in residual.items() if s in ALLOWED}
 
-    return 1 if any(r[3] for r in orphans) else 0
+    print(f"defined public symbols      : {len([s for s in sites if not s.startswith('_')])}")
+    print(f"reachable from roots        : {len([s for s in sites if s in reachable and not s.startswith('_')])}")
+    print(f"unreachable, DECLARED       : {len(declared)}")
+    print(f"unreachable, UNDECLARED     : {len(undeclared)}")
+
+    if undeclared:
+        print("\n=== UNDECLARED UNREACHABLE — each is a defect or needs a declaration ===")
+        for sym in sorted(undeclared):
+            for rel, line in undeclared[sym]:
+                print(f"  {rel}:{line}  {sym}")
+    if declared:
+        print("\n=== declared unreachable (reason on record) ===")
+        for sym in sorted(declared):
+            print(f"  {sym}: {ALLOWED[sym]}")
+
+    return 1 if undeclared else 0
 
 
 if __name__ == "__main__":
