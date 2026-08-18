@@ -70,6 +70,12 @@ DEFAULT_TOKEN_ENV = "OPENSANDBOX_ACCESS_TOKEN"
 #: execd's own local-development port, from the published spec's ``servers`` list.
 DEFAULT_BASE_URL = "http://127.0.0.1:44772"
 
+#: Execution is not implemented yet (see ``submit``). ``availability`` reads this so a reachable
+#: server can never be SELECTED and then fail at execution — a provider that advertises itself and
+#: then cannot run a node is the declared-not-enforced shape this project exists to refuse. One
+#: constant, read by both, so the guard and the raise cannot drift apart.
+EXECUTION_IMPLEMENTED = False
+
 #: A hardening layer counts as enforced only when execd says ``active``. ``degraded`` means
 #: "configured but a prerequisite is missing", which is precisely the case that must not read as
 #: enforced — it is the shape of a control that looks present and constrains less than it claims.
@@ -258,11 +264,35 @@ class OpenSandboxTransport:
     # ── RemoteExecTransport ──────────────────────────────────────────────────
 
     def availability(self) -> tuple[bool, str]:
-        """Health-check ``/ping``, then require that the isolator reports itself available.
+        """May this provider be SELECTED for a node? Fail-closed while execution is unimplemented.
+
+        Deliberately not the same question as "is the backend healthy" — see ``backend_reachable``.
+        Returning True here while ``submit`` raises would let the registry choose this provider and
+        then fail at execution, having already paid for every node upstream. Never includes the
+        token or a response body in the reason.
+        """
+        if not EXECUTION_IMPLEMENTED:
+            # Checked BEFORE the network so the answer cannot depend on a server being up: a
+            # deployment must get the same refusal whether or not the platform is running.
+            return (
+                False,
+                "opensandbox: execution is not implemented yet, so this backend must not be "
+                "selected — see submit(). Attestation is complete and tested; flip "
+                "EXECUTION_IMPLEMENTED when submit() lands.",
+            )
+        return self.backend_reachable()
+
+    def backend_reachable(self) -> tuple[bool, str]:
+        """Whether the backend is up and its isolator reports itself available.
+
+        Split out from ``availability`` so the two questions stay separately answerable and
+        separately testable: "is the platform healthy" is an operator diagnostic that remains
+        meaningful and exercised while "may this provider be selected" is gated on execution
+        existing. Folding them into one function is how the reachability logic would have rotted
+        untested behind the guard above.
 
         Two calls rather than one on purpose: a reachable execd whose isolation is unavailable is a
-        different failure from an unreachable one, and an operator needs to be told which. Never
-        includes the token or the response body in the reason.
+        different failure from an unreachable one, and an operator needs to be told which.
         """
         try:
             req = _urlrequest.Request(self._base + "/ping", method="GET", headers=self._headers())

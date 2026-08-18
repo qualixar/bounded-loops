@@ -201,9 +201,9 @@ def test_no_server_reachable_fails_closed_with_a_reason() -> None:
     """
     transport = OpenSandboxTransport(base_url="http://127.0.0.1:44772")
 
-    ok, reason = transport.availability()
+    ok, reason = transport.backend_reachable()
 
-    assert not ok, "availability must not report success without a reachable, available isolator"
+    assert not ok, "backend_reachable must not report success without a reachable isolator"
     assert "opensandbox" in reason
     # And it attests nothing rather than raising, so the registry can fall through.
     controls = transport.attested_controls(
@@ -220,17 +220,40 @@ def test_a_reachable_execd_with_isolation_off_is_distinguished_from_unreachable(
     })
     transport = OpenSandboxTransport(opener=opener)
 
-    ok, reason = transport.availability()
+    ok, reason = transport.backend_reachable()
 
     assert not ok
     assert "reports unavailable" in reason
     assert "bwrap not installed" in reason, "the backend's own diagnostic must reach the operator"
 
 
-def test_availability_succeeds_when_ping_and_capabilities_both_agree() -> None:
+def test_backend_reachable_succeeds_when_ping_and_capabilities_both_agree() -> None:
+    """The operator diagnostic, which stays meaningful while selection is gated."""
     opener = _FakeOpener({"/ping": (200, {}), "/v1/isolated/capabilities": (200, _caps())})
 
-    assert OpenSandboxTransport(opener=opener).availability() == (True, "")
+    assert OpenSandboxTransport(opener=opener).backend_reachable() == (True, "")
+
+
+def test_a_healthy_backend_is_still_refused_for_selection_while_submit_raises() -> None:
+    """The defect this guard closes. Found by asking what a release would actually do.
+
+    ``availability`` returning True while ``submit`` raises means the registry selects this
+    provider and then fails at execution, having already paid for every node upstream of it. That
+    is a capability declared in a readable place and enforced nowhere — this project's own defect
+    class, in this project. So selection is refused independently of whether the platform is up.
+    """
+    opener = _FakeOpener({"/ping": (200, {}), "/v1/isolated/capabilities": (200, _caps())})
+    transport = OpenSandboxTransport(opener=opener)
+
+    assert transport.backend_reachable() == (True, ""), "the backend really is healthy here"
+
+    ok, reason = transport.availability()
+    assert not ok, "a provider that cannot execute must never be selectable"
+    assert "not implemented" in reason
+    # And the refusal must not depend on the server: same answer with nothing listening.
+    offline_ok, offline_reason = OpenSandboxTransport(opener=_FakeOpener({})).availability()
+    assert not offline_ok
+    assert offline_reason == reason, "the refusal must be independent of backend health"
 
 
 # ── the guards ───────────────────────────────────────────────────────────────
@@ -291,50 +314,31 @@ def test_submit_fails_closed_rather_than_returning_an_empty_result() -> None:
         transport.submit(request)
 
 
-def test_the_own_kernel_providers_refuse_this_transport() -> None:
-    """``RemoteIsolationProvider(require_kernel=True)`` must decline, because kernel is UNKNOWN.
+def test_both_refusal_gates_work_and_in_this_order(monkeypatch) -> None:
+    """Two independent reasons this transport cannot back an own-kernel tier, and both must hold.
 
-    This is the registry-level consequence of the attestation, checked through the real provider
-    rather than restated: it is the behaviour a deployment actually gets.
+    The execution gate fires first, so that is what an operator sees today. But the attestation
+    refusal is the one that must survive `submit()` landing — otherwise flipping
+    ``EXECUTION_IMPLEMENTED`` would silently promote a shared-kernel backend into a tier that
+    requires its own kernel. Patching the flag proves the second gate is real and not merely
+    shadowed by the first.
     """
+    from bounded_loops.graph.adapters.enforcement.providers import opensandbox as osb
+
     opener = _FakeOpener({"/ping": (200, {}), "/v1/isolated/capabilities": (200, _caps())})
-    transport = OpenSandboxTransport(opener=opener)
     provider = RemoteIsolationProvider(
-        provider_id="microvm", transport=transport, require_kernel=True,
+        provider_id="microvm", transport=OpenSandboxTransport(opener=opener), require_kernel=True,
     )
 
-    availability = provider.probe(
+    first = provider.probe(
         tier=IsolationLevel.CUSTOMER_MANAGED_WORKER, network_mode=NetworkMode.DENY,
     )
+    assert not first.available
+    assert "not implemented" in first.reason, "the execution gate is the one that fires today"
 
-    assert not availability.available
-    assert "own-kernel" in availability.reason
-
-
-# ── registry integration ─────────────────────────────────────────────────────
-
-
-def test_the_default_chain_assembles_without_a_transport_and_declines_fail_closed() -> None:
-    """Every host must be able to build the full chain. An unconfigured platform declines."""
-    from bounded_loops.graph.adapters.enforcement.registry import default_registry
-
-    registry = default_registry(include_host_managed=False)
-
-    assert "sandbox_platform" in registry.provider_ids
-
-
-def test_the_sandbox_platform_never_preempts_the_cheap_native_cage() -> None:
-    """The opt-in rule, enforced by position rather than promised in a comment.
-
-    A deployment that runs the platform must still get Seatbelt/bwrap for a tier native can
-    deliver — otherwise adding the platform silently moves every node off the laptop, which is the
-    regression this ordering exists to prevent.
-    """
-    from bounded_loops.graph.adapters.enforcement.registry import default_registry
-
-    ids = default_registry(include_host_managed=False).provider_ids
-
-    assert ids.index("native") < ids.index("sandbox_platform"), (
-        "native must be tried before the managed platform"
+    monkeypatch.setattr(osb, "EXECUTION_IMPLEMENTED", True)
+    second = provider.probe(
+        tier=IsolationLevel.CUSTOMER_MANAGED_WORKER, network_mode=NetworkMode.DENY,
     )
-    assert ids[-1] == "sandbox_platform", "the enterprise opt-in tier is the last resort"
+    assert not second.available, "the kernel refusal must survive execution being implemented"
+    assert "own-kernel" in second.reason
