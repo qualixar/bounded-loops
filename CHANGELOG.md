@@ -3,6 +3,40 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.8] — 2026-08-18
+
+Additive. No existing command changes its behaviour, its output, or its exit code.
+
+### Added
+
+- **DeepSeek Harness as a worker.** `dsh` joins the local-CLI providers, so a node can run
+  `dsh --profile headless` with its completion decided by an independent gate and its attempts
+  bounded by the manifest. It is reported as **not metered**: that harness records token usage
+  in its own session log rather than on the output this connector reads, so a node declaring a
+  spend cap on it fails closed naming the provider instead of counting its calls as free. It
+  authenticates from its environment, and like every shipped provider it pre-grants nothing —
+  add the variable name to your own provider catalog entry and your operator allow-list, or
+  point its base URL at a local endpoint.
+
+- **Gate plugins.** A package can publish a gate through the `bounded_loops.gates` entry-point
+  group, keyed by gate kind. A third-party gate cannot claim a gate kind the shipped catalogue
+  already uses, cannot supply both a node's worker and that node's gate, and is reported as
+  unmeasured — the false-accept rates in this project's evaluation are properties of the gates
+  measured, and do not transfer. A gate that raises, or returns a verdict whose `passed` is not
+  a real boolean, is recorded as a failure rather than a pass.
+
+- **Managed sandbox platforms as an isolation provider.** An OpenSandbox-compatible server can
+  be supplied as a remote execution backend. It is the last provider tried, so a local sandbox
+  is still used wherever it can deliver the requested isolation, and it publishes only the
+  controls the platform actually attests: network denial, authorized egress and own-kernel
+  isolation are reported as unknown rather than assumed, so a node requiring them is refused.
+  Executing a node through it is not implemented yet, and the provider declines selection until
+  it is.
+
+### Fixed
+
+- Three type-checking errors that had no effect at runtime.
+
 ## [0.6.7] — 2026-08-18
 
 Closes the three enterprise-review commitments left open in 0.6.6. All three are

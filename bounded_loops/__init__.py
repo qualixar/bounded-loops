@@ -40,7 +40,7 @@ from bounded_loops.graph.application.node_contracts import (
     WorkerResult,
 )
 
-__version__ = "0.6.7"
+__version__ = "0.6.8"
 
 __all__ = [
     "__version__",
