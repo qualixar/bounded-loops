@@ -27,7 +27,7 @@ from pathlib import Path
 
 from bounded_loops.domain.errors import ManifestError
 from bounded_loops.graph.loop_node_wiring import (
-    admitted_loop_package_digests,
+    admitted_digests_or_problem,
     parse_loop_roots,
 )
 from bounded_loops.graph.application.compile_graph import (
@@ -308,13 +308,26 @@ def cmd_graph_run(args: argparse.Namespace) -> int:
         except (OSError, json.JSONDecodeError) as exc:
             _err(f"graph run: cannot load connections — {exc}")
             return 2
+        if not isinstance(connections_raw, list):
+            _err(
+                "graph run: connections must be a JSON array of connection objects, got "
+                f"{type(connections_raw).__name__}"
+            )
+            return 2
+
+    # Same shared resolver `bl graph plan` uses. This command tracebacked on a duplicated
+    # loop package while plan already exited 2 — the fix had been applied per call site.
+    package_digests, problem = admitted_digests_or_problem(
+        parse_loop_roots(getattr(args, "loop_roots", None))
+    )
+    if problem is not None or package_digests is None:
+        _err(f"graph run: {problem}")
+        return 2
 
     try:
         snapshot = CompileSnapshot(
             policy_digest=_NULL_POLICY_DIGEST,
-            package_digests=admitted_loop_package_digests(
-                parse_loop_roots(getattr(args, "loop_roots", None))
-            ),
+            package_digests=package_digests,
             connections=tuple(connections_raw),  # type: ignore[arg-type]
         )
         plan = compile_graph(graph, snapshot)
@@ -403,8 +416,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     plan_p.add_argument("--json", action="store_true", help="Emit JSON output.")
     plan_p.add_argument(
         "--loop-roots", action="append", dest="loop_roots", default=None, metavar="<dir>",
-        help="Extra loop-package root (repeatable). MUST match the roots you will pass to "
-             "`bl graph run`, or this plan describes an admission set the run will not use.",
+        help="Loop-package root, REPLACING the default catalogue (repeatable). Pass the same "
+             "roots you will pass to `bl graph run`, or this plan describes an admission set "
+             "the run will not use. The plan prints the roots it resolved so you can check.",
     )
     plan_p.set_defaults(func=cmd_graph_plan)
 
@@ -554,8 +568,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     run_p.add_argument(
         "--loop-roots", action="append", dest="loop_roots", default=None, metavar="<dir>",
         help=(
-            "Directory of loop packages to admit, in addition to the shipped packages (repeatable). "
-            "Packages are resolved BY DIGEST — adding a root makes a package findable; "
+            "Directory of loop packages to admit, REPLACING the default catalogue (repeatable). "
+            "It does NOT add to the shipped packages, which is what this text claimed until the "
+            "Wave-1 audit: passing any root drops both defaults, so a graph naming a shipped "
+            "package will be refused unless that root carries it too. "
+            "Packages are resolved BY DIGEST — a root makes a package findable; "
             "it cannot change which bytes a given digest means."
         ),
     )

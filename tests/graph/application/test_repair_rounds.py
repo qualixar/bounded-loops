@@ -855,3 +855,58 @@ def test_a_uniform_budget_on_every_node_is_still_read_as_one_number():
     carriers = [n for n in plan.nodes if "repair_budget" in n.approval_policy]
     assert len(carriers) == len(plan.nodes), "the compiler distributes to every node"
     assert repair_budget(plan) == 3
+
+
+# ── the negative-budget tamper guard (Wave-1 audit round 1) ────────────────────────────────────
+
+@pytest.mark.parametrize("forged_budget", [-1, -2, -100, 101, 1_000])
+def test_a_repair_budget_outside_the_authored_range_is_refused_not_used(forged_budget: int) -> None:
+    """The validator allows 0..100, so anything outside it means the plan did not pass through it.
+
+    BOTH ends are checked and the first version of this guard only checked one. Below 0,
+    `(1 + budget)` — the work bound's multiplier — collapses the bound and any consumer deriving
+    components by dividing by it divides by zero, which `bl graph plan` does. Above the ceiling
+    nothing crashes and the bound is silently INFLATED, which is the quieter failure: an operator
+    authorises a run against a number no authored graph could have produced.
+
+    Parametrised past a single value on purpose. Testing only -1 would have been satisfied by a
+    guard written `if budget == -1`.
+    """
+    plan = _plan(budget=1, attempts=2)
+    forged = dataclasses.replace(
+        plan,
+        nodes=tuple(
+            dataclasses.replace(
+                node, approval_policy={**node.approval_policy, "repair_budget": forged_budget}
+            )
+            for node in plan.nodes
+        ),
+    )
+    with pytest.raises(GraphIntegrityError, match="outside"):
+        repair_budget(forged)
+    with pytest.raises(GraphIntegrityError, match="outside"):
+        total_execution_bound(forged)
+
+
+@pytest.mark.parametrize("legal_budget", [0, 1, 100])
+def test_the_authored_range_endpoints_stay_legal(legal_budget: int) -> None:
+    """Calibration for the guard above: it must reject outside the range without moving the edges."""
+    plan = _plan(budget=1, attempts=1)
+    inside = dataclasses.replace(
+        plan,
+        nodes=tuple(
+            dataclasses.replace(
+                node, approval_policy={**node.approval_policy, "repair_budget": legal_budget}
+            )
+            for node in plan.nodes
+        ),
+    )
+    assert repair_budget(inside) == legal_budget
+    assert total_execution_bound(inside) == (1 + legal_budget) * 3
+
+
+def test_zero_stays_legal_so_the_guard_did_not_move_the_boundary() -> None:
+    """Calibration for the test above: 0 is the normal repair-off case and must still compute."""
+    plan = _plan(budget=0, attempts=1, repair=False)  # budget defaults to 2 — must be explicit
+    assert repair_budget(plan) == 0
+    assert total_execution_bound(plan) == 3  # (1 + 0) * 3 nodes x 1 attempt

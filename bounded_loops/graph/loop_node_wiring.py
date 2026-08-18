@@ -444,6 +444,30 @@ def parse_loop_roots(raw: list[str] | None) -> "tuple[Path, ...] | None":
     return tuple(Path(p) for p in raw) if raw else None
 
 
+def admitted_digests_or_problem(
+    roots: tuple[Path, ...] | None,
+) -> tuple[frozenset[str] | None, str | None]:
+    """Resolve the catalogue, or return a classified human-ready reason. Never raises.
+
+    Exists because this failure was fixed three times in one day and reached a different
+    subset of callers each time. First ``bl graph plan`` passed ``frozenset()`` while eleven
+    siblings admitted properly. Then plan caught ``GraphIntegrityError`` and not ``OSError``.
+    Then plan caught both and ``bl graph run`` — the command that actually spends — still
+    tracebacked on the same duplicate package. Every one of those was a fix applied per call
+    site. One function is the only structural answer: there is now a single place to be wrong.
+
+    ``unusable`` covers the integrity family deliberately. It is not always a duplicate — the
+    same type is raised for a symlink or a non-regular file — so a message naming duplicates
+    would be wrong for two of the three causes. The exception text carries the specific cause.
+    """
+    try:
+        return admitted_loop_package_digests(roots), None
+    except GraphIntegrityError as exc:
+        return None, f"the loop-package catalogue on this host is unusable — {exc}"
+    except OSError as exc:
+        return None, f"the loop-package catalogue on this host is unreadable — {exc}"
+
+
 def admitted_loop_package_digests(roots: tuple[Path, ...] | None = None) -> frozenset[str]:
     """Every loop-package digest resolvable on this host, in the ``sha256:`` form a plan declares.
 

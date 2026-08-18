@@ -31,10 +31,12 @@ from bounded_loops.graph.application.validate_graph import (
 from bounded_loops.graph.domain.authoring import _NULL_POLICY_DIGEST
 from bounded_loops.graph.application.plan_persistence import load_plan_from_run_dir
 from bounded_loops.graph.loop_node_wiring import (
+    _default_loop_roots,
+    admitted_digests_or_problem,
     admitted_loop_package_digests,
     parse_loop_roots,
 )
-from bounded_loops.graph.domain.errors import GraphValidationError
+from bounded_loops.graph.domain.errors import GraphIntegrityError, GraphValidationError
 
 
 def _err(msg: str) -> None:
@@ -139,16 +141,42 @@ def cmd_graph_plan(args: argparse.Namespace) -> int:
         except (OSError, json.JSONDecodeError) as exc:
             _err(f"graph plan: cannot load connections — {exc}")
             return 2
+        # A connections file holding `null`, `1` or `true` parses as valid JSON and then
+        # `tuple(...)` raises TypeError, which no handler below covers.
+        if not isinstance(connections_raw, list):
+            _err(
+                "graph plan: connections must be a JSON array of connection objects, got "
+                f"{type(connections_raw).__name__}"
+            )
+            return 2
 
+    # PHASE 1 — resolve the host's loop-package catalogue, as its own step with its own failure.
+    # It reads the filesystem and raises GraphIntegrityError for reasons that have nothing to do
+    # with the manifest: two byte-identical packages under different names, a package that is not
+    # a directory. Reporting those as a compile failure would tell an author to fix their graph
+    # when the fix is in their catalogue. GraphIntegrityError is a SIBLING of
+    # GraphValidationError, not a subclass, so the compile handler below cannot cover it — before
+    # this split, `cp -R loops/<pkg> loops/<pkg>-copy` made this command traceback.
+    #
+    # OSError is caught for the SAME reason and was missed on the first pass: indexing walks the
+    # tree with `iterdir` and hashes every file with `read_bytes`, so one unreadable file is a
+    # PermissionError, not a GraphIntegrityError. Widening for one exception type and not the
+    # other left `chmod 000 loops/<pkg>/loop.yaml` still tracebacking. The two are reported
+    # apart because they are different problems: UNREADABLE is a permissions fix, INCONSISTENT
+    # is a duplicate to delete.
+    roots = parse_loop_roots(getattr(args, "loop_roots", None))
+    package_digests, problem = admitted_digests_or_problem(roots)
+    if problem is not None or package_digests is None:
+        _err(f"graph plan: {problem}")
+        return 2
+
+    # PHASE 2 — compile. ``package_digests`` was ``frozenset()`` until 0.6.8, which refused every
+    # ``kind: loop`` node and so refused all six shipped reference graphs, while ``bl graph run``
+    # admitted the local catalogue.
     try:
         snapshot = CompileSnapshot(
             policy_digest=_NULL_POLICY_DIGEST,
-            # Was ``frozenset()``, which refused every ``kind: loop`` node and so refused all
-            # six shipped reference graphs — while ``bl graph run`` admitted the local
-            # catalogue. The pre-run command could not inspect the graphs the runner accepts.
-            package_digests=admitted_loop_package_digests(
-                parse_loop_roots(getattr(args, "loop_roots", None))
-            ),
+            package_digests=package_digests,
             connections=tuple(connections_raw),  # type: ignore[arg-type]
         )
         plan = compile_graph(graph, snapshot)
@@ -156,16 +184,22 @@ def cmd_graph_plan(args: argparse.Namespace) -> int:
         _err(f"graph plan: compile failed [{exc.code}] {exc.pointer} — {exc.message}")
         return 2
 
-    # The pre-run work bound — the number this command exists to report, and the one a reader
-    # arriving from the paper looks for. ``total_execution_bound`` is the sole authority for the
-    # formula; the two components below are DERIVED from it rather than recomputed, because two
-    # expressions for one truth is how a bound and its display drift apart.
+    # PHASE 3 — the pre-run work bound, the number this command exists to report.
+    # ``total_execution_bound`` is the sole authority for the formula; the components below are
+    # DERIVED from it rather than recomputed, because two expressions for one truth is how a
+    # bound and its display drift apart.
     #
-    # ``repair_budget`` raises on conflicting per-node budgets. ``compile_graph`` cannot produce
-    # that state — it copies ONE global ``policies.repair_budget`` onto every node — so the raise
-    # is a tamper check on a hand-forged plan and is unreachable from a plan compiled here.
-    bound = total_execution_bound(plan)
-    rounds = repair_budget(plan)
+    # Both calls raise GraphIntegrityError on a plan the compiler could not have produced —
+    # divergent or negative per-node repair budgets. That is unreachable from the plan compiled
+    # in phase 2, which copies ONE validated global budget onto every node. It is caught anyway:
+    # an unreachable raise is a claim about today's callers, and this command already grew one
+    # crash from exactly that assumption.
+    try:
+        bound = total_execution_bound(plan)
+        rounds = repair_budget(plan)
+    except GraphIntegrityError as exc:
+        _err(f"graph plan: cannot compute the execution bound — {exc}")
+        return 2
     attempts_per_round = bound // (1 + rounds)  # exact: bound == (1 + rounds) * attempts_per_round
 
     if getattr(args, "json", False):
@@ -189,11 +223,15 @@ def cmd_graph_plan(args: argparse.Namespace) -> int:
         ]
         print(json.dumps(
             {
+                "admission": {
+                    "loop_package_roots": [str(r) for r in (roots or _default_loop_roots())],
+                    "loop_packages_admitted": len(package_digests),
+                },
                 "bindings": bindings_out,
                 "execution_bound": {
                     "attempts_per_round": attempts_per_round,
                     "repair_rounds": rounds,
-                    "total_node_executions": bound,
+                    "total_attempt_slots": bound,
                 },
                 "levels": [list(level) for level in plan.levels],
                 "nodes": nodes_out,
@@ -209,9 +247,15 @@ def cmd_graph_plan(args: argparse.Namespace) -> int:
         print(f"graph   : {plan.source_graph_digest}")
         print(f"policy  : {plan.policy_digest}")
         print(
-            f"bound   : {bound} node executions max "
+            f"bound   : {bound} attempt slots max "
             f"= (1 + {rounds} repair rounds) x {attempts_per_round} attempts/round"
         )
+        # The admission basis, disclosed rather than enforced. Roots are cwd-sensitive
+        # (`_default_loop_roots` includes `cwd/loops`) and nothing can compare two separate
+        # invocations, so the honest surface is to state what THIS plan resolved and let a
+        # reader check it against the run.
+        shown = ", ".join(str(r) for r in (roots or _default_loop_roots()))
+        print(f"pkgroots: {shown} ({len(package_digests)} loop packages admitted)")
         for i, level in enumerate(plan.levels):
             nodes_in_level = ", ".join(level)
             print(f"wave {i}  : [{nodes_in_level}]")

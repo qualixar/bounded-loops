@@ -13,9 +13,14 @@ hash-chained receipt, so a verifier sees precisely where and why monotonicity re
 
 So the lifecycle is per **(node, round)**, not per node. Every rule below follows from that.
 
-**Termination.** Total node executions are bounded by ``(1 + R) * Σ_v a_v``, where ``R`` is the
+**Termination.** Total ATTEMPT SLOTS are bounded by ``(1 + R) * Σ_v a_v``, where ``R`` is the
 graph's GLOBAL repair budget and ``a_v`` is node ``v``'s ``max_attempts`` — the TOTAL attempts it may
 make, so ``max_attempts: 1`` contributes 1, not 2.
+
+A slot is not a process start. ``MAX_REDRIVES_PER_ATTEMPT`` lets an attempt whose worker died
+before reaching its gate be re-driven on resume, so one slot can start the worker up to four
+times. Bounded either way, but a reader who takes this figure for process starts understates it —
+and understating is the wrong direction for a spend bound.
 
 Stated in the retry-budget notation the scheduling literature uses, where ``b_v`` counts RETRIES, that
 is ``(1 + R) * Σ_v (b_v + 1)``. The two are the same quantity: ``a_v = b_v + 1``. Writing
@@ -40,6 +45,13 @@ from __future__ import annotations
 from typing import Mapping, Protocol
 
 from bounded_loops.graph.application.failure_policy import MAY_CONTINUE_AFTER
+# IMPORTED, never re-typed. This is the ceiling the authoring validator enforces, and the tamper
+# guard below exists precisely to detect a plan that did not pass through that validator. A second
+# copy of the number would let the guard and the rule it enforces drift apart silently, which is
+# the same defect class the guard is checking for.
+from bounded_loops.graph.application.validate_graph import (
+    _MAX_REPAIR_ROUNDS as _AUTHORED_REPAIR_CEILING,
+)
 from bounded_loops.graph.domain.authoring import Effect
 from bounded_loops.graph.domain.errors import GraphIntegrityError
 from bounded_loops.graph.domain.events import NodeFailureCause, StoredGraphEvent
@@ -139,11 +151,39 @@ def repair_budget(plan: ExecutionPlan) -> int:
             "each other indefinitely with both counters showing credit, which is the "
             "construction the termination bound excludes. Recompile the plan."
         )
-    return declared.pop()
+    budget = declared.pop()
+    if not 0 <= budget <= _AUTHORED_REPAIR_CEILING:
+        raise GraphIntegrityError(
+            f"repair budget {budget} is outside 0..{_AUTHORED_REPAIR_CEILING}; the authoring"
+            " validator refuses anything outside that range, so this plan did not come from it —"
+            " a forgery or a corruption, the same class as divergent per-node budgets."
+            " BOTH ends matter and the first version of this guard only checked one. Below 0,"
+            " `(1 + budget)` — the work bound's multiplier — collapses the bound to 0 or negative,"
+            " and a consumer deriving components by dividing by it divides by zero. Above the"
+            " ceiling, nothing crashes and the bound is silently INFLATED, which is the quieter"
+            " failure: an operator authorises a run against a number no authored graph could"
+            " have produced."
+        )
+    return budget
 
 
 def total_execution_bound(plan: ExecutionPlan) -> int:
-    """``(1 + R) * Σ_v (b_v + 1)`` — the tight bound on node executions for the whole run.
+    """``(1 + R) * Σ_v m_v`` — an UPPER bound on ATTEMPT SLOTS for the whole run.
+
+    Three words in that line were wrong until the Wave-1 audit and each mattered.
+
+    NOT "tight": a repair round re-runs only ``descendants(target)``, never every node, so the
+    ``(1 + R)`` factor over-counts every round after the first. Valid as a ceiling, which is all
+    an operator needs, but calling it tight invites a referee to look for the exact figure.
+
+    NOT "node executions": ``MAX_REDRIVES_PER_ATTEMPT`` is 3, and an attempt whose worker dies
+    before reaching its gate is re-driven on resume, so ONE slot can start the worker four
+    times. This counts SLOTS. Reading it as process starts understates by up to 4x — the wrong
+    direction for a spend bound. The paper says attempts throughout; this now matches it.
+
+    ``m_v`` not ``b_v + 1``: the two are equal by definition (a retry budget plus the initial
+    attempt), but the body below sums ``max_attempts`` directly, and a summary line in one
+    notation over a body in another is how a reader concludes the code does not do what it says.
 
     Sums ``max_attempts`` directly, which is what the controller actually spends: ``run_graph``
     iterates ``range(1, max_attempts + 1)``. See the module docstring on why ``Σ (max_attempts + 1)``
