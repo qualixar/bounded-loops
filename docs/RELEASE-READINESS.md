@@ -1,8 +1,14 @@
 # Graph Engine — Release Readiness Assessment
 
-**Version:** 0.6.0  
+**Version assessed:** 0.6.0  
 **Assessment date:** 2026-08-15 (updated for the 0.6.0 release: MCP 2.0, `bl monitor`, and a
 third round of dual external audit — five focused passes per auditor)  
+**NOT RE-ASSESSED SINCE.** The current release is 0.6.9. Everything below describes the graph
+engine as it stood at 0.6.0 and has not been re-run against 0.6.7, 0.6.8 or 0.6.9 — which added
+third-party gate plugins, `GuardedGate`, run receipts, and `bl graph plan`'s pre-run bound. Read it
+as a dated assessment, not a current one. Relabelling this header was the only honest option: the
+field said "Version: 0.6.0" beside a 0.6.9 package, and bumping the number would have claimed an
+assessment that nobody performed.  
 **Scope:** `bl graph` subcommand group and supporting application/adapter layers
 
 **What the third audit round changed, and why it belongs in a readiness document.** Eight HIGH

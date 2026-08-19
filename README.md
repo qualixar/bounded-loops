@@ -167,8 +167,8 @@ bubblewrap, no Docker), still with no credential.
 bl graph run --execute --out ./sandbox-demo
 ```
 
-A built-in probe node runs inside the sandbox, attempts a network connection and an
-out-of-workspace write, and an independent gate passes only if the OS denied both.
+A built-in probe node runs inside the sandbox, attempts a network connection, and an
+independent gate passes only if the OS denied it.
 
 To run a real agent graph (needs your already-logged-in `claude`, `codex`, `grok`,
 `muse`, or `agy` CLI):
@@ -272,8 +272,8 @@ Full how-to with worked examples: [docs/WRITING-A-LOOP.md](docs/WRITING-A-LOOP.m
 ### Built-in gates
 
 `command`, `pytest`, `jsonschema`, `composite`, plus typed adapters for `osv`,
-`checkov`, `gitleaks`, `semgrep`, `trivy`, `promptfoo`, `great_expectations`, and
-`axe`. Typed gates parse structured output and fail closed on malformed reports.
+`checkov`, `gitleaks`, `semgrep`, `trivy`, `promptfoo`, and `great_expectations`.
+Typed gates parse structured output and fail closed on malformed reports.
 Run `bl gates` to check local tool availability.
 
 ---

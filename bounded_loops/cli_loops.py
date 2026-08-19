@@ -40,7 +40,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         help="Browse the shipped loop catalog.",
         description=(
             "Commands for browsing the bounded-loops catalog. "
-            "Use `bl loops list` to see all 68 shipped loops with optional "
+            "Use `bl loops list` to see all 69 shipped loops with optional "
             "role and gate-kind filters."
         ),
     )
@@ -245,7 +245,7 @@ def _discover_catalog_yamls() -> list[Path]:
 
     # Nothing on disk: fall back to the catalog bundled in the wheel. Without this a
     # `pip install bounded-loops` user ran `bl loops list`, got "No loops found", and was
-    # told to "run from a bounded-loops source checkout" — the package advertises 68 loops
+    # told to "run from a bounded-loops source checkout" — the package advertises 69 loops
     # and then asks you to go and clone them.
     if not found:
         from bounded_loops.catalog_access import packaged_catalog_root

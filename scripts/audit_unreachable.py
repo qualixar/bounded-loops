@@ -34,7 +34,7 @@ def py_files() -> list[pathlib.Path]:
     return sorted(p for p in PKG.rglob("*.py") if "__pycache__" not in p.parts)
 
 
-def names_in(node: ast.AST) -> set[str]:
+def names_in(node: ast.AST, *, strings: bool = True) -> set[str]:
     """Every identifier mentioned anywhere under `node`, including attribute tails.
 
     Attribute tails matter: `mod.helper()` should count as a reference to `helper`, because the
@@ -49,15 +49,22 @@ def names_in(node: ast.AST) -> set[str]:
         elif isinstance(sub, (ast.ImportFrom, ast.Import)):
             for alias in sub.names:
                 found.add((alias.asname or alias.name).split(".")[-1])
-        elif isinstance(sub, ast.Constant) and isinstance(sub.value, str):
-            # A string can be a dynamic dispatch key or a forward-ref annotation.
+        elif strings and isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+            # A string can be a dynamic dispatch key or a forward-ref annotation. `strings=False`
+            # recomputes reachability without this rule, which is how the STRING-ONLY section below
+            # finds the symbols whose ONLY evidence of a caller is a literal that happens to spell
+            # their name. That rule is load-bearing — it is how the P2 gate table reaches CheckovGate
+            # — and it is also how a stray `x = "SomeOrphan"` anywhere in the package would silence
+            # this whole audit for that symbol. Both, reported separately.
             token = sub.value.strip()
             if token.isidentifier():
                 found.add(token)
     return found
 
 
-def build() -> tuple[dict[str, set[str]], dict[str, list[tuple[str, int]]], set[str]]:
+def build(*, strings: bool = True) -> tuple[
+    dict[str, set[str]], dict[str, list[tuple[str, int]]], set[str]
+]:
     """Return (symbol -> referenced names, symbol -> definition sites, root names)."""
     refs: dict[str, set[str]] = {}
     sites: dict[str, list[tuple[str, int]]] = {}
@@ -75,15 +82,15 @@ def build() -> tuple[dict[str, set[str]], dict[str, list[tuple[str, int]]], set[
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 key = stmt.name
                 sites.setdefault(key, []).append((rel, stmt.lineno))
-                refs.setdefault(key, set()).update(names_in(stmt) - {key})
+                refs.setdefault(key, set()).update(names_in(stmt, strings=strings) - {key})
                 # A decorated top-level def is registered at import time.
                 if stmt.decorator_list:
                     roots.add(key)
                 # Its decorators and default values evaluate at import time.
                 for dec in stmt.decorator_list:
-                    roots.update(names_in(dec))
+                    roots.update(names_in(dec, strings=strings))
             else:
-                roots.update(names_in(stmt))
+                roots.update(names_in(stmt, strings=strings))
     return refs, sites, roots
 
 
@@ -107,24 +114,57 @@ def declared_roots() -> set[str]:
     return out
 
 
-def main() -> int:
-    refs, sites, import_roots = build()
+def _reached(*, strings: bool) -> tuple[set[str], dict[str, list[tuple[str, int]]]]:
+    """The transitive closure from the roots, and every definition site."""
+    refs, sites, import_roots = build(strings=strings)
     roots = import_roots | declared_roots()
-
     reachable: set[str] = set()
-    queue = [r for r in roots]
+    queue = list(roots)
     while queue:
         name = queue.pop()
         if name in reachable:
             continue
         reachable.add(name)
         queue.extend(refs.get(name, frozenset()) - reachable)
+    return reachable, sites
+
+
+def main() -> int:
+    reachable, sites = _reached(strings=True)
+    reachable_without_strings, _ = _reached(strings=False)
 
     try:
         sys.path.insert(0, str(ROOT / "scripts"))
-        from unreachable_allowlist import ALLOWED  # type: ignore[import-not-found]
-    except Exception:
-        ALLOWED = {}
+        from unreachable_allowlist import (  # type: ignore[import-not-found]
+            ALLOWED,
+            ALLOWED_AMBIGUOUS,
+            ALLOWED_STRING_ONLY,
+        )
+    except Exception as broken:
+        # LOUD, not empty. This used to be `except Exception: ALLOWED = {}`, so a typo in the
+        # allowlist made every declaration vanish and the audit reported 68 undeclared orphans as if
+        # the file had never existed — a broken gate presenting as a failing one, which at least
+        # fails, and would have presented as a PASSING one the moment the residual was empty. An
+        # unreadable allowlist is a broken detector and must say so.
+        print(f"FATAL: allowlist unreadable — {type(broken).__name__}: {broken}", file=sys.stderr)
+        return 2
+
+    public = [name for name in sites if not name.startswith("_")]
+
+    # BLIND SPOT 1 — the graph is keyed by UNQUALIFIED name, because an `ast.Name` does not say which
+    # module's `load` it meant. Two modules defining `load` therefore share one node: their reference
+    # sets merge, and if EITHER is reached both are called reachable. `evaluation/tier2.load` is
+    # test-only and was reported reachable purely because `application/manifest.load` exists. The
+    # detector cannot resolve this without real import resolution, so it stops pretending it has and
+    # says so: every colliding public name must be declared, naming how each site is reached.
+    ambiguous = {
+        name: sites[name] for name in public if len(sites[name]) > 1
+    }
+    # BLIND SPOT 2 — see `names_in`. A symbol reached ONLY because some literal spells its name.
+    string_only = {
+        name: sites[name] for name in public
+        if name in reachable and name not in reachable_without_strings
+    }
 
     residual = {
         sym: places for sym, places in sites.items()
@@ -133,22 +173,39 @@ def main() -> int:
     undeclared = {s: p for s, p in residual.items() if s not in ALLOWED}
     declared = {s: p for s, p in residual.items() if s in ALLOWED}
 
-    print(f"defined public symbols      : {len([s for s in sites if not s.startswith('_')])}")
-    print(f"reachable from roots        : {len([s for s in sites if s in reachable and not s.startswith('_')])}")
+    undeclared_ambiguous = {n: p for n, p in ambiguous.items() if n not in ALLOWED_AMBIGUOUS}
+    undeclared_string_only = {n: p for n, p in string_only.items() if n not in ALLOWED_STRING_ONLY}
+
+    print(f"defined public symbols      : {len(public)}")
+    print(f"reachable from roots        : {len([s for s in public if s in reachable])}")
     print(f"unreachable, DECLARED       : {len(declared)}")
     print(f"unreachable, UNDECLARED     : {len(undeclared)}")
+    print(f"ambiguous by name, DECLARED : {len(ambiguous) - len(undeclared_ambiguous)}")
+    print(f"ambiguous by name, UNDECLARED: {len(undeclared_ambiguous)}")
+    print(f"string-only, DECLARED       : {len(string_only) - len(undeclared_string_only)}")
+    print(f"string-only, UNDECLARED     : {len(undeclared_string_only)}")
 
     if undeclared:
         print("\n=== UNDECLARED UNREACHABLE — each is a defect or needs a declaration ===")
         for sym in sorted(undeclared):
             for rel, line in undeclared[sym]:
                 print(f"  {rel}:{line}  {sym}")
+    if undeclared_ambiguous:
+        print("\n=== UNDECLARED AMBIGUOUS — reachability was computed on a merged name ===")
+        for sym in sorted(undeclared_ambiguous):
+            for rel, line in undeclared_ambiguous[sym]:
+                print(f"  {rel}:{line}  {sym}")
+    if undeclared_string_only:
+        print("\n=== UNDECLARED STRING-ONLY — only a literal spells this name ===")
+        for sym in sorted(undeclared_string_only):
+            for rel, line in undeclared_string_only[sym]:
+                print(f"  {rel}:{line}  {sym}")
     if declared:
         print("\n=== declared unreachable (reason on record) ===")
         for sym in sorted(declared):
             print(f"  {sym}: {ALLOWED[sym]}")
 
-    return 1 if undeclared else 0
+    return 1 if (undeclared or undeclared_ambiguous or undeclared_string_only) else 0
 
 
 if __name__ == "__main__":

@@ -217,7 +217,7 @@ def _with_package_digest(entry: dict[str, Any]) -> dict[str, Any]:
 
     Deliberately NOT cached. A digest is a claim about current content; serving a remembered one
     after the package changed would defeat the check the compiler performs with it. Digesting all
-    68 shipped packages measures ~150ms total, which is not worth trading correctness for.
+    the shipped packages measures ~150ms total, which is not worth trading correctness for.
     """
     if entry.get("error") is not None or not entry.get("path"):
         # Nothing to digest, and an entry that failed to load must not gain a field that makes

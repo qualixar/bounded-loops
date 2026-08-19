@@ -21,6 +21,7 @@ from typing import Mapping
 import pytest
 
 from bounded_loops.adapters.gates import plugins as gp
+from bounded_loops.adapters.gates import provenance as prov
 from bounded_loops.adapters.gates.plugins import (
     GatePluginRefused,
     GuardedGate,
@@ -30,6 +31,9 @@ from bounded_loops.adapters.gates.plugins import (
 )
 from bounded_loops.application.ports import GatePort
 from bounded_loops.domain.models import LoopContext, Rung, Verdict
+
+#: `_prov` uses this to tell "no kind given" from "kind given as None".
+_UNSET = object()
 
 
 def _ctx(workspace: Path) -> LoopContext:
@@ -887,7 +891,53 @@ def test_a_verdict_cannot_change_its_answer_after_being_validated() -> None:
     assert type(out) is Verdict, "the gate's OWN object was handed onward, so it can still flip"
     assert out.passed is False
     assert out.passed is False, "two reads disagreed — the returned verdict is not a snapshot"
-    assert not (out.passed and not out.detail.strip()), "passing verdict with no detail escaped"
+    # `str.strip`, not `out.detail.strip()`. Asking the object is how the sibling test below was
+    # fooled, and an assertion that consults the value under test is not an assertion.
+    assert type(out.detail) is str, "the gate's own string object was handed onward"
+    assert not (out.passed and not str.strip(out.detail)), "passing verdict with no detail escaped"
+
+
+def test_a_str_subclass_cannot_talk_its_way_past_the_empty_detail_rule() -> None:
+    """A passing verdict whose detail LOOKS non-empty only when you ask the gate.
+
+    `isinstance(detail, str)` is true for a `str` subclass, and every method on it — `strip`,
+    `__str__`, `__len__` — belongs to the gate. `_validate` used to run `detail.strip()`, so a
+    subclass returning "looks-fine" from `strip()` satisfied the rule while the value that reached
+    the ledger was still "". That is the unexplainable DONE this rule exists to forbid, and the
+    test guarding the rule asked the same object the same question, so it stayed green through it.
+
+    The other direction matters as much: a `strip()` that lies by returning "" must NOT cause a
+    genuinely explained pass to be refused. Both are asserted here.
+    """
+
+    class _Quiet(str):
+        def strip(self, *args: object, **kwargs: object) -> str:
+            return "looks-fine"
+
+        def __str__(self) -> str:
+            return "also-lies"
+
+    class _QuietGate:
+        def check(self, ctx: LoopContext) -> Verdict:
+            return Verdict(passed=True, detail=_Quiet(""))
+
+    out = GuardedGate(_QuietGate(), kind="quiet").check(None)  # type: ignore[arg-type]
+    assert out.passed is False, "an empty detail talked its way past the rule via strip()"
+    assert type(out.detail) is str
+    assert "no detail" in out.detail
+
+    class _Loud(str):
+        def strip(self, *args: object, **kwargs: object) -> str:
+            return ""
+
+    class _LoudGate:
+        def check(self, ctx: LoopContext) -> Verdict:
+            return Verdict(passed=True, detail=_Loud("pytest: 42 passed"))
+
+    kept = GuardedGate(_LoudGate(), kind="loud").check(None)  # type: ignore[arg-type]
+    assert kept.passed is True, "a real explanation was discarded because strip() lied downward"
+    assert kept.detail == "pytest: 42 passed"
+    assert type(kept.detail) is str, "the subclass instance itself reached the ledger"
 
 
 def test_a_well_formed_verdict_survives_validation_with_its_content_intact() -> None:
@@ -907,9 +957,18 @@ def test_a_well_formed_verdict_survives_validation_with_its_content_intact() -> 
 # ── gate provenance: derived by the harness, never asked of the gate ───────────────────────
 
 
-def _prov(gate, *, plugin_kinds=frozenset(), distributions=None):
-    return gp.gate_provenance(
-        gate, plugin_kinds=plugin_kinds, distributions=distributions or {},
+def _prov(gate, *, kind=_UNSET, plugin_kinds=frozenset(), distributions=None):
+    """`kind` defaults to the wrapper's own `gate_kind` so the existing cases read unchanged.
+
+    In the product it is NOT defaulted — `composition.wire` passes the registry key it resolved
+    itself. `test_provenance_names_the_kind_the_harness_resolved_not_the_one_on_the_object` is the
+    case that pins that difference down.
+    """
+    return prov.gate_provenance(
+        gate,
+        kind=getattr(gate, "gate_kind", None) if kind is _UNSET else kind,
+        plugin_kinds=plugin_kinds,
+        distributions=distributions or {},
     )
 
 
@@ -942,19 +1001,53 @@ def test_source_is_decided_by_the_entry_point_scan_not_by_the_gate() -> None:
 def test_provenance_never_raises_on_a_hostile_gate() -> None:
     """This runs on every lap while building a ledger row. A provenance lookup that killed a run
     would make the audit trail the thing that breaks the audited work. An absent claim reads
-    correctly; a crash does not."""
+    correctly; a crash does not.
 
-    class _Hostile:
+    The hostile read used to be `gate.gate_kind`. It is gone: `kind` now arrives from
+    `composition.wire` as a plain string off the manifest, so there is no property there to
+    weaponise — removing an attack surface beats containing it. `wraps` is the read that SURVIVES,
+    because `implementation` is documented as self-reported, so that is what this pins.
+    """
+
+    class _HostileWraps:
         @property
-        def gate_kind(self):
+        def wraps(self):
             raise SystemExit("provenance lookup weaponised")
 
-    assert _prov(_Hostile()) == {}
+    assert _prov(_HostileWraps(), kind="pytest") == {}
 
-    class _NoKind:
+    class _Bare:
         pass
 
-    assert _prov(_NoKind()) == {}
+    # No kind for the harness to supply is an absent claim, not a guess.
+    assert _prov(_Bare(), kind=None) == {}
+    assert _prov(_Bare(), kind="") == {}
+
+
+def test_provenance_names_the_kind_the_harness_resolved_not_the_one_on_the_object() -> None:
+    """`kind` comes from the manifest key `composition.wire` resolved, never off the gate.
+
+    `GuardedGate` freezes `__setattr__`, and its own docstring admits that is not containment:
+    `object.__setattr__(g, "_kind", "pytest")` rewrites the frozen field. While `gate_provenance`
+    read `gate.gate_kind`, that one line turned a third-party gate into `kind: pytest,
+    source: shipped` in the hash chain — a forged answer to "who decided this lap", which is the
+    only question this record exists to answer. The function's own first line claimed the harness
+    derived the value, which is what made the gap worth closing rather than documenting.
+    """
+    gate = GuardedGate(_MarkerGate(), kind="acme-check")
+    object.__setattr__(gate, "_kind", "pytest")
+    assert gate.gate_kind == "pytest", "the freeze is not containment; that is the premise here"
+
+    forged = _prov(gate, plugin_kinds=frozenset({"acme-check"}))
+    assert forged["kind"] == "pytest", "reading the object is what the old code did"
+
+    honest = _prov(
+        gate, kind="acme-check", plugin_kinds=frozenset({"acme-check"}),
+        distributions={"acme-check": "acme-gates"},
+    )
+    assert honest["kind"] == "acme-check"
+    assert honest["source"] == "plugin"
+    assert honest["distribution"] == "acme-gates"
 
 
 def test_provenance_values_cannot_bloat_the_hash_chain() -> None:
@@ -962,7 +1055,7 @@ def test_provenance_values_cannot_bloat_the_hash_chain() -> None:
     landing inside the ledger's hash chain."""
     huge = type("X" * 5000, (), {"check": lambda self, ctx: None})
     record = _prov(GuardedGate(huge(), kind="pytest"))
-    assert len(record["implementation"]) <= gp._PROVENANCE_VALUE_MAX
+    assert len(record["implementation"]) <= prov._PROVENANCE_VALUE_MAX
 
 
 def test_a_real_run_stamps_provenance_onto_every_ledger_row(tmp_path) -> None:

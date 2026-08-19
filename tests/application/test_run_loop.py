@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from bounded_loops.application.run_loop import RunLoopUseCase, RunLoopDeps
+from bounded_loops.adapters.gates.plugins import GuardedGate
 from bounded_loops.domain.errors import GateError, RunnerError
 from bounded_loops.domain.models import (
     Spec, Bounds, Verdict, RunResult, Status, Rung,
@@ -361,15 +362,29 @@ def test_error_when_runner_raises_runner_error():
     assert ledger._entries[-1].verdict.evidence["component"] == "runner"
 
 
-def test_error_when_gate_raises_gate_error():
-    class BrokenGate:
-        def check(self, ctx):
-            raise GateError("pytest not found")
+class BrokenGate:
+    """A shipped gate whose tool is missing — the `gitleaks not installed` case."""
 
+    def check(self, ctx):
+        raise GateError("pytest not found")
+
+
+def test_error_when_gate_raises_gate_error():
+    """A gate that cannot run is ERROR, and the gate is WRAPPED, as composition always wraps it.
+
+    This test used to inject a RAW `BrokenGate`, a configuration `composition._instantiate_gate` has
+    not produced since every gate began going through `GuardedGate`. `GuardedGate.check` converted
+    every raise into a failing verdict, so in the shipped product this ERROR branch was dead: a
+    missing binary looked like a failing gate, the loop retried until a bound tripped, and the run
+    reported HALT. The test passed throughout, because the test WAS the only caller of the shape it
+    described. Wrapping here is the whole point — remove the wrap and this test stops guarding
+    anything the product does.
+    """
     ledger = FakeLedger()
     runner = FakeRunner(RunResult(changed=True, agent_claimed_done=False, tokens=5))
     budget = FakeBudget()
-    uc = _use_case(deps=_deps(runner=runner, gate=BrokenGate(), budget=budget, ledger=ledger))
+    gate = GuardedGate(BrokenGate(), kind="pytest")
+    uc = _use_case(deps=_deps(runner=runner, gate=gate, budget=budget, ledger=ledger))
 
     outcome = uc.run()
 

@@ -133,7 +133,7 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
     if getattr(args, "connections", None):
         try:
             connections_raw = json.loads(Path(args.connections).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             _err(f"graph run: cannot load connections — {exc}")
             return 2
     node_prompts: dict[str, str] = {}
@@ -143,7 +143,7 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
             return 2
         try:
             raw = json.loads(Path(args.inputs).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             _err(f"graph run: cannot load inputs — {exc}")
             return 2
         if not isinstance(raw, dict) or not all(
@@ -158,7 +158,7 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
     if getattr(args, "admitted", None):
         try:
             admitted_raw = json.loads(Path(args.admitted).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             _err(f"graph run: cannot load --admitted records — {exc}")
             return 2
         if not isinstance(admitted_raw, dict):
@@ -305,7 +305,7 @@ def cmd_graph_run(args: argparse.Namespace) -> int:
             connections_raw = json.loads(
                 Path(args.connections).read_text(encoding="utf-8")
             )
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             _err(f"graph run: cannot load connections — {exc}")
             return 2
         if not isinstance(connections_raw, list):

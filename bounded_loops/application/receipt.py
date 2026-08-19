@@ -259,7 +259,17 @@ def receipt_document(metadata: dict, entries: list) -> dict:
             # From the ledger, for the same reason as `status` above.
             "reason": _reason_from_ledger(entries),
             "reason_in_metadata": metadata.get("reason", ""),
-            "laps": len(entries),
+            # `ledger_rows`, NOT `laps`. This key held `len(entries)` under the name `laps`, sitting
+            # one level above `bounds.attempts.consumed`, which is computed correctly by
+            # `_attempts_consumed`. A ceiling halt appends a WIND-DOWN row — `attempted: false` — so
+            # for a run bounded at 2 attempts the two read 3 and 2, and a consumer reaching for the
+            # obvious name reported a bound that held exactly as if it had been exceeded by half.
+            # Both auditors found this independently. Renamed rather than corrected because the
+            # number itself is useful and honest — it is the row count, and `bl verify` already calls
+            # that `ledger_rows`; what misled was the name. Free to rename: `receipt.json` is new in
+            # this release and has no published consumers.
+            "ledger_rows": len(entries),
+            "attempts": _attempts_consumed(entries),
         },
         # Declared beside consumed, per dimension, so neither can be read without the other.
         # `changed_during_run` exists because refusing to pick a declaration must not read as
@@ -330,12 +340,31 @@ def receipt_document(metadata: dict, entries: list) -> dict:
 
 
 def _distinct_gates(entries: list) -> list[dict]:
-    """Every DISTINCT gate appearing in the ledger, in first-seen order."""
+    """Every DISTINCT gate appearing in the ledger, in first-seen order.
+
+    A row with NO recorded gate is a DIFFERENT state, not a row to skip — the same correction
+    `_distinct_declarations` already carries, and the same reason. `gate` arrived in this release, so
+    the first ledger to hit this is the ordinary one: `--resume` a run started on an older version
+    and the early rows have no provenance while the later ones do. Skipping the bare rows made that
+    ledger read as UNIFORM, and `_gate_of` then credited the whole run — including the segment that
+    recorded nothing — to the gate that decided only its tail. `gate_provenance` returning `{}` on a
+    lap, which it documents itself as doing for a hostile or broken gate, produces the same shape
+    inside a single segment.
+
+    Returning the absent state as a member makes `_gate_of` see more than one and name none, which is
+    worse reading and true evidence.
+    """
     seen: list[dict] = []
+    absent = False
     for entry in entries:
         gate = entry.get("gate")
-        if isinstance(gate, dict) and gate.get("kind") and gate not in seen:
-            seen.append(gate)
+        if isinstance(gate, dict) and gate.get("kind"):
+            if gate not in seen:
+                seen.append(gate)
+        else:
+            absent = True
+    if absent and seen:
+        return [*seen, {}]
     return seen
 
 

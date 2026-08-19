@@ -15,6 +15,7 @@ from bounded_loops.application.receipt import (
     _attempts_consumed,
     _declared,
     _mapping,
+    _reason_from_ledger,
     _status_from_ledger,
     _against,
     _spend_across_segments,
@@ -49,19 +50,28 @@ def _print_run_receipt(receipt: dict) -> None:
     # From the ledger, like the reason below and like the portable receipt. This surface still
     # headlined the unprotected summary file after the portable artifact stopped doing so — the
     # sibling of a fix already made, missed once again.
-    status = _status_from_ledger(receipt["entries"]) or metadata.get("status", "UNKNOWN")
-    # From the ledger, like the portable receipt. An audit noted this surface still printed
-    # metadata.json's copy, which `bl verify` reads and does NOT hash — so the one reader who runs
-    # `bl runs --show` instead of opening receipt.md saw the unprotected string. Two surfaces
-    # describing the same run must not draw it from different files.
-    entries = receipt["entries"]
-    ledger_reason = ""
-    if entries:
-        last = entries[-1] if isinstance(entries[-1], dict) else {}
-        detail = _mapping(last.get("verdict")).get("detail")
-        ledger_reason = detail if isinstance(detail, str) else ""
-    reason = ledger_reason or metadata.get("reason", "unknown")
-    print(f"Run {run_id}: {status} ({reason})")
+    # `_status_from_ledger` always returns a string — "NO LEDGER ROWS", "INCOMPLETE" or a mapped
+    # status — so the `or metadata.get("status")` that used to sit here could never fire. A dead
+    # fallback still reads as a live one, and a reader auditing where this headline comes from had to
+    # prove that branch unreachable before believing the answer.
+    status = _status_from_ledger(receipt["entries"])
+    # The reason comes from `_reason_from_ledger` — the SAME function the portable receipt uses, not
+    # a second derivation beside it. Two things were wrong with the line this replaces.
+    #
+    # It ended `or metadata.get("reason", "unknown")`. A gate may legitimately return a FAILING
+    # verdict with an empty detail, so that fallback fired on ordinary runs, and it fired on hostile
+    # ones: `bl verify` reads metadata.json and does NOT hash it, so a run whose ledger said DONE and
+    # whose metadata said HALT printed `Run r6: DONE (evil-metadata-reason)` — one sentence, half of
+    # it hash-protected and half editable by anyone with write access, and nothing marking which was
+    # which.
+    #
+    # And it read `verdict.detail` raw, so a PAUSED run printed the gate's pass sentence as the
+    # reason it stopped: `Run r: PAUSE (gate passed (exit 0))`, true words in the place a reader
+    # looks for why, while the actual why — awaiting approval — appeared nowhere. `receipt_markdown`
+    # renders `**PAUSE** — awaiting-approval` for the same row. Re-deriving a value beside a shared
+    # function is how the two surfaces drifted twice; calling it is how they stop being able to.
+    reason = _reason_from_ledger(receipt["entries"])
+    print(f"Run {run_id}: {status}" + (f" ({reason})" if reason else ""))
     print(f"Workspace: {metadata.get('workspace', 'unknown')}")
     print(f"Ledger: {metadata.get('ledger_path', 'unknown')}")
     print()
@@ -137,7 +147,15 @@ def _load_run(target: Path) -> tuple[dict, list] | None:
     if not ledger.is_file():
         return None
     entries = []
-    for line in ledger.read_text(encoding="utf-8").splitlines():
+    try:
+        raw_lines = ledger.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        # A run directory whose ledger is unreadable bytes is not a run this command can describe.
+        # It used to raise out of `main`: `bl receipt` on a tampered ledger printed a Python
+        # traceback instead of refusing it, and `UnicodeDecodeError` is a ValueError so no OSError
+        # handler anywhere on this path would have caught it.
+        return None
+    for line in raw_lines:
         if line.strip():
             try:
                 entries.append(json.loads(line))
@@ -147,8 +165,8 @@ def _load_run(target: Path) -> tuple[dict, list] | None:
     if metadata_path.is_file() and not metadata_path.is_symlink():
         try:
             loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            loaded = None
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            loaded = None   # unreadable summary: the ledger below still carries the whole receipt
         if isinstance(loaded, dict):
             metadata = loaded
     return metadata, entries
@@ -159,7 +177,7 @@ def _cmd_receipt(args: argparse.Namespace) -> int:
     if loaded is None:
         print(
             f"receipt: {args.target} is not a readable run directory "
-            "(expected ledger.jsonl inside it)",
+            "(expected a ledger.jsonl inside it holding UTF-8 JSON lines)",
             file=sys.stderr,
         )
         return 2

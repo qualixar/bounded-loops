@@ -229,7 +229,7 @@ def read_run_receipt(
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise ManifestError(f"run '{run_id}' metadata is missing") from exc
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ManifestError(f"run '{run_id}' metadata is unreadable") from exc
     if not isinstance(metadata, dict):
         raise ManifestError(f"run '{run_id}' metadata must be a JSON object")
@@ -238,7 +238,10 @@ def read_run_receipt(
         raw_lines = ledger_path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError as exc:
         raise ManifestError(f"run '{run_id}' ledger is missing") from exc
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError is a ValueError, so `except OSError` alone let a non-UTF-8 ledger raise
+        # out of `bl runs --show` as a traceback. Same miss as `bl receipt` and `bl verify` had: one
+        # decode guard was written per surface and each surface was widened alone.
         raise ManifestError(f"run '{run_id}' ledger is unreadable") from exc
 
     entries: list[dict] = []

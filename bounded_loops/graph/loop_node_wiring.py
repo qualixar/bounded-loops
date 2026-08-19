@@ -204,7 +204,7 @@ def _default_loop_roots() -> tuple[Path, ...]:
     roots: list[Path] = []
     for candidate in (shipped, Path.cwd() / "loops"):
         # Deduplicated by RESOLVED path: run from inside the repo and these two are the same
-        # directory, which would otherwise digest all 68 packages twice on every assembly.
+        # directory, which would otherwise digest every shipped package twice on every assembly.
         if candidate.is_dir() and not any(root.samefile(candidate) for root in roots):
             roots.append(candidate)
     return tuple(roots)

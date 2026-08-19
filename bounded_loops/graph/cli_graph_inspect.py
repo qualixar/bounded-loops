@@ -147,7 +147,12 @@ def cmd_graph_plan(args: argparse.Namespace) -> int:
             connections_raw = json.loads(
                 Path(args.connections).read_text(encoding="utf-8")
             )
-        except (OSError, json.JSONDecodeError) as exc:
+        # `UnicodeDecodeError` is a ValueError, so neither `OSError` nor `JSONDecodeError` catches
+        # it. The comment 25 lines above already said exactly that and widened the MANIFEST read;
+        # the four other user-supplied reads across this file and `cli_graph.py` kept the narrow
+        # handler, and `--connections` with a UTF-16 BOM still tracebacked past exit code 2. Widening
+        # one site per audit round is how a class of defect survives being found three times.
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             _err(f"graph plan: cannot load connections — {exc}")
             return 2
         # A connections file holding `null`, `1` or `true` parses as valid JSON and then

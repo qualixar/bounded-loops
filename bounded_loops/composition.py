@@ -70,12 +70,16 @@ from bounded_loops.adapters.runners.anchor_guard import AnchorGuardRunner
 #. All
 # three are real, stdlib-or-jsonschema-only dependencies, imported directly.
 from bounded_loops.adapters.gates.command import CommandGate
+# `GuardedGate` is deliberately NOT imported: every wrap goes through `_gate_plugins.guard_gate`,
+# which holds the class in a closure cell, so `composition.GuardedGate = Evil` has nothing to bind
+# to. Removing the import is part of that fix, not tidying after it.
 from bounded_loops.adapters.gates.plugins import (
     GatePluginRefused,
-    GuardedGate,
     merged_gate_registry,
 )
 from bounded_loops.adapters.gates import plugins as _gate_plugins
+from bounded_loops.adapters.gates import provenance as _gate_provenance
+from bounded_loops.adapters.gates.p2_registry import P2_GATE_REGISTRY as _P2_GATE_REGISTRY
 from bounded_loops.adapters.gates.pytest import PytestGate
 from bounded_loops.adapters.gates.jsonschema import JsonSchemaGate
 from bounded_loops.adapters.gates.composite import CompositeGate
@@ -97,36 +101,6 @@ from bounded_loops.adapters.io.approval import CliApproval, AutoApproval
 from bounded_loops.adapters.io.clock import UtcClock
 from bounded_loops.application.env_passthrough import resolve_env_passthrough as _resolve_env_passthrough
 
-# P2 gates (axe) — genuinely not yet
-# authored. Lazy/guarded import, mirroring the qualixar block below.
-# composition.wire() raises ManifestError("gate kind not yet implemented")
-# for these until then — honest, not a silent stub. Note:
-# the original draft imported these four unconditionally at module level,
-# which would have made composition.py unimportable until every P2 gate
-# module existed, blocking import entirely.
-def _build_p2_registry() -> Mapping[str, type]:
-    """Built in a function so the backing dict is UNREACHABLE once the proxy exists.
-
-    ``MappingProxyType`` is a VIEW: freezing a dict that is still a module attribute protects
-    nothing, because mutating the backing object changes what the proxy reports. This matters because
-    ``_instantiate_gate`` reads ``_P2_GATE_REGISTRY['osv']`` directly and those gates are NOT wrapped,
-    so a plugin factory setting ``_P2_GATE_REGISTRY['osv'] = Hijack`` would land an unchecked verdict.
-    """
-    built: dict[str, type] = {}
-    for _mod, _cls_name, _key in [
-        ("axe", "AxeGate", "axe"),
-        ("osv", "OsvGate", "osv"),
-        ("checkov", "CheckovGate", "checkov"),
-    ]:
-        try:
-            _module = __import__(f"bounded_loops.adapters.gates.{_mod}", fromlist=[_cls_name])
-            built[_key] = getattr(_module, _cls_name)
-        except ImportError:
-            pass  # not yet implemented — wire() raises ManifestError at instantiation
-    return MappingProxyType(built)
-
-
-_P2_GATE_REGISTRY: Mapping[str, type] = _build_p2_registry()
 
 # Optional Qualixar gates — only when [qualixar-gates] extra is installed.
 # The default install NEVER reaches these lines.
@@ -289,20 +263,21 @@ def wire(
         # is never actually None; mypy just can't see that guarantee
         # through the Optional[int] domain type. type: ignore, not a
         # silent behavior change.
-        # Wrapped like every other gate. This path built a RAW CommandGate until round 4, the one
-        # construction site `_instantiate_gate` does not cover, so an override verdict reached the
+        # Wrapped like every other gate. This path built a RAW CommandGate until round 4 — the one
+        # construction site `_instantiate_gate` does not cover — so an override verdict reached the
         # rules layer unvalidated. An operator typing --gate-override is trusted to choose the
-        # command, which is why this is not a supply-chain hole — but trust in the operator's INTENT
-        # is not evidence the command's exit code means what the rules layer will read it as, and a
-        # shipped gate returning a non-bool is exactly the case wrapping was introduced to catch.
-        gate: GatePort = GuardedGate(
+        # command, so this is no supply-chain hole; but trusting their INTENT is not evidence the exit
+        # code means what the rules layer reads it as, which is the case wrapping exists to catch.
+        resolved_gate_kind = "command-override"
+        gate: GatePort = _gate_plugins.guard_gate(
             CommandGate(
                 gate_cmd_override, timeout_s=manifest.bounds.max_wallclock_s  # type: ignore[arg-type]
             ),
-            kind="command-override",
+            kind=resolved_gate_kind,
         )
     else:
         gate_key = manifest.gate_kind
+        resolved_gate_kind = gate_key
         if gate_key not in GATE_REGISTRY:
             raise ManifestError(
                 f"gate.kind '{gate_key}' not yet implemented in bounded-loops "
@@ -432,8 +407,12 @@ def wire(
             # Computed HERE, once per run, because this is the only layer that knows both the
             # registry and the entry-point scan's distribution map — and `application` must not
             # import this module. The gate is never asked to describe itself.
-            gate_provenance=_gate_plugins.gate_provenance(
-                gate, plugin_kinds=PLUGIN_GATE_KINDS,
+            # The key THIS function resolved from the manifest, not `gate.gate_kind` read back off
+            # the object being described. See `provenance.gate_provenance` for why that matters.
+            gate_provenance=_gate_provenance.gate_provenance(
+                gate,
+                kind=resolved_gate_kind,
+                plugin_kinds=PLUGIN_GATE_KINDS,
                 distributions=_LOADED_GATES.distributions,
             ),
             # Read from the RESOLVED bounds, not from manifest.raw, so the receipt records the
@@ -929,13 +908,19 @@ def _instantiate_gate(gate_key: str, manifest: LoopManifest) -> GatePort:
     # truthy non-bool reaching the rules layer, i.e. DONE with nothing verified. The exact-type test
     # cannot be spoofed, and `GuardedGate.__init_subclass__` now refuses subclasses outright so the
     # only object that can take this branch is one WE constructed in `instantiate_guarded`.
-    return built if type(built) is GuardedGate else GuardedGate(built, kind=gate_key)
+    #
+    # Round 5: both halves used to resolve a module-global `GuardedGate` at call time, and a gate
+    # plugin runs arbitrary code at import, so `composition.GuardedGate = Evil` defeated the check
+    # AND the constructor at once. `guard_gate` closes over the real class; see `_wrapper_bound_to`.
+    return _gate_plugins.guard_gate(built, kind=gate_key)
 
 
 def _instantiate_gate_from_config(gate_config: dict, manifest: LoopManifest) -> GatePort:
     """Composite children are wrapped too — an unchecked child verdict is aggregated into the parent."""
     kind = gate_config.get("kind")
     built = _build_child_gate(gate_config, manifest)
-    if type(built) is GuardedGate:  # exact type — see _instantiate_gate for why isinstance is unsafe
-        return built
-    return GuardedGate(built, kind=str(kind) if isinstance(kind, str) else "composite-child")
+    # Exact type and closure-held class, both — see `_instantiate_gate` for why isinstance is unsafe
+    # and `_wrapper_bound_to` for why the class must not come from a module global.
+    return _gate_plugins.guard_gate(
+        built, kind=str(kind) if isinstance(kind, str) else "composite-child"
+    )

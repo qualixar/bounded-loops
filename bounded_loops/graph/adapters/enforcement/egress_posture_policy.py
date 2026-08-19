@@ -1,7 +1,7 @@
 """Local-CLI egress policy — where the deployment's resolved egress posture meets a
 local_cli connector node's actual runtime capability (Slice 2 wiring).
 
-DECISION (Varun): ``LocalCliConnectorWorker`` now has a real caged path for ALLOWLIST — it
+DESIGN NOTE: ``LocalCliConnectorWorker`` now has a real caged path for ALLOWLIST — it
 reuses the SAME Seatbelt loopback-proxy cage ``SandboxedNodeWorker``/the ``https`` transport
 already use (see ``local_cli_worker.py``: filesystem writes confined to the workdir + the
 operator's real HOME + TMPDIR, so the subscription login still works; network confined to the

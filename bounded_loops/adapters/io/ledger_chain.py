@@ -279,6 +279,18 @@ def verify_ledger_file(path: Path) -> ChainReport:
             head=GENESIS,
             detail=f"cannot read ledger: {exc}",
         )
+    except UnicodeDecodeError as exc:
+        # A ledger that is not valid UTF-8 IS a broken chain, and saying so is the whole job of this
+        # function. Until now `bl verify` raised UnicodeDecodeError out of `main` and printed a
+        # traceback: the tool whose purpose is to survive a tampered record was defeated by one.
+        # `UnicodeDecodeError` subclasses ValueError, not OSError, so the handler above never saw it.
+        return ChainReport(
+            status=ChainStatus.BROKEN,
+            lines=0,
+            verified_lines=0,
+            head=GENESIS,
+            detail=f"ledger is not valid UTF-8, so its bytes are not the record it claims: {exc}",
+        )
     return chain_ledger_lines(text.splitlines())
 
 

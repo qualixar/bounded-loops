@@ -197,7 +197,12 @@ _MAX_LINES = 800
 #: moved once for this same feature and a number moved twice stops meaning anything. This
 #: way 800 still binds every other module, and the single exception is named, bounded, and
 #: has a written exit condition instead of quietly becoming the new normal.
-_ALLOWED_OVER_CAP = {"bounded_loops.composition": 950}
+#: Ratchet, not an allowance: this number goes DOWN or stays, never up. It sat at 950 while
+#: composition drifted from 941 to 967, and the fix was to move the P2 gate table out to
+#: `adapters/gates/p2_registry.py` rather than raise the ceiling — a bound loosened because the code
+#: hit it is not a bound, which is the whole thesis of this package. Pinned to the real count so the
+#: next addition has to make the same choice deliberately.
+_ALLOWED_OVER_CAP = {"bounded_loops.composition": 926}
 
 
 def test_no_module_exceeds_the_line_cap() -> None:

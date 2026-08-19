@@ -302,7 +302,7 @@ documentation including the deployment facade, connector catalog, and arena mode
 This is the contract that turns a loop package into a `kind: loop` node with real dataflow,
 and it is declared in the loop's own `loop.yaml` — not in the graph manifest.  Both blocks
 are optional; a loop that declares neither runs in **fixture mode** (no overlay, and
-`loop-outcome.json` as its only artifact), which is how all 68 shipped loops behave.
+`loop-outcome.json` as its only artifact), which is how every shipped loop behaves.
 
 ```yaml
 # loop.yaml — optional port declarations

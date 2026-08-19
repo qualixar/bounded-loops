@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import struct
 import tomllib
 from pathlib import Path
@@ -271,6 +272,67 @@ def test_release_metadata_uses_the_canonical_catalog_count_and_version() -> None
     assert "69" in _project()["description"] and "65" in _project()["description"]
     assert "69 loop folders" in npm["description"]
     assert "65 keyless" in npm["description"]
+
+
+def test_no_shipped_text_states_a_stale_catalog_count() -> None:
+    """Every sentence that claims how many loops ship must agree with how many ship.
+
+    The sibling test above already asserted the canonical count — in CITATION.cff's abstract, npm's
+    `description`, and pyproject's `description`. Three fields. Meanwhile `bl loops --help` told users
+    "all 68 shipped loops", npm/README.md said "the 68 loop folders (64 keyless)", docs/EMBEDDING.md
+    said "all 68 shipped loops", and five internal comments repeated 68 — while `loops/` held 69 and
+    `bl loops list` printed 69. A contract named "release metadata uses the canonical count" that
+    covers three of twelve sites is the shape of defect this project exists to name, in its own gate.
+
+    Scoped to phrases that can only mean the catalogue total, so an example saying "3 loops" is not a
+    false positive. CHANGELOG.md is excluded on purpose: its old entries record what was true at the
+    release they describe, and rewriting history to match today would be the actual dishonesty.
+    """
+    total = len(sorted((REPO_ROOT / "loops").glob("*/loop.yaml")))
+    keyless = total - 4   # the four framework examples need an SDK key; see the sibling test
+    patterns = {
+        r"(\d+)\s+shipped\s+loops?": total,
+        r"(\d+)\s+loop\s+folders": total,
+        r"(\d+)\s+shipped\s+packages": total,
+        # Parenthesised only: the catalogue form is "69 loop folders (65 keyless)". A bare
+        # `\d+ keyless` also matched "L1 keyless demo" and "P0/P1 keyless" in loop bounds and in
+        # composition's runner comment — this test's first run reported seven false positives, which
+        # is the argument for running a new gate before trusting it.
+        r"\((\d+)\s+keyless\)": keyless,
+    }
+
+    roots = [REPO_ROOT / "bounded_loops", REPO_ROOT / "docs", REPO_ROOT / "npm", REPO_ROOT / "loops"]
+    files = [REPO_ROOT / "README.md", REPO_ROOT / "CITATION.cff", REPO_ROOT / "pyproject.toml"]
+    for root in roots:
+        files.extend(
+            path for path in root.rglob("*")
+            if path.is_file() and path.suffix in {".py", ".md", ".json", ".yaml", ".toml"}
+            and "__pycache__" not in path.parts
+        )
+
+    stale: list[str] = []
+    examined = 0
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        examined += 1
+        for pattern, expected in patterns.items():
+            for match in re.finditer(pattern, text):
+                if int(match.group(1)) != expected:
+                    line = text[: match.start()].count("\n") + 1
+                    stale.append(
+                        f"{path.relative_to(REPO_ROOT)}:{line}  says {match.group(0)!r}, "
+                        f"catalogue has {expected}"
+                    )
+
+    # Floor: without it a broken glob makes this pass by reading nothing.
+    assert examined >= 100, f"file discovery collapsed to {examined}; this contract proves nothing"
+    assert total == 69, f"catalogue is {total} loops; update the sibling test's literals too"
+    assert not stale, (
+        "shipped text states a loop count the catalogue does not have:\n  " + "\n  ".join(stale)
+    )
 
 
 def test_public_docs_have_no_orphan_course_section_references() -> None:

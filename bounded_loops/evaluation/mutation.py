@@ -22,7 +22,7 @@ rate against a gate that was right to say no.
 
 `DESTROYING` is certain by construction rather than verified, because there is nothing to compare
 against: an artifact emptied of content cannot satisfy any loop's stated purpose, whatever that
-purpose is. That claim is deliberately weak enough to be true of all 68 loops without reading a
+purpose is. That claim is deliberately weak enough to be true of every shipped loop without reading a
 single gate — which is what "held out" means here.
 """
 

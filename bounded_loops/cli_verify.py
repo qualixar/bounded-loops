@@ -235,7 +235,7 @@ def _resolve(target: Path) -> tuple[Path, dict | None]:
     if metadata_path.is_file() and not metadata_path.is_symlink():
         try:
             loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             metadata = None
         else:
             metadata = loaded if isinstance(loaded, dict) else None

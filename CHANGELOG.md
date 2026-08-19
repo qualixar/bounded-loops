@@ -3,6 +3,83 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.9] — 2026-08-20
+
+**Not additive.** Three surfaces change what they say. A gate that cannot run now ends the run as
+`ERROR` where it previously looked like a gate that ran and failed. `bl runs --show` draws its whole
+headline from the ledger, so a paused run reads `awaiting-approval` instead of the gate's own
+sentence. In `receipt.json`, `run.laps` is now `run.ledger_rows`, with a new `run.attempts` beside
+it. Exit codes are unchanged.
+
+### Fixed
+
+- **A gate that could not run was reported as a gate that failed.** A missing `gitleaks` binary, a
+  `checkov` timeout — anything raising `GateError` — became a failing verdict, so the loop retried it
+  until a bound tripped and the run ended as `HALT`. You were told your agent could not satisfy a
+  gate that never executed once. The signal now reaches the engine and the run ends as `ERROR`.
+
+- **A gate could pass a lap without explaining it.** A verdict whose detail was a `str` subclass
+  answered the emptiness check with one value and stored another, so a lap could reach `DONE` with
+  an empty explanation in the ledger. Detail is now normalised before it is checked or kept.
+
+- **`bl verify`, `bl receipt` and `bl runs --show` crashed on a ledger that is not valid UTF-8.**
+  All three printed a Python traceback instead of refusing the file — the tools for inspecting a
+  tampered record, defeated by one. `bl verify` now reports the chain as `BROKEN` and says why; the
+  other two refuse with a message and exit 2.
+
+- **`bl runs --show` mixed the protected record with the unprotected one.** The status came from the
+  hash-chained ledger and the reason from `metadata.json`, which `bl verify` reads and does not
+  hash — printed as one sentence with nothing marking which half was which. Both halves now come
+  from the ledger, and when the ledger has no reason, none is printed.
+
+- **A receipt could name one gate for a run that did not all go through it.** Laps with no recorded
+  gate were skipped rather than counted as a different state, so resuming a run started on an older
+  version credited the whole run to the gate that decided only its tail. A receipt now names a gate
+  only when one gate decided every lap.
+
+- **A gate plugin could skip verdict validation.** A plugin runs code when it is discovered, which is
+  before any gate is built, and rebinding one name in the composition module replaced both the check
+  that a gate is wrapped and the wrapper itself. The wrapper class is no longer reachable by name
+  from that module.
+
+- **The record of which gate decided a lap was read off the gate.** One assignment could make a
+  third-party gate appear in the hash chain as a shipped one. It now comes from the key the harness
+  resolved from your manifest.
+
+- **`bl graph run` crashed on a duplicated loop package.** `bl graph plan` already refused it; the
+  same fix had only been tested on one of the two commands.
+
+- **`bl graph plan` and `bl graph run` crashed on a `--connections`, `--inputs` or `--admitted` file
+  that is not valid UTF-8**, instead of refusing it with an exit code.
+
+- **The documented loop count was wrong.** `bl loops --help`, the npm README and the embedding guide
+  said 68; 69 ship. A release check now covers every place that states the count, not three of them.
+
+- **The README listed `axe` as a built-in gate.** It has no adapter — selecting it raises
+  `ManifestError`. It is now named as absent.
+
+- **The sandbox demo claimed a filesystem probe it never ran.** The README and the module both said
+  the probe attempts an out-of-workspace write and that the gate checks both. It probes the network
+  only, and now says so.
+
+### Changed
+
+- **The source distribution no longer contains editor and agent configuration.** Local toolchain
+  files were tracked in the repository and shipped inside the published sdist. The wheel was never
+  affected.
+
+- **`receipt.json`: `run.laps` is now `run.ledger_rows`, and `run.attempts` is new.** A run halted at
+  its ceiling appends a wind-down row, so the row count sat one above the attempts the bound actually
+  allowed — under a name that invited being read as bound utilisation.
+
+### Release checks
+
+- The unreachable-symbol audit reported names defined in more than one module as reachable whenever
+  any one of them was, which hid a test-only helper behind an identically named live function. Those
+  names, and symbols reachable only because a string literal spells them, are now reported and must
+  each be declared with a reason. The test guarding the audit never read its exit code, so a broken
+  audit passed; it does now.
+
 ## [0.6.8] — 2026-08-18
 
 Additive. No existing command changes its behaviour, its output, or its exit code.

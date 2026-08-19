@@ -108,7 +108,7 @@ def test_the_approval_precedes_the_irreversible_effect(definition):
 def test_every_pinned_package_is_stub_keyless(definition):
     """A reference graph must cost nothing to run, or CI cannot run it.
 
-    Four of the 68 shipped packages use ``runner: python_callable`` and need a real agent framework
+    Four of the shipped packages use ``runner: python_callable`` and need a real agent framework
     (adk / autogen / crewai / langgraph). Pinning one of those would quietly make this graph
     un-runnable without extra installs, so the check is explicit.
     """

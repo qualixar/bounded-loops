@@ -301,7 +301,10 @@ class RunLoopUseCase:
             d.tracer.span(ctx, result, verdict)
 
             # ── 8. Decide terminal or continue ──
-            if verdict.passed and stop_condition_met(spec, verdict):
+            # `is True` for the same reason `stop_condition_met` uses it: a truthy non-bool reaching
+            # here is a DONE nothing confirmed. Both reads are hardened, not just the one, because
+            # hardening a check and leaving its sibling is the mistake this codebase repeats most.
+            if verdict.passed is True and stop_condition_met(spec, verdict):
 
                 # ── 8a. DONE or PAUSE (rung/approval check) ──
                 if rung_requires_approval(rung, bounds):

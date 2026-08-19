@@ -195,10 +195,13 @@ ALLOWED: dict[str, str] = {
         "directly, but it is a first-class part of the research-evidence domain contract."
     ),
     "verdict_is_wellformed": (
-        "API: 'Delegates so there is exactly ONE validation implementation.' A public helper for "
-        "gate implementors; its docstring explicitly says 'A second copy would drift' and this "
-        "is the one the controller should call. node_receipts.py test_run_graph.py line 735 "
-        "notes that verdict_is_wellformed reads each field and the controller reads them again."
+        "API: a public boolean helper for gate implementors, at node_receipts.py:154. It delegates "
+        "to validated_verdict_or_none so there is exactly ONE validation implementation. NOT called "
+        "by the engine: run_graph.py:633 calls validated_verdict_or_none directly, because it needs "
+        "the validated SNAPSHOT and a bool would leave it re-reading the gate's own object. This "
+        "reason previously said 'this is the one the controller should call' and cited a stale "
+        "comment at test_run_graph.py:735 as evidence that it did — an aspiration written as a "
+        "finding, in the one file whose header says a false reason is worse than no allowlist."
     ),
     "write_state_document": (
         "API: 'Atomically write markdown to path (UTF-8), overwriting any existing file.' A public "
@@ -267,5 +270,90 @@ ALLOWED: dict[str, str] = {
         "PORT_IMPL: docstring says 'A RemoteExecTransport backed by an OpenSandbox execd "
         "endpoint.' A production deployment adapter; 'allow_offhost=True' is its operator-opt-in "
         "for non-loopback enterprise deployments. Not yet wired into a composition entry point."
+    ),
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+# AMBIGUOUS BY NAME — the detector's first structural blind spot, declared instead of hidden.
+#
+# The reference graph is keyed by UNQUALIFIED name, because an `ast.Name` node does not say which
+# module's `load` it meant and resolving that needs real import resolution. So two modules defining
+# the same public name share ONE node: their reference sets merge, and if EITHER is reached, BOTH are
+# reported reachable. An orphan sharing a name with a live function is therefore invisible — the one
+# class of orphan this audit was built to catch and structurally could not see.
+#
+# Every colliding public name is declared here, naming HOW EACH SITE IS REACHED. Where a site turns
+# out to have no caller, the declaration says so rather than the collision covering for it.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+ALLOWED_AMBIGUOUS: dict[str, str] = {
+    "describe": (
+        "BOTH REACHED. provider_catalog.py:326 <- cli_graph_providers.py:17 imports it as "
+        "`describe as _describe_providers` and calls it at :68. budget_config.py:128 <- "
+        "cli_graph_resume.py:21 imports it and calls it at :90. Two unrelated renderers that "
+        "happen to share the most obvious verb."
+    ),
+    "load": (
+        "ONE SITE IS TEST-ONLY, and the collision was hiding it. application/manifest.py:255 is "
+        "reached from the whole CLI. evaluation/tier2.py:212 has exactly one caller in the "
+        "repository — tests/evaluation/test_tier2_authoring_was_blind.py:32 — so it is HARNESS, the "
+        "same category as `generate` and `generate_for_loop` above, which are declared because their "
+        "names are unique. `load` was reported reachable purely because `manifest.load` exists. This "
+        "is the finding that made this section exist."
+    ),
+    "load_template": (
+        "ALL THREE REACHED, each inside its own module: graph/arena/render.py:54 <- :43, "
+        "graph/console/rendering.py:31 <- :49, graph/studio/render.py:74 <- :55. Three independent "
+        "renderers, each with its own template file."
+    ),
+    "main": (
+        "ALL SEVEN REACHED. Three are console scripts in pyproject: cli.py:65 (`bl`), "
+        "mcp_server.py:559 (`bounded-loops-mcp`), hooks/cli.py:44 (`bounded-loops-hook`). "
+        "graph/loop_node_entry.py:255 is invoked as `-m bounded_loops.graph.loop_node_entry` from "
+        "graph/adapters/workers/loop_packages.py:267. The remaining three — "
+        "hooks/graph_run_stop.py:228, hooks/pretooluse_loop_package.py:68, "
+        "hooks/verify_bounded_loop.py:177 — are dispatched by hooks/cli.py, which maps a hook name "
+        "to a MODULE STRING in `_HOOKS` and does `import_module(...).main`. That dynamic dispatch is "
+        "why the string-literal rule in `names_in` has to stay."
+    ),
+    "register": (
+        "TEN OF ELEVEN REACHED; the eleventh is a deployment seam. cli.py:342-356 imports and calls "
+        "eight: cli_verify, cli_receipt, graph/cli_graph, cli_loop, cli_loops, cli_workspace, "
+        "cli_capabilities, graph/monitor/cli_monitor. mcp_server.py:555-556 calls mcp_discovery and "
+        "mcp_authoring. graph/mcp_graph.py:137 has NO in-repo caller and is not meant to: its "
+        "signature takes the MCP server, the facade and a subject_provider, and its docstring says "
+        "it wires the graph tools 'onto an MCPServer instance handed in by the deployment'. An "
+        "integration point, stated as one. If bounded-loops' own MCP server should be registering "
+        "the graph tools, that is a wiring gap and this line is where it would be noticed."
+    ),
+    "workspace_digest": (
+        "BOTH REACHED. adapters/runners/workspace_digest.py:86 <- adapters/runners/codex.py:71,98 "
+        "and shell.py:88. graph/application/slm_bridge.py:127 <- graph/slm_evidence.py:30 imports it "
+        "and calls it at :55."
+    ),
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+# STRING-ONLY — the detector's second blind spot, declared instead of hidden.
+#
+# `names_in` counts an identifier-shaped string CONSTANT as a reference, because that is how dynamic
+# dispatch reaches a symbol (see `main` above, and the P2 gate table below). The cost of that rule:
+# a stray `x = "SomeOrphan"` anywhere in the package silences this audit for `SomeOrphan` forever.
+#
+# So every symbol whose ONLY evidence of a caller is a literal spelling its name is listed here. If
+# a future orphan appears in this section rather than being silently absorbed, the rule did its job.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+ALLOWED_STRING_ONLY: dict[str, str] = {
+    "CheckovGate": (
+        "REGISTRY TABLE: reached through the ('checkov', 'CheckovGate', 'checkov') row in "
+        "adapters/gates/p2_registry.py, which does __import__ + getattr so the class name exists "
+        "only as a string. Deliberate: the P2 gates are lazily imported so a missing adapter is a "
+        "ManifestError at instantiation rather than an unimportable composition module."
+    ),
+    "OsvGate": (
+        "REGISTRY TABLE: same row shape as CheckovGate, ('osv', 'OsvGate', 'osv') in "
+        "adapters/gates/p2_registry.py. Also read directly as _P2_GATE_REGISTRY['osv'] by "
+        "composition._build_gate, which is a subscript on a string key, not a name reference."
     ),
 }

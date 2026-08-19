@@ -47,7 +47,7 @@ CONTROLLER_SUBDIR = ".controller"
 #: names are "never something the package ships" with nothing enforcing it.** Nothing in this module
 #: can distinguish a ``__pycache__`` that a run produced from one an author committed, so content
 #: under an excluded name is INVISIBLE to the digest: a package must not ship code there, and a
-#: package that does has a mutable region under a pinned digest. For the 68 packages this repository
+#: package that does has a mutable region under a pinned digest. For the packages this repository
 #: ships that rule is enforced — ``test_no_shipped_loop_package_hides_content_under_an_excluded_name``
 #: fails CI if any of them acquires one. For a third-party package it is a contract with the author,
 #: which is why it is written down here rather than implied.

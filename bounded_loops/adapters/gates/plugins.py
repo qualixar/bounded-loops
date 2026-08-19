@@ -92,8 +92,9 @@ from types import MappingProxyType
 import inspect
 import logging
 import re
-from typing import Any, Mapping, NoReturn
+from typing import Any, Callable, Mapping, NoReturn, cast
 
+from bounded_loops.domain.errors import GateError
 from bounded_loops.domain.models import LoopContext, Verdict
 
 _LOGGER = logging.getLogger(__name__)
@@ -459,30 +460,50 @@ class GuardedGate:
         return self._inner
 
     def check(self, ctx: LoopContext) -> Verdict:
-        """Every raise below this line becomes a FAILING verdict, including raises from VALIDATION.
+        """Every raise below this line becomes a FAILING verdict, EXCEPT `GateError`, which says the
+        gate could not reach a verdict at all and which the engine turns into `Status.ERROR`.
 
         Round 4: only `self._inner.check(ctx)` used to sit inside the try, so the validation that
         follows — `isinstance`, the `passed` bool test, `detail.strip()` — ran unprotected. A Verdict
         subclass whose `passed` property raises therefore escaped this wrapper entirely. That is
         availability rather than a forged pass, but a gate crashing the harness from inside the code
         that exists to contain it is not a distinction worth shipping.
+
+        Round 5 split that single try in two. `GateError` is the harness's OWN signal for "I could
+        not run" — gitleaks is not installed, checkov timed out — and `run_loop` has always had an
+        `except GateError` branch reporting `Status.ERROR`. Wrapping every gate made that branch
+        DEAD CODE: a missing binary became a failing verdict, the loop retried it until a bound
+        tripped, and the operator was told the agent could not satisfy a gate that never ran once.
+        Reporting a bound as held when the check behind it never executed is this project's own
+        defect class, so the signal propagates. Only out of the gate CALL, though — a verdict object
+        that raises while being VALIDATED is a broken gate, not an absent one, and still FAILS.
         """
         try:
-            return self._checked(ctx)
-        except KeyboardInterrupt:
-            raise  # the operator's, not the plugin's to convert into a verdict
+            raw = self._inner.check(ctx)  # type: ignore[attr-defined]
+        except (KeyboardInterrupt, GateError):
+            raise  # the operator's Ctrl-C; the harness's own "this gate could not run"
         except BaseException as exc:  # noqa: BLE001
             # A gate that raises FAILS. `except Exception` was the first version and a test with
             # SystemExit(1) broke it — the same defect the P3 audit already found in the provider
             # loader. A gate crashing must never be read as "nothing to report, carry on".
-            return Verdict(
-                passed=False,
-                detail=(
-                    f"gate {self._kind!r} raised {type(exc).__name__}: {exc}. A gate that cannot "
-                    "complete has not confirmed anything, so this lap does not pass."
-                ),
-                evidence={"gate_kind": self._kind, "error": type(exc).__name__},
-            )
+            return self._raised(exc)
+        try:
+            return self._validate(raw)
+        except KeyboardInterrupt:
+            raise
+        except BaseException as exc:  # noqa: BLE001
+            return self._raised(exc)
+
+    def _raised(self, exc: BaseException) -> Verdict:
+        """The failing verdict for a gate that raised anything the harness does not propagate."""
+        return Verdict(
+            passed=False,
+            detail=(
+                f"gate {self._kind!r} raised {type(exc).__name__}: {exc}. A gate that cannot "
+                "complete has not confirmed anything, so this lap does not pass."
+            ),
+            evidence={"gate_kind": self._kind, "error": type(exc).__name__},
+        )
 
     def _validate(self, raw: object) -> Verdict:
         """Reject anything that is not an unambiguous mechanical confirmation.
@@ -515,6 +536,25 @@ class GuardedGate:
         detail = raw.detail
         evidence = dict(raw.evidence) if isinstance(raw.evidence, Mapping) else {}
 
+        # `detail` is normalised to a GENUINE str before it is asked anything or kept. A `str`
+        # SUBCLASS satisfies `isinstance(detail, str)` and may override `strip`, `__str__`, `__len__`
+        # and every other method, so each question put to the object was being answered by the gate.
+        # Reproduced: `class Quiet(str)` whose `strip()` returns "looks-fine" satisfied the
+        # empty-detail rule below while the value that actually shipped was still "" — a passing
+        # verdict with nothing explaining it, which is the one thing that rule exists to forbid. The
+        # test guarding the rule asserted `out.detail.strip()`, so it consulted the same lie and
+        # stayed green: snapshotting the field was not enough while the snapshot was still the
+        # gate's own object. `str.__str__` is the UNBOUND builtin — a subclass cannot intercept it,
+        # and it returns a plain `str`, the same reason the wrap sites use `type(x) is` over
+        # `isinstance`.
+        if isinstance(detail, str):
+            try:
+                detail_text = str.__str__(detail)
+            except TypeError:
+                detail_text = ""   # an object whose __class__ merely CLAIMS str is not one
+        else:
+            detail_text = str(detail)   # not a str at all: keep whatever reason the gate gave
+
         # `if passed` would accept "yes", 1, [1] — a loop reaching DONE because a field was
         # non-empty. `passed` is documented as "True iff the gate mechanically confirmed the
         # stop_condition", so anything that is not the boolean True is not a confirmation.
@@ -528,7 +568,7 @@ class GuardedGate:
                 evidence={"gate_kind": self._kind, "offered_passed": repr(passed)},
             )
 
-        if passed and not (isinstance(detail, str) and detail.strip()):
+        if passed and not detail_text.strip():
             # Only a PASSING verdict is blocked, which is what the documented rule says. A passing
             # verdict with no detail leaves the ledger with an unexplainable DONE — unreviewable
             # after the fact. A FAILING verdict with a thin detail is merely unhelpful, and
@@ -539,80 +579,43 @@ class GuardedGate:
                 evidence={"gate_kind": self._kind},
             )
 
-        # A fresh Verdict, not `raw`. See the docstring: returning `raw` is the TOCTOU.
-        return Verdict(
-            passed=passed,
-            detail=detail if isinstance(detail, str) else str(detail),
-            evidence=evidence,
-        )
+        # A fresh Verdict, not `raw`, and a plain `str` detail, not the gate's own object. See the
+        # docstring: returning `raw` is the TOCTOU, and keeping `raw.detail` is the same TOCTOU one
+        # field down — every later reader of that string would be calling the gate's methods.
+        return Verdict(passed=passed, detail=detail_text, evidence=evidence)
 
-    def _checked(self, ctx: LoopContext) -> Verdict:
-        """The gate call and the validation of what it returned, as one guarded unit."""
-        raw = self._inner.check(ctx)  # type: ignore[attr-defined]
-        return self._validate(raw)
+def _wrapper_bound_to(cls: type) -> Callable[..., "GuardedGate"]:
+    """Builds `guard_gate` with the wrapper class held in a CLOSURE CELL, not a module global.
 
+    Every wrap site used to read the module-global name `GuardedGate` — in this module and, worse,
+    the re-exported copy in `composition` — and resolve it at CALL time. A gate plugin is arbitrary
+    code that runs during `merged_gate_registry` at import, i.e. BEFORE any gate is instantiated, so
+    it had a window to do `import bounded_loops.composition as c; c.GuardedGate = Evil`. That single
+    assignment reached BOTH halves of `type(built) is GuardedGate else GuardedGate(built)`: the
+    exact-type check compared against the attacker's class and the constructor was the attacker's
+    class, so nothing was wrapped and a `Verdict(passed="yes")` went to the rules layer as a pass.
 
-#: Cap on any single provenance value. A class name is chosen by the gate's own package, so it is
-#: attacker-controlled length that ends up inside the ledger's hash chain. 200 is far past any real
-#: class name and far short of a value that makes a receipt unreadable.
-_PROVENANCE_VALUE_MAX = 200
+    A closure cell is not reachable by assigning to a module attribute, so rebinding
+    `plugins.GuardedGate` now changes nothing about what gets wrapped — and `composition` no longer
+    imports the class at all, so that name is not there to rebind in the first place.
 
-
-def _short_value(value: object) -> str | None:
-    """A provenance value, or None if it is not a usable short string."""
-    if not isinstance(value, str) or not value:
-        return None
-    cleaned = "".join(character for character in value if character.isprintable())
-    if not cleaned:
-        return None
-    return cleaned[:_PROVENANCE_VALUE_MAX]
-
-
-def gate_provenance(
-    gate: object, *, plugin_kinds: frozenset[str], distributions: Mapping[str, str],
-) -> dict[str, str]:
-    """WHICH gate produced a verdict, derived by the HARNESS and never supplied by the gate.
-
-    Written into ``LedgerEntry.gate`` — a sibling of ``verdict``, deliberately not a member of it,
-    because everything inside ``verdict`` is authored by the gate and provenance a gate can write is
-    not provenance.
-
-    Keys, and exactly how much each is worth:
-      ``kind``            the harness's own registry key. ``_validated_kind`` refuses the names the
-                          harness reserves for itself, so this cannot be squatted.
-      ``source``          ``shipped`` or ``plugin``, decided by the entry-point scan, not by the gate.
-      ``distribution``    for a plugin only, from installed package METADATA. Absent for shipped
-                          gates rather than hardcoded: ``source: shipped`` already says the gate came
-                          with bounded-loops, and inventing a literal here would be one more string
-                          to drift.
-      ``implementation``  the concrete class that ran. **Self-reported** — a name the gate's own
-                          package chose. Records WHAT ran, not that it is trustworthy.
-
-    There is no ``measured`` key and must not be one until a vacuity probe exists. Whether a gate
-    would actually catch a regression needs a per-gate mutation corpus, which cannot be built for
-    arbitrary third-party code.
-
-    NEVER RAISES. This runs on every lap while building a ledger row, and a provenance lookup that
-    killed a run would make the audit trail the thing that breaks the audited work. A hostile or
-    broken gate yields ``{}`` — an absent claim, which reads correctly, rather than a false one.
+    THE HONEST LIMIT, stated because the alternative is this project's own defect class: a plugin
+    executing in this process is not CONTAINED by anything here. It can still reach into
+    `guard_gate.__closure__`, replace the ledger, or call `os._exit`. This closes the cheap,
+    one-line rebind and it is worth closing; it is not a sandbox, and no in-process check is.
     """
-    try:
-        kind = _short_value(getattr(gate, "gate_kind", None))
-        if kind is None:
-            return {}
-        record = {"kind": kind, "source": "plugin" if kind in plugin_kinds else "shipped"}
-        implementation = _short_value(type(getattr(gate, "wraps", gate)).__name__)
-        if implementation is not None:
-            record["implementation"] = implementation
-        if record["source"] == "plugin":
-            distribution = _short_value(distributions.get(kind))
-            if distribution is not None:
-                record["distribution"] = distribution
-        return record
-    except KeyboardInterrupt:
-        raise
-    except BaseException:  # noqa: BLE001 — see NEVER RAISES above
-        return {}
+
+    def guard_gate(inner: object, *, kind: str) -> "GuardedGate":
+        if type(inner) is cls:
+            return cast("GuardedGate", inner)
+        return cast("GuardedGate", cls(inner, kind=kind))
+
+    return guard_gate
+
+
+#: The only wrap entry point. `GuardedGate` stays exported for `type(x) is GuardedGate` assertions
+#: and for tests that construct one directly; anything CHOOSING whether to wrap must call this.
+guard_gate = _wrapper_bound_to(GuardedGate)
 
 
 def merged_gate_registry(

@@ -45,7 +45,12 @@ def stop_condition_met(spec: Spec, verdict: Verdict) -> bool:
         cross-check against verdict.evidence for richer semantics.
     """
     # v1: gate-passed == condition-met
-    return verdict.passed
+    # `is True`, not a truthy read. `GuardedGate` refuses a non-bool `passed` and every gate the
+    # harness builds goes through it, so this is defence in depth rather than the primary check — but
+    # the primary check is one wrapper away from a plugin that runs arbitrary code at import, and the
+    # cost of surviving that is three characters. A `passed` of "yes", 1 or [1] is not a mechanical
+    # confirmation, and this is the function whose answer decides DONE.
+    return verdict.passed is True
 
 
 def no_progress(lap_changed: Sequence[bool], window: int) -> bool:

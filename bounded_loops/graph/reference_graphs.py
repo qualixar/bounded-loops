@@ -2,7 +2,7 @@
 
 These are COMPOSITIONS of already-shipped loop packages, not new examples. Every node's gate is a
 real mechanical check that existed and was validated before the graph engine could run it, and 64 of
-the 68 packages run on a stub runner, so a reference graph costs nothing to run and is deterministic
+the shipped packages run on a stub runner, so a reference graph costs nothing to run and is deterministic
 in CI. Authoring new example loops instead would have shipped unproven gates in place of proven ones.
 
 The shapes live here rather than inside the generated YAML so that the generator script and the

@@ -150,6 +150,63 @@ def test_a_duplicated_loop_package_is_refused_cleanly_not_as_a_traceback(
     assert "share digest" in err, "the message should name the actual collision"
 
 
+def test_a_duplicated_loop_package_is_refused_by_graph_RUN_too(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The sibling of the test above, for the command that was fixed and never covered.
+
+    `88f43b3` applied `admitted_digests_or_problem` at BOTH call sites — `cmd_graph_plan` and
+    `cmd_graph_run`. Only the plan half had a test. A mutation probe reverted the `cli_graph.py` half
+    and the suite stayed green: half a fix was guarding nothing, and `bl graph run` on a duplicated
+    catalogue would traceback again the moment anyone touched that line. A fix with a test on one of
+    its two halves is a fix with a test on one of its two halves.
+
+    `cmd_graph_run` without `--execute` compiles and previews, so this exercises the real refusal
+    path without running a graph.
+    """
+    source = REPO_ROOT / "loops" / "osv-scanner-example"
+    assert (source / "loop.yaml").is_file(), "fixture moved; pick another shipped loop package"
+    roots = tmp_path / "loops"
+    roots.mkdir()
+    shutil.copytree(source, roots / "my-variant")
+    shutil.copytree(source, roots / "my-variant-copy")
+
+    rc = cmd_graph_run(_ns(SHIPPED_GRAPHS[0], loop_roots=[str(roots)], execute=False, out=None))
+
+    assert rc == 2, "graph run must refuse a duplicated package with an exit code, not an exception"
+    err = capsys.readouterr().err
+    assert "loop-package catalogue" in err, f"catalogue failure misreported as something else: {err}"
+    assert "share digest" in err, "the message should name the actual collision"
+
+
+def test_graph_run_still_compiles_a_clean_catalogue_so_that_guard_refuses_nothing_else(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Calibration for the test above: one copy under one name must NOT be refused by `graph run`.
+
+    Without this, the previous test passes just as well against a `return 2` written at the top of
+    the function.
+
+    Uses a GENERATED manifest with no loop nodes, for the reason the plan calibration above records:
+    `--loop-roots` REPLACES the default catalogue, so a shipped reference graph naming shipped
+    packages can never compile against a foreign root. Written first against `SHIPPED_GRAPHS[0]`,
+    which failed with `package_unavailable` — the fixture's fault, not the guard's, and the same
+    fixture mistake the sibling test already had to correct once.
+    """
+    roots = tmp_path / "loops"
+    roots.mkdir()
+    shutil.copytree(REPO_ROOT / "loops" / "osv-scanner-example", roots / "my-variant")
+
+    rc = cmd_graph_run(
+        _ns(
+            _repair_manifest(tmp_path, repair_budget=1, attempts=1),
+            loop_roots=[str(roots)], execute=False, out=None,
+        )
+    )
+
+    assert rc == 0, f"a clean catalogue was refused by graph run: {capsys.readouterr().err.strip()}"
+
+
 def test_a_clean_catalogue_still_plans_so_the_guard_is_not_refusing_everything(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

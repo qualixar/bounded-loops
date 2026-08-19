@@ -1,10 +1,16 @@
 """Built-in, REAL sandboxed graph run — the headline no-Docker demonstration.
 
 Unlike ``bl graph demo`` (in-process, no isolation), this executes a node for
-real inside a native OS sandbox and proves it: the node tries to open a socket
-and write outside its workspace, and an INDEPENDENT gate then reads the produced
-artifact and passes only if the OS actually denied the network. The producer
-never grades itself — the gate is a separate object that inspects the receipt.
+real inside a native OS sandbox and proves it: the node tries to open a socket, and
+an INDEPENDENT gate then reads the produced artifact and passes only if the OS
+actually denied the network. The producer never grades itself — the gate is a
+separate object that inspects the receipt.
+
+The probe is the NETWORK only. This paragraph used to add "and write outside its
+workspace", which the producer has never attempted and no gate here checks — a
+guarantee stated in a docstring and enforced nowhere, which is the defect class this
+project exists to name. An out-of-workspace write probe is a real thing to add; until
+something runs it, the sentence claiming it is the bug.
 
 It runs anywhere a native sandbox exists (macOS Seatbelt, Linux bubblewrap) with
 no Docker daemon and no root. If the host can only offer Docker, the built-in
