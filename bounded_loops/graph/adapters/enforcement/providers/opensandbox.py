@@ -70,10 +70,36 @@ DEFAULT_TOKEN_ENV = "OPENSANDBOX_ACCESS_TOKEN"
 #: execd's own local-development port, from the published spec's ``servers`` list.
 DEFAULT_BASE_URL = "http://127.0.0.1:44772"
 
-#: Execution is not implemented yet (see ``submit``). ``availability`` reads this so a reachable
-#: server can never be SELECTED and then fail at execution — a provider that advertises itself and
-#: then cannot run a node is the declared-not-enforced shape this project exists to refuse. One
-#: constant, read by both, so the guard and the raise cannot drift apart.
+#: Execution is not implemented (see ``submit``). ``availability`` reads this so a reachable server
+#: can never be SELECTED and then fail at execution — a provider that advertises itself and then
+#: cannot run a node is the declared-not-enforced shape this project exists to refuse. One constant,
+#: read by both, so the guard and the raise cannot drift apart.
+#:
+#: **WHY IT IS STILL False, established by attempt rather than by assumption (2026-08-19).**
+#: ``submit()`` cannot be written without a server to write it against, and writing it blind is how
+#: a withdrawn module happened once already. So self-hosting was attempted on localhost:
+#:
+#:   * ``opensandbox-server`` 0.2.2 (Apache-2.0, PyPI) installs and ``init-config --example docker``
+#:     succeeds, writing a server bound to 127.0.0.1:8080.
+#:   * Starting it FAILS AT IMPORT with ``503 DOCKER::INITIALIZATION_ERROR`` — ``create_sandbox_service()``
+#:     raises while ``opensandbox_server.api.lifecycle`` is being imported, so the API never binds.
+#:     There is no degraded or containerless mode to test against: the control plane manages Docker,
+#:     and upstream's README states "Docker (required for local execution)" with no alternative.
+#:   * This host has the ``docker`` CLI but no reachable daemon, and no podman / colima / lima /
+#:     rancher. ``execd`` is injected INTO a container at runtime, so no container runtime means no
+#:     execution surface at all — not a slow one, an absent one.
+#:
+#: What that does and does not license. It does NOT license implementing ``submit()`` from the
+#: published spec alone; every attestation path here is tested, and an execution path that no test
+#: could exercise would be the one unverified thing in a module whose whole subject is refusing
+#: unverified claims. It DOES make this a documented integration seam rather than an omission: the
+#: transport is complete, honest about what it cannot attest, and structurally unable to be selected.
+#:
+#: To unblock, in order: (1) make a Docker daemon reachable — Docker Desktop, Colima or Rancher
+#: Desktop, all named in the server's own error message; (2) start the server and confirm a sandbox
+#: can be created; (3) implement ``submit()`` against it; (4) add an env-gated live test in the shape
+#: of ``tests/adapters/gates/test_plugins_live.py``; (5) flip this constant LAST, once that test
+#: passes. Flipping it before step 4 re-creates exactly the gap this comment exists to prevent.
 EXECUTION_IMPLEMENTED = False
 
 #: A hardening layer counts as enforced only when execd says ``active``. ``degraded`` means
