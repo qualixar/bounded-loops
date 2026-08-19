@@ -310,6 +310,15 @@ class TestEndToEnd:
         assert main(["verify", str(run_dir), "--expect-head", true_head]) != 0
         assert "NOT VERIFIED" in capsys.readouterr().out
 
+        # POSITIVE CONTROL. Without this the test passes if verification simply always fails —
+        # an audit called the two assertions above "complicit": either alone stays green. The
+        # forged head must still verify against the forged ledger, so what the test detects is
+        # specifically the disagreement with the digest the reader kept, not a broken verifier.
+        forged_head = json.loads((run_dir / "metadata.json").read_text())["ledger_head"]
+        assert forged_head != true_head
+        assert main(["verify", str(run_dir), "--expect-head", forged_head]) == 0
+        assert "Verified" in capsys.readouterr().out
+
 
 def test_a_failure_while_READING_the_run_also_never_fails_the_run(tmp_path, capsys):
     """The first version guarded only the write. Resolving the run directory and reading the ledger
@@ -577,3 +586,68 @@ class TestWorkCeiling:
         )
         assert row["budget_declared"]["wallclock_work_s"] == expected
         assert row["budget_declared"]["wallclock_s"] == bounds.max_wallclock_s
+
+
+class TestReasonAlsoRestsOnHashedData:
+    """Round 1 moved the STATUS off metadata.json and left the REASON behind, so half the headline
+    still rested on the one file `bl verify` reads and does not hash: a verified HALT could keep its
+    status and have the clause after the dash rewritten to anything. Fixing one site and leaving its
+    sibling is this codebase's most-repeated mistake — committed here inside the fix for it.
+    """
+
+    _MD_PATH = {"ledger_path": "/tmp/x/ledger.jsonl", "ledger_head": "h", "run_id": "x"}
+
+    def _rows(self) -> list:
+        return [{
+            "lap": 3, "verdict": {"passed": False, "detail": "max_iterations 2 reached at lap 3"},
+            "decision": "halt", "attempted": False,
+            "budget_spent": {"laps": 3, "tokens": 20, "wallclock_s": 0.3},
+            "budget_declared": {"attempts": 2, "tokens": None, "wallclock_s": 990},
+        }]
+
+    def test_the_reason_comes_from_the_ledger_not_from_metadata(self):
+        document = receipt_document(
+            {**self._MD_PATH, "status": "HALT", "reason": "gate-passed, all good"}, self._rows(),
+        )
+        assert document["run"]["reason"] == "max_iterations 2 reached at lap 3"
+        assert document["run"]["reason_in_metadata"] == "gate-passed, all good"
+        assert document["run"]["status_disagrees_with_metadata"] is True, (
+            "a rewritten reason with a matching status went unreported"
+        )
+
+    def test_a_rewritten_reason_alone_is_surfaced_in_the_markdown(self):
+        text = receipt_markdown(receipt_document(
+            {**self._MD_PATH, "status": "HALT", "reason": "gate-passed, all good"}, self._rows(),
+        ))
+        assert "max_iterations 2 reached at lap 3" in text
+        assert "disagrees with the summary filed beside it" in text
+
+    def test_an_honest_run_reports_no_disagreement(self):
+        """Calibration: status AND reason both matching must stay silent."""
+        document = receipt_document(
+            {**self._MD_PATH, "status": "HALT", "reason": "max_iterations 2 reached at lap 3"},
+            self._rows(),
+        )
+        assert document["run"]["status_disagrees_with_metadata"] is False
+
+
+def test_a_ledger_mixing_declared_and_undeclared_rows_counts_as_changed():
+    """Skipping rows that lack the field meant a ledger whose early rows predate declared bounds and
+    whose later rows carry them read as UNIFORM — and the whole run was reported as having run under
+    the later declaration, including the segment that declared nothing."""
+    rows = [
+        {"lap": 1, "verdict": {"passed": False, "detail": "x"}, "decision": "continue",
+         "attempted": True, "budget_spent": {"laps": 1, "tokens": 5, "wallclock_s": 0.1}},
+        {"lap": 2, "verdict": {"passed": True, "detail": "y"}, "decision": "done",
+         "attempted": True, "budget_spent": {"laps": 2, "tokens": 9, "wallclock_s": 0.2},
+         "budget_declared": {"attempts": 9, "tokens": None, "wallclock_s": 990}},
+    ]
+    document = receipt_document(
+        {"run_id": "x", "status": "DONE", "ledger_head": "h",
+         "ledger_path": "/tmp/x/ledger.jsonl"}, rows,
+    )
+    assert document["bounds_changed_during_run"] is True
+    assert document["bounds"]["attempts"]["declared"] is None, (
+        "one segment's declaration was presented as the whole run's"
+    )
+    assert "limits changed while this run was in progress" in receipt_markdown(document)

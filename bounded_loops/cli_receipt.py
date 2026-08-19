@@ -49,10 +49,20 @@ def _distinct_declarations(entries: list) -> list[dict]:
     under different limits.
     """
     seen: list[dict] = []
+    absent = False
     for entry in entries:
         declared = entry.get("budget_declared")
-        if isinstance(declared, dict) and declared and declared not in seen:
-            seen.append(declared)
+        if isinstance(declared, dict) and declared:
+            if declared not in seen:
+                seen.append(declared)
+        else:
+            absent = True
+    # A row with NO declaration is a DIFFERENT state, not a row to skip. Skipping it meant a ledger
+    # whose early rows predate the field and whose later rows carry it read as UNIFORM, and the whole
+    # run was then reported as having run under the later declaration — including the segment that
+    # never declared anything. Returning both states makes the caller treat it as changed.
+    if absent and seen:
+        return [*seen, {}]
     return seen
 
 
@@ -71,6 +81,7 @@ def _declared(entries: list) -> dict:
     """
     declarations = _distinct_declarations(entries)
     return declarations[0] if len(declarations) == 1 else {}
+
 
 
 def _against(consumed: object, ceiling: object, unit: str = "") -> str:
@@ -157,6 +168,22 @@ _DECISION_STATUS = {
 }
 
 
+def _reason_from_ledger(entries: list) -> str:
+    """The terminal row's own explanation, which is inside the hash chain.
+
+    `metadata.json` stores the same string, and the STATUS was moved off that file already — but the
+    reason was left behind, so half the receipt's headline still rested on the one file `bl verify`
+    reads and does not hash. "HALT — max_iterations 2 reached at lap 3" could keep its verified HALT
+    and have the clause after the dash rewritten to anything. Fixing a defect at one site and
+    leaving its sibling is the mistake this codebase has made most often; this is that mistake, in
+    the fix for it.
+    """
+    if not entries:
+        return ""
+    detail = _mapping(_mapping(entries[-1] if isinstance(entries[-1], dict) else {}).get("verdict")).get("detail")
+    return detail if isinstance(detail, str) else ""
+
+
 def _status_from_ledger(entries: list) -> str:
     """The run's outcome, derived from the hash-chained ledger rather than from metadata.json."""
     if not entries:
@@ -195,10 +222,18 @@ def receipt_document(metadata: dict, entries: list) -> dict:
             "status": _status_from_ledger(entries),
             "status_in_metadata": metadata.get("status", ""),
             "status_disagrees_with_metadata": (
-                _status_from_ledger(entries) != (metadata.get("status") or "")
-                and bool(metadata.get("status"))
+                (
+                    _status_from_ledger(entries) != (metadata.get("status") or "")
+                    and bool(metadata.get("status"))
+                )
+                or (
+                    _reason_from_ledger(entries) != (metadata.get("reason") or "")
+                    and bool(metadata.get("reason"))
+                )
             ),
-            "reason": metadata.get("reason", ""),
+            # From the ledger, for the same reason as `status` above.
+            "reason": _reason_from_ledger(entries),
+            "reason_in_metadata": metadata.get("reason", ""),
             "laps": len(entries),
         },
         # Declared beside consumed, per dimension, so neither can be read without the other.
