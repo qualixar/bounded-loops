@@ -14,11 +14,24 @@ scale a laptop does not need. The registry already prefers native mechanisms; th
 a deployment that already runs the platform.
 
 **What this transport attests, and the two dimensions it deliberately refuses to.** The execd API
-publishes ``GET /v1/isolated/capabilities``, which reports the per-session isolator plus the state
-of each hardening layer as ``active`` | ``disabled`` | ``degraded`` | ``unsupported`` — a
-four-valued distinction, not a boolean, which maps almost exactly onto this project's
-``Control.ENFORCED`` / ``NOT_ENFORCED`` / ``UNKNOWN``. That is why this backend can attest more
-than the generic loopback sidecar can.
+publishes ``GET /v1/isolated/capabilities``. This module was written against a published spec in which
+that endpoint reports the per-session isolator plus each hardening layer as ``active`` | ``disabled``
+| ``degraded`` | ``unsupported`` — a four-valued distinction that maps almost exactly onto this
+project's ``Control.ENFORCED`` / ``NOT_ENFORCED`` / ``UNKNOWN``.
+
+**MEASURED AGAINST A LIVE SERVER (2026-08-19), and the spec does not match the shipped daemon.**
+``opensandbox/execd:v1.0.21`` answers that path with four fields and no per-layer states at all::
+
+    {"available": false,
+     "message": "bwrap found (v0.11.2) but smoke test failed: ... Operation not permitted",
+     "commit_supported": false, "diff_supported": false}
+
+The parser below survives that correctly — the layers it cannot find become ``Control.UNKNOWN``
+rather than ``ENFORCED``, so the honest outcome happens to be the one it produces. But treat the
+four-valued description above as UNCONFIRMED against any shipped execd: it is the spec's account, not
+an observed one, and the observed one carries less. ``available`` and ``message`` are the only fields
+this transport has actually seen, and ``backend_reachable`` — which reads exactly those two — is the
+one path here verified end to end against a running daemon.
 
 It still cannot attest everything, and the gaps are structural rather than missing work:
 
@@ -85,9 +98,26 @@ DEFAULT_BASE_URL = "http://127.0.0.1:44772"
 #:     raises while ``opensandbox_server.api.lifecycle`` is being imported, so the API never binds.
 #:     There is no degraded or containerless mode to test against: the control plane manages Docker,
 #:     and upstream's README states "Docker (required for local execution)" with no alternative.
-#:   * This host has the ``docker`` CLI but no reachable daemon, and no podman / colima / lima /
-#:     rancher. ``execd`` is injected INTO a container at runtime, so no container runtime means no
-#:     execution surface at all — not a slow one, an absent one.
+#:   * ``execd`` is injected INTO a container at runtime, so no container runtime means no execution
+#:     surface at all — not a slow one, an absent one.
+#:
+#: **CORRECTION, same day.** The bullet above originally said this host had no reachable daemon. That
+#: became false: Docker Desktop 29.3.1 was started, the server came up on 127.0.0.1:8080, a sandbox
+#: reached ``Running``, and execd was reachable on an allocated host port. What was learned by doing
+#: it, which no amount of reading gave:
+#:
+#:   * The server on 8080 is the **Lifecycle API** — 38 endpoints, and NOT ONE of them executes code.
+#:     Zero occurrences of "execd" or "44772" in its ``/openapi.json``. Sandbox creation additionally
+#:     requires ``image.uri`` AND ``entrypoint`` AND ``resourceLimits`` together, none of which the
+#:     schema marks required — three cross-field validators discoverable only by being refused.
+#:   * ``execd`` runs as its own injected image (``runtime.execd_image``) and is published on a host
+#:     port from ``port_range_min..max``; ``GET /sandboxes/{id}/endpoints/44772`` reports it.
+#:   * execd serves no ``/openapi.json``, so its EXECUTION surface is still undiscovered. That, not
+#:     the daemon, is what now blocks ``submit()``.
+#:   * On Docker Desktop for macOS the isolator reports ``available: false`` — bubblewrap cannot
+#:     create a namespace — so this host can attest nothing even with everything running. A live test
+#:     here could prove transport mechanics and could NOT prove the isolation claim, which is the only
+#:     claim that matters.
 #:
 #: What that does and does not license. It does NOT license implementing ``submit()`` from the
 #: published spec alone; every attestation path here is tested, and an execution path that no test
