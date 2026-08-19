@@ -7,6 +7,7 @@ the instruction it prints for checking itself actually works.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from bounded_loops.cli import main
@@ -85,6 +86,11 @@ class TestDocument:
         monkeypatch.setattr(Path, "read_text", _forbidden)
         monkeypatch.setattr(Path, "open", _forbidden)
         monkeypatch.setattr("time.time", _forbidden)
+        # An audit noted the clock was only half-blocked: the budget meter uses `time.monotonic`,
+        # and a timestamp would come from `datetime`, so patching `time.time` alone left the two
+        # clocks this codebase actually reads wide open.
+        monkeypatch.setattr("time.monotonic", _forbidden)
+        monkeypatch.setattr("datetime.datetime", _forbidden)
 
         first = receipt_document(_metadata(tmp_path), _entries())
         second = receipt_document(_metadata(tmp_path), _entries())
@@ -253,7 +259,7 @@ class TestEndToEnd:
         loop_dir = tmp_path / "loop"
         shutil.copytree(Path("loops/assertion-density"), loop_dir)
         assert main(["run", str(loop_dir), "--run-id", "v1", "--yes"]) == 0
-        capsys.readouterr()
+        run_output = capsys.readouterr().out
 
         run_dir = loop_dir / ".bounded-loops" / "runs" / "v1"
         document = json.loads((run_dir / "receipt.json").read_text())
@@ -261,10 +267,11 @@ class TestEndToEnd:
         parts = command.split()
         assert parts[:2] == ["bl", "verify"], command
 
-        # The honest workflow: substitute the digest the reader kept, which for an untampered run
-        # is the one the ledger actually heads at. Deliberately NOT read from the receipt — that is
-        # the whole point of the placeholder.
-        head = document["integrity"]["ledger_head_in_this_directory"]
+        # The honest workflow: the digest the operator kept, taken from the RUN'S OWN OUTPUT rather
+        # than from the run directory. An audit pointed out that reading it back from receipt.json —
+        # as this test first did — models exactly the misuse the placeholder exists to prevent, so
+        # the test would have "verified" the false green rather than the real workflow.
+        head = re.search(r"Ledger head: ([0-9a-f]{64})", run_output).group(1)
         argv = [part if not part.startswith("<") else head for part in parts[1:]]
         assert main(argv) == 0, f"the receipt's published command shape does not work: {command}"
         assert "Verified" in capsys.readouterr().out
