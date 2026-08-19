@@ -37,7 +37,10 @@ from bounded_loops.domain.models import Bounds
 
 def _bounds(*, wallclock: int, reserve: int | None = None) -> Bounds:
     kwargs = {} if reserve is None else {"handoff_reserve_s": reserve}
-    return Bounds(max_iterations=3, max_wallclock_s=wallclock, **kwargs)
+    return Bounds(
+        max_iterations=3, max_wallclock_s=wallclock,
+        **kwargs,  # type: ignore[arg-type]  # heterogeneous kwargs by design
+    )
 
 
 def _write_loop(tmp_path: Path, bounds_yaml: str) -> Path:

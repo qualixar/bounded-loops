@@ -114,7 +114,8 @@ def _where(path: Path, root: Path | None, function: ast.AST) -> str:
         shown: object = path.relative_to(root) if root is not None else path.relative_to(_TESTS)
     except ValueError:
         shown = path
-    return f"{shown}:{function.lineno} {function.name}"
+    # `ast.AST` itself declares neither attribute; the callers only ever pass a def or class.
+    return f"{shown}:{function.lineno} {function.name}"  # type: ignore[attr-defined]
 
 
 def _unguarded_tests(path: Path) -> list[str]:

@@ -509,7 +509,7 @@ def test_a_composite_child_naming_an_unregistered_plugin_kind_is_refused_not_a_k
     )
     from bounded_loops.domain.errors import ManifestError
     with pytest.raises(ManifestError, match="not in the gate registry"):
-        comp._instantiate_gate_from_config({"kind": "ghost-kind"}, manifest)
+        comp._instantiate_gate_from_config({"kind": "ghost-kind"}, manifest)  # type: ignore[arg-type]  # a stand-in manifest: this test is about the gate key, not the manifest
 
 
 def test_a_substituted_shipped_gate_cannot_land_a_pass(tmp_path: Path) -> None:
@@ -535,12 +535,12 @@ def test_a_substituted_shipped_gate_cannot_land_a_pass(tmp_path: Path) -> None:
 
     original = comp.PytestGate
     try:
-        comp.PytestGate = _Hijack  # type: ignore[misc]
+        comp.PytestGate = _Hijack  # type: ignore[assignment,misc]  # substituting a hostile class for a shipped one is the attack
         manifest = types.SimpleNamespace(
             gate_kind="pytest", gate_config={},
             bounds=types.SimpleNamespace(max_wallclock_s=30, schema=None), loop_dir=tmp_path,
         )
-        gate = comp._instantiate_gate("pytest", manifest)
+        gate = comp._instantiate_gate("pytest", manifest)  # type: ignore[arg-type]  # a stand-in manifest
         assert isinstance(gate, GuardedGate), "a shipped gate reached the engine unwrapped"
         verdict = gate.check(_ctx(tmp_path))
         assert verdict.passed is False, "a substituted gate landed a PASS on the rules layer"
@@ -559,7 +559,7 @@ def test_a_genuine_shipped_gate_is_unaffected_by_the_wrapper(tmp_path: Path) -> 
         gate_kind="command", gate_config={"run": "true"},
         bounds=types.SimpleNamespace(max_wallclock_s=30, schema=None), loop_dir=tmp_path,
     )
-    gate = comp._instantiate_gate("command", manifest)
+    gate = comp._instantiate_gate("command", manifest)  # type: ignore[arg-type]  # a stand-in manifest
     assert isinstance(gate, GuardedGate)
     verdict = gate.check(_ctx(tmp_path))
     assert verdict.passed is True, "wrapping broke a shipped gate that should pass"
@@ -688,7 +688,7 @@ class _ClassLiar:
     def __init__(self, *args: object, **kwargs: object) -> None:
         pass
 
-    @property
+    @property  # type: ignore[misc]  # a read-only property overriding a read-write one is the lie under test
     def __class__(self) -> type:  # type: ignore[override]
         return GuardedGate
 
@@ -708,14 +708,14 @@ def test_a_gate_that_lies_about_its_type_is_still_wrapped_and_still_checked() ->
     from bounded_loops import composition
 
     original = composition.CommandGate
-    composition.CommandGate = _ClassLiar  # type: ignore[misc]
+    composition.CommandGate = _ClassLiar  # type: ignore[assignment,misc]  # rebinding a class in the composition module is the attack
     try:
         manifest = object.__new__(composition.LoopManifest)
         object.__setattr__(manifest, "gate_config", {"run": "true"})
         object.__setattr__(manifest, "bounds", type("B", (), {"max_wallclock_s": 5})())
         verdict = composition._instantiate_gate("command", manifest).check(None)  # type: ignore[arg-type]
     finally:
-        composition.CommandGate = original
+        composition.CommandGate = original  # type: ignore[assignment,misc]  # restoring the real class after the attack
 
     assert verdict.passed is False, "a liar's verdict reached the rules layer UNVALIDATED"
     assert "not a bool" in verdict.detail
@@ -730,13 +730,13 @@ def test_a_composite_child_that_lies_about_its_type_is_still_wrapped() -> None:
 
     manifest = load_manifest(Path("loops/assertion-density"))
     original = composition.CommandGate
-    composition.CommandGate = _ClassLiar  # type: ignore[misc]
+    composition.CommandGate = _ClassLiar  # type: ignore[assignment,misc]  # rebinding a class in the composition module is the attack
     try:
         child = composition._instantiate_gate_from_config(
             {"kind": "command", "run": "true"}, manifest
         )
     finally:
-        composition.CommandGate = original
+        composition.CommandGate = original  # type: ignore[assignment,misc]  # restoring the real class after the attack
 
     assert type(child) is GuardedGate, "a lying composite child reached the aggregator unwrapped"
     assert child.check(None).passed is False  # type: ignore[arg-type]
@@ -853,7 +853,7 @@ def test_every_reserved_kind_is_one_the_harness_actually_builds() -> None:
 
     manifest = load_manifest(Path("loops/assertion-density"))
     built = composition.wire(manifest, gate_cmd_override="true")._deps.gate
-    assert built.gate_kind in gp._RESERVED_INTERNAL_KINDS
+    assert built.gate_kind in gp._RESERVED_INTERNAL_KINDS  # type: ignore[attr-defined]  # GuardedGate exposes gate_kind; GatePort does not declare it
     assert gp._RESERVED_INTERNAL_KINDS == {"command-override"}, (
         "a name was added to the reserved set — assert here that the harness builds it"
     )
@@ -875,8 +875,8 @@ def test_a_verdict_cannot_change_its_answer_after_being_validated() -> None:
 
         @property
         def passed(self) -> bool:  # type: ignore[override]
-            object.__setattr__(self, "_n", self._n + 1)
-            return False if self._n <= 3 else True
+            object.__setattr__(self, "_n", self._n + 1)  # type: ignore[attr-defined]  # a frozen field mutated through object.__setattr__, on purpose
+            return False if self._n <= 3 else True  # type: ignore[attr-defined]  # same field, read back
 
         @property
         def detail(self) -> str:  # type: ignore[override]

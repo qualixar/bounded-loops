@@ -103,11 +103,20 @@ def test_docker_runner_e2e_if_docker_daemon_available(tmp_path):
         pytest.skip(f"alpine:latest has no repo digest to pin: {inspected.stderr.strip()!r}")
 
     _git_init(tmp_path)
+    # NOT `agent_output.txt`. `workspace_digest` excludes that name on purpose — every runner writes
+    # it on every lap, so counting it would make `changed` permanently true — and `DockerRunner`
+    # overwrites it with the container's stdout after the run. This test wrote only to that file, so
+    # the container did its work, the runner replaced the file, the digest ignored it, and
+    # `changed=False` was the CORRECT answer to a test asserting True. It failed on every CI run.
     result = DockerRunner(
-        image=pinned, agent_cmd="sh -c 'echo ok > agent_output.txt'",
+        image=pinned, agent_cmd="sh -c 'echo ok > touched_by_container.txt'",
     ).run_once(_spec(), _ctx(tmp_path))
 
-    assert result.changed is True
+    assert result.changed is True, (
+        "the container's write did not register: check that the target filename is not in "
+        "workspace_digest's exclusion list"
+    )
+    assert (tmp_path / "touched_by_container.txt").read_text() == "ok\n"
 
 
 def test_worktree_runner_e2e(tmp_path):

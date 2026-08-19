@@ -563,7 +563,7 @@ class TestWorkCeiling:
 
     def _row(self, **declared: object) -> list:
         base = {"attempts": 10, "tokens": None, "wallclock_s": 990, "wallclock_work_s": 900.0}
-        base.update(declared)
+        base.update(declared)  # type: ignore[arg-type]  # a deliberately partial declaration
         return [{
             "lap": 1, "verdict": {"passed": True, "detail": "ok"}, "decision": "done",
             "attempted": True,

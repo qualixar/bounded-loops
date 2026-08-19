@@ -50,7 +50,7 @@ def _deps(runner=None, gate=None, memory=None, ledger=None,
         memory     = memory     or FakeMemory(),
         ledger     = ledger     or FakeLedger(),
         tracer     = tracer     or FakeTracer(),
-        budget     = budget     or FakeBudget(),
+        budget     = budget     or FakeBudget(),  # type: ignore[arg-type]  # structural fake
         killswitch = killswitch or FakeKillSwitch(),
         approval   = approval   or FakeApproval(grants=True),
         clock      = clock      or FakeClock(),

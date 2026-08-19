@@ -33,7 +33,7 @@ BL = [sys.executable, "-m", "bounded_loops.cli"]
 # helpers the E9 sweep uses. Sharing them is deliberate: an earlier version of this project kept a
 # second copy of a scan and fixing one copy fixed nothing.
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
-from e9_bound_utilisation import (  # noqa: E402
+from e9_bound_utilisation import (  # type: ignore[import-not-found]  # noqa: E402
     _bounds,
     _copy,
     _set_records,

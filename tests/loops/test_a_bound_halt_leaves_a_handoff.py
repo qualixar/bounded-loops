@@ -119,7 +119,7 @@ def _bounds(**over) -> Bounds:
         require_approval=False,
     )
     base.update(over)
-    return Bounds(**base)
+    return Bounds(**base)  # type: ignore[arg-type]  # heterogeneous kwargs by design
 
 
 def _deps(workspace: Path, runner, **over) -> RunLoopDeps:
