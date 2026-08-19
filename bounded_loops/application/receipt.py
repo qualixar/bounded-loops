@@ -467,42 +467,74 @@ def _write_atomically(path: Path, text: str) -> None:
             temp_path.unlink()
 
 
+def _remove_quietly(path: Path) -> None:
+    try:
+        path.unlink()
+    except (OSError, ValueError):
+        pass
+
+
 def write_receipt_artifacts(run_dir: Path, metadata: dict, entries: list) -> list[Path]:
-    """Write receipt.md and receipt.json into a run directory. Returns what it wrote."""
+    """Write receipt.md and receipt.json into a run directory. Returns what it wrote.
+
+    ABSENCE IS HONEST; STALENESS IS A LIE. Two files cannot be replaced in one atomic step, so on any
+    failure this DELETES both rather than leaving whatever landed. An audit escalated the alternative:
+    a crash between the two replaces left a new receipt.json beside an OLD receipt.md, and a paper
+    attaches the markdown — so the reader gets a confident document describing a different run, with
+    `bl verify` green because it never reads either file. A missing receipt sends someone to
+    `bl receipt`, which re-derives the truth from the ledger. A stale one does not.
+    """
     document = receipt_document(metadata, entries)
-    written = []
-    for name, text in (
+    # Both texts rendered BEFORE any write, so a rendering failure cannot half-write the pair.
+    rendered = (
         ("receipt.json", json.dumps(document, indent=2, sort_keys=True) + "\n"),
         ("receipt.md", receipt_markdown(document)),
-    ):
-        target = run_dir / name
-        _write_atomically(target, text)
-        written.append(target)
+    )
+    written: list[Path] = []
+    try:
+        for name, text in rendered:
+            target = run_dir / name
+            _write_atomically(target, text)
+            written.append(target)
+    except BaseException:
+        # Includes the previous contents of whichever file was not reached: an older receipt for an
+        # earlier segment of a resumed run is exactly the document that must not survive here.
+        for name, _ in rendered:
+            _remove_quietly(run_dir / name)
+        raise
     return written
 
 
-def write_receipt_artifacts_or_warn(build: Callable[[], tuple[Path, dict, list]]) -> None:
+def write_receipt_artifacts_or_warn(
+    run_dir: Path, build: Callable[[], tuple[dict, list]],
+) -> None:
     """Do the whole paperwork step, and NEVER fail a run because the paperwork failed.
 
     Called on the terminal path of a completed run. A read-only volume, a full disk or a permissions
     problem must not turn a run that reached DONE into a failure — the ledger is already written and
-    already the authoritative record, so the artifact is a convenience on top of it. Warns on stderr
-    so the absence is visible rather than silent.
+    already the authoritative record, so the artifact is a convenience on top of it.
 
-    Takes a BUILDER rather than the finished inputs, so resolving the run directory and reading the
-    ledger back are inside the guard too. The first version guarded only the write, and the read
-    outside it raised `ManifestError` and broke a caller — the same "widened one operation and left
-    its sibling exposed" mistake this codebase has made repeatedly. Everything that can fail while
-    producing paperwork belongs on the same side of the try.
+    `run_dir` is a SEPARATE argument from `build` on purpose. It used to come back from the builder,
+    which meant a failure inside the builder left the directory unknown and any previous receipt
+    sitting there untouched — a document describing an earlier state of this very run. Taking the
+    directory up front makes cleanup always possible, which is the whole point: ABSENCE IS HONEST,
+    STALENESS IS A LIE. A missing receipt sends a reader to `bl receipt`, which re-derives the truth
+    from the ledger; a stale one sends them nowhere.
     """
     try:
-        run_directory, metadata, entries = build()
-        write_receipt_artifacts(run_directory, metadata, entries)
+        metadata, entries = build()
+        write_receipt_artifacts(run_dir, metadata, entries)
     except KeyboardInterrupt:
         raise
     except BaseException as exc:  # noqa: BLE001 — see docstring
+        for name in RECEIPT_FILES:
+            _remove_quietly(run_dir / name)
         print(
             f"[bounded-loops] could not write the receipt artifact ({type(exc).__name__}: {exc}). "
-            f"The ledger is unaffected and remains the authoritative record.",
+            "Any earlier receipt here has been removed rather than left stale; run "
+            "`bl receipt <run-dir>` to re-derive it. The ledger is unaffected and remains the "
+            "authoritative record.",
             file=sys.stderr,
         )
+
+

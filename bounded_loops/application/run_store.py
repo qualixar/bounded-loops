@@ -168,7 +168,8 @@ def write_run_metadata(
     # omission unrepresentable. Fail-open: the ledger is already the authoritative record, and
     # paperwork must never turn a completed run into a failure.
     write_receipt_artifacts_or_warn(
-        lambda: (directory, _read_json(path), _read_ledger_rows(outcome.ledger_path)),
+        directory,
+        lambda: (_read_json(path), _read_ledger_rows(outcome.ledger_path)),
     )
     _upsert_run_values(
         db_path=run_db(loop_dir, storage_root=storage_root),

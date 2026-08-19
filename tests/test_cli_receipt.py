@@ -10,6 +10,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from bounded_loops.cli import main
 # The builders and the writer live in `application.receipt` so that every path which persists a run
 # can write the artifact; `cli_receipt` is the presentation half.
@@ -193,7 +195,7 @@ class TestWriting:
             raise OSError("read-only file system")
 
         monkeypatch.setattr(receipt_module, "_write_atomically", _explode)
-        write_receipt_artifacts_or_warn(lambda: (tmp_path, _metadata(tmp_path), _entries()))
+        write_receipt_artifacts_or_warn(tmp_path, lambda: (_metadata(tmp_path), _entries()))
 
         assert not (tmp_path / "receipt.md").exists()
         assert "could not write the receipt" in capsys.readouterr().err
@@ -341,10 +343,10 @@ def test_a_failure_while_READING_the_run_also_never_fails_the_run(tmp_path, caps
     """The first version guarded only the write. Resolving the run directory and reading the ledger
     back sat outside the try, so a read failure propagated and broke a caller — caught by an
     unrelated test that mocks the wiring, not by anything written for this feature."""
-    def _explode() -> tuple[Path, dict, list]:
+    def _explode() -> tuple[dict, list]:
         raise RuntimeError("run 'r1' does not exist")
 
-    write_receipt_artifacts_or_warn(_explode)
+    write_receipt_artifacts_or_warn(tmp_path, _explode)
 
     assert "could not write the receipt" in capsys.readouterr().err
 
@@ -862,3 +864,58 @@ def test_a_killed_run_still_reports_what_it_spent():
     assert document["bounds"]["tokens"]["consumed"] == 205, "a killed run's spend was lost"
     assert document["bounds"]["wallclock_s"]["consumed"] == 1.5
     assert document["run"]["status"] == "KILLED"
+
+
+class TestStalenessIsNeverLeftBehind:
+    """An audit escalated what had been documented as an acceptable limit: two files cannot be
+    replaced atomically, so a crash between them left a NEW receipt.json beside an OLD receipt.md —
+    and a paper attaches the markdown. `bl verify` reads neither file, so it stays green while the
+    attachable document describes a different run. "Split-brain is a lie, not a missing file."
+    """
+
+    def _existing_pair(self, tmp_path: Path) -> None:
+        (tmp_path / "receipt.json").write_text('{"run": {"status": "DONE"}}')
+        (tmp_path / "receipt.md").write_text("# OLD MARKDOWN describing an earlier segment\n")
+
+    def test_a_failure_part_way_through_removes_both_files(self, tmp_path, monkeypatch):
+        import bounded_loops.application.receipt as receipt_module
+
+        self._existing_pair(tmp_path)
+        calls = {"n": 0}
+        real = receipt_module._write_atomically
+
+        def _fail_on_second(path: Path, text: str) -> None:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("no space left on device")
+            real(path, text)
+
+        monkeypatch.setattr(receipt_module, "_write_atomically", _fail_on_second)
+        with pytest.raises(OSError):
+            write_receipt_artifacts(tmp_path, _metadata(tmp_path), _entries())
+
+        assert not (tmp_path / "receipt.json").exists(), "a half-written pair survived"
+        assert not (tmp_path / "receipt.md").exists(), "the OLD markdown survived beside new json"
+
+    def test_a_failure_before_any_write_still_clears_an_earlier_receipt(self, tmp_path, capsys):
+        """The resume case: metadata and the head are the new run, and the receipt on disk describes
+        only the first segment. Fail-open must not preserve it."""
+        self._existing_pair(tmp_path)
+
+        def _explode() -> tuple[dict, list]:
+            raise RuntimeError("ledger unreadable")
+
+        write_receipt_artifacts_or_warn(tmp_path, _explode)
+
+        assert not (tmp_path / "receipt.md").exists(), "a stale receipt survived a failed write"
+        assert not (tmp_path / "receipt.json").exists()
+        err = capsys.readouterr().err
+        assert "removed rather than left stale" in err
+        assert "bl receipt" in err, "the reader must be told how to re-derive it"
+
+    def test_a_successful_write_replaces_both(self, tmp_path):
+        """Calibration: the cleanup must not fire on the happy path."""
+        self._existing_pair(tmp_path)
+        write_receipt_artifacts(tmp_path, _metadata(tmp_path), _entries())
+        assert "OLD MARKDOWN" not in (tmp_path / "receipt.md").read_text()
+        assert json.loads((tmp_path / "receipt.json").read_text())["run"]["status"] == "DONE"
