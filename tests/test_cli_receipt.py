@@ -628,16 +628,23 @@ class TestReasonAlsoRestsOnHashedData:
         )
         assert document["run"]["reason"] == "max_iterations 2 reached at lap 3"
         assert document["run"]["reason_in_metadata"] == "gate-passed, all good"
-        assert document["run"]["status_disagrees_with_metadata"] is True, (
-            "a rewritten reason with a matching status went unreported"
-        )
+        # NOT flagged, and that is deliberate: a reason-only mismatch is not evidence of tampering,
+        # because for DONE and PAUSE the two strings legitimately differ (the engine's canonical
+        # label vs the gate's own sentence). This assertion used to require a flag here, which made
+        # every honest successful run accuse itself. The protection that matters is above: the
+        # receipt DISPLAYS the ledger's reason, so metadata's copy is not load-bearing.
+        assert document["run"]["status_disagrees_with_metadata"] is False
 
-    def test_a_rewritten_reason_alone_is_surfaced_in_the_markdown(self):
+    def test_a_rewritten_reason_is_simply_not_the_one_displayed(self):
+        """The premise of this test was wrong when first written: it required a reason-only mismatch
+        to raise an accusation, which fires on every honest DONE run. The real protection is that the
+        rewritten string never reaches the reader at all."""
         text = receipt_markdown(receipt_document(
             {**self._MD_PATH, "status": "HALT", "reason": "gate-passed, all good"}, self._rows(),
         ))
-        assert "max_iterations 2 reached at lap 3" in text
-        assert "disagrees with the summary filed beside it" in text
+        assert "max_iterations 2 reached at lap 3" in text, "the ledger's reason must be shown"
+        assert "gate-passed, all good" not in text, "the unhashed reason reached the reader"
+        assert "Treat this run as suspect" not in text
 
     def test_an_honest_run_reports_no_disagreement(self):
         """Calibration: status AND reason both matching must stay silent."""
@@ -771,3 +778,87 @@ def test_every_persist_path_writes_the_receipt_because_they_share_one(tmp_path):
     for name in RECEIPT_FILES:
         assert (directory / name).is_file(), f"{name} not written by a non-CLI persist path"
     assert json.loads((directory / "receipt.json").read_text())["run"]["status"] == "DONE"
+
+
+class TestHonestRunsAreNotAccused:
+    """A round-2 fix folded `reason` into the tamper flag. `Outcome.reason` for DONE is the engine's
+    canonical label ("gate-passed") while the ledger's terminal detail is the GATE's own sentence
+    ("gate passed (exit 0)"). Those always differ, so EVERY honest successful run printed "Treat this
+    run as suspect" — and printed it incoherently, since the banner shows the status pair, which was
+    identical. All three disagreement tests used `halt` rows, where the strings happen to match, so
+    the regression was invisible to the suite.
+    """
+
+    _MD_PATH = {"ledger_path": "/tmp/x/ledger.jsonl", "ledger_head": "h", "run_id": "x"}
+
+    def _done_rows(self) -> list:
+        return [{
+            "lap": 1, "verdict": {"passed": True, "detail": "gate passed (exit 0)"},
+            "decision": "done", "attempted": True,
+            "budget_spent": {"laps": 1, "tokens": 205, "wallclock_s": 0.1},
+            "budget_declared": {"attempts": 10, "tokens": None, "wallclock_s": 990},
+        }]
+
+    def test_an_honest_successful_run_is_not_flagged(self):
+        document = receipt_document(
+            {**self._MD_PATH, "status": "DONE", "reason": "gate-passed"}, self._done_rows(),
+        )
+        assert document["run"]["status_disagrees_with_metadata"] is False, (
+            "an honest DONE run accused itself because the reason strings legitimately differ"
+        )
+        assert "Treat this run as suspect" not in receipt_markdown(document)
+
+    def test_an_honest_paused_run_is_not_flagged(self):
+        rows = self._done_rows()
+        rows[0]["decision"] = "pause"
+        document = receipt_document(
+            {**self._MD_PATH, "status": "PAUSE", "reason": "awaiting-approval"}, rows,
+        )
+        assert document["run"]["status_disagrees_with_metadata"] is False
+        assert "Treat this run as suspect" not in receipt_markdown(document)
+
+    def test_a_rewritten_status_is_still_caught(self):
+        """Calibration: dropping the reason comparison must not disarm the flag. Nothing is lost —
+        the receipt DISPLAYS the ledger's reason, so metadata's copy is not load-bearing."""
+        document = receipt_document(
+            {**self._MD_PATH, "status": "DONE", "reason": "gate-passed"},
+            [dict(self._done_rows()[0], decision="halt",
+                  verdict={"passed": False, "detail": "max_iterations reached"})],
+        )
+        assert document["run"]["status_disagrees_with_metadata"] is True
+        assert "Treat this run as suspect" in receipt_markdown(document)
+
+    def test_a_real_successful_run_produces_an_unaccused_receipt(self, tmp_path, monkeypatch):
+        """End to end, because the two reason strings come from different layers of the engine and
+        only a real run puts both on disk."""
+        import shutil
+
+        monkeypatch.setenv("BOUNDED_LOOPS_TRUST_STORE", str(tmp_path / "trust"))
+        loop_dir = tmp_path / "loop"
+        shutil.copytree(Path("loops/assertion-density"), loop_dir)
+        assert main(["run", str(loop_dir), "--run-id", "ok", "--yes"]) == 0
+
+        text = (loop_dir / ".bounded-loops/runs/ok/receipt.md").read_text()
+        assert "Treat this run as suspect" not in text, text[:400]
+
+
+def test_a_killed_run_still_reports_what_it_spent():
+    """The kill check writes its row with `budget_spent={}` before the worker runs, and a bound halt
+    writes a wind-down row. Taking each segment's LAST row unconditionally reported a killed run's
+    spend as unknown and dropped every token it had really spent. Under-reporting cost is the one
+    direction a receipt must never fail in."""
+    rows = [
+        {"lap": 1, "verdict": {"passed": False, "detail": "gate failed"}, "decision": "continue",
+         "attempted": True, "budget_spent": {"laps": 1, "tokens": 205, "wallclock_s": 1.5},
+         "budget_declared": {"attempts": 10, "tokens": None, "wallclock_s": 990}},
+        {"lap": 2, "verdict": {"passed": False, "detail": "killed"}, "decision": "killed",
+         "attempted": False, "budget_spent": {},
+         "budget_declared": {"attempts": 10, "tokens": None, "wallclock_s": 990}},
+    ]
+    document = receipt_document(
+        {"run_id": "k", "status": "KILLED", "reason": "killed", "ledger_head": "h",
+         "ledger_path": "/tmp/x/ledger.jsonl"}, rows,
+    )
+    assert document["bounds"]["tokens"]["consumed"] == 205, "a killed run's spend was lost"
+    assert document["bounds"]["wallclock_s"]["consumed"] == 1.5
+    assert document["run"]["status"] == "KILLED"

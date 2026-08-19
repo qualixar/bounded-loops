@@ -109,7 +109,17 @@ def _spend_across_segments(entries: list) -> dict:
     saw_tokens = False
     saw_wallclock = False
     for segment in _segments(entries):
-        last = _mapping(segment[-1].get("budget_spent") if isinstance(segment[-1], dict) else {})
+        # The last row that actually CARRIES figures, not simply the last row. A killed run's final
+        # row is a pre-turn check written with `budget_spent={}` (see `run_loop._make_entry`), and a
+        # bound halt writes a wind-down row; taking the last row unconditionally reported a killed
+        # run's spend as unknown and silently dropped every token it had really spent. Under-
+        # reporting cost is the direction a receipt must never fail in.
+        last: dict = {}
+        for row in reversed(segment):
+            candidate = _mapping(row.get("budget_spent") if isinstance(row, dict) else {})
+            if candidate:
+                last = candidate
+                break
         tokens = last.get("tokens")
         wallclock = last.get("wallclock_s")
         if isinstance(tokens, (int, float)) and not isinstance(tokens, bool):
@@ -211,15 +221,19 @@ def receipt_document(metadata: dict, entries: list) -> dict:
             # rested on the one file nothing protects.
             "status": _status_from_ledger(entries),
             "status_in_metadata": metadata.get("status", ""),
+            # STATUS only. The reason strings are NOT comparable and must never be compared here:
+            # the engine's `Outcome.reason` is a canonical label ("gate-passed", "awaiting-approval")
+            # while the ledger's terminal detail is the GATE's own sentence ("gate passed (exit 0)").
+            # For DONE and PAUSE they always differ, so folding reason into this flag made EVERY
+            # honest successful run print "Treat this run as suspect" — and print it incoherently,
+            # since the banner shows the status pair, which was identical. A receipt that accuses
+            # itself on a clean run is worse than the defect the flag was added to catch.
+            #
+            # Nothing is lost by dropping it: the receipt DISPLAYS the ledger's reason, so metadata's
+            # copy is not load-bearing and editing it changes nothing a reader sees.
             "status_disagrees_with_metadata": (
-                (
-                    _status_from_ledger(entries) != (metadata.get("status") or "")
-                    and bool(metadata.get("status"))
-                )
-                or (
-                    _reason_from_ledger(entries) != (metadata.get("reason") or "")
-                    and bool(metadata.get("reason"))
-                )
+                _status_from_ledger(entries) != (metadata.get("status") or "")
+                and bool(metadata.get("status"))
             ),
             # From the ledger, for the same reason as `status` above.
             "reason": _reason_from_ledger(entries),
