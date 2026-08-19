@@ -206,6 +206,8 @@ def receipt_document(metadata: dict, entries: list) -> dict:
         # "no limits were declared". An absent number and a number that changed halfway are
         # different facts, and only one of them is a reason to distrust the summary.
         "bounds_recorded": bool(declarations),
+        # Where WORK is cut off, as distinct from the declared total. None when not recorded.
+        "work_ceiling_s": declared.get("wallclock_work_s"),
         "bounds_changed_during_run": len(declarations) > 1,
         "declarations": declarations if len(declarations) > 1 else [],
         "gate_changed_during_run": len(gates) > 1,
@@ -333,6 +335,19 @@ def receipt_markdown(document: dict) -> str:
         if document.get("bounds_changed_during_run"):
             allowed = "**changed**"
         lines.append(f"| {label} | {allowed} | {used} |")
+
+    work_ceiling = (document.get("work_ceiling_s")
+                    if not document.get("bounds_changed_during_run") else None)
+    if work_ceiling is not None and work_ceiling != bounds["wallclock_s"].get("declared"):
+        # Both numbers are true and they answer different questions. The declared total is the
+        # operator's; the work ceiling is where the run actually gets stopped, and quoting only the
+        # total hides it.
+        lines += [
+            "",
+            f"The wall-clock ceiling above is the total. Work stops at **{work_ceiling}s** — the "
+            "remainder is held back so a run halted by a bound can still write its handoff, which "
+            "is taken OUT of the declared ceiling rather than added to it.",
+        ]
 
     if document.get("bounds_changed_during_run"):
         lines += [

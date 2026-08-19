@@ -91,7 +91,7 @@ from bounded_loops.adapters.io.file_ledger import FileLedger
 from bounded_loops.adapters.io.receipt_redaction import RedactionPolicy, wrap_if_active
 from bounded_loops.adapters.io.noop_tracer import NoopTracer
 from bounded_loops.adapters.io.otel_tracer import OtelTracer
-from bounded_loops.adapters.io.budget import BudgetMeter
+from bounded_loops.adapters.io.budget import BudgetMeter, declared_budget
 from bounded_loops.adapters.io.kill_switch import EnvKillSwitch  # NOT FileKillSwitch — see  B
 from bounded_loops.adapters.io.approval import CliApproval, AutoApproval
 from bounded_loops.adapters.io.clock import UtcClock
@@ -440,11 +440,7 @@ def wire(
             # ceilings actually enforced. `manifest.load` normalises a null wallclock to 3600 and a
             # --max-iterations override lands here too; a receipt quoting the YAML would name a
             # ceiling that never applied, which is worse than naming none.
-            budget_declared={
-                "attempts": bounds.max_iterations,
-                "tokens": bounds.max_tokens,
-                "wallclock_s": bounds.max_wallclock_s,
-            },
+            budget_declared=declared_budget(bounds),
         ),
         env_passthrough=resolved_env_passthrough,
         cleanup_workspace=(not keep_workspace and run_id is None),

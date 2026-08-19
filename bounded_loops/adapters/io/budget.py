@@ -52,6 +52,34 @@ def effective_reserve_s(bounds: Bounds) -> float:
     return float(min(bounds.handoff_reserve_s, (bounds.max_wallclock_s - 1) // 2))
 
 
+def declared_budget(bounds: Bounds) -> dict[str, object]:
+    """The ceilings a receipt should quote, including the one a reader cannot otherwise see.
+
+    `max_wallclock_s` is the operator's number and the honest total: the wind-down turn is PARTITIONED
+    out of it, never added to it, so a run cannot outlive the declared ceiling (see
+    `application/handoff.py`). Reporting it is correct.
+
+    But WORK stops earlier — at `max_wallclock_s - effective_reserve_s`, which for the shipped
+    990 s / 90 s pair is 900 s. Quoting only 990 tells a reader the total and hides the number the
+    run is actually cut off at. Both are true; only one of them answers "how close did this come to
+    being stopped?", so the receipt carries both rather than choosing.
+
+    `wallclock_work_s` is None when no wallclock ceiling is declared, because there is then no work
+    ceiling to derive — not zero, which would read as "no time allowed at all".
+    """
+    work_ceiling: object = None
+    if bounds.max_wallclock_s is not None:
+        try:
+            work_ceiling = round(bounds.max_wallclock_s - effective_reserve_s(bounds), 2)
+        except (ValueError, TypeError):
+            work_ceiling = None   # a bound assembled in code that cannot yield a reserve
+    return {
+        "attempts": bounds.max_iterations,
+        "tokens": bounds.max_tokens,
+        "wallclock_s": bounds.max_wallclock_s,
+        "wallclock_work_s": work_ceiling,
+    }
+
 def _work_ceiling(bounds: Bounds) -> float:
     """The wallclock available for WORK: the declared ceiling less the effective reserve.
 

@@ -212,7 +212,9 @@ def test_the_ledger_records_the_ceilings_the_run_declared(tmp_path):
     ))
 
     row = json.loads((tmp_path / "ledger.jsonl").read_text().splitlines()[0])
-    assert row["budget_declared"] == {"attempts": 10, "tokens": None, "wallclock_s": 990}
+    assert row["budget_declared"] == {"attempts": 10, "tokens": None, "wallclock_s": 990}, (
+        "a hand-built entry records exactly what it was given"
+    )
     assert row["budget_declared"]["tokens"] is None, (
         "an undeclared ceiling must be recorded as null, not omitted — 'unbounded' is a fact a "
         "reader of a bound claim must not have to infer from a missing key"

@@ -517,3 +517,63 @@ def test_an_old_ledger_reports_its_bounds_as_not_recorded_not_as_unbounded():
     text = receipt_markdown(document)
     assert "not recorded" in text
     assert "no ceiling" not in text, "an unrecorded ceiling was asserted to be absent"
+
+
+class TestWorkCeiling:
+    """`max_wallclock_s` is the operator's number and the honest TOTAL — the wind-down turn is
+    partitioned out of it, never added to it, so a run cannot outlive its declared ceiling. But WORK
+    stops earlier, at total minus the effective reserve. Quoting only the total answers "what was
+    declared?" and hides "when does this get stopped?". Audit finding; both numbers now appear.
+    """
+
+    _MD = {"run_id": "x", "status": "DONE", "ledger_head": "h",
+           "ledger_path": "/tmp/x/ledger.jsonl"}
+
+    def _row(self, **declared: object) -> list:
+        base = {"attempts": 10, "tokens": None, "wallclock_s": 990, "wallclock_work_s": 900.0}
+        base.update(declared)
+        return [{
+            "lap": 1, "verdict": {"passed": True, "detail": "ok"}, "decision": "done",
+            "attempted": True,
+            "budget_spent": {"laps": 1, "tokens": 5, "wallclock_s": 0.1},
+            "budget_declared": base,
+        }]
+
+    def test_the_receipt_names_where_work_is_cut_off_not_only_the_total(self):
+        text = receipt_markdown(receipt_document(self._MD, self._row()))
+        assert "| wall clock | 990s |" in text, "the operator's declared total must still be shown"
+        assert "Work stops at **900.0s**" in text
+
+    def test_no_second_number_when_nothing_is_held_back(self):
+        """Calibration: with a zero reserve the work ceiling IS the total, and repeating it would be
+        noise that trains a reader to skip the line."""
+        text = receipt_markdown(receipt_document(self._MD, self._row(wallclock_work_s=990)))
+        assert "Work stops at" not in text
+
+    def test_no_second_number_when_no_wallclock_ceiling_was_declared(self):
+        text = receipt_markdown(
+            receipt_document(self._MD, self._row(wallclock_s=None, wallclock_work_s=None))
+        )
+        assert "Work stops at" not in text
+        assert "| wall clock | no ceiling |" in text
+
+    def test_a_real_run_records_the_work_ceiling(self, tmp_path, monkeypatch):
+        """End to end: `composition` must derive it from the SAME function the budget meter uses,
+        or the receipt would quote a cutoff the engine does not enforce."""
+        import shutil
+
+        from bounded_loops.adapters.io.budget import effective_reserve_s
+        from bounded_loops.application.manifest import load as load_manifest
+
+        monkeypatch.setenv("BOUNDED_LOOPS_TRUST_STORE", str(tmp_path / "trust"))
+        loop_dir = tmp_path / "loop"
+        shutil.copytree(Path("loops/assertion-density"), loop_dir)
+        assert main(["run", str(loop_dir), "--run-id", "wc", "--yes"]) == 0
+
+        bounds = load_manifest(loop_dir).bounds
+        expected = round(bounds.max_wallclock_s - effective_reserve_s(bounds), 2)
+        row = json.loads(
+            (loop_dir / ".bounded-loops/runs/wc/ledger.jsonl").read_text().splitlines()[0]
+        )
+        assert row["budget_declared"]["wallclock_work_s"] == expected
+        assert row["budget_declared"]["wallclock_s"] == bounds.max_wallclock_s
