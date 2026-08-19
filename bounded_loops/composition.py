@@ -289,8 +289,17 @@ def wire(
         # is never actually None; mypy just can't see that guarantee
         # through the Optional[int] domain type. type: ignore, not a
         # silent behavior change.
-        gate: GatePort = CommandGate(
-            gate_cmd_override, timeout_s=manifest.bounds.max_wallclock_s  # type: ignore[arg-type]
+        # Wrapped like every other gate. This path built a RAW CommandGate until round 4, the one
+        # construction site `_instantiate_gate` does not cover, so an override verdict reached the
+        # rules layer unvalidated. An operator typing --gate-override is trusted to choose the
+        # command, which is why this is not a supply-chain hole — but trust in the operator's INTENT
+        # is not evidence the command's exit code means what the rules layer will read it as, and a
+        # shipped gate returning a non-bool is exactly the case wrapping was introduced to catch.
+        gate: GatePort = GuardedGate(
+            CommandGate(
+                gate_cmd_override, timeout_s=manifest.bounds.max_wallclock_s  # type: ignore[arg-type]
+            ),
+            kind="command-override",
         )
     else:
         gate_key = manifest.gate_kind
@@ -899,13 +908,20 @@ def _instantiate_gate(gate_key: str, manifest: LoopManifest) -> GatePort:
     type, and a well-formed Verdict passes through untouched.
     """
     built = _build_gate(gate_key, manifest)
-    return built if isinstance(built, GuardedGate) else GuardedGate(built, kind=gate_key)
+    # `type(...) is` NOT `isinstance(...)`. isinstance consults `__class__`, which the object being
+    # tested controls, so a hostile gate that merely CLAIMS to be a GuardedGate skipped validation
+    # entirely: monkey-patch `composition.CommandGate` to a GuardedGate SUBCLASS and the round-3
+    # `isinstance` shortcut handed it straight through. Reproduced returning passed="yes" — a
+    # truthy non-bool reaching the rules layer, i.e. DONE with nothing verified. The exact-type test
+    # cannot be spoofed, and `GuardedGate.__init_subclass__` now refuses subclasses outright so the
+    # only object that can take this branch is one WE constructed in `instantiate_guarded`.
+    return built if type(built) is GuardedGate else GuardedGate(built, kind=gate_key)
 
 
 def _instantiate_gate_from_config(gate_config: dict, manifest: LoopManifest) -> GatePort:
     """Composite children are wrapped too — an unchecked child verdict is aggregated into the parent."""
     kind = gate_config.get("kind")
     built = _build_child_gate(gate_config, manifest)
-    if isinstance(built, GuardedGate):
+    if type(built) is GuardedGate:  # exact type — see _instantiate_gate for why isinstance is unsafe
         return built
     return GuardedGate(built, kind=str(kind) if isinstance(kind, str) else "composite-child")

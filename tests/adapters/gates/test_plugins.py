@@ -662,3 +662,132 @@ def test_refuse_if_same_distribution_is_a_no_op_for_shipped_kinds() -> None:
         gate_distributions=_dists(**{"acme-check": "bounded-loops"}),
         worker_module="bounded_loops.x",
     )
+
+
+# ── Round 4: the wrapper's own type test was the bypass ────────────────────────────────────
+#
+# Round 3 made wrapping unconditional but skipped anything that already looked wrapped:
+#     return built if isinstance(built, GuardedGate) else GuardedGate(built, kind=gate_key)
+# `isinstance` consults `__class__`, which the object being tested controls. So an object only
+# had to CLAIM to be a GuardedGate to skip every check in `GuardedGate.check`. Reproduced
+# end-to-end returning passed="yes" — a truthy non-bool reaching the rules layer, which is a
+# loop reaching DONE with nothing verified.
+#
+# Two independent defences, tested independently below so that removing either one fails a test:
+#   1. the call sites test the EXACT type, which cannot be spoofed
+#   2. GuardedGate refuses to be subclassed, so the honest version of the vector cannot exist
+
+
+class _ClassLiar:
+    """Not a subclass of GuardedGate. Merely claims to be one, which `isinstance` believes."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return GuardedGate
+
+    def check(self, ctx: LoopContext) -> Verdict:
+        return Verdict(passed="yes", detail="verified nothing")  # type: ignore[arg-type]
+
+
+def test_isinstance_believes_the_liar_which_is_why_the_call_sites_cannot_use_it() -> None:
+    """Pins the language behaviour the bypass depended on, so the next reader sees WHY."""
+    liar = _ClassLiar()
+    assert isinstance(liar, GuardedGate) is True, "if this ever becomes False the risk is gone"
+    assert type(liar) is not GuardedGate
+
+
+def test_a_gate_that_lies_about_its_type_is_still_wrapped_and_still_checked() -> None:
+    """The BLOCKER, end to end through the real composition path."""
+    from bounded_loops import composition
+
+    original = composition.CommandGate
+    composition.CommandGate = _ClassLiar  # type: ignore[misc]
+    try:
+        manifest = object.__new__(composition.LoopManifest)
+        object.__setattr__(manifest, "gate_config", {"run": "true"})
+        object.__setattr__(manifest, "bounds", type("B", (), {"max_wallclock_s": 5})())
+        verdict = composition._instantiate_gate("command", manifest).check(None)  # type: ignore[arg-type]
+    finally:
+        composition.CommandGate = original
+
+    assert verdict.passed is False, "a liar's verdict reached the rules layer UNVALIDATED"
+    assert "not a bool" in verdict.detail
+
+
+def test_a_composite_child_that_lies_about_its_type_is_still_wrapped() -> None:
+    """The SECOND call site. A fix that reaches one site and misses its sibling is this
+    project's most-repeated defect, so the sibling gets its own test."""
+    from bounded_loops import composition
+
+    from bounded_loops.application.manifest import load as load_manifest
+
+    manifest = load_manifest(Path("loops/assertion-density"))
+    original = composition.CommandGate
+    composition.CommandGate = _ClassLiar  # type: ignore[misc]
+    try:
+        child = composition._instantiate_gate_from_config(
+            {"kind": "command", "run": "true"}, manifest
+        )
+    finally:
+        composition.CommandGate = original
+
+    assert type(child) is GuardedGate, "a lying composite child reached the aggregator unwrapped"
+    assert child.check(None).passed is False  # type: ignore[arg-type]
+
+
+def test_guarded_gate_refuses_to_be_subclassed() -> None:
+    """The honest form of the same vector, killed at class-creation time."""
+    with pytest.raises(TypeError, match="cannot be subclassed"):
+
+        class _Sneaky(GuardedGate):  # type: ignore[misc]
+            pass
+
+
+def test_a_verdict_that_raises_during_validation_becomes_a_failing_verdict() -> None:
+    """Validation used to sit OUTSIDE the try, so a Verdict whose field raises escaped the
+    wrapper. Availability rather than a forged pass — but not from inside the containment."""
+
+    class _BombVerdict(Verdict):
+        # A plain __init__ that skips the frozen-dataclass one. Without this the bomb detonates
+        # inside the dataclass __init__ (object.__setattr__ onto a property with no setter), which
+        # is INSIDE `_inner.check` — the path that already worked. The first version of this test
+        # did exactly that and passed with the fix reverted.
+        def __init__(self) -> None:
+            pass
+
+        @property
+        def passed(self) -> bool:  # type: ignore[override]
+            raise SystemExit("raises on ACCESS, during validation, not during check()")
+
+    class _BombGate:
+        def check(self, ctx: LoopContext) -> Verdict:
+            return _BombVerdict()
+
+    verdict = GuardedGate(_BombGate(), kind="bomb").check(None)  # type: ignore[arg-type]
+    assert verdict.passed is False
+    assert "raised" in verdict.detail
+
+
+def test_a_wrapped_gate_cannot_have_its_inner_swapped() -> None:
+    """Defence in depth, NOT containment: `object.__setattr__` and `gc.get_referrers` both defeat
+    this. It makes the casual and accidental rebind fail loudly instead of silently changing
+    which gate a verdict is read from."""
+    gate = GuardedGate(_MarkerGate(), kind="k")
+    with pytest.raises(AttributeError, match="frozen after construction"):
+        gate._inner = _MarkerGate()
+
+
+def test_gate_cmd_override_reaches_the_engine_wrapped() -> None:
+    """The one construction site universal wrapping did not cover until round 4."""
+    from bounded_loops import composition
+    from bounded_loops.application.manifest import load as load_manifest
+
+    manifest = load_manifest(Path("loops/assertion-density"))
+    gate = composition.wire(manifest, gate_cmd_override="true")._deps.gate
+
+    assert type(gate) is GuardedGate, "--gate-override built a RAW gate"
+    assert gate.gate_kind == "command-override"
+    assert type(gate.wraps).__name__ == "CommandGate"

@@ -333,9 +333,44 @@ class GuardedGate:
     prevent.
     """
 
+    __slots__ = ("_frozen", "_inner", "_kind")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Subclassing is refused, because a subclass WAS the bypass.
+
+        Round 4: `_instantiate_gate` shortcut `isinstance(built, GuardedGate)` to avoid double
+        wrapping. A hostile gate class that subclasses this one therefore skipped every check
+        below — reproduced returning passed="yes", a truthy non-bool, i.e. a loop reaching DONE
+        with nothing verified. That call site now tests the exact type, and this makes the vector
+        itself unconstructible so a future call site cannot reintroduce it by reaching for the
+        more natural-looking `isinstance`.
+        """
+        raise TypeError(
+            "GuardedGate cannot be subclassed: a subclass is indistinguishable from the wrapper "
+            "under isinstance, which is how an unvalidated verdict reached the rules layer. Wrap "
+            "an instance instead of inheriting from it."
+        )
+
     def __init__(self, inner: object, *, kind: str) -> None:
         self._inner = inner
         self._kind = kind
+        self._frozen = True
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Refuse rebinding after construction, so `gate._inner = Evil()` is not a one-liner.
+
+        NOT containment, and must not be described as such: `object.__setattr__` bypasses this, and
+        a determined plugin can reach the wrapper through `gc.get_referrers`. It is the same honest
+        limit the registry-freezing attempt ran into — in-process policing of a hostile object in the
+        same interpreter is unwinnable. What this buys is that the CASUAL and ACCIDENTAL rebind now
+        fails loudly instead of silently swapping the gate a verdict is read from.
+        """
+        if getattr(self, "_frozen", False):
+            raise AttributeError(
+                f"GuardedGate is frozen after construction; refusing to rebind {name!r}. "
+                "Construct a new wrapper rather than mutating the gate a verdict comes from."
+            )
+        object.__setattr__(self, name, value)
 
     @property
     def gate_kind(self) -> str:
@@ -357,8 +392,16 @@ class GuardedGate:
         return self._inner
 
     def check(self, ctx: LoopContext) -> Verdict:
+        """Every raise below this line becomes a FAILING verdict, including raises from VALIDATION.
+
+        Round 4: only `self._inner.check(ctx)` used to sit inside the try, so the validation that
+        follows — `isinstance`, the `passed` bool test, `detail.strip()` — ran unprotected. A Verdict
+        subclass whose `passed` property raises therefore escaped this wrapper entirely. That is
+        availability rather than a forged pass, but a gate crashing the harness from inside the code
+        that exists to contain it is not a distinction worth shipping.
+        """
         try:
-            raw = self._inner.check(ctx)  # type: ignore[attr-defined]
+            return self._checked(ctx)
         except KeyboardInterrupt:
             raise  # the operator's, not the plugin's to convert into a verdict
         except BaseException as exc:  # noqa: BLE001
@@ -374,6 +417,12 @@ class GuardedGate:
                 evidence={"gate_kind": self._kind, "error": type(exc).__name__},
             )
 
+    def _validate(self, raw: object) -> Verdict:
+        """Reject anything that is not an unambiguous mechanical confirmation.
+
+        Called from inside `check`'s try, so a Verdict whose fields raise on access becomes a
+        failing verdict rather than an exception escaping the wrapper.
+        """
         if not isinstance(raw, Verdict):
             return Verdict(
                 passed=False,
@@ -409,6 +458,11 @@ class GuardedGate:
             )
 
         return raw
+
+    def _checked(self, ctx: LoopContext) -> Verdict:
+        """The gate call and the validation of what it returned, as one guarded unit."""
+        raw = self._inner.check(ctx)  # type: ignore[attr-defined]
+        return self._validate(raw)
 
 
 def merged_gate_registry(
