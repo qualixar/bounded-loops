@@ -86,7 +86,25 @@ def test_readme_puts_verified_quick_start_above_the_fold() -> None:
     # The intent of the guard is "do not turn the README into the documentation", and each of
     # these links OUT to docs rather than inlining them. If the next increase cannot name its
     # additions this specifically, trim instead of raising.
-    assert len(readme.split()) <= 3000
+    #
+    # Raised again to 3600 for 0.6.9, for three additions, all of them things a reader could not
+    # get from this page before:
+    #
+    #   1. "Why you would want this" — the problem in plain language, plus a three-row table
+    #      defining gate, bound and ledger. Those three words appeared from the header onward and
+    #      were never defined anywhere in the README. A non-technical reader could not learn from
+    #      this page what the product was for; the terms were only ever used, never introduced.
+    #   2. "Use it with Claude Code or Codex" — the actual install and invocation, above the fold.
+    #      The only agent-integration content lived at line 382 of 480, opened with MCP protocol
+    #      revisions and HMAC token internals, and contained NO Claude Code commands at all — it
+    #      pointed at plugins/README.md instead. The single largest group of prospective users had
+    #      to leave the page to find out whether the tool worked with the agent they already run.
+    #   3. Captions and a second diagram in Architecture. The README shipped one diagram, for the
+    #      loop engine, while half the package is the graph engine.
+    #
+    # Each links OUT for depth — the MCP section, plugins/README.md, docs/ARCHITECTURE.md — and
+    # none of them inlines documentation, which is the condition this guard actually cares about.
+    assert len(readme.split()) <= 3600
     assert "actions/workflows/ci.yml/badge.svg" in readme
     assert "tests-678_passing" not in readme
 

@@ -1,0 +1,55 @@
+flowchart TB
+    subgraph GDomain["Graph domain (pure, stdlib-only)"]
+        Plan["plan.py — CompiledPlan, waves,\nper-node attempt ceilings"]
+        Events["events.py — the hash-chained event vocabulary"]
+        Artifacts["artifacts.py — artifact identity + digests"]
+        Approvals["approvals.py — approval records"]
+        Conns["connections.py — connection admission"]
+        GErrors["errors.py — GraphValidationError,\nGraphIntegrityError"]
+    end
+
+    subgraph GApp["Graph application (orchestration)"]
+        Compile["compile_graph.py — manifest to CompiledPlan.\nRefuses BEFORE anything runs"]
+        Repair["repair_rounds.py — total_execution_bound\n(1 + repair_budget) x sum of node attempts"]
+        Controller["run_graph.py — GraphRunController\n(the node algorithm)"]
+        Receipts["node_receipts.py — validated_verdict_or_none.\nA gate verdict is snapshotted, never re-read"]
+        Ports["graph_ports.py — the seam"]
+        Persist["plan_persistence.py · audit_plan.py"]
+    end
+
+    subgraph GAdapters["Graph adapters (concrete implementations)"]
+        Workers["adapters/workers/\nconnector_worker · join_worker\nloop_packages — a bounded LOOP as one node\nacceptance_gate · loop_receipt_gate"]
+        Enforce["adapters/enforcement/\nnative sandbox: Seatbelt · bubblewrap\ncapabilities · egress posture · registry"]
+        Store["adapters/persistence/\nevent_log — the hash chain\nartifact_store · audit_store · approvals"]
+        Connectors["adapters/connectors/\nlocal CLI providers · credentials"]
+    end
+
+    GComp["graph_composition.py — THE graph composition root\n(only file that imports concrete adapters)"]
+
+    Compile --> Plan
+    Compile --> GErrors
+    Compile --> Conns
+    Repair --> Plan
+    Controller --> Ports
+    Controller --> Receipts
+    Controller --> Plan
+    Controller --> Events
+    Receipts --> Events
+    Persist --> Artifacts
+    Persist --> Approvals
+
+    Workers -.implements.-> Ports
+    Enforce -.implements.-> Ports
+    Store -.implements.-> Ports
+    Connectors -.implements.-> Ports
+
+    GComp -->|instantiates + injects| Workers
+    GComp -->|instantiates + injects| Enforce
+    GComp -->|instantiates + injects| Store
+    GComp -->|instantiates + injects| Connectors
+    GComp -->|builds| Controller
+    GComp --> Compile
+
+    CLI["cli_graph.py (plan · run · status · resume · approve)"] --> GComp
+    MCPG["mcp_graph.py (graph tools for a host MCP server)"] --> GComp
+    LoopEngine["the bounded LOOP engine\n(see ports-and-adapters)"] -.one node runs one loop.-> Workers

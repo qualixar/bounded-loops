@@ -4,14 +4,21 @@
 
 <h1 align="center">bounded-loops</h1>
 
-<p align="center"><strong>Two things ship in this package: a standalone bounded loop engine and a graph engine that composes loops into DAGs. Each is a complete, independently useful program.</strong></p>
+<p align="center"><strong>An AI coding agent can tell you it finished when it did not.</strong></p>
+
+<p align="center">bounded-loops runs your agent until a check it cannot edit or grade says the work<br/>
+actually passes — and stops at a limit you set before the run starts.<br/>
+Every run leaves a hash-chained record you can re-verify afterwards.</p>
 
 <p align="center">
   <a href="https://github.com/qualixar/bounded-loops/actions/workflows/ci.yml"><img src="https://github.com/qualixar/bounded-loops/actions/workflows/ci.yml/badge.svg" alt="CI status"/></a>
   <a href="https://pypi.org/project/bounded-loops/"><img src="https://img.shields.io/pypi/v/bounded-loops" alt="PyPI version"/></a>
   <a href="https://www.npmjs.com/package/bounded-loops"><img src="https://img.shields.io/npm/v/bounded-loops" alt="npm version"/></a>
+  <a href="https://pypi.org/project/bounded-loops/"><img src="https://img.shields.io/pypi/pyversions/bounded-loops" alt="Supported Python versions"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-2563eb" alt="Apache-2.0 license"/></a>
 </p>
+
+<p align="center"><em>Works with Claude Code, OpenAI Codex, Antigravity, or no agent at all.</em></p>
 
 ![Ungated agent claim compared with a gate-verified bounded loop](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/demo.gif)
 
@@ -25,6 +32,74 @@ bl run .bounded-loops/loops/bug-fix-red-green --yes   # a real planted bug, a re
 and `bl loops install` copies one into your project — nothing is downloaded, so this works
 offline. Installing is a step because `bl run` writes its ledger beside the loop, and
 `site-packages` is the wrong place to keep run receipts.
+
+---
+
+## Why you would want this
+
+An agent that writes code also decides when to stop. Ask one to fix a failing test and it
+will often reply that the test passes — because it believes it does. Nothing checked.
+
+You can watch that happen. A shipped loop has a deliberately broken twin that trusts the
+agent's word instead of running the tests:
+
+```bash
+./loops/bug-fix-red-green/wreck.sh     # the ungated version: exits claiming success
+bl run loops/bug-fix-red-green --yes   # the same task, gated: pytest decides
+```
+
+The first one prints success while `pytest` is still failing. The second cannot: the thing
+that says "done" is a separate program, and it runs the tests.
+
+Three words are used throughout this README, and they are the whole idea:
+
+| | |
+|---|---|
+| **gate** | The check that decides pass or fail. A command, a test suite, a schema — never the agent. The agent's own "I'm done" is written to the record and **ignored**. |
+| **bound** | A limit you declare *before* the run: how many attempts, how many tokens, how long, how many tries without progress. The engine enforces it and stops. |
+| **ledger** | The append-only, hash-chained file of what happened. `bl verify` re-checks it, so "it passed" is something you can confirm rather than trust. |
+
+Everything else in this document is those three things applied to harder shapes.
+
+---
+
+## Use it with Claude Code or Codex
+
+You keep the agent you already use. bounded-loops becomes the thing that decides when it is
+allowed to stop.
+
+**Claude Code**
+
+```bash
+pip install "bounded-loops[mcp]"
+git clone https://github.com/qualixar/bounded-loops && cd bounded-loops
+claude plugin marketplace add ./plugins/claude-code
+claude plugin install bounded-loops@bounded-loops
+```
+
+**OpenAI Codex**
+
+```bash
+pip install "bounded-loops[mcp]"
+git clone https://github.com/qualixar/bounded-loops && cd bounded-loops
+codex plugin marketplace add .
+codex plugin add bounded-loops@bounded-loops
+```
+
+Then, inside your agent, ask it to run a gated task instead of grading itself:
+
+```
+Run the bug-fix-red-green loop and show me the receipt.
+```
+
+The agent calls the loop, a real `pytest` decides each attempt, the attempt limit is enforced
+by the engine rather than by the agent's judgement, and you get a receipt you can re-verify.
+Running a loop deliberately takes **two calls** — a preview, then a confirm carrying a token
+from that preview — so an agent cannot start a run you were not shown. Details:
+[Codex, Claude Code, MCP, and editors](#codex-claude-code-mcp-and-editors).
+
+No agent? Everything above works from the terminal alone; 65 of the 69 shipped loops need no
+API key.
 
 ---
 
@@ -161,7 +236,7 @@ bl graph status --run ./demo-run
 ```
 
 The next one is different: it enforces **real** OS isolation (macOS Seatbelt or Linux
-bubblewrap, no Docker), still with no credential.
+bubblewrap — see Known limitations, no Docker), still with no credential.
 
 ```bash
 bl graph run --execute --out ./sandbox-demo
@@ -282,7 +357,7 @@ Run `bl gates` to check local tool availability.
 
 `bl graph` compiles a YAML manifest into an execution plan, validates every
 connection binding at compile time, and runs each node inside a native OS sandbox
-(macOS Seatbelt or Linux bubblewrap — no Docker). Every run writes an append-only,
+(macOS Seatbelt today — no Docker). Every run writes an append-only,
 hash-chained event log. The read-only Arena renders that log without re-executing
 anything.
 
@@ -373,9 +448,17 @@ of which runner, gate, or storage backend a loop uses. The graph engine reuses t
 same ports per node. [`bounded_loops/composition.py`](bounded_loops/composition.py)
 is the composition root.
 
+**The loop engine.** The domain rule at the centre; runners, gates and storage at the edges.
+
 ![Ports and adapters: the domain rule at the centre, runners, gates and storage at the edges](https://raw.githubusercontent.com/qualixar/bounded-loops/main/docs/diagrams/ports-and-adapters.png)
 
-Full design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+**The graph engine.** Same shape, one layer up. `compile_graph` refuses a manifest before
+anything runs, `repair_rounds` computes the whole-run bound, and one node can be a bounded loop.
+
+![The bounded graph engine: compile refuses before anything runs, the controller drives nodes against per-node attempt ceilings, and workers, sandboxing and the hash-chained event log sit behind one port seam](https://raw.githubusercontent.com/qualixar/bounded-loops/main/docs/diagrams/graph-architecture.png)
+
+Both diagrams are generated from `docs/diagrams/*.mmd`. Full design:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
@@ -447,6 +530,9 @@ bl_graph_evidence(run_ref="...")
   and resumes via `bl graph approve`. Sandboxed arbitrary-tool nodes are a later phase.
 - The `ALLOWLIST` egress cage is a network-only restriction on macOS Seatbelt. A
   caged subprocess still has full filesystem access.
+- **`--execute` is verified on macOS Seatbelt only. Linux bubblewrap is selected and does not
+  yet complete** — the node's declared output never reaches the promoted workspace. Every other
+  command is platform-independent.
 - The Arena's `LOCAL/UNVERIFIED` notice is accurate: local runs are not verified
   against a hosted receipt server.
 - `content-fact-gate` and OSV scans require network access; the quickstart is offline.
