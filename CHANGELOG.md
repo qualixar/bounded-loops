@@ -3,6 +3,32 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.10] — 2026-08-20
+
+One fix. `npx bounded-loops` could not install the engine on a managed Python.
+
+### Fixed
+
+- **`npx bounded-loops` failed on any distro-managed Python.** The launcher's only install path was
+  `pip install` into whichever interpreter it found, which PEP 668 refuses outright on Homebrew
+  Python, Debian's `python3`, and most distribution builds. It then printed "Install it manually:
+  pip install bounded-loops" — the command that had just been refused. It also never looked for an
+  engine already installed by `pipx` or `uv tool`, so a working `bl` on your PATH was ignored.
+
+  Resolution now goes in order: an interpreter that already has the matching version, then a
+  matching `bl` on PATH, then the launcher's own virtual environment under
+  `${XDG_CACHE_HOME:-~/.cache}/bounded-loops/`, and only then an install — into that environment,
+  which PEP 668 does not govern. Every hand-off still requires an exact version match, so
+  `npx bounded-loops@0.6.10` cannot run an older engine. Where a virtual environment cannot be
+  created — Debian and Ubuntu package `venv` separately — it names `python3-venv` and gives three
+  working install commands instead of failing on a refusal.
+
+  `--break-system-packages` is not used. It overrides exactly the protection PEP 668 provides, and
+  a release check now asserts it stays absent.
+
+  Verified on Debian bookworm with `EXTERNALLY-MANAGED` present: the 0.6.9 launcher fails, this one
+  installs and runs, a second run reuses the environment, and exit codes propagate.
+
 ## [0.6.9] — 2026-08-20
 
 **Not additive.** Three surfaces change what they say. A gate that cannot run now ends the run as

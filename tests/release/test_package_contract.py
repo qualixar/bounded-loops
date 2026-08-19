@@ -292,6 +292,60 @@ def test_release_metadata_uses_the_canonical_catalog_count_and_version() -> None
     assert "65 keyless" in npm["description"]
 
 
+def test_the_npm_launcher_never_installs_into_a_managed_interpreter() -> None:
+    """The npm launcher must not `pip install` into the user's Python, and must never override PEP 668.
+
+    0.6.9 shipped a launcher whose only install path was `python -m pip install bounded-loops==<v>`
+    into whichever interpreter it found first. On a managed interpreter — Homebrew Python, Debian's
+    python3, any distro build — PEP 668 refuses that, so `npx bounded-loops` died on a stock macOS
+    machine and printed "Install it manually: pip install bounded-loops==0.6.9", which is the command
+    that had just been refused. It also never looked for an engine already installed by pipx or
+    `uv tool`, so a user with a working `bl` on PATH was sent down the install path regardless.
+
+    Nothing in the suite exercised that file, which is why it shipped. This test is static on
+    purpose — it needs no Node and no network, so it runs everywhere — and it guards the two things
+    that actually matter: the install target, and the shortcut nobody should take.
+
+    The tempting wrong fix is `--break-system-packages`. It exists to override exactly the protection
+    PEP 668 provides, and a launcher that quietly mutates a distro-managed interpreter to save the
+    user one step is not a tradeoff this package gets to make on their behalf. Asserted absent.
+    """
+    launcher = (REPO_ROOT / "npm" / "bin" / "bounded-loops.js").read_text(encoding="utf-8")
+    # Comments stripped before the flag check: the launcher's header explains at length why
+    # `--break-system-packages` is not used, and a test that cannot tell a decision from its
+    # explanation would force the file to stop recording the reasoning to stay green.
+    code = "\n".join(
+        line for line in launcher.splitlines() if not line.lstrip().startswith("//")
+    )
+
+    assert "--break-system-packages" not in code, (
+        "the launcher must never override PEP 668; create a virtual environment instead"
+    )
+
+    # The install must target the launcher's own venv interpreter, not the discovered one. Both are
+    # in this file, so the assertion is about WHICH is passed to the install call.
+    install = re.search(
+        r"spawnSync\(\s*(?P<target>\w+)\s*,\s*\[\s*'-m',\s*'pip',\s*'install'", code
+    )
+    assert install is not None, "no pip install call found; if the launcher changed shape, update this"
+    assert install.group("target") == "managed", (
+        f"pip install targets {install.group('target')!r}; it must target the managed venv "
+        "interpreter, or PEP 668 refuses it on every distro-managed Python"
+    )
+
+    # The three resolution steps that make the install a last resort rather than the only path.
+    assert "'-m', 'venv'" in code, "the launcher must create its own virtual environment"
+    assert "pathCliVersion" in code, (
+        "the launcher must look for a matching `bl` already on PATH — that is what a pipx or "
+        "`uv tool` install looks like, and those venvs are invisible to the interpreter probe"
+    )
+    assert "engineVersion" in code, "the launcher must verify an EXACT version before handing off"
+
+    # A launcher pinned to a version the package does not build cannot resolve anything.
+    npm = json.loads((REPO_ROOT / "npm" / "package.json").read_text(encoding="utf-8"))
+    assert npm["version"] == _PYPROJECT_VERSION
+
+
 def test_no_shipped_text_states_a_stale_catalog_count() -> None:
     """Every sentence that claims how many loops ship must agree with how many ship.
 
