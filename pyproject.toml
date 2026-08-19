@@ -77,7 +77,19 @@ build-backend = "hatchling.build"
 # Hatchling's default sdist ships every git-tracked file. Internal engineering material
 # must never reach a published artifact — the same rule .gitignore already states for
 # `audit/` ("tracked in a separate private repo, never public").
-exclude = [".backup/", "audit/", "*.db"]
+#
+# The editor and agent directories below were shipping in the sdist. They are local toolchain
+# wiring — SuperLocalMemory's `slm connect` output, Cursor rules, Copilot instructions, VS Code
+# MCP config — tracked in git and therefore published beside the wheel. Nothing secret, and
+# nothing a user of this package should receive. The WHEEL was always clean
+# (`packages = ["bounded_loops"]`); only the sdist carried them, which is the artifact nobody
+# opens. `.github/` is NOT excluded wholesale: it holds `workflows/ci.yml`, which belongs in an
+# sdist, so only the agent-instruction files inside it are named.
+exclude = [
+  ".backup/", "audit/", "*.db",
+  ".agent/", ".agents/", ".claude/", ".cursor/", ".vscode/",
+  ".github/copilot-instructions.md", ".github/instructions/", ".github/prompts/",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["bounded_loops"]
