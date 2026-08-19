@@ -905,7 +905,9 @@ def _instantiate_gate(gate_key: str, manifest: LoopManifest) -> GatePort:
     returns a non-bool or raises previously reached the rules layer unchecked.
 
     Verified free of behavioural cost before this landed: no test anywhere asserts a gate's concrete
-    type, and a well-formed Verdict passes through untouched.
+    type. A well-formed Verdict keeps its passed, detail and evidence, but is NOT the same object —
+    round 5 found that returning the gate's own Verdict let a property answer one way for validation
+    and another for the rules layer, so the wrapper now ships a snapshot it built itself.
     """
     built = _build_gate(gate_key, manifest)
     # `type(...) is` NOT `isinstance(...)`. isinstance consults `__class__`, which the object being

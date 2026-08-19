@@ -470,8 +470,18 @@ class GuardedGate:
     def _validate(self, raw: object) -> Verdict:
         """Reject anything that is not an unambiguous mechanical confirmation.
 
-        Called from inside `check`'s try, so a Verdict whose fields raise on access becomes a
-        failing verdict rather than an exception escaping the wrapper.
+        Reads each field EXACTLY ONCE into a local and returns a FRESHLY CONSTRUCTED Verdict built
+        from those locals. It must never return `raw`.
+
+        Round 5, and it is the whole point of this method: a property can answer differently on
+        each call, so validating `raw.passed` and then handing `raw` onward checks one value and
+        delivers another. Reproduced — a Verdict returning False for every validation read and True
+        afterwards reached the rules layer as passed=True with detail='', which is precisely the
+        unexplainable DONE the detail rule below exists to forbid. Validation of a snapshot is only
+        worth anything if the snapshot is what ships.
+
+        Called from inside `check`'s try, so a field that raises on access becomes a failing verdict
+        rather than an exception escaping the wrapper.
         """
         if not isinstance(raw, Verdict):
             return Verdict(
@@ -483,20 +493,25 @@ class GuardedGate:
                 evidence={"gate_kind": self._kind},
             )
 
-        # `if raw.passed` would accept "yes", 1, [1] — a loop reaching DONE because a field was
+        # ONE read each. Every check below and the returned Verdict use these locals, never `raw`.
+        passed = raw.passed
+        detail = raw.detail
+        evidence = dict(raw.evidence) if isinstance(raw.evidence, Mapping) else {}
+
+        # `if passed` would accept "yes", 1, [1] — a loop reaching DONE because a field was
         # non-empty. `passed` is documented as "True iff the gate mechanically confirmed the
         # stop_condition", so anything that is not the boolean True is not a confirmation.
-        if raw.passed is not True and raw.passed is not False:
+        if passed is not True and passed is not False:
             return Verdict(
                 passed=False,
                 detail=(
-                    f"gate {self._kind!r} set passed={raw.passed!r} ({type(raw.passed).__name__}), "
+                    f"gate {self._kind!r} set passed={passed!r} ({type(passed).__name__}), "
                     "not a bool. A truthy value is not a mechanical confirmation."
                 ),
-                evidence={"gate_kind": self._kind, "offered_passed": repr(raw.passed)},
+                evidence={"gate_kind": self._kind, "offered_passed": repr(passed)},
             )
 
-        if raw.passed and not (isinstance(raw.detail, str) and raw.detail.strip()):
+        if passed and not (isinstance(detail, str) and detail.strip()):
             # Only a PASSING verdict is blocked, which is what the documented rule says. A passing
             # verdict with no detail leaves the ledger with an unexplainable DONE — unreviewable
             # after the fact. A FAILING verdict with a thin detail is merely unhelpful, and
@@ -507,7 +522,12 @@ class GuardedGate:
                 evidence={"gate_kind": self._kind},
             )
 
-        return raw
+        # A fresh Verdict, not `raw`. See the docstring: returning `raw` is the TOCTOU.
+        return Verdict(
+            passed=passed,
+            detail=detail if isinstance(detail, str) else str(detail),
+            evidence=evidence,
+        )
 
     def _checked(self, ctx: LoopContext) -> Verdict:
         """The gate call and the validation of what it returned, as one guarded unit."""

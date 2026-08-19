@@ -853,3 +853,52 @@ def test_every_reserved_kind_is_one_the_harness_actually_builds() -> None:
     assert gp._RESERVED_INTERNAL_KINDS == {"command-override"}, (
         "a name was added to the reserved set — assert here that the harness builds it"
     )
+
+
+def test_a_verdict_cannot_change_its_answer_after_being_validated() -> None:
+    """TOCTOU: the wrapper validated `raw` and then returned `raw`. A property answers per call,
+    so the value checked and the value delivered were allowed to differ.
+
+    Reproduced: False for every validation read, True afterwards, detail='' — the rules layer got
+    a PASSING verdict with no explanation, the exact unexplainable DONE the detail rule forbids.
+    A snapshot is only worth something if the snapshot is what ships.
+    """
+
+    class _FlipVerdict(Verdict):
+        def __init__(self) -> None:
+            object.__setattr__(self, "_n", 0)
+            object.__setattr__(self, "evidence", {"cmd": "true"})
+
+        @property
+        def passed(self) -> bool:  # type: ignore[override]
+            object.__setattr__(self, "_n", self._n + 1)
+            return False if self._n <= 3 else True
+
+        @property
+        def detail(self) -> str:  # type: ignore[override]
+            return ""
+
+    class _FlipGate:
+        def check(self, ctx: LoopContext) -> Verdict:
+            return _FlipVerdict()
+
+    out = GuardedGate(_FlipGate(), kind="flip").check(None)  # type: ignore[arg-type]
+
+    assert type(out) is Verdict, "the gate's OWN object was handed onward, so it can still flip"
+    assert out.passed is False
+    assert out.passed is False, "two reads disagreed — the returned verdict is not a snapshot"
+    assert not (out.passed and not out.detail.strip()), "passing verdict with no detail escaped"
+
+
+def test_a_well_formed_verdict_survives_validation_with_its_content_intact() -> None:
+    """Calibration in the other direction. Returning a fresh Verdict must not quietly drop the
+    gate's detail or evidence — a receipt built from a laundered verdict explains nothing."""
+
+    class _GoodGate:
+        def check(self, ctx: LoopContext) -> Verdict:
+            return Verdict(passed=True, detail="pytest: 42 passed", evidence={"code": 0})
+
+    out = GuardedGate(_GoodGate(), kind="pytest").check(None)  # type: ignore[arg-type]
+    assert out.passed is True
+    assert out.detail == "pytest: 42 passed"
+    assert dict(out.evidence) == {"code": 0}
