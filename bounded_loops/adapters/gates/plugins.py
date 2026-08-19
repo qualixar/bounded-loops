@@ -75,7 +75,7 @@ from types import MappingProxyType
 import inspect
 import logging
 import re
-from typing import Mapping
+from typing import Any, Mapping, NoReturn
 
 from bounded_loops.domain.models import LoopContext, Verdict
 
@@ -99,6 +99,15 @@ class GatePluginRefused(Exception):
     """
 
 
+#: Kinds the HARNESS constructs itself, which therefore must never be claimable by a plugin or
+#: named by a loop manifest. "command-override" identifies the gate built from the operator's
+#: `--gate-override` flag. A plugin offering that same name produced a gate whose `gate_kind` was
+#: indistinguishable from a real operator override — a forged provenance claim, and provenance is
+#: exactly what the run receipt is for. Reserving the name is cheaper than teaching every reader
+#: of a receipt to distrust one value in it.
+_RESERVED_INTERNAL_KINDS = frozenset({"command-override"})
+
+
 def _validated_kind(kind: object, *, source: str) -> str:
     if not isinstance(kind, str) or not kind:
         raise GatePluginRefused(f"{source} used a non-string gate kind ({type(kind).__name__})")
@@ -110,6 +119,13 @@ def _validated_kind(kind: object, *, source: str) -> str:
         raise GatePluginRefused(
             f"{source} offers gate kind {kind!r}; a kind is lowercase alphanumeric with single "
             "internal hyphens (no leading, trailing or doubled hyphen)"
+        )
+    if kind in _RESERVED_INTERNAL_KINDS:
+        raise GatePluginRefused(
+            f"{source} offers gate kind {kind!r}, which the harness reserves for gates it builds "
+            "itself. A third party using this name would produce a verdict whose recorded "
+            f"provenance is indistinguishable from the harness's own. Reserved: "
+            f"{sorted(_RESERVED_INTERNAL_KINDS)}"
         )
     return kind
 
@@ -333,7 +349,11 @@ class GuardedGate:
     prevent.
     """
 
-    __slots__ = ("_frozen", "_inner", "_kind")
+    # "__weakref__" is explicit because __slots__ SILENTLY removes weak-reference support, and a
+    # security wrapper quietly breaking a language capability is how a caller discovers the wrapper
+    # by tripping over it. Nothing weakrefs a gate today; the slot costs one pointer and keeps
+    # GuardedGate substitutable for the plain object it replaced.
+    __slots__ = ("__weakref__", "_frozen", "_inner", "_kind")
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Subclassing is refused, because a subclass WAS the bypass.
@@ -371,6 +391,36 @@ class GuardedGate:
                 "Construct a new wrapper rather than mutating the gate a verdict comes from."
             )
         object.__setattr__(self, name, value)
+
+    def _refuse_copy(self, *args: object, **kwargs: object) -> NoReturn:
+        """Refuse to serialise, with the real reason instead of a confusing frozen-attribute error.
+
+        The `__setattr__` freeze already broke pickle and deepcopy as a SIDE EFFECT — reconstruction
+        rebinds `_inner` on an object whose `_frozen` has been restored, so both failed with
+        "refusing to rebind '_inner'", which tells a reader nothing about what they did wrong.
+
+        Refusing is also the right answer on the merits, not a limitation being dressed up: a gate is
+        the trust anchor a verdict is read from, and pickling one is a way to carry a verdict-producer
+        across a process or host boundary and rehydrate it somewhere its provenance is no longer
+        checkable. Nothing in the harness copies a gate — the `python_callable` runner crosses a spawn
+        boundary with STRINGS (module path, function name), never the gate — so this closes a door
+        that was never open rather than removing a capability.
+        """
+        raise TypeError(
+            "GuardedGate cannot be pickled or copied: a gate is the trust anchor its verdict is "
+            "read from, and rehydrating one elsewhere moves a verdict-producer somewhere its "
+            "provenance cannot be checked. Wire a new gate at the destination instead."
+        )
+
+    # All three routes report the SAME real reason. `_refuse_copy` takes *args because
+    # `__deepcopy__` is handed a memo dict — aliasing a zero-arg method produced a wrong-arity
+    # TypeError, i.e. the confusing message this code exists to remove. `__reduce__` keeps
+    # `object`'s exact signature because mypy checks overrides of it against the supertype.
+    __deepcopy__ = _refuse_copy
+    __copy__ = _refuse_copy
+
+    def __reduce__(self) -> str | tuple[Any, ...]:
+        self._refuse_copy()
 
     @property
     def gate_kind(self) -> str:

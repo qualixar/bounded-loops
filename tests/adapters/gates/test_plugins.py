@@ -791,3 +791,65 @@ def test_gate_cmd_override_reaches_the_engine_wrapped() -> None:
     assert type(gate) is GuardedGate, "--gate-override built a RAW gate"
     assert gate.gate_kind == "command-override"
     assert type(gate.wraps).__name__ == "CommandGate"
+
+
+def test_a_guarded_gate_refuses_to_be_copied_or_pickled() -> None:
+    """The `__setattr__` freeze broke copy and pickle as a SIDE EFFECT, with a message about
+    rebinding `_inner` that explained nothing. Refusing is also correct on the merits: a gate is
+    the trust anchor a verdict is read from. Asserts the REASON, not merely that it raises —
+    a wrong-arity TypeError from an aliased method also raises, and did."""
+    import copy
+    import pickle
+
+    gate = GuardedGate(_MarkerGate(), kind="k")
+    for label, call in (
+        ("copy", lambda: copy.copy(gate)),
+        ("deepcopy", lambda: copy.deepcopy(gate)),
+        ("pickle", lambda: pickle.dumps(gate)),
+    ):
+        with pytest.raises(TypeError, match="cannot be pickled or copied") as caught:
+            call()
+        assert "trust anchor" in str(caught.value), f"{label} raised for the wrong reason"
+
+
+def test_a_guarded_gate_can_still_be_weak_referenced() -> None:
+    """`__slots__` SILENTLY removes weak-reference support unless "__weakref__" is listed.
+
+    Not a security property — a regression guard. A wrapper that quietly withdraws a language
+    capability is discovered by a caller tripping over it, and the wrapper is now on every gate.
+    """
+    import weakref
+
+    gate = GuardedGate(_MarkerGate(), kind="k")
+    assert weakref.ref(gate)() is gate
+
+
+def test_a_plugin_cannot_claim_a_kind_the_harness_reserves_for_itself() -> None:
+    """Provenance forgery: a plugin offering "command-override" produced a gate whose recorded
+    kind was indistinguishable from the operator's own --gate-override gate. The receipt is the
+    reason this matters — a provenance field an outsider can write is not provenance."""
+    with pytest.raises(GatePluginRefused, match="reserves for gates it builds itself"):
+        gp._validated_kind("command-override", source="acme-dist")
+
+
+def test_reserving_names_did_not_break_ordinary_plugin_kinds() -> None:
+    """Calibrated in both directions: the refusal must be narrow, not a blanket tightening."""
+    assert gp._validated_kind("acme-check", source="acme-dist") == "acme-check"
+    assert gp._validated_kind("command", source="acme-dist") == "command"
+
+
+def test_every_reserved_kind_is_one_the_harness_actually_builds() -> None:
+    """Anti-rot: a reserved name that nothing constructs is a refusal with no reason behind it,
+    which is how a deny-list becomes folklore. If the override's kind string is ever renamed,
+    this fails rather than leaving the old name reserved and the new one squattable."""
+    from pathlib import Path
+
+    from bounded_loops import composition
+    from bounded_loops.application.manifest import load as load_manifest
+
+    manifest = load_manifest(Path("loops/assertion-density"))
+    built = composition.wire(manifest, gate_cmd_override="true")._deps.gate
+    assert built.gate_kind in gp._RESERVED_INTERNAL_KINDS
+    assert gp._RESERVED_INTERNAL_KINDS == {"command-override"}, (
+        "a name was added to the reserved set — assert here that the harness builds it"
+    )
