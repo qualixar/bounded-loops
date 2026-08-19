@@ -730,6 +730,132 @@ def test_a_non_bool_verdict_decision_fails_the_node_closed(tmp_path):
 
 
 
+# ── the verdict the controller CHECKED must be the verdict it ACTS ON ─────────────────────
+#
+# `verdict_is_wellformed` reads each field, then the controller reads them AGAIN for the
+# `if verdict.passed:` branch and for `verdict_body`. A GateVerdict is a frozen dataclass, so
+# fields cannot be REASSIGNED — but a subclass can define them as properties that answer
+# differently per call, and `isinstance(verdict, GateVerdict)` accepts a subclass. The loop-gate
+# boundary had the identical defect (see GuardedGate._validate) and closed it by returning a
+# snapshot the harness built.
+
+
+class _FlippingVerdictGate:
+    """False for the wellformedness read, True for the branch that marks a node SUCCEEDED."""
+
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
+        class _Flip(GateVerdict):
+            def __init__(self) -> None:
+                object.__setattr__(self, "_n", 0)
+                object.__setattr__(self, "evidence_digest", None)
+
+            @property
+            def passed(self):  # type: ignore[override]
+                object.__setattr__(self, "_n", self._n + 1)
+                return False if self._n <= 1 else True
+
+            @property
+            def reason(self):  # type: ignore[override]
+                return "looks fine"
+
+        return _Flip()
+
+
+def test_a_verdict_that_flips_after_validation_cannot_pass_a_node(tmp_path):
+    plan = _plan()
+    controller = GraphRunController(
+        plan=plan, event_log=GraphEventLog(tmp_path / "events.jsonl", _identity(plan)),
+        worker=_Worker([]), gate=_FlippingVerdictGate(), artifact_verifier=_artifacts(),
+        execution_policy=_policy(plan), execution_enforcer=_Enforcer([]),
+        timestamp=lambda: "2026-08-08T00:00:00Z",
+    )
+
+    projection = controller.run()
+
+    assert projection.state != "SUCCEEDED", (
+        "a node succeeded on a verdict that validated as a FAILURE — the controller acted on a "
+        "different read than the one it checked"
+    )
+
+
+class _FlippingDigestGate:
+    """A well-formed sha256 for the validation read, a forged string for the receipt.
+
+    `evidence_digest` exists so the verdict in the receipt is tamper-EVIDENT. A digest that never
+    passed format validation reaching the durable log defeats the only thing that field is for.
+    """
+
+    GOOD = "sha256:" + "a" * 64
+    FORGED = "sha256:" + "0" * 63 + "Z<forged>"
+
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
+        forged, good = self.FORGED, self.GOOD
+
+        class _Flip(GateVerdict):
+            def __init__(self) -> None:
+                object.__setattr__(self, "_n", 0)
+
+            @property
+            def passed(self):  # type: ignore[override]
+                return True
+
+            @property
+            def reason(self):  # type: ignore[override]
+                return "gate passed"
+
+            @property
+            def evidence_digest(self):  # type: ignore[override]
+                object.__setattr__(self, "_n", self._n + 1)
+                return good if self._n <= 1 else forged
+
+        return _Flip()
+
+
+def test_a_forged_evidence_digest_cannot_reach_the_durable_receipt(tmp_path):
+    plan = _plan()
+    controller = GraphRunController(
+        plan=plan, event_log=GraphEventLog(tmp_path / "events.jsonl", _identity(plan)),
+        worker=_Worker([]), gate=_FlippingDigestGate(), artifact_verifier=_artifacts(),
+        execution_policy=_policy(plan), execution_enforcer=_Enforcer([]),
+        timestamp=lambda: "2026-08-08T00:00:00Z",
+    )
+
+    controller.run()
+
+    recorded = [
+        entry.event.payload.get("verdict", {}).get("evidence_digest")
+        for entry in controller.event_log.replay()
+        if isinstance(entry.event.payload.get("verdict"), dict)
+    ]
+    assert _FlippingDigestGate.FORGED not in recorded, (
+        f"a digest that never passed validation is in the durable receipt: {recorded}"
+    )
+
+
+class _ExitingGate:
+    """SystemExit is not an Exception. The loop-gate boundary catches BaseException for exactly
+    this reason — its comment records that "a test with SystemExit(1) broke it"."""
+
+    def evaluate(self, *, plan, node, result, attempt=1, repair_round=0) -> GateVerdict:
+        raise SystemExit(1)
+
+
+def test_a_gate_that_exits_the_process_fails_the_node_instead_of_escaping(tmp_path):
+    plan = _plan()
+    controller = GraphRunController(
+        plan=plan, event_log=GraphEventLog(tmp_path / "events.jsonl", _identity(plan)),
+        worker=_Worker([]), gate=_ExitingGate(), artifact_verifier=_artifacts(),
+        execution_policy=_policy(plan), execution_enforcer=_Enforcer([]),
+        timestamp=lambda: "2026-08-08T00:00:00Z",
+    )
+
+    projection = controller.run()   # must not raise SystemExit out of the controller
+
+    assert projection.state == "FAILED"
+    failed = controller.event_log.replay()[-2]
+    assert failed.event.payload["reason"] == "independent gate evaluation failed"
+
+
 # ── conditional edges end to end (P4.25a) ────────────────────────────────────────────────
 
 

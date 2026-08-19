@@ -105,23 +105,61 @@ def route_payload(route: ResolvedRoute) -> dict[str, object]:
     }
 
 
-def verdict_is_wellformed(verdict: GateVerdict) -> bool:
-    """A gate that returns an empty reason or a non-digest evidence reference is
-    malformed; the controller fails the node closed here rather than let a bad
-    verdict reach (and be rejected by) the durable log as an uncaught error."""
-    if not isinstance(verdict.passed, bool):
-        return False
-    if not isinstance(verdict.reason, str) or not verdict.reason:
-        return False
+def validated_verdict_or_none(verdict: object) -> GateVerdict | None:
+    """Validate a gate's verdict and return a GateVerdict THIS MODULE built, or None to fail closed.
+
+    Reads every field EXACTLY ONCE into a local, validates the locals, and returns a fresh
+    ``GateVerdict`` constructed from them. The caller must use the returned object and discard the
+    gate's — that is the entire point, and returning the gate's own object was the defect.
+
+    ``GateVerdict`` is a frozen dataclass, so its fields cannot be REASSIGNED. That is not enough:
+    ``isinstance(verdict, GateVerdict)`` accepts a SUBCLASS, and a subclass can define ``passed``,
+    ``reason`` or ``evidence_digest`` as properties that answer differently on each call. Validating
+    one read and then acting on another read was reproducible two ways:
+
+      * ``passed`` returning False for the wellformedness read and True afterwards — a node marked
+        SUCCEEDED on a verdict that validated as a failure.
+      * ``evidence_digest`` returning a well-formed sha256 for the format check and a forged string
+        for the receipt — which defeats the ONLY thing that field exists for, since its whole job is
+        to make the externalized verdict tamper-evident.
+
+    The loop-gate boundary had the identical defect and closed it the same way; see
+    ``GuardedGate._validate``. Wrapping graph gates in ``GuardedGate`` itself would be wrong — that
+    class validates a different type (``domain.models.Verdict``: passed/detail/evidence) and is
+    strictly WEAKER here, because it does not require a reason on a FAILING verdict and has no
+    concept of an evidence digest. The lesson transfers; the code does not.
+    """
+    if not isinstance(verdict, GateVerdict):
+        return None
+
+    # ONE read each. Everything below validates and returns these locals, never `verdict`.
+    passed = verdict.passed
+    reason = verdict.reason
     digest = verdict.evidence_digest
+
+    if not isinstance(passed, bool):
+        return None
+    if not isinstance(reason, str) or not reason:
+        return None
     if digest is not None and not (
         isinstance(digest, str)
         and digest.startswith("sha256:")
         and len(digest) == 71
         and all(character in "0123456789abcdef" for character in digest[7:])
     ):
-        return False
-    return True
+        return None
+    return GateVerdict(passed=passed, reason=reason, evidence_digest=digest)
+
+
+def verdict_is_wellformed(verdict: GateVerdict) -> bool:
+    """A gate that returns an empty reason or a non-digest evidence reference is
+    malformed; the controller fails the node closed here rather than let a bad
+    verdict reach (and be rejected by) the durable log as an uncaught error.
+
+    Delegates so there is exactly ONE validation implementation. A second copy would drift, and the
+    copy the controller does not call is the one that would keep looking correct.
+    """
+    return validated_verdict_or_none(verdict) is not None
 
 
 def verdict_body(verdict: GateVerdict) -> dict[str, object]:

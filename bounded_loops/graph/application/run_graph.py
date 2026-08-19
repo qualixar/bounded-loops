@@ -15,7 +15,6 @@ from bounded_loops.graph.application.execution_policy import (
 from bounded_loops.graph.application.node_contracts import (
     ApprovalResolverPort,
     ArtifactVerifierPort,
-    GateVerdict,
     IndependentGatePort,
     NodeWorkerPort,
 )
@@ -29,7 +28,7 @@ from bounded_loops.graph.application.node_receipts import (
     validate_observed_transport,
     validate_worker_result,
     verdict_body,
-    verdict_is_wellformed,
+    validated_verdict_or_none,
 )
 from bounded_loops.graph.application.node_spend import (
     MAX_REDRIVES_PER_ATTEMPT,
@@ -611,16 +610,28 @@ class GraphRunController:
         states[node_id] = NodeState.GATING
         self._append_node(node_id, "node.gating", NodeState.GATING, attempt=attempt)
         try:
-            verdict = self._gate.evaluate(
+            offered = self._gate.evaluate(
                 plan=self.plan, node=node, result=result, attempt=attempt,
                 repair_round=self._receipts.repair_round,
             )
-        except Exception:
+        except KeyboardInterrupt:
+            raise  # the operator's, not a gate defect to record as one
+        except BaseException:  # noqa: BLE001
+            # BaseException, not Exception. `SystemExit` is not an `Exception`, so a gate that calls
+            # sys.exit() — or uses a library that does, which argparse and several CLIs do on bad
+            # input — escaped this handler and took the whole graph run down with it. The loop-gate
+            # boundary already carries this fix and its comment records that "a test with
+            # SystemExit(1) broke it"; this is the same defect one subsystem over.
             return AttemptOutcome(terminal=self._fail_node(
                 states, node_id, "independent gate evaluation failed", attempt=attempt,
                 cause=NodeFailureCause.GATE_BROKEN,
             ))
-        if not isinstance(verdict, GateVerdict) or not verdict_is_wellformed(verdict):
+        # The snapshot THIS process built, never the gate's own object: a subclass can define its
+        # fields as properties that answer differently per call, so validating one read and acting
+        # on another let a node succeed on a verdict that validated as a failure, and let a forged
+        # evidence digest into the durable receipt. See `validated_verdict_or_none`.
+        verdict = validated_verdict_or_none(offered)
+        if verdict is None:
             # A broken gate, not a failed attempt: retrying would spend the budget
             # against a verdict this controller cannot interpret, and would hide the
             # defect behind an eventual budget-exhausted failure.
