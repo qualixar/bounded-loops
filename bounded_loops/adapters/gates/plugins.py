@@ -21,15 +21,32 @@ take the run down, which is the identical hole the P3 audit found in the provide
 **2. Registration is all-or-nothing per plugin.** A plugin offering three gates and one bad one
 contributes nothing, rather than leaving an operator with a gate set that depends on import order.
 
-**3. A plugin cannot claim a shipped gate kind.** This closes the supply-chain move where a package
-registers ``pytest`` and silently becomes the gate every existing loop already trusts. Enforced
-twice on purpose — the loader refuses the name, AND ``merged_gate_registry`` layers plugins UNDER
-the shipped set so shipped wins structurally even if the check were wrong.
+**3. A plugin cannot claim a shipped gate kind — by NAME.** The loader refuses the name and
+``merged_gate_registry`` layers plugins UNDER the shipped set, so a package cannot register
+``pytest`` and become the kind existing loops name.
+
+Stated narrowly on purpose. Three independent audits showed that a plugin CAN still replace the
+class behind a shipped kind, and no amount of registry hardening prevents it: freeze the dict and
+the module attribute is rebound; stop the rebind and the class is monkey-patched; and for
+first-class kinds ``_build_gate`` reads a BARE MODULE GLOBAL — ``return PytestGate(...)`` — so the
+registry is not even consulted. All three were reproduced live.
+
+So this rule is anti-collision, not containment, and the registries being frozen is a convenience
+rather than a boundary. The property that actually holds is rule 5.
 
 **4. One distribution cannot supply both a loop's runner and its gate.** ``def:independence``
 requires disjoint write authority. A package that provides the worker AND the thing that certifies
 the worker is precisely the configuration the soundness argument excludes, and an author cannot be
 relied on to notice. See ``same_distribution_refusal``.
+
+**5. Every verdict is checked, whoever produced it.** ``composition._instantiate_gate`` wraps EVERY
+gate in ``GuardedGate`` — shipped and third-party alike — so a raise becomes FAIL, a non-boolean pass
+is not a pass, and a passing verdict with no detail is refused. This is the invariant that survives
+an in-process adversary, because it inspects the VERDICT and never asks who produced it: a hijacked
+``CommandGate`` returning ``passed="yes"`` is refused by the same code that refuses a third party's.
+
+It also hardens our own catalogue, which is the larger prize. A shipped gate with a bug that returns
+a non-bool, or that raises, previously reached the rules layer unchecked.
 
 **On measurement, stated plainly.** §7 of the paper reports 47 shipped gates that were satisfied by
 the ABSENCE of the thing they check. That rate belongs to a specific gate measured against a
@@ -39,10 +56,15 @@ loader, never by the plugin, because a package must not be able to describe itse
 against a corpus it has never run. A gate can be correct and unmeasured. What it cannot be is
 silently credited with someone else's number.
 
-**This is a boundary, not a sandbox.** A gate plugin is arbitrary code in this process. What is
-guaranteed is narrower and worth stating exactly: the checks in this module read a snapshot taken
-BEFORE any plugin code runs, so they cannot be defeated by mutating what they read, and a plugin's
-verdict passes through ``GuardedGate`` before the rules layer sees it.
+**This is a boundary, not a sandbox.** A gate plugin is arbitrary code in this process: it can
+monkey-patch the engine, rebind module attributes, or replace a shipped gate class outright. Nothing
+here stops that and nothing here claims to — the first version of this docstring implied otherwise
+and the audits were right to call it.
+
+What IS guaranteed, exactly: the checks in this module read a snapshot taken BEFORE any plugin code
+runs, so they cannot be defeated by mutating what they read; and every verdict reaching the rules
+layer has been through ``GuardedGate`` regardless of which class produced it. The worst a hostile
+plugin achieves is a refusal or a wrapped gate — not an unchecked pass.
 """
 
 from __future__ import annotations
@@ -214,7 +236,22 @@ def load_gate_plugins(
             )
             continue
         discovered.update(accepted)
-        dist_name = getattr(getattr(entry, "dist", None), "name", None)
+        # INSIDE the loop's guarded region, not after it. `entry.dist` is a property that reads
+        # installed metadata, so it raises OSError on a damaged .dist-info — and this is the THIRD
+        # place in this feature where an exception escaped a line I had just widened for a different
+        # type. A missing distribution name costs only rule 4's precision for that one kind; letting
+        # it abort discovery costs every plugin on the host.
+        try:
+            dist_name = getattr(getattr(entry, "dist", None), "name", None)
+        except KeyboardInterrupt:
+            raise
+        except BaseException as broken:  # noqa: BLE001
+            _LOGGER.warning(
+                "gate plugin %r loaded but its distribution name is unreadable (%s: %s); "
+                "the independence check cannot use it",
+                entry.name, type(broken).__name__, broken,
+            )
+            dist_name = None
         if dist_name is not None:
             for kind in accepted:
                 distributions[kind] = dist_name
@@ -245,11 +282,14 @@ def same_distribution_refusal(
     hand made ``acme.gates`` differ from ``acme_gates`` while letting an unrelated ``posix-ipc``
     package be blamed for a gate kind called ``os``.
 
-    ``worker_module`` is the module the WORKER will import and execute — ``runner.module_path`` for a
-    ``python_callable`` loop. That is the only runner form that names a Python module the graph author
-    controls, so it is the only case this can decide. For ``shell`` and ``agent_cmd`` runners the
-    worker is an opaque subprocess with no distribution to compare, and returning None there is
-    honest rather than a silent pass: nothing was checked because nothing is checkable.
+    SCOPE, STATED PLAINLY BECAUSE IT IS NARROWER THAN THE RULE'S NAME SUGGESTS. This decides exactly
+    one configuration: a ``python_callable`` loop whose ``runner.module_path`` resolves to a single
+    distribution that also supplies the gate. For ``shell``, ``agent_cmd``, ``docker``, ``worktree``
+    and every credentialed runner, the worker is an opaque subprocess with no distribution to compare,
+    so this returns None — nothing was checked, because nothing is checkable from here. A gate author
+    reading "one distribution cannot supply both" would over-trust that, so the docs must say
+    python_callable and not imply general coverage. Detecting an ``agent_cmd`` binary's owning project
+    would extend the rule; it is not attempted and is not claimed.
     """
     if worker_module is None:
         return None
@@ -258,9 +298,24 @@ def same_distribution_refusal(
         return None  # a shipped gate, or a plugin whose distribution metadata was unreadable
     try:
         worker_dists = packages_distributions().get(worker_module.split(".", 1)[0], [])
-    except OSError:
-        return None  # unreadable metadata is not evidence of a violation
-    if _pep503(gate_dist) in {_pep503(d) for d in worker_dists}:
+    except KeyboardInterrupt:
+        raise
+    except BaseException:  # noqa: BLE001
+        # Any metadata failure, not just OSError. `packages_distributions()` reads every installed
+        # METADATA file, so a non-UTF-8 one raises UnicodeDecodeError and an empty .dist-info raises
+        # TypeError — both verified by the audit, neither an OSError. Damaged metadata is NOT evidence
+        # of a violation, and a traceback out of `wire()` is a worse outcome than an unchecked rule.
+        return None
+    # EXACTLY ONE provider, or no refusal. `packages_distributions()` maps a top-level name to EVERY
+    # distribution that ships under it, so a namespace package makes unrelated siblings look identical:
+    # `jaraco.something` and a `jaraco.context` gate both resolve to the `jaraco` root, and `google.*`
+    # is shared by protobuf, google-auth and google-api-core. Set membership therefore refused loops
+    # whose worker and gate came from genuinely different projects — proved on this host by two
+    # auditors. Ambiguity now FAILS OPEN, because wrongly blocking a legitimate loop is worse than
+    # not enforcing a rule the metadata cannot decide.
+    if len(worker_dists) != 1:
+        return None
+    if _pep503(gate_dist) == _pep503(worker_dists[0]):
         return (
             f"distribution {gate_dist!r} supplies both this loop's worker module "
             f"({worker_module}) and its gate ({gate_kind!r}). An independent gate requires write "
@@ -286,6 +341,20 @@ class GuardedGate:
     def gate_kind(self) -> str:
         """The kind this wraps. Read by callers reporting WHICH gate produced a verdict."""
         return self._kind
+
+    @property
+    def wraps(self) -> object:
+        """The gate underneath, for diagnostics and provenance — never to bypass the checks.
+
+        Added because universal wrapping is now unconditional, so ``type(gate).__name__`` no longer
+        names the gate that ran; a caller that needs to report WHAT executed has to be able to ask.
+        The receipt surface needs exactly this: a verdict is only reviewable if it says which gate,
+        from which distribution, produced it.
+
+        Reading this to call ``.check()`` directly would defeat the wrapper. Nothing in the engine
+        does, and a reviewer seeing it should treat it as a defect.
+        """
+        return self._inner
 
     def check(self, ctx: LoopContext) -> Verdict:
         try:
@@ -451,6 +520,8 @@ def refuse_if_same_distribution(
 def guarded_child_or_none(
     *, child_kind: object, plugin_kinds: frozenset[str], registry: Mapping[str, type],
     child_config: Mapping[str, object],
+    gate_distributions: Mapping[str, str] = MappingProxyType({}),
+    worker_module: str | None = None,
 ) -> GuardedGate | None:
     """A wrapped composite CHILD when the kind is third-party, else None so shipped branches run.
 
@@ -459,5 +530,22 @@ def guarded_child_or_none(
     """
     if not (isinstance(child_kind, str) and child_kind in plugin_kinds):
         return None
+    # A kind that is declared a plugin but absent from the registry means the two disagree — a polluted
+    # `_PLUGIN_GATE_KINDS` or a partial reload. Refuse it; `registry[child_kind]` raised a bare
+    # KeyError straight past `wire()`'s handler as a traceback.
+    gate_cls = registry.get(child_kind)
+    if gate_cls is None:
+        raise GatePluginRefused(
+            f"gate kind {child_kind!r} is registered as third-party but is not in the gate registry; "
+            "the plugin set and the registry disagree, so this loop is refused rather than guessed at"
+        )
+    if worker_module is not None or gate_distributions:
+        # Rule 4 applies to a CHILD exactly as to a top-level gate. It did not, so a same-distribution
+        # gate slipped through by being wrapped in a composite — the one place the check was most
+        # needed, since the parent aggregates the child's verdict.
+        refuse_if_same_distribution(
+            gate_kind=child_kind, plugin_kinds=plugin_kinds,
+            gate_distributions=gate_distributions, worker_module=worker_module,
+        )
     extra = {k: v for k, v in child_config.items() if k != "kind"}
-    return instantiate_guarded(child_kind, registry[child_kind], extra)
+    return instantiate_guarded(child_kind, gate_cls, extra)

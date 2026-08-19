@@ -188,7 +188,16 @@ def test_the_composition_tier_modules_all_exist() -> None:
 #: nothing in composition but `_SCRATCH_MARKER` and no sibling function, so they move out
 #: cleanly — re-exported from composition so existing `composition._make_scratch_workspace`
 #: references in tests and docs keep resolving.
-_MAX_LINES = 900
+_MAX_LINES = 800
+
+#: The ONE module over the cap, with its own ceiling so the overage cannot drift.
+#: Varun's call on 2026-08-19: "I do not care about 800 lines. It is not a hard cap."
+#:
+#: An allowlist rather than a raised global cap, because the global number was already
+#: moved once for this same feature and a number moved twice stops meaning anything. This
+#: way 800 still binds every other module, and the single exception is named, bounded, and
+#: has a written exit condition instead of quietly becoming the new normal.
+_ALLOWED_OVER_CAP = {"bounded_loops.composition": 950}
 
 
 def test_no_module_exceeds_the_line_cap() -> None:
@@ -198,10 +207,20 @@ def test_no_module_exceeds_the_line_cap() -> None:
     package was also the most convenient place to add the next thing. Nobody decided to write an
     900-line file; the cap was simply not checked, so each addition was individually reasonable.
     """
+    sizes = {
+        name: len(path.read_text(encoding="utf-8").splitlines()) for name, path in _modules(_ROOT)
+    }
+    # Length floor, demanded by tests/test_no_test_asserts_only_inside_a_loop.py and rightly: without
+    # it a broken `_modules` glob makes this whole test pass by scanning nothing. The exempt module
+    # must also still BE there, or the exemption is silently guarding a name that no longer exists.
+    assert len(sizes) >= 100, f"module discovery collapsed to {len(sizes)}; the cap proves nothing"
+    assert set(_ALLOWED_OVER_CAP) <= set(sizes), (
+        f"cap exemption names a module that does not exist: {set(_ALLOWED_OVER_CAP) - set(sizes)}"
+    )
     over = [
-        f"{name} ({len(path.read_text(encoding='utf-8').splitlines())})"
-        for name, path in _modules(_ROOT)
-        if len(path.read_text(encoding="utf-8").splitlines()) > _MAX_LINES
+        f"{name} ({count})"
+        for name, count in sizes.items()
+        if count > _ALLOWED_OVER_CAP.get(name, _MAX_LINES)
     ]
     assert over == [], f"modules over the {_MAX_LINES}-line cap:\n  " + "\n  ".join(over)
 

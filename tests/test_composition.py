@@ -214,7 +214,14 @@ class TestWireValidManifest:
         with patch("bounded_loops.composition.StubRunner") as MockStub:
             MockStub.return_value = MagicMock()
             use_case = comp.wire(manifest)
-        assert use_case._deps.gate.__class__.__name__ == "CompositeGate"
+        # Every gate is now wrapped in GuardedGate, so the outer type names the wrapper. The
+        # intent of this assertion — composite wiring produced a CompositeGate — is preserved by
+        # looking through it. Wrapping is what stops a substituted gate landing an unchecked pass;
+        # see adapters/gates/plugins for why policing provenance instead cannot work.
+        gate = use_case._deps.gate
+        assert gate.__class__.__name__ == "GuardedGate"
+        assert gate.gate_kind == "composite"
+        assert gate.wraps.__class__.__name__ == "CompositeGate"
 
     def test_approval_l1_rung_auto_approval(self, tmp_path):
         """L1 rung + require_approval=None → AutoApproval (never prompts)."""

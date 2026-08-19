@@ -72,6 +72,7 @@ from bounded_loops.adapters.runners.anchor_guard import AnchorGuardRunner
 from bounded_loops.adapters.gates.command import CommandGate
 from bounded_loops.adapters.gates.plugins import (
     GatePluginRefused,
+    GuardedGate,
     merged_gate_registry,
 )
 from bounded_loops.adapters.gates import plugins as _gate_plugins
@@ -300,12 +301,11 @@ def wire(
             )
         # Rule 4: the WORKER's module (runner.module_path), never the runner ADAPTER's — see
         # adapters/gates/plugins.same_distribution_refusal for why that distinction is the fix.
-        _worker = (manifest.raw.get("runner") or {}).get("module_path")
         try:
             _gate_plugins.refuse_if_same_distribution(
                 gate_kind=gate_key, plugin_kinds=PLUGIN_GATE_KINDS,
                 gate_distributions=_LOADED_GATES.distributions,
-                worker_module=_worker if isinstance(_worker, str) else None,
+                worker_module=_worker_module_of(manifest, runner_key),
             )
         except GatePluginRefused as refused:
             raise ManifestError(str(refused)) from refused
@@ -649,7 +649,22 @@ def _make_persistent_run_workspace(
 
 # ── Private helpers ──────────────────────────────────────────────────────────
 
-def _instantiate_gate(gate_key: str, manifest: LoopManifest) -> GatePort:
+def _worker_module_of(manifest: LoopManifest, runner_key: str) -> str | None:
+    """The Python module the WORKER will import, or None when there is not one.
+
+    Gated on ``runner_key`` because ``module_path`` was previously read unconditionally: a loop
+    running ``stub`` or ``shell`` with a stale ``module_path`` left in its manifest had that string
+    fed to the independence check, so a rule about the worker was decided from a field the worker
+    never touches. Only ``python_callable`` actually imports it.
+    """
+    if runner_key != "python_callable":
+        return None
+    module_path = (manifest.raw.get("runner") or {}).get("module_path")
+    return module_path if isinstance(module_path, str) else None
+
+
+
+def _build_gate(gate_key: str, manifest: LoopManifest) -> GatePort:
     """
     Instantiate a gate, passing gate-kind-specific constructor arguments
     derived from manifest.gate_config.
@@ -774,12 +789,14 @@ def _instantiate_gate(gate_key: str, manifest: LoopManifest) -> GatePort:
     raise ManifestError(f"Internal error: no instantiation rule for gate '{gate_key}'")
 
 
-def _instantiate_gate_from_config(gate_config: dict, manifest: LoopManifest) -> GatePort:
+def _build_child_gate(gate_config: dict, manifest: LoopManifest) -> GatePort:
     child_kind = gate_config.get("kind")
     try:
         _plugin_child = _gate_plugins.guarded_child_or_none(
             child_kind=child_kind, plugin_kinds=PLUGIN_GATE_KINDS,
             registry=GATE_REGISTRY, child_config=gate_config,
+            gate_distributions=_LOADED_GATES.distributions,
+            worker_module=_worker_module_of(manifest, manifest.runner_kind),
         )
     except GatePluginRefused as refused:
         raise ManifestError(str(refused)) from refused
@@ -817,9 +834,25 @@ def _instantiate_gate_from_config(gate_config: dict, manifest: LoopManifest) -> 
             checkpoint=str(checkpoint) if checkpoint else None,
             timeout_s=manifest.bounds.max_wallclock_s,  # type: ignore[arg-type]
         )
+    # Registry fallthrough. `manifest._validate_composite_gate` accepts any recognised kind, so a
+    # hardcoded list here meant `osv` and `checkov` passed validation and then died at wiring — the
+    # authoring surface advertising what the composer refused. Kinds with no zero-argument constructor
+    # still land on the error below, but by absence from the registry rather than by omission here.
+    registry_cls = GATE_REGISTRY.get(child_kind) if isinstance(child_kind, str) else None
+    if registry_cls is not None:
+        try:
+            return registry_cls(timeout_s=manifest.bounds.max_wallclock_s)
+        except TypeError:
+            try:
+                return registry_cls()
+            except TypeError as exc:
+                raise ManifestError(
+                    f"composite child gate kind {child_kind!r} needs configuration this composer "
+                    f"cannot supply ({exc}); declare it as the top-level gate instead"
+                ) from exc
     raise ManifestError(
         f"composite child gate kind {child_kind!r} is not implemented in v1 "
-        "(supported: command, pytest, jsonschema)"
+        f"(recognised kinds: {sorted(GATE_REGISTRY)})"
     )
 
 
@@ -841,3 +874,38 @@ def _new_trace_id(loop_name: str) -> str:
     Example: "bug-fix-red-green-a1b2c3d4"
     """
     return f"{loop_name}-{uuid.uuid4().hex[:8]}"
+
+
+def _instantiate_gate(gate_key: str, manifest: LoopManifest) -> GatePort:
+    """EVERY gate is wrapped, shipped or third-party. This is the invariant that actually holds.
+
+    The previous design wrapped only plugin kinds and tried to stop substitution by freezing the
+    registries. Three auditors independently showed that cannot work, and a live probe confirmed the
+    worst case: ``_build_gate`` reads first-class gates by BARE MODULE GLOBAL — ``return
+    PytestGate(...)`` — so ``composition.PytestGate = Hijack`` from a plugin's factory replaces the
+    class this function calls and ``GATE_REGISTRY`` is never consulted at all. The file even says so
+    in a comment above ``_build_gate``, which was read and then not connected to the fix.
+
+    Policing provenance is unwinnable in-process: freeze the dict and the name is rebound, stop the
+    rebind and the class is monkey-patched, freeze the class and ``Verdict`` is patched. Checking the
+    VERDICT needs none of that to hold — a hijacked ``CommandGate`` returning ``passed="yes"`` is
+    refused by the same guard that refuses a third party's, because the guard never asks who produced
+    it.
+
+    It also hardens OUR OWN catalogue, which is the larger prize: a shipped gate with a bug that
+    returns a non-bool or raises previously reached the rules layer unchecked.
+
+    Verified free of behavioural cost before this landed: no test anywhere asserts a gate's concrete
+    type, and a well-formed Verdict passes through untouched.
+    """
+    built = _build_gate(gate_key, manifest)
+    return built if isinstance(built, GuardedGate) else GuardedGate(built, kind=gate_key)
+
+
+def _instantiate_gate_from_config(gate_config: dict, manifest: LoopManifest) -> GatePort:
+    """Composite children are wrapped too — an unchecked child verdict is aggregated into the parent."""
+    kind = gate_config.get("kind")
+    built = _build_child_gate(gate_config, manifest)
+    if isinstance(built, GuardedGate):
+        return built
+    return GuardedGate(built, kind=str(kind) if isinstance(kind, str) else "composite-child")

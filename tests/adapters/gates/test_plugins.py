@@ -378,12 +378,36 @@ def test_the_registration_push_is_what_makes_a_plugin_kind_loadable(
     assert manifest_mod.load(loop_dir).gate_kind == "acme-check"
 
 
-def test_shipped_kinds_survive_a_registration_push() -> None:
-    """The push REPLACES the plugin set; it must not disturb the shipped allowlist."""
-    from bounded_loops.application import manifest as manifest_mod
-    import bounded_loops.composition  # noqa: F401 — importing is what performs the real push
+def test_composition_itself_performs_the_push_at_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reload composition so the REAL import-time push runs. Nothing else can catch its deletion.
 
-    assert {"pytest", "command", "composite", "osv"} <= manifest_mod.recognized_gate_kinds()
+    Two earlier attempts at this test were vacuous and all three auditors said so. One asserted
+    ``{"pytest","command","osv"} <= recognized_gate_kinds()`` — true from ``VALID_GATE_KINDS`` alone,
+    independent of any push. The other called ``register_plugin_gate_kinds`` itself, proving the
+    mechanism while leaving the WIRING untested. An Opus reviewer settled it empirically: it deleted
+    ``composition.py``'s push line and ran all 45 tests — 45 passed.
+
+    ``importlib.reload`` is the only way to execute that line in-process with discovery faked. The
+    reload is undone in a ``finally`` so the module other tests import is the real one.
+    """
+    import importlib
+    from bounded_loops.application import manifest as manifest_mod
+    import bounded_loops.composition as comp
+
+    _patch_entry_points(monkeypatch, [_entry("p", lambda: {"reload-probe": _MarkerGate})])
+    monkeypatch.setattr(manifest_mod, "_PLUGIN_GATE_KINDS", frozenset())
+    try:
+        importlib.reload(comp)
+        assert "reload-probe" in manifest_mod.recognized_gate_kinds(), (
+            "composition imported without telling the manifest validator about plugin kinds"
+        )
+        assert "reload-probe" in comp.GATE_REGISTRY
+    finally:
+        monkeypatch.undo()
+        importlib.reload(comp)
+        manifest_mod.register_plugin_gate_kinds(comp.PLUGIN_GATE_KINDS)
 
 
 def test_a_plugin_kind_passes_manifest_load_and_instantiates_wrapped(
@@ -421,32 +445,220 @@ def test_an_unknown_gate_kind_is_still_refused_so_the_allowlist_did_not_become_a
         load(_loop_dir_with_gate_kind(tmp_path, "no-such-gate"))
 
 
-def test_a_plugin_kind_is_usable_as_a_composite_child_and_is_wrapped(
-    monkeypatch: pytest.MonkeyPatch,
+def test_a_plugin_kind_is_usable_as_a_composite_child_through_a_real_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Composite is the only way to combine a shipped gate with a third-party one."""
+    """A real loop.yaml with a composite whose CHILD is third-party, through manifest.load.
+
+    The previous version called `_instantiate_gate_from_config` with a SimpleNamespace, so the
+    load-time half of this fix could be reverted with the suite still green — an auditor showed that
+    restoring `_validate_composite_gate` to the shipped-only allowlist kept it passing. It also hid a
+    real coupling: the composer now reads `manifest.runner_kind` to decide whether a worker module
+    exists, and a hand-made namespace does not have one. A real manifest exercises both.
+
+    Composite is the only way to combine a shipped gate with a third-party one, which is the case a
+    company most wants: their own check alongside ours.
+    """
+    import re
+    import shutil
     import bounded_loops.composition as comp
+    from bounded_loops.application import manifest as manifest_mod
 
     _extend_registry(monkeypatch, comp, "acme-check")
+    monkeypatch.setattr(manifest_mod, "_PLUGIN_GATE_KINDS", frozenset({"acme-check"}))
 
-    import types
-    fake_manifest = types.SimpleNamespace(
-        bounds=types.SimpleNamespace(max_wallclock_s=30, schema=None), loop_dir=Path("."),
+    pkg = tmp_path / "pkg"
+    shutil.copytree(_REAL_LOOP, pkg)
+    mf = pkg / "loop.yaml"
+    mf.write_text(
+        re.sub(
+            r"(?m)^gate:\n\s*kind:\s*osv\s*$",
+            "gate:\n  kind: composite\n  gates:\n    - kind: acme-check\n    - kind: command\n      run: \"true\"",
+            mf.read_text(encoding="utf-8"),
+            count=1,
+        ),
+        encoding="utf-8",
     )
-    child = comp._instantiate_gate_from_config({"kind": "acme-check"}, fake_manifest)
+    assert "composite" in mf.read_text(encoding="utf-8"), "substitution did not apply"
+
+    loaded = manifest_mod.load(pkg)
+    assert loaded.gate_kind == "composite"
+
+    child = comp._instantiate_gate_from_config({"kind": "acme-check"}, loaded)
     assert isinstance(child, GuardedGate), "a composite CHILD reached the aggregator unwrapped"
 
 
-def test_the_shipped_registry_cannot_be_mutated_by_anything_at_all() -> None:
-    """Rule 3's structural half, at the object level: the live registries are frozen.
+def test_a_composite_child_naming_an_unregistered_plugin_kind_is_refused_not_a_keyerror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A kind declared third-party but absent from the registry means the two disagree.
 
-    A gate plugin's factory runs arbitrary code in this process, and `_instantiate_gate` reads shipped
-    classes straight out of these registries WITHOUT GuardedGate — so a mutable registry is a path to
-    an unchecked verdict on the rules layer. Freezing is only meaningful because the backing dicts are
-    built inside functions and are unreachable once the proxies exist.
+    `registry[child_kind]` raised a bare KeyError straight past `wire()`'s handler as a traceback.
     """
+    import types
     import bounded_loops.composition as comp
-    for name in ("GATE_REGISTRY", "_P2_GATE_REGISTRY", "_QUALIXAR_GATE_REGISTRY"):
-        with pytest.raises(TypeError):
-            comp.__dict__[name]["osv"] = _MarkerGate
-    assert not hasattr(comp, "built"), "a backing dict leaked to module scope; the freeze is a no-op"
+
+    monkeypatch.setattr(comp, "PLUGIN_GATE_KINDS", frozenset({"ghost-kind"}))
+    manifest = types.SimpleNamespace(
+        runner_kind="stub", raw={}, gate_config={},
+        bounds=types.SimpleNamespace(max_wallclock_s=30, schema=None), loop_dir=tmp_path,
+    )
+    from bounded_loops.domain.errors import ManifestError
+    with pytest.raises(ManifestError, match="not in the gate registry"):
+        comp._instantiate_gate_from_config({"kind": "ghost-kind"}, manifest)
+
+
+def test_a_substituted_shipped_gate_cannot_land_a_pass(tmp_path: Path) -> None:
+    """The invariant that replaced registry freezing, stated as the audits forced it to be.
+
+    The old test here was named "cannot be mutated by anything at all" and only tried
+    ``proxy["osv"] = ...``. Three separate writes it never attempted all succeed: rebinding the module
+    attribute, patching the gate CLASS, and — the one that mattered — rebinding the bare global that
+    ``_build_gate`` actually calls, since first-class kinds are read as ``return PytestGate(...)`` and
+    never through the registry at all.
+
+    So provenance is not defensible in-process and the freeze is a convenience, not a boundary. What
+    IS defensible is the verdict: whatever produced it, a non-boolean pass is refused. This test
+    performs the strongest available substitution and asserts the outcome, not the mechanism.
+    """
+    import types
+    import bounded_loops.composition as comp
+
+    class _Hijack:
+        def __init__(self, **kwargs: object) -> None: ...
+        def check(self, ctx: LoopContext) -> Verdict:
+            return Verdict(passed="yes", detail="hijacked", evidence={})  # type: ignore[arg-type]
+
+    original = comp.PytestGate
+    try:
+        comp.PytestGate = _Hijack  # type: ignore[misc]
+        manifest = types.SimpleNamespace(
+            gate_kind="pytest", gate_config={},
+            bounds=types.SimpleNamespace(max_wallclock_s=30, schema=None), loop_dir=tmp_path,
+        )
+        gate = comp._instantiate_gate("pytest", manifest)
+        assert isinstance(gate, GuardedGate), "a shipped gate reached the engine unwrapped"
+        verdict = gate.check(_ctx(tmp_path))
+        assert verdict.passed is False, "a substituted gate landed a PASS on the rules layer"
+        assert "not a bool" in verdict.detail
+    finally:
+        comp.PytestGate = original  # type: ignore[misc]
+
+
+def test_a_genuine_shipped_gate_is_unaffected_by_the_wrapper(tmp_path: Path) -> None:
+    """Calibration for universal wrapping: a well-formed verdict must pass through untouched."""
+    import types
+    import bounded_loops.composition as comp
+
+    (tmp_path / "check.sh").write_text("exit 0\n", encoding="utf-8")
+    manifest = types.SimpleNamespace(
+        gate_kind="command", gate_config={"run": "true"},
+        bounds=types.SimpleNamespace(max_wallclock_s=30, schema=None), loop_dir=tmp_path,
+    )
+    gate = comp._instantiate_gate("command", manifest)
+    assert isinstance(gate, GuardedGate)
+    verdict = gate.check(_ctx(tmp_path))
+    assert verdict.passed is True, "wrapping broke a shipped gate that should pass"
+    assert verdict.detail.strip()
+
+
+# ── rule 4 had ZERO test coverage; an Opus reviewer's grep found no reference at all ────────────
+
+def _dists(**kw: str) -> Mapping[str, str]:
+    return kw
+
+
+def test_rule_four_refuses_a_worker_and_gate_from_one_distribution() -> None:
+    """The case the rule exists for. `bounded_loops` resolves to exactly one distribution here."""
+    refusal = gp.same_distribution_refusal(
+        gate_kind="acme-check",
+        gate_distributions=_dists(**{"acme-check": "bounded-loops"}),
+        worker_module="bounded_loops.adapters.runners.stub",
+    )
+    assert refusal is not None
+    assert "bounded-loops" in refusal
+
+
+@pytest.mark.parametrize("gate_dist", ["Bounded_Loops", "bounded.loops", "BOUNDED-LOOPS"])
+def test_rule_four_normalises_distribution_names_per_pep503(gate_dist: str) -> None:
+    """`acme.gates`, `acme_gates` and `Acme-Gates` are one project; hand-rolled matching missed that."""
+    assert gp.same_distribution_refusal(
+        gate_kind="k", gate_distributions=_dists(k=gate_dist),
+        worker_module="bounded_loops.x",
+    ) is not None
+
+
+def test_rule_four_does_not_refuse_unrelated_distributions() -> None:
+    assert gp.same_distribution_refusal(
+        gate_kind="k", gate_distributions=_dists(k="totally-unrelated"),
+        worker_module="bounded_loops.x",
+    ) is None
+
+
+def test_rule_four_fails_open_when_a_namespace_root_has_several_owners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The false positive both CLI auditors proved on this host, one with a real `jaraco.*` pairing.
+
+    `packages_distributions()` maps a top-level name to EVERY distribution shipping under it, so a
+    namespace package makes unrelated siblings indistinguishable — `google` is shared by protobuf,
+    google-auth and google-api-core. Set membership refused loops whose worker and gate came from
+    genuinely different projects. Ambiguity now fails OPEN, because wrongly blocking a legitimate loop
+    is worse than not enforcing a rule the metadata cannot decide.
+    """
+    monkeypatch.setattr(
+        gp, "packages_distributions", lambda: {"myco": ["myco-finance", "myco-tools"]},
+    )
+    assert gp.same_distribution_refusal(
+        gate_kind="k", gate_distributions=_dists(k="myco-tools"),
+        worker_module="myco.finance.worker",
+    ) is None, "an ambiguous namespace root must not produce a refusal"
+
+
+@pytest.mark.parametrize("boom", [OSError("io"), UnicodeDecodeError("utf-8", b"", 0, 1, "bad"),
+                                 TypeError("empty dist-info"), RuntimeError("corrupt")])
+def test_rule_four_treats_broken_metadata_as_non_evidence(
+    monkeypatch: pytest.MonkeyPatch, boom: BaseException,
+) -> None:
+    """Only OSError was caught. A non-UTF-8 METADATA raises UnicodeDecodeError, an empty .dist-info
+    TypeError — verified live by an auditor as a traceback out of `wire()`. Damaged metadata is not
+    evidence of a violation, and a crash is a worse outcome than an unenforced rule."""
+    def _raise() -> Mapping[str, list[str]]:
+        raise boom
+
+    monkeypatch.setattr(gp, "packages_distributions", _raise)
+    assert gp.same_distribution_refusal(
+        gate_kind="k", gate_distributions=_dists(k="bounded-loops"),
+        worker_module="bounded_loops.x",
+    ) is None
+
+
+def test_rule_four_is_silent_for_runners_that_import_no_module() -> None:
+    """Documented scope: shell/agent_cmd have no module to compare, so nothing is checked."""
+    assert gp.same_distribution_refusal(
+        gate_kind="k", gate_distributions=_dists(k="bounded-loops"), worker_module=None,
+    ) is None
+
+
+def test_rule_four_skips_shipped_kinds() -> None:
+    assert gp.same_distribution_refusal(
+        gate_kind="pytest", gate_distributions=_dists(), worker_module="bounded_loops.x",
+    ) is None
+
+
+def test_refuse_if_same_distribution_raises_for_a_plugin_kind() -> None:
+    """The guard wrapper `composition` actually calls — previously untested in either suite."""
+    with pytest.raises(GatePluginRefused, match="cannot certify this loop"):
+        gp.refuse_if_same_distribution(
+            gate_kind="acme-check", plugin_kinds=frozenset({"acme-check"}),
+            gate_distributions=_dists(**{"acme-check": "bounded-loops"}),
+            worker_module="bounded_loops.x",
+        )
+
+
+def test_refuse_if_same_distribution_is_a_no_op_for_shipped_kinds() -> None:
+    gp.refuse_if_same_distribution(
+        gate_kind="pytest", plugin_kinds=frozenset({"acme-check"}),
+        gate_distributions=_dists(**{"acme-check": "bounded-loops"}),
+        worker_module="bounded_loops.x",
+    )

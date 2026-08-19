@@ -84,10 +84,26 @@ _PLUGIN_GATE_KINDS: frozenset[str] = frozenset()
 
 
 def register_plugin_gate_kinds(kinds: frozenset[str]) -> None:
-    """Declare which gate kinds third-party packages supplied. Called by ``composition``.
+    """Declare which gate kinds third-party packages supplied. Called by ``composition`` at import.
 
-    Idempotent and safe to call again — a later call REPLACES the set rather than adding to it,
-    so a test that installs a fake plugin can restore the real value by calling with it.
+    A later call REPLACES the set rather than adding to it, which is what lets a test install a fake
+    plugin set and restore the real one afterwards.
+
+    THIS IS NOT A LOCK, and the audit was right to say so. It is module state with a documented
+    writer, not a guarded one: anything already running in this process — a plugin's import, an
+    embedder, a test — can call it and change what ``load()`` will accept, and ``importlib.reload`` of
+    this module resets the set to empty with nothing re-pushing it.
+
+    Accepted deliberately, because the alternatives are worse. A ``load()`` parameter can be forgotten
+    by one caller, which is how the CLI would accept a plugin gate while the public ``load_loop`` API
+    silently refused the same manifest. Pulling the value would need this layer to import
+    ``composition``, which imports this module. Guarding the writer would not help against code that
+    can rebind the module attribute anyway.
+
+    What makes this tolerable is that it cannot manufacture trust: widening this set only lets a kind
+    reach ``composition``, where the class must still be in ``GATE_REGISTRY`` and every verdict is
+    wrapped regardless of who registered the kind. The worst a hostile writer achieves is a refusal
+    or a wrapped gate — not an unchecked pass.
     """
     global _PLUGIN_GATE_KINDS
     _PLUGIN_GATE_KINDS = frozenset(kinds)
