@@ -539,6 +539,71 @@ class TestBLShowAndGates:
         assert "Lap 1" in output and "PASS" in output
         assert "gate:" not in output and "None" not in output
 
+    def _write_run(self, tmp_path, rows, status="DONE", reason="gate-passed"):
+        run_dir = tmp_path / ".bounded-loops" / "runs" / "r1"
+        run_dir.mkdir(parents=True)
+        (run_dir / "metadata.json").write_text(json.dumps({
+            "run_id": "r1", "status": status, "reason": reason, "laps": len(rows),
+            "workspace": str(run_dir / "workspace"),
+            "ledger_path": str(run_dir / "ledger.jsonl"),
+        }), encoding="utf-8")
+        (run_dir / "ledger.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+    def test_runs_show_reads_consumption_against_the_declared_ceiling(self, tmp_path, capsys):
+        """The product is called bounded-loops. Until this line existed its own receipt showed
+        `tokens=205` with nothing to read it against, and a spend figure alone cannot support the
+        claim the name makes."""
+        self._write_run(tmp_path, [{
+            "lap": 1, "verdict": {"passed": True, "detail": "ok"}, "decision": "done",
+            "attempted": True,
+            "budget_spent": {"laps": 1, "tokens": 205, "wallclock_s": 0.5},
+            "budget_declared": {"attempts": 10, "tokens": None, "wallclock_s": 990},
+        }])
+
+        assert main(["runs", str(tmp_path), "--show", "r1"]) == 0
+        output = capsys.readouterr().out
+        assert "attempts 1/10" in output
+        assert "wallclock 0.5s/990s" in output
+        assert "tokens 205/no ceiling" in output, (
+            "an undeclared ceiling must say so; printing nothing reads as if a ceiling applied"
+        )
+
+    def test_a_bound_that_held_exactly_is_not_reported_as_overrun(self, tmp_path, capsys):
+        """THE case this computation exists for. A ceiling halt writes a final row on which no work
+        was attempted, so counting ROWS reports 3 attempts against a declared 2 — a bound that held
+        exactly, shown as 1.5x over. `attempted` makes it computable; the receipt must do it."""
+        self._write_run(tmp_path, [
+            {"lap": 1, "verdict": {"passed": False, "detail": "x"}, "decision": "continue",
+             "attempted": True, "budget_spent": {"laps": 1, "tokens": 10, "wallclock_s": 0.1},
+             "budget_declared": {"attempts": 2, "tokens": None, "wallclock_s": 990}},
+            {"lap": 2, "verdict": {"passed": False, "detail": "x"}, "decision": "continue",
+             "attempted": True, "budget_spent": {"laps": 2, "tokens": 20, "wallclock_s": 0.2},
+             "budget_declared": {"attempts": 2, "tokens": None, "wallclock_s": 990}},
+            {"lap": 3, "verdict": {"passed": False, "detail": "halt"}, "decision": "halt",
+             "attempted": False, "budget_spent": {"laps": 3, "tokens": 20, "wallclock_s": 0.3},
+             "budget_declared": {"attempts": 2, "tokens": None, "wallclock_s": 990}},
+        ], status="HALT", reason="max_iterations 2 reached at lap 3")
+
+        assert main(["runs", str(tmp_path), "--show", "r1"]) == 0
+        output = capsys.readouterr().out
+        assert "attempts 2/2" in output, f"a bound that held exactly was misreported: {output}"
+        assert "attempts 3/2" not in output
+
+    def test_runs_show_omits_the_bounds_line_for_a_run_recorded_before_it_existed(
+        self, tmp_path, capsys,
+    ):
+        """Calibration: absent, not "None/None"."""
+        self._write_run(tmp_path, [{
+            "lap": 1, "verdict": {"passed": True, "detail": "ok"}, "decision": "done",
+            "budget_spent": {"laps": 1, "tokens": 5, "wallclock_s": 0.1},
+        }])
+
+        assert main(["runs", str(tmp_path), "--show", "r1"]) == 0
+        output = capsys.readouterr().out
+        assert "Lap 1" in output and "PASS" in output
+        assert "bounds:" not in output and "None" not in output
+
     def test_lint_contrib_accepts_reference_loop(self):
         repo_root = Path(__file__).resolve().parents[1]
         code = main([
@@ -816,3 +881,68 @@ class TestWorkedExamples:
         out = capsys.readouterr().out
         assert "HALT" in out
         assert code == 1
+
+
+class TestReceiptEndToEnd:
+    """A real run, then the receipt a human reads. The synthetic receipt tests above pin the
+    ARITHMETIC; these pin that the harness actually produces the inputs that arithmetic needs —
+    that `composition` pushes the resolved ceilings in, and that the controller marks the
+    wind-down row `attempted: false`. Neither is visible to a test that writes its own ledger.
+    """
+
+    def _loop(self, tmp_path):
+        import shutil
+        from pathlib import Path
+        loop_dir = tmp_path / "loop"
+        shutil.copytree(Path("loops/assertion-density"), loop_dir)
+        return loop_dir
+
+    def test_a_real_run_records_ceilings_that_can_be_read_against_its_spend(
+        self, tmp_path, capsys, monkeypatch,
+    ):
+        monkeypatch.setenv("BOUNDED_LOOPS_TRUST_STORE", str(tmp_path / "trust"))
+        loop_dir = self._loop(tmp_path)
+
+        assert main(["run", str(loop_dir), "--run-id", "e1", "--yes"]) == 0
+        capsys.readouterr()
+        assert main(["runs", str(loop_dir), "--show", "e1"]) == 0
+
+        output = capsys.readouterr().out
+        assert "attempts 1/10" in output, f"declared ceilings never reached the receipt: {output}"
+        assert "gate: command (shipped)" in output
+
+    def test_a_real_ceiling_halt_reports_the_bound_as_held_not_overrun(
+        self, tmp_path, capsys, monkeypatch,
+    ):
+        """End to end: a gate that always fails, a ceiling of 2. The run writes THREE ledger rows
+        and the receipt must say 2/2. This is the case the `attempted` field was introduced for and
+        the first place anything actually reads it."""
+        monkeypatch.setenv("BOUNDED_LOOPS_TRUST_STORE", str(tmp_path / "trust"))
+        loop_dir = self._loop(tmp_path)
+
+        main([
+            "run", str(loop_dir), "--run-id", "h1", "--yes",
+            "--max-iterations", "2", "--gate-override", "false",
+        ])
+        capsys.readouterr()
+        assert main(["runs", str(loop_dir), "--show", "h1"]) == 0
+
+        output = capsys.readouterr().out
+        assert "attempts 2/2" in output, f"a bound that held exactly was misreported: {output}"
+
+    def test_a_cli_override_is_recorded_as_the_ceiling_that_applied(
+        self, tmp_path, capsys, monkeypatch,
+    ):
+        """bounds.yaml declares max_iterations: 10. With --max-iterations 3 the receipt must quote
+        3 — the ceiling actually ENFORCED. A receipt quoting the YAML would name a bound that never
+        applied, which is worse than naming none."""
+        monkeypatch.setenv("BOUNDED_LOOPS_TRUST_STORE", str(tmp_path / "trust"))
+        loop_dir = self._loop(tmp_path)
+
+        main(["run", str(loop_dir), "--run-id", "o1", "--yes", "--max-iterations", "3"])
+        capsys.readouterr()
+        assert main(["runs", str(loop_dir), "--show", "o1"]) == 0
+
+        output = capsys.readouterr().out
+        assert "attempts 1/3" in output
+        assert "/10" not in output, "the receipt quoted the YAML ceiling, not the enforced one"

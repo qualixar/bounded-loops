@@ -158,6 +158,7 @@ def test_the_serialised_ledger_row_has_exactly_the_expected_keys(tmp_path):
     row = json.loads((tmp_path / "ledger.jsonl").read_text().splitlines()[0])
     assert set(row) == {
         "prev", "lap", "ts", "verdict", "decision", "budget_spent", "attempted", "handoff", "gate",
+        "budget_declared",
     }
     assert set(row["verdict"]) == {"passed", "detail", "evidence"}
 
@@ -197,3 +198,32 @@ def test_gate_provenance_is_frozen_on_the_entry():
     except TypeError:
         return
     raise AssertionError("provenance was mutable after the entry was built")
+
+
+def test_the_ledger_records_the_ceilings_the_run_declared(tmp_path):
+    """In the ledger, not metadata.json. `bl verify` hashes the ledger and does NOT hash metadata,
+    so a ceiling stored only there could be raised after the run and the receipt would still verify
+    clean — which would make "this run stayed inside its budget" unverifiable."""
+    ledger = FileLedger(tmp_path / "ledger.jsonl")
+    ledger.record(LedgerEntry(
+        lap=1, ts=UtcClock().now_iso(), verdict=Verdict(True, "ok"), decision="done",
+        budget_spent={"laps": 1, "tokens": 205},
+        budget_declared={"attempts": 10, "tokens": None, "wallclock_s": 990},
+    ))
+
+    row = json.loads((tmp_path / "ledger.jsonl").read_text().splitlines()[0])
+    assert row["budget_declared"] == {"attempts": 10, "tokens": None, "wallclock_s": 990}
+    assert row["budget_declared"]["tokens"] is None, (
+        "an undeclared ceiling must be recorded as null, not omitted — 'unbounded' is a fact a "
+        "reader of a bound claim must not have to infer from a missing key"
+    )
+
+
+def test_an_older_ledger_row_loads_with_no_declared_bounds(tmp_path):
+    old_row = {
+        "prev": "0" * 64, "lap": 1, "ts": "2026-01-01T00:00:00Z",
+        "verdict": {"passed": True, "detail": "ok", "evidence": {}},
+        "decision": "done", "budget_spent": {"laps": 1}, "attempted": True, "handoff": "",
+    }
+    entry = _deserialise(json.dumps(old_row, separators=(",", ":")))
+    assert dict(entry.budget_declared) == {}

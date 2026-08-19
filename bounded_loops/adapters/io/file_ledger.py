@@ -135,6 +135,9 @@ def _serialise(entry: LedgerEntry, *, prev: str = GENESIS) -> str:
         # shape; lines written before the field existed simply lack the key and still verify,
         # because the chain hashes raw line text and those lines are unchanged.
         "gate": _json_value(entry.gate),
+        # The ceilings declared for this run, beside the spend, inside the chain. See
+        # LedgerEntry.budget_declared for why metadata.json was the wrong home.
+        "budget_declared": _json_value(entry.budget_declared),
     }
     return json.dumps(d, ensure_ascii=False, separators=(",", ":"))
 
@@ -177,4 +180,5 @@ def _deserialise(line: str) -> LedgerEntry:
         # this field existed must still round-trip, or every pre-existing run directory becomes
         # unreadable by the tool that is supposed to audit it.
         gate=dict(d.get("gate") or {}),
+        budget_declared=dict(d.get("budget_declared") or {}),
     )

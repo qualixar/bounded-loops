@@ -11,6 +11,57 @@ record of what already happened, and anything here that recomputed a verdict wou
 from __future__ import annotations
 
 
+def _attempts_consumed(entries: list) -> int:
+    """Rows on which the worker was actually invoked.
+
+    NOT ``len(entries)``, and not the last row's ``budget_spent["laps"]``. A ceiling halt records a
+    final row on which no work was attempted, so counting rows reports 11 attempts against a
+    declared 10 — a bound that held EXACTLY, reported as 1.1x over. `attempted` exists to make this
+    computable; the receipt is the place that has to actually do it.
+    """
+    return sum(1 for entry in entries if entry.get("attempted", True))
+
+
+def _declared(entries: list) -> dict:
+    """The ceilings this run ran under, taken from the ledger rows themselves.
+
+    Every row carries them and they are identical, so the last row is as good as the first. Read
+    from the LEDGER rather than metadata.json deliberately: `bl verify` hashes the ledger and does
+    not hash metadata, so a ceiling quoted from metadata could have been edited upward after the
+    run and the receipt would still verify clean.
+    """
+    for entry in reversed(entries):
+        declared = entry.get("budget_declared")
+        if isinstance(declared, dict) and declared:
+            return declared
+    return {}
+
+
+def _against(consumed: object, ceiling: object, unit: str = "") -> str:
+    """One `consumed/ceiling` pair. An undeclared ceiling says so rather than printing nothing."""
+    shown = "no ceiling" if ceiling is None else f"{ceiling}{unit}"
+    return f"{consumed}{unit}/{shown}"
+
+
+def _print_bounds_line(entries: list) -> None:
+    """What the run was ALLOWED, beside what it used.
+
+    The product is called bounded-loops and until this line existed its own receipt showed only
+    consumption: `tokens=205` with nothing to read it against. A spend figure alone cannot support
+    the claim the name makes.
+    """
+    declared = _declared(entries)
+    if not declared or not entries:
+        return   # a run recorded before this field existed prints exactly as it did before
+    spent = entries[-1].get("budget_spent") or {}
+    print(
+        "bounds: "
+        f"attempts {_against(_attempts_consumed(entries), declared.get('attempts'))}   "
+        f"tokens {_against(spent.get('tokens', '?'), declared.get('tokens'))}   "
+        f"wallclock {_against(spent.get('wallclock_s', '?'), declared.get('wallclock_s'), 's')}"
+    )
+
+
 def _print_run_receipt(receipt: dict) -> None:
     metadata = receipt["metadata"]
     run_id = metadata.get("run_id", "?")
@@ -19,6 +70,8 @@ def _print_run_receipt(receipt: dict) -> None:
     print(f"Run {run_id}: {status} ({reason})")
     print(f"Workspace: {metadata.get('workspace', 'unknown')}")
     print(f"Ledger: {metadata.get('ledger_path', 'unknown')}")
+    print()
+    _print_bounds_line(receipt["entries"])
     print()
     for entry in receipt["entries"]:
         verdict = entry.get("verdict", {})

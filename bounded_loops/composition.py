@@ -436,6 +436,15 @@ def wire(
                 gate, plugin_kinds=PLUGIN_GATE_KINDS,
                 distributions=_LOADED_GATES.distributions,
             ),
+            # Read from the RESOLVED bounds, not from manifest.raw, so the receipt records the
+            # ceilings actually enforced. `manifest.load` normalises a null wallclock to 3600 and a
+            # --max-iterations override lands here too; a receipt quoting the YAML would name a
+            # ceiling that never applied, which is worse than naming none.
+            budget_declared={
+                "attempts": bounds.max_iterations,
+                "tokens": bounds.max_tokens,
+                "wallclock_s": bounds.max_wallclock_s,
+            },
         ),
         env_passthrough=resolved_env_passthrough,
         cleanup_workspace=(not keep_workspace and run_id is None),

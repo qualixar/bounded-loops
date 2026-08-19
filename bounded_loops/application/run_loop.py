@@ -84,6 +84,9 @@ class RunLoopDeps:
     #: (see `test_layering`), and because the honest source for "which distribution" is the
     #: entry-point scan that only the composer has done.
     gate_provenance: Mapping[str, str] = field(default_factory=dict)
+    #: The ceilings this run declared, pushed in for the same reason as `gate_provenance`:
+    #: the composer is the layer that has resolved the manifest's bounds.
+    budget_declared: Mapping[str, object] = field(default_factory=dict)
 
 
 def _make_entry(
@@ -118,6 +121,7 @@ def _make_entry(
         attempted=attempted,
         handoff=handoff,
         gate=dict(deps.gate_provenance),
+        budget_declared=dict(deps.budget_declared),
     )
 
 

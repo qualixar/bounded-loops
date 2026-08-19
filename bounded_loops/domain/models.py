@@ -470,10 +470,28 @@ class LedgerEntry:
     #: Empty for ledgers written before this field existed, which still verify: the chain hashes
     #: raw line text, so an additive field cannot invalidate a line it was never in.
     gate:         dict = field(default_factory=dict)
+    #: The ceilings this run DECLARED, so the receipt can be read against them without the reader
+    #: having to hold the loop's bounds.yaml. `budget_spent` says what was consumed; this says what
+    #: was allowed. A consumption figure with no ceiling beside it is not a bound claim.
+    #:
+    #: In the LEDGER, not in metadata.json, and that is the whole point. `bl verify` cross-checks
+    #: metadata's lap count but does not hash the file — so a ceiling stored only there could be
+    #: edited upward and the receipt would still verify. A declared bound outside the hash chain
+    #: cannot support the sentence "this run stayed inside its budget".
+    #:
+    #: Keys are `attempts` / `tokens` / `wallclock_s`. `attempts`, NOT `laps`: the declared cap is on
+    #: work attempts, and a ceiling halt writes one extra row on which no work was attempted (see
+    #: `attempted` above). Pairing a declared cap against a raw lap count is how a bound that held
+    #: exactly reads as 1.1x consumed.
+    #:
+    #: A null value means NO ceiling was declared for that dimension, and is recorded rather than
+    #: omitted: "unbounded" is a fact a reader of a bound claim must not have to infer from silence.
+    budget_declared: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "budget_spent", _freeze_value(self.budget_spent))
         object.__setattr__(self, "gate", _freeze_value(self.gate))
+        object.__setattr__(self, "budget_declared", _freeze_value(self.budget_declared))
 
 
 @dataclass(frozen=True)
