@@ -95,11 +95,23 @@ DEFAULT_BASE_URL = "http://127.0.0.1:44772"
 #: unverified claims. It DOES make this a documented integration seam rather than an omission: the
 #: transport is complete, honest about what it cannot attest, and structurally unable to be selected.
 #:
-#: To unblock, in order: (1) make a Docker daemon reachable — Docker Desktop, Colima or Rancher
-#: Desktop, all named in the server's own error message; (2) start the server and confirm a sandbox
-#: can be created; (3) implement ``submit()`` against it; (4) add an env-gated live test in the shape
-#: of ``tests/adapters/gates/test_plugins_live.py``; (5) flip this constant LAST, once that test
-#: passes. Flipping it before step 4 re-creates exactly the gap this comment exists to prevent.
+#: **THIS IS A DECISION, NOT A TODO (2026-08-19).** The remote-execution seam ships documented and
+#: fail-closed. It is not scheduled work waiting for someone to notice it, and a future reader should
+#: not "finish" it opportunistically: the reason it is unimplemented is that it CANNOT be verified on
+#: a host with no container runtime, and that has not changed.
+#:
+#: Should a Docker-capable host become part of the loop, the order is: (1) make a daemon reachable —
+#: Docker Desktop, Colima or Rancher Desktop, all named in the server's own error message; (2) start
+#: the server and confirm a sandbox can be created; (3) capture the real request/response shapes,
+#: including ``/openapi.json`` from the running server, so ``submit()`` is written against observed
+#: payloads rather than a published spec — note that every attestation path in this module was
+#: written from the spec and has never seen a live response, so step 3 also re-validates the parser
+#: below; (4) implement ``submit()``; (5) add an env-gated live test in the shape of
+#: ``tests/adapters/gates/test_plugins_live.py``, which runs only where a daemon exists and skips
+#: elsewhere; (6) flip this constant LAST, once that test passes on such a host.
+#:
+#: Flipping it before step 5 re-creates precisely the gap this comment exists to prevent, and would
+#: do so in the one module whose entire subject is refusing claims nothing checked.
 EXECUTION_IMPLEMENTED = False
 
 #: A hardening layer counts as enforced only when execd says ``active``. ``degraded`` means
