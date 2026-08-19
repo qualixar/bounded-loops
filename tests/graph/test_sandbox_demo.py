@@ -15,6 +15,8 @@ import pytest
 
 from bounded_loops.graph.adapters.enforcement import probe_platform
 from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
+from bounded_loops.graph.adapters.enforcement.sandbox import SandboxMechanism
+from bounded_loops.graph.application.execution_policy import NetworkMode
 from bounded_loops.graph import sandbox_demo
 from bounded_loops.graph.sandbox_demo import run_sandbox_demo
 from bounded_loops.graph.cli_graph import cmd_graph_run
@@ -80,9 +82,30 @@ def test_run_execute_without_out_defaults_into_the_project_workspace(tmp_path, c
         )
     )
     runs_root = tmp_path / ".bounded-loops" / "runs"
-    assert rc == 0
-    assert "writing to" in capsys.readouterr().err
+    err = capsys.readouterr().err
+
+    # The claim in the docstring, asserted on every host: the directory is chosen, created and
+    # announced. Both happen BEFORE the demo asks whether this host can sandbox anything.
+    assert "writing to" in err
     assert [entry.name for entry in runs_root.iterdir()], "the run directory was not created"
+
+    # The exit code is a claim about the HOST, not about the default path, and it was asserted as
+    # `rc == 0` unconditionally. A GitHub Linux runner has Docker and no bubblewrap, so the demo
+    # refused with exit 2 and its own honest message — correct behaviour — and this test failed on
+    # every commit for hours while the local suite stayed green on macOS Seatbelt. A test named for
+    # the default output directory must not depend on whether the host can sandbox a process.
+    plan_node = sandbox_demo._build_plan().nodes[0]
+    # `sandbox_demo.probe_platform`, not the imported name: the test must ask the SAME object
+    # the engine asks, or a monkeypatch of one is invisible to the other and they disagree.
+    mechanism, _why = sandbox_demo.probe_platform().select_mechanism(
+        plan_node.isolation, NetworkMode.DENY
+    )
+    native = mechanism is not None and mechanism is not SandboxMechanism.DOCKER
+    if native:
+        assert rc == 0, f"a host with a native sandbox must complete the demo: {err}"
+    else:
+        assert rc == 2, "a host with no native sandbox must refuse, not half-run"
+        assert "native sandbox" in err, f"the refusal must name what is missing: {err}"
 
 
 def test_run_execute_refuses_non_local_cli_manifest(tmp_path, capsys):

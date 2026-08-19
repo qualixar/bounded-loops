@@ -47,6 +47,13 @@ jobs:
         with:
           version: "0.11.8"
           enable-cache: true
+      - name: Install bubblewrap so the native sandbox path is actually exercised
+        # The headline `bl graph run --execute` demo needs a NATIVE sandbox — macOS Seatbelt or
+        # Linux bubblewrap. A GitHub ubuntu runner ships Docker and neither, so every sandbox
+        # assertion on Linux was reaching the "this host offers only Docker" refusal: the feature
+        # the README leads with was never executed in CI, on any commit. Installing bwrap here is
+        # what makes the Linux job able to run it at all.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap
       - name: Sync locked development environment
         run: uv sync --frozen --group dev
       - name: Run deterministic offline suite
