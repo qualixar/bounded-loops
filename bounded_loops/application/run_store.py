@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from bounded_loops.domain.errors import ManifestError
+from bounded_loops.application.receipt import write_receipt_artifacts_or_warn
 from bounded_loops.domain.models import Outcome
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -95,6 +96,34 @@ def begin_run(
     return metadata_path
 
 
+def _read_json(path: Path) -> dict:
+    """The metadata just written, read back from disk so the artifact reflects what landed."""
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _read_ledger_rows(ledger_path: object) -> list:
+    """Parsed ledger rows, for building the receipt."""
+    rows = []
+    for line in Path(str(ledger_path)).read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
+
+
+def _count_ledger_rows(ledger_path: object) -> int | None:
+    """Non-blank lines in the ledger, or None when it cannot be read.
+
+    None rather than 0: an unreadable ledger must not be recorded as an empty one, which would make
+    every later completeness check trivially satisfied.
+    """
+    try:
+        path = Path(str(ledger_path))
+        return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+
+
 def write_run_metadata(
     *,
     loop_dir: Path,
@@ -116,6 +145,13 @@ def write_run_metadata(
             "status": outcome.status.value,
             "reason": outcome.reason,
             "laps": outcome.laps,
+            # The ledger's ACTUAL row count, which `laps` is not: `--resume` restarts the in-process
+            # lap counter at 1 while the ledger stays append-only, so a resumed run stored `laps: 2`
+            # beside four rows and `bl verify`'s completeness check reported "4 ledger rows for 2
+            # claimed laps" as COMPLETE. A length witness that undercounts by a whole segment cannot
+            # detect a removed tail, which is the only thing it exists for. `laps` is left alone —
+            # it is the outcome's own figure and `list_runs` reports it.
+            "ledger_rows": _count_ledger_rows(outcome.ledger_path),
             # Recorded here as well as printed. Same-filesystem storage is a weak
             # witness — an adversary rewriting the ledger can rewrite this too — but
             # it raises the cost from one edit to two coordinated ones, and it gives
@@ -123,6 +159,16 @@ def write_run_metadata(
             # kept their terminal.
             "ledger_head": outcome.ledger_head,
         },
+    )
+    # EVERY persist path writes the receipt, because they all come through here. Three paths reach
+    # this function — the CLI, the MCP server and the graph loop bridge — and only the CLI used to
+    # write one, so the other two left a STALE receipt sitting beside a newer ledger while
+    # `bl verify` reported the run intact. Patching those two call sites would repeat this
+    # codebase's most-committed defect; writing it where the metadata write already lives makes the
+    # omission unrepresentable. Fail-open: the ledger is already the authoritative record, and
+    # paperwork must never turn a completed run into a failure.
+    write_receipt_artifacts_or_warn(
+        lambda: (directory, _read_json(path), _read_ledger_rows(outcome.ledger_path)),
     )
     _upsert_run_values(
         db_path=run_db(loop_dir, storage_root=storage_root),

@@ -32,7 +32,6 @@ from bounded_loops.application.run_store import (
     begin_run,
     list_runs,
     read_run_receipt,
-    run_dir,
     write_run_metadata,
 )
 from bounded_loops.graph.adapters.preflight.runner_preflight import (
@@ -44,7 +43,6 @@ from bounded_loops.composition import wire
 from bounded_loops.cli_receipt import (
     _print_run_receipt,
     register as _register_receipt,
-    write_receipt_artifacts_or_warn,
 )
 from bounded_loops.cli_preconditions import _confirm_trust, check_run_preconditions
 from bounded_loops.cli_retention import add_prune_parser
@@ -466,11 +464,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
             outcome=outcome,
             workspace=use_case._workspace,
         )
-        # A receipt you have to ask for is one nobody has when they need it, so a persisted run
-        # writes its own. AFTER the metadata, because the artifact quotes the ledger head from it.
-        # Fail-open: the ledger is already the authoritative record, and paperwork must never turn a
-        # run that reached DONE into a failure.
-        _write_receipt_for(manifest.loop_dir, args.run_id)
 
     if outcome.status == Status.DONE:
         return 0
@@ -774,20 +767,6 @@ def _err(msg: str) -> None:
     """Print an error message to stderr."""
     print(f"error: {msg}", file=sys.stderr)
 
-
-
-def _write_receipt_for(loop_dir: Path, run_id: str) -> None:
-    """Write the portable receipt for a just-finished persisted run.
-
-    Reads the receipt back through `read_run_receipt` rather than reusing in-memory state, so the
-    artifact is built from what actually landed on disk. If the two ever disagree, the file is the
-    thing a reader will have.
-    """
-    def build() -> tuple[Path, dict, list]:
-        receipt = read_run_receipt(loop_dir=loop_dir, run_id=run_id)
-        return run_dir(loop_dir, run_id), receipt["metadata"], receipt["entries"]
-
-    write_receipt_artifacts_or_warn(build)
 
 # hardening: a PATH-independent invocation. `bl` may not be on
 # PATH after `pip install -e .` in every shell, but `python -m bounded_loops.cli`

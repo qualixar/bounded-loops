@@ -10,7 +10,9 @@ import json
 from pathlib import Path
 
 from bounded_loops.cli import main
-from bounded_loops.cli_receipt import (
+# The builders and the writer live in `application.receipt` so that every path which persists a run
+# can write the artifact; `cli_receipt` is the presentation half.
+from bounded_loops.application.receipt import (
     RECEIPT_FILES,
     receipt_document,
     receipt_markdown,
@@ -179,7 +181,7 @@ class TestWriting:
         """The ledger is already written and already authoritative. A read-only volume or a full
         disk must not turn a run that reached DONE into a failure — but the absence must be visible
         rather than silent."""
-        import bounded_loops.cli_receipt as receipt_module
+        import bounded_loops.application.receipt as receipt_module
 
         def _explode(*args: object, **kwargs: object) -> None:
             raise OSError("read-only file system")
@@ -299,6 +301,11 @@ class TestEndToEnd:
         metadata = json.loads((run_dir / "metadata.json").read_text())
         metadata.update(
             status="DONE", reason="gate-passed", laps=1, ledger_head=head_of_lines([line]),
+            # A thorough adversary also fixes the row count. Leaving it stale made the forgery
+            # detectable by the completeness witness alone, which meant this test was no longer
+            # exercising the thing it is about — the kept-digest check. Narrowing the attack is
+            # progress; letting the test pass for the easier reason is not.
+            ledger_rows=1,
         )
         (run_dir / "metadata.json").write_text(json.dumps(metadata))
         main(["receipt", str(run_dir), "--write"])
@@ -306,6 +313,9 @@ class TestEndToEnd:
 
         # The forgery is internally consistent: the receipt now claims success.
         assert json.loads((run_dir / "receipt.json").read_text())["run"]["status"] == "DONE"
+        # And it survives every check that does NOT require an outside digest.
+        assert main(["verify", str(run_dir)]) == 0
+        capsys.readouterr()
         # But the digest the reader kept does not match.
         assert main(["verify", str(run_dir), "--expect-head", true_head]) != 0
         assert "NOT VERIFIED" in capsys.readouterr().out
@@ -651,3 +661,106 @@ def test_a_ledger_mixing_declared_and_undeclared_rows_counts_as_changed():
         "one segment's declaration was presented as the whole run's"
     )
     assert "limits changed while this run was in progress" in receipt_markdown(document)
+
+
+class TestResumedRunSpend:
+    """`--resume` builds a FRESH BudgetMeter and restarts the lap counter while the ledger stays
+    append-only, so the last row's spend describes only the final segment. Reading it as the run's
+    total under-reported every earlier segment — while attempts were already counted across the whole
+    ledger, so one table held two different intervals. Both auditors called this a blocker: a cost
+    figure that SHRINKS when a run is resumed is worse than no cost figure.
+    """
+
+    _MD = {"run_id": "x", "status": "DONE", "ledger_head": "h",
+           "ledger_path": "/tmp/x/ledger.jsonl"}
+
+    def _segment(self, laps: int, tokens_each: int) -> list:
+        return [
+            {
+                "lap": lap, "verdict": {"passed": False, "detail": "x"}, "decision": "continue",
+                "attempted": True,
+                # cumulative WITHIN a segment, which is what the meter reports
+                "budget_spent": {"laps": lap, "tokens": tokens_each * lap,
+                                 "wallclock_s": round(0.1 * lap, 2)},
+                "budget_declared": {"attempts": 4, "tokens": None, "wallclock_s": 990,
+                                    "wallclock_work_s": 900.0},
+            }
+            for lap in range(1, laps + 1)
+        ]
+
+    def test_spend_is_the_sum_of_the_segments_not_the_last_one(self):
+        entries = self._segment(2, 100) + self._segment(2, 100)   # 200 + 200
+        document = receipt_document(self._MD, entries)
+        assert document["segments"] == 2
+        assert document["bounds"]["tokens"]["consumed"] == 400, (
+            "the receipt reported one segment's spend as the whole run's"
+        )
+        assert document["bounds"]["attempts"]["consumed"] == 4, "attempts must cover the same span"
+
+    def test_an_unresumed_run_is_unchanged(self):
+        """Calibration: the sum must equal the last row when there is only one segment."""
+        document = receipt_document(self._MD, self._segment(3, 100))
+        assert document["segments"] == 1
+        assert document["bounds"]["tokens"]["consumed"] == 300
+
+    def test_a_real_resumed_run_reports_the_total(self, tmp_path, capsys, monkeypatch):
+        """End to end, because the segment seam is a property of what the ENGINE writes: only a real
+        resume restarts the lap counter and the meter."""
+        import shutil
+
+        monkeypatch.setenv("BOUNDED_LOOPS_TRUST_STORE", str(tmp_path / "trust"))
+        loop_dir = tmp_path / "loop"
+        shutil.copytree(Path("loops/assertion-density"), loop_dir)
+        args = ["--yes", "--max-iterations", "1", "--gate-override", "false"]
+        main(["run", str(loop_dir), "--run-id", "r", *args])
+        main(["run", str(loop_dir), "--run-id", "r", "--resume", *args])
+        capsys.readouterr()
+
+        document = json.loads(
+            (loop_dir / ".bounded-loops/runs/r/receipt.json").read_text()
+        )
+        assert document["segments"] == 2
+        rows = [
+            json.loads(line) for line in
+            (loop_dir / ".bounded-loops/runs/r/ledger.jsonl").read_text().splitlines() if line.strip()
+        ]
+        last_only = rows[-1]["budget_spent"]["tokens"]
+        assert document["bounds"]["tokens"]["consumed"] > last_only, (
+            f"a resumed run still reports one segment's spend ({last_only})"
+        )
+
+
+def test_every_persist_path_writes_the_receipt_because_they_share_one(tmp_path):
+    """Three code paths persist a run — the CLI, the MCP server and the graph loop bridge — and only
+    the CLI wrote a receipt, so the others left a STALE one beside a newer ledger while `bl verify`
+    reported the run intact. The write now lives where the metadata write already lives, so a future
+    fourth path cannot forget it. This test calls `write_run_metadata` DIRECTLY, i.e. as those other
+    paths do, without going near the CLI.
+    """
+    import shutil
+
+    from bounded_loops.application.run_store import run_dir, write_run_metadata
+    from bounded_loops.domain.models import Outcome, Status
+
+    loop_dir = tmp_path / "loop"
+    shutil.copytree(Path("loops/assertion-density"), loop_dir)
+    directory = run_dir(loop_dir, "viamcp")
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "ledger.jsonl").write_text(json.dumps({
+        "prev": "0" * 64, "lap": 1, "ts": "t",
+        "verdict": {"passed": True, "detail": "ok", "evidence": {}}, "decision": "done",
+        "budget_spent": {"laps": 1, "tokens": 7}, "attempted": True, "handoff": "",
+        "gate": {"kind": "command", "source": "shipped"},
+        "budget_declared": {"attempts": 3, "tokens": None, "wallclock_s": 990,
+                            "wallclock_work_s": 900.0},
+    }) + "\n")
+
+    write_run_metadata(
+        loop_dir=loop_dir, run_id="viamcp",
+        outcome=Outcome(Status.DONE, "gate-passed", 1, directory / "ledger.jsonl", "abc"),
+        workspace=directory / "workspace",
+    )
+
+    for name in RECEIPT_FILES:
+        assert (directory / name).is_file(), f"{name} not written by a non-CLI persist path"
+    assert json.loads((directory / "receipt.json").read_text())["run"]["status"] == "DONE"

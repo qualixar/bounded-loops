@@ -114,19 +114,28 @@ def _cmd_verify(args: argparse.Namespace) -> int:
             ),
         })
 
-    claimed = (metadata or {}).get("laps")
+    # `ledger_rows` in preference to `laps`. `--resume` restarts the in-process lap counter while the
+    # ledger stays append-only, so `laps` undercounts a resumed run by every earlier segment: four
+    # hashed rows beside `laps: 2` passed as COMPLETE, and the slack is exactly where a removed tail
+    # would hide. `laps` remains the fallback so run directories written before `ledger_rows` existed
+    # still get the check they always had — a weakened witness beats none.
+    recorded_rows = (metadata or {}).get("ledger_rows")
+    claimed = recorded_rows if isinstance(recorded_rows, int) else (metadata or {}).get("laps")
+    exact = isinstance(recorded_rows, int)
     if isinstance(claimed, int):
-        # A run records one ledger row per lap. Fewer rows than laps is a removed
-        # tail, which is exactly the case a hash chain cannot see on its own.
+        # A run records one ledger row per lap within a segment. Fewer rows than recorded is a
+        # removed tail, which is exactly the case a hash chain cannot see on its own.
         passed = report.lines >= claimed
+        unit = "recorded rows" if exact else "claimed laps (no row count recorded)"
         checks.append({
             "check": "completeness",
             "passed": passed,
             "status": "COMPLETE" if passed else "TRUNCATED",
+            "witness": "row-count" if exact else "lap-count",
             "detail": (
-                f"{report.lines} ledger rows for {claimed} claimed laps"
+                f"{report.lines} ledger rows for {claimed} {unit}"
                 if passed
-                else f"receipt claims {claimed} laps but the ledger holds {report.lines} rows"
+                else f"the run recorded {claimed} rows but the ledger holds {report.lines}"
             ),
         })
     else:
