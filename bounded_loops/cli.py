@@ -775,12 +775,6 @@ def _err(msg: str) -> None:
     print(f"error: {msg}", file=sys.stderr)
 
 
-# hardening: a PATH-independent invocation. `bl` may not be on
-# PATH after `pip install -e .` in every shell, but `python -m bounded_loops.cli`
-# always works — the tests use exactly this hermetic form.
-if __name__ == "__main__":
-    sys.exit(main())
-
 
 def _write_receipt_for(loop_dir: Path, run_id: str) -> None:
     """Write the portable receipt for a just-finished persisted run.
@@ -794,3 +788,9 @@ def _write_receipt_for(loop_dir: Path, run_id: str) -> None:
         return run_dir(loop_dir, run_id), receipt["metadata"], receipt["entries"]
 
     write_receipt_artifacts_or_warn(build)
+
+# hardening: a PATH-independent invocation. `bl` may not be on
+# PATH after `pip install -e .` in every shell, but `python -m bounded_loops.cli`
+# always works — the tests use exactly this hermetic form.
+if __name__ == "__main__":
+    sys.exit(main())

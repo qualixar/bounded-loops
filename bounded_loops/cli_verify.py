@@ -89,8 +89,10 @@ def _cmd_verify(args: argparse.Namespace) -> int:
             "witness": "external" if external else "co-located",
             "detail": (
                 (
-                    "head matches the digest you supplied, which the run directory does "
-                    "not contain: this is the strong check"
+                    "head matches the digest you supplied. This is the strong check ONLY IF you "
+                    "kept that digest outside this directory: verify cannot see where you got it, "
+                    "and a digest copied out of the run directory proves nothing about an editor "
+                    "of that directory"
                     if external else
                     f"head matches the digest in {source} — but that file sits beside the "
                     f"ledger, so an editor of both satisfies this. Re-run with "
@@ -167,10 +169,18 @@ def _print_human(ledger_path: Path, report, checks: list[dict], *, ok: bool) -> 
     if ok:
         anchor = next((c for c in checks if c["check"] == "anchor"), {})
         if anchor.get("witness") == "external":
-            print("Verified: this receipt is intact, accounts for every lap it claims, and "
-                  "matches a digest from outside the run directory.")
+            # States the CONDITION rather than asserting it. The previous wording claimed the
+            # digest came "from outside the run directory", which verify cannot know — it sees a
+            # command-line argument, not where the caller found it. A receipt that published a
+            # pasteable head from inside the directory turned that assertion into a false green.
+            print("Verified: this run's LEDGER is intact and accounts for every lap it claims, and "
+                  "its head matches the digest you supplied.")
+            print("  Not checked: receipt.md / receipt.json, which are renderings of the ledger "
+                  "and are not covered by its hash chain.")
+            print("  Established only if that digest was kept outside this run directory. "
+                  "A digest read out of the directory cannot show it was not rewritten wholesale.")
         else:
-            print("Verified: this receipt is internally consistent and accounts for every lap "
+            print("Verified: this run's LEDGER is internally consistent and accounts for every lap "
                   "it claims.")
             print("  Not established: that the run directory was not rewritten wholesale. "
                   "Only --expect-head with a digest kept elsewhere can show that.")

@@ -19,6 +19,13 @@ from pathlib import Path
 from typing import Callable
 
 
+def _mapping(value: object) -> dict:
+    """A dict, or an empty one. `value or {}` is NOT this: a non-empty string is truthy and then
+    `.get` raises. A receipt that crashes on a malformed ledger is a tool that fails at the exact
+    moment its subject is suspect."""
+    return value if isinstance(value, dict) else {}
+
+
 def _attempts_consumed(entries: list) -> int:
     """Rows on which the worker was actually invoked.
 
@@ -27,22 +34,43 @@ def _attempts_consumed(entries: list) -> int:
     declared 10 — a bound that held EXACTLY, reported as 1.1x over. `attempted` exists to make this
     computable; the receipt is the place that has to actually do it.
     """
-    return sum(1 for entry in entries if entry.get("attempted", True))
+    # Counts unless the flag is EXACTLY False. A missing, null or malformed value counts as an
+    # attempt, deliberately: an unreadable flag that reduced reported consumption would make a
+    # damaged or doctored ledger read as a cheaper run than it was. When the receipt cannot tell,
+    # it must not flatter the run.
+    return sum(1 for entry in entries if entry.get("attempted", True) is not False)
+
+
+def _distinct_declarations(entries: list) -> list[dict]:
+    """Every DISTINCT set of ceilings appearing in the ledger, in first-seen order.
+
+    Usually one. `--resume` can produce more than one: a run halted at `--max-iterations 1` and
+    resumed at `--max-iterations 5` leaves rows declaring both, and the two segments genuinely ran
+    under different limits.
+    """
+    seen: list[dict] = []
+    for entry in entries:
+        declared = entry.get("budget_declared")
+        if isinstance(declared, dict) and declared and declared not in seen:
+            seen.append(declared)
+    return seen
 
 
 def _declared(entries: list) -> dict:
-    """The ceilings this run ran under, taken from the ledger rows themselves.
+    """The ceilings this run ran under — ONLY if every row agrees. Otherwise empty.
 
-    Every row carries them and they are identical, so the last row is as good as the first. Read
-    from the LEDGER rather than metadata.json deliberately: `bl verify` hashes the ledger and does
-    not hash metadata, so a ceiling quoted from metadata could have been edited upward after the
-    run and the receipt would still verify clean.
+    Refuses to pick. This function took the LAST row's declaration until an audit showed what that
+    reports: a run halted at a declared ceiling of 1 attempt and then resumed at 5 produced
+    "attempts 5/5", i.e. a run that blew a declared bound of 1 and went on to spend 5 attempts,
+    rendered as a bound that held exactly. The earlier, tighter declaration was silently discarded —
+    the one number an auditor asking "did this stay inside its budget?" most needs.
+
+    Read from the LEDGER rather than metadata.json deliberately: `bl verify` hashes the ledger and
+    does not hash metadata, so a ceiling quoted from metadata could be edited upward after the run
+    and the receipt would still verify clean.
     """
-    for entry in reversed(entries):
-        declared = entry.get("budget_declared")
-        if isinstance(declared, dict) and declared:
-            return declared
-    return {}
+    declarations = _distinct_declarations(entries)
+    return declarations[0] if len(declarations) == 1 else {}
 
 
 def _against(consumed: object, ceiling: object, unit: str = "") -> str:
@@ -61,7 +89,7 @@ def _print_bounds_line(entries: list) -> None:
     declared = _declared(entries)
     if not declared or not entries:
         return   # a run recorded before this field existed prints exactly as it did before
-    spent = entries[-1].get("budget_spent") or {}
+    spent = _mapping(entries[-1].get("budget_spent"))
     print(
         "bounds: "
         f"attempts {_against(_attempts_consumed(entries), declared.get('attempts'))}   "
@@ -82,10 +110,10 @@ def _print_run_receipt(receipt: dict) -> None:
     _print_bounds_line(receipt["entries"])
     print()
     for entry in receipt["entries"]:
-        verdict = entry.get("verdict", {})
+        verdict = _mapping(entry.get("verdict"))
         passed = verdict.get("passed") is True
         state = "PASS" if passed else "FAIL"
-        budget = entry.get("budget_spent", {})
+        budget = _mapping(entry.get("budget_spent"))
         print(
             f"Lap {entry.get('lap', '?')}: {state}  "
             f"decision={entry.get('decision', '?')}  "
@@ -121,6 +149,24 @@ def _print_run_receipt(receipt: dict) -> None:
 # a reader who does not trust the file has a way to find out rather than a reassurance.
 
 
+#: A terminal ledger decision maps 1:1 onto the run's outcome. `continue` is not terminal — a
+#: ledger whose last row says `continue` records a run that never finished, which is a fact about
+#: the record and must be reported as one rather than smoothed into a status.
+_DECISION_STATUS = {
+    "done": "DONE", "halt": "HALT", "pause": "PAUSE", "killed": "KILLED", "error": "ERROR",
+}
+
+
+def _status_from_ledger(entries: list) -> str:
+    """The run's outcome, derived from the hash-chained ledger rather than from metadata.json."""
+    if not entries:
+        return "NO LEDGER ROWS"
+    decision = _mapping(entries[-1] if isinstance(entries[-1], dict) else {}).get("decision")
+    if decision == "continue":
+        return "INCOMPLETE"
+    return _DECISION_STATUS.get(decision if isinstance(decision, str) else "", "UNKNOWN")
+
+
 def receipt_document(metadata: dict, entries: list) -> dict:
     """The receipt as data. The single source both written artifacts render from.
 
@@ -129,7 +175,9 @@ def receipt_document(metadata: dict, entries: list) -> dict:
     reporting it.
     """
     declared = _declared(entries)
-    spent = (entries[-1].get("budget_spent") or {}) if entries else {}
+    declarations = _distinct_declarations(entries)
+    gates = _distinct_gates(entries)
+    spent = _mapping(entries[-1].get("budget_spent")) if entries else {}
     head = metadata.get("ledger_head") or ""
     # The run directory, taken from metadata's own ledger path rather than by touching the
     # filesystem, so this function stays pure. A literal "<run-dir>" placeholder produced a
@@ -139,11 +187,29 @@ def receipt_document(metadata: dict, entries: list) -> dict:
     return {
         "run": {
             "id": metadata.get("run_id", ""),
-            "status": metadata.get("status", "UNKNOWN"),
+            # From the LEDGER's terminal decision, which is inside the hash chain — not from
+            # metadata.json, which `bl verify` reads and does NOT hash. Taking the headline from
+            # metadata meant editing that one unhashed file flipped the receipt from HALT to DONE
+            # while verification stayed green: the single most load-bearing word in the document
+            # rested on the one file nothing protects.
+            "status": _status_from_ledger(entries),
+            "status_in_metadata": metadata.get("status", ""),
+            "status_disagrees_with_metadata": (
+                _status_from_ledger(entries) != (metadata.get("status") or "")
+                and bool(metadata.get("status"))
+            ),
             "reason": metadata.get("reason", ""),
             "laps": len(entries),
         },
         # Declared beside consumed, per dimension, so neither can be read without the other.
+        # `changed_during_run` exists because refusing to pick a declaration must not read as
+        # "no limits were declared". An absent number and a number that changed halfway are
+        # different facts, and only one of them is a reason to distrust the summary.
+        "bounds_recorded": bool(declarations),
+        "bounds_changed_during_run": len(declarations) > 1,
+        "declarations": declarations if len(declarations) > 1 else [],
+        "gate_changed_during_run": len(gates) > 1,
+        "gates": gates if len(gates) > 1 else [],
         "bounds": {
             "attempts": {
                 "declared": declared.get("attempts"),
@@ -158,45 +224,78 @@ def receipt_document(metadata: dict, entries: list) -> dict:
         "laps": [
             {
                 "lap": entry.get("lap"),
-                "passed": (entry.get("verdict") or {}).get("passed") is True,
+                "passed": _mapping(entry.get("verdict")).get("passed") is True,
                 "decision": entry.get("decision"),
                 "attempted": bool(entry.get("attempted", True)),
-                "detail": (entry.get("verdict") or {}).get("detail", ""),
+                "detail": _mapping(entry.get("verdict")).get("detail", ""),
             }
             for entry in entries
         ],
         "integrity": {
             "authoritative_record": "ledger.jsonl",
-            "ledger_head": head,
+            # Named for WHERE IT CAME FROM. The first version called this `ledger_head` and pasted
+            # it straight into the verify command, which manufactured a false green: a complete
+            # forgery of the run directory (ledger + metadata + this file) then passed
+            # `bl verify --expect-head <that value>` and printed a success line claiming the digest
+            # came from outside the directory. `bl verify --help` says supplying the head is "the
+            # only check an adversary with write access to the whole run directory cannot satisfy" —
+            # publishing the head INSIDE that directory hands the adversary exactly that check.
+            # Reversing an earlier judgement here: a runnable command that proves nothing is worse
+            # than a placeholder, because it converts a reader's diligence into false assurance.
+            "ledger_head_in_this_directory": head,
             "verify_command": (
-                f"bl verify {run_directory} --expect-head {head}" if head else ""
+                f"bl verify {run_directory} --expect-head <the-digest-printed-when-the-run-ended>"
+                if head else ""
             ),
             "note": (
-                "This file is derived from ledger.jsonl and is NOT itself tamper-evident: it is "
-                "written after the hash chain is closed and nothing hashes it. The ledger's chain "
-                "is the record that cannot be edited without detection. Verify with the command "
-                "above, supplying the head you recorded when the run ended."
+                "This file is derived from ledger.jsonl and is NOT itself tamper-evident: it "
+                "is written after the hash chain is closed and nothing hashes it. Neither is the "
+                "digest recorded above — it sits in this directory, so anyone who could edit the "
+                "ledger could edit it too. Supply the digest printed when the run ENDED, from your "
+                "terminal, your CI log, or wherever you kept it. Without a digest held outside "
+                "this directory, verification shows only that the file was not carelessly edited."
             ),
         },
     }
 
 
-def _gate_of(entries: list) -> dict:
-    """The gate that decided the run, from the rows themselves."""
-    for entry in reversed(entries):
+def _distinct_gates(entries: list) -> list[dict]:
+    """Every DISTINCT gate appearing in the ledger, in first-seen order."""
+    seen: list[dict] = []
+    for entry in entries:
         gate = entry.get("gate")
-        if isinstance(gate, dict) and gate.get("kind"):
-            return gate
-    return {}
+        if isinstance(gate, dict) and gate.get("kind") and gate not in seen:
+            seen.append(gate)
+    return seen
 
 
-def _cell(pair: dict, unit: str = "") -> tuple[str, str]:
+def _gate_of(entries: list) -> dict:
+    """The gate that decided the run — ONLY if one gate decided all of it. Otherwise empty.
+
+    Same defect as `_declared`, same fix: a resumed run can change gate (`--gate-override` on the
+    resume), and naming the last one attributes the whole run to a gate that decided only part of
+    it. Naming no gate is worse reading and better evidence.
+    """
+    gates = _distinct_gates(entries)
+    return gates[0] if len(gates) == 1 else {}
+
+
+def _cell(pair: dict, unit: str = "", *, recorded: bool = True) -> tuple[str, str]:
+    """One allowed/used pair.
+
+    `recorded=False` renders "not recorded", which is NOT the same claim as "no ceiling". A ledger
+    written before declared bounds existed carries no declaration; rendering that as "no ceiling"
+    asserts the run was unbounded, which the data does not say and which is very likely false — the
+    loop had a bounds.yaml, it simply was not written into the row. An absent record and a declared
+    absence are different facts and the receipt must not merge them.
+    """
     declared = pair.get("declared")
     consumed = pair.get("consumed")
-    return (
-        "no ceiling" if declared is None else f"{declared}{unit}",
-        "?" if consumed is None else f"{consumed}{unit}",
-    )
+    if not recorded:
+        allowed = "not recorded"
+    else:
+        allowed = "no ceiling" if declared is None else f"{declared}{unit}"
+    return (allowed, "?" if consumed is None else f"{consumed}{unit}")
 
 
 def receipt_markdown(document: dict) -> str:
@@ -212,6 +311,16 @@ def receipt_markdown(document: dict) -> str:
         "",
         f"**{run['status']}** — {run['reason']}" if run["reason"] else f"**{run['status']}**",
         "",
+        *(
+            [
+                "> **This run's own record disagrees with the summary filed beside it.** The status "
+                f"above comes from the ledger (`{run['status']}`); `metadata.json` says "
+                f"`{run['status_in_metadata']}`. The ledger is the hash-chained record; that file "
+                "is not covered by it. Treat this run as suspect.",
+                "",
+            ]
+            if run.get("status_disagrees_with_metadata") else []
+        ),
         "## What this run was allowed, and what it used",
         "",
         "| | allowed | used |",
@@ -220,8 +329,28 @@ def receipt_markdown(document: dict) -> str:
     for label, key, unit in (
         ("attempts", "attempts", ""), ("tokens", "tokens", ""), ("wall clock", "wallclock_s", "s"),
     ):
-        allowed, used = _cell(bounds[key], unit)
+        allowed, used = _cell(bounds[key], unit, recorded=document.get("bounds_recorded", True))
+        if document.get("bounds_changed_during_run"):
+            allowed = "**changed**"
         lines.append(f"| {label} | {allowed} | {used} |")
+
+    if document.get("bounds_changed_during_run"):
+        lines += [
+            "",
+            "> **The limits changed while this run was in progress**, so there is no single set to "
+            "read the spend against. This happens when a run is resumed with different limits. "
+            "The totals above are for the whole ledger; the segments ran under:",
+            "",
+        ]
+        for index, declaration in enumerate(document.get("declarations") or [], start=1):
+            def _shown(value: object, unit: str = "") -> str:
+                return "no ceiling" if value is None else f"{value}{unit}"
+
+            lines.append(
+                f"> {index}. attempts {_shown(declaration.get('attempts'))}, "
+                f"tokens {_shown(declaration.get('tokens'))}, "
+                f"wall clock {_shown(declaration.get('wallclock_s'), 's')}"
+            )
 
     lines += ["", "## What decided it", ""]
     if gate.get("kind"):
@@ -234,12 +363,19 @@ def receipt_markdown(document: dict) -> str:
             + (f", from `{distribution}`" if distribution else "")
             + (f", implemented by `{gate['implementation']}`" if gate.get("implementation") else "")
         )
+    elif document.get("gate_changed_during_run"):
+        # Naming one of them would attribute the whole run to a gate that decided part of it.
+        named = ", ".join(f"`{gate.get('kind')}`" for gate in document.get("gates") or [])
+        lines.append(
+            f"**More than one gate decided this run** — {named}. No single gate can be credited "
+            "with the outcome; read the lap table."
+        )
     else:
         # Absent rather than invented. A run recorded before provenance existed cannot be given a
         # gate name after the fact without the receipt asserting something nobody checked.
         lines.append("Not recorded — this run predates gate provenance in the ledger.")
 
-    lines += ["", "## Laps", "", "| lap | gate | decision | attempted | detail |", "|---|---|---|---|---|"]
+    lines += ["", "## Laps", "", "| lap | verdict | decision | attempted | detail |", "|---|---|---|---|---|"]
     for lap in document["laps"]:
         detail = str(lap.get("detail") or "").replace("|", "\\|").replace("\n", " ")
         lines.append(

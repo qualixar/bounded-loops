@@ -271,8 +271,17 @@ def test_the_human_summary_distinguishes_the_two_witnesses(
 
     assert main(["verify", str(directory), "--expect-head", head]) == 0
     strong = capsys.readouterr().out
-    assert "outside the run directory" in strong
-    assert "Not established" not in strong
+    # STATES the condition, does not assert it. This test used to require the output to claim the
+    # digest came "from outside the run directory" — while itself reading `head` out of
+    # metadata.json INSIDE that directory, which is exactly the case the claim is false for. verify
+    # sees a command-line argument, not where the caller found it. The wording became conditional
+    # when a receipt started publishing a pasteable head from inside the run directory and turned
+    # that assertion into a green tick on a forged run.
+    assert "matches the digest you supplied" in strong
+    assert "Established only if that digest was kept outside this run directory" in strong
+    assert "Not established" not in strong, (
+        "the strong path must not read as the weak one; it reports a condition, not a failure"
+    )
 
 
 def test_a_mistyped_path_is_not_accused_of_tampering(
