@@ -29,6 +29,14 @@ One fix. `npx bounded-loops` could not install the engine on a managed Python.
   Verified on Debian bookworm with `EXTERNALLY-MANAGED` present: the 0.6.9 launcher fails, this one
   installs and runs, a second run reuses the environment, and exit codes propagate.
 
+  **Why a test suite did not catch it.** The launcher had a test, and it was green. It asserted one
+  thing — that the install pinned the npm package's version — against a fake `python3` that returned
+  success for `pip install`. A real managed interpreter refuses that command, so the stand-in
+  accepted what production rejects, and the assertion could never fail for the reason that mattered.
+  The tests now assert the resolution ORDER: an already-matching interpreter, then a matching `bl` on
+  PATH, then a private environment, and never an install into the interpreter that was found. Five of
+  the seven fail against the 0.6.9 launcher.
+
 ## [0.6.9] — 2026-08-20
 
 **Not additive.** Three surfaces change what they say. A gate that cannot run now ends the run as
