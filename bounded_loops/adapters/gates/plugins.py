@@ -39,11 +39,20 @@ requires disjoint write authority. A package that provides the worker AND the th
 the worker is precisely the configuration the soundness argument excludes, and an author cannot be
 relied on to notice. See ``same_distribution_refusal``.
 
-**5. Every verdict is checked, whoever produced it.** ``composition._instantiate_gate`` wraps EVERY
-gate in ``GuardedGate`` — shipped and third-party alike — so a raise becomes FAIL, a non-boolean pass
-is not a pass, and a passing verdict with no detail is refused. This is the invariant that survives
-an in-process adversary, because it inspects the VERDICT and never asks who produced it: a hijacked
-``CommandGate`` returning ``passed="yes"`` is refused by the same code that refuses a third party's.
+**5. Every verdict is checked, whoever produced it, and the checked value is the one that ships.**
+``composition._instantiate_gate`` wraps EVERY gate in ``GuardedGate`` — shipped and third-party alike
+— so a raise becomes FAIL, a non-boolean pass is not a pass, and a passing verdict with no detail is
+refused. This is the invariant that survives an in-process adversary, because it inspects the VERDICT
+and never asks who produced it: a hijacked ``CommandGate`` returning ``passed="yes"`` is refused by
+the same code that refuses a third party's.
+
+Two halves, and the second was missing for a whole audit round. Wrapping alone was not enough twice
+over: the wrapper's own ``isinstance`` type test let a gate SKIP validation by claiming to be the
+wrapper, and ``_validate`` then checked the gate's Verdict and RETURNED THAT SAME OBJECT, so a
+property could answer ``False`` for every validation read and ``True`` for the rules layer. Both are
+closed by not trusting anything the plugin controls: the call sites test the exact type, and
+``_validate`` reads each field once and returns a Verdict the harness built. **Never return the
+gate's own verdict object.**
 
 It also hardens our own catalogue, which is the larger prize. A shipped gate with a bug that returns
 a non-bool, or that raises, previously reached the rules layer unchecked.
@@ -61,10 +70,18 @@ monkey-patch the engine, rebind module attributes, or replace a shipped gate cla
 here stops that and nothing here claims to — the first version of this docstring implied otherwise
 and the audits were right to call it.
 
-What IS guaranteed, exactly: the checks in this module read a snapshot taken BEFORE any plugin code
-runs, so they cannot be defeated by mutating what they read; and every verdict reaching the rules
-layer has been through ``GuardedGate`` regardless of which class produced it. The worst a hostile
-plugin achieves is a refusal or a wrapped gate — not an unchecked pass.
+What IS guaranteed, exactly: the load-time checks read a snapshot taken BEFORE any plugin code runs,
+so they cannot be defeated by mutating what they read; every verdict reaching the rules layer has
+been through ``GuardedGate`` regardless of which class produced it; and that verdict is a record the
+HARNESS constructed from fields it read once, not an object the plugin still holds a reference to.
+The worst a hostile plugin achieves is a refusal, or an honest failing verdict, or a pass it could
+have declared honestly anyway — not an unchecked pass, and not a verdict that changes after it was
+checked.
+
+What is NOT guaranteed, stated plainly because two audit rounds were spent rediscovering it:
+a plugin sharing this interpreter can rebind names, monkey-patch classes, and reach objects through
+``gc``. Nothing here contains it. Every property above is enforced by inspecting the VERDICT, which
+is why none of them depend on containment holding.
 """
 
 from __future__ import annotations
