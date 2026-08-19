@@ -15,6 +15,7 @@ from bounded_loops.application.receipt import (
     _attempts_consumed,
     _declared,
     _mapping,
+    _status_from_ledger,
     _against,
     _spend_across_segments,
     receipt_document,
@@ -45,7 +46,10 @@ def _print_bounds_line(entries: list) -> None:
 def _print_run_receipt(receipt: dict) -> None:
     metadata = receipt["metadata"]
     run_id = metadata.get("run_id", "?")
-    status = metadata.get("status", "UNKNOWN")
+    # From the ledger, like the reason below and like the portable receipt. This surface still
+    # headlined the unprotected summary file after the portable artifact stopped doing so — the
+    # sibling of a fix already made, missed once again.
+    status = _status_from_ledger(receipt["entries"]) or metadata.get("status", "UNKNOWN")
     # From the ledger, like the portable receipt. An audit noted this surface still printed
     # metadata.json's copy, which `bl verify` reads and does NOT hash — so the one reader who runs
     # `bl runs --show` instead of opening receipt.md saw the unprotected string. Two surfaces

@@ -826,7 +826,17 @@ class TestHonestRunsAreNotAccused:
             {**self._MD_PATH, "status": "PAUSE", "reason": "awaiting-approval"}, rows,
         )
         assert document["run"]["status_disagrees_with_metadata"] is False
-        assert "Treat this run as suspect" not in receipt_markdown(document)
+        text = receipt_markdown(document)
+        assert "Treat this run as suspect" not in text
+        # The ninth vacuous test, caught by audit: this asserted ONLY the absence of the banner and
+        # never what the receipt actually SAID. A live PAUSE receipt read `**PAUSE** — gate passed
+        # (exit 0)`: true, and positioned exactly where a reader reads "why", with the real why
+        # absent. A paused run's reason is structural, not the gate's sentence.
+        assert document["run"]["reason"] == "awaiting-approval"
+        assert "**PAUSE** — awaiting-approval" in text
+        assert "gate passed (exit 0)" not in text.split("## What this run")[0], (
+            "the gate's pass sentence is standing in for the reason the run paused"
+        )
 
     def test_a_rewritten_status_is_still_caught(self):
         """Calibration: dropping the reason comparison must not disarm the flag. Nothing is lost —
@@ -1019,3 +1029,63 @@ def test_spend_is_searched_per_dimension_not_per_row():
     )["bounds"]
     assert bounds["tokens"]["consumed"] == 205, "a partial later row hid the real token spend"
     assert bounds["wallclock_s"]["consumed"] == 1.5
+
+
+def test_the_lap_table_and_the_summary_agree_about_what_was_attempted():
+    """One field, one rule. The summary counted a malformed `attempted` as an attempt (`is not
+    False`) while the lap table printed "no" for it (`bool(...)`), so a single document rendered the
+    same field two ways. A receipt that contradicts itself is not evidence, whichever half is right.
+    """
+    for value in (None, "no", 0, [], {}):
+        document = receipt_document(
+            {"run_id": "x", "status": "DONE", "ledger_head": "h",
+             "ledger_path": "/tmp/x/ledger.jsonl"},
+            [{
+                "lap": 1, "verdict": {"passed": True, "detail": "ok"}, "decision": "done",
+                "attempted": value,
+                "budget_spent": {"laps": 1, "tokens": 5, "wallclock_s": 0.1},
+                "budget_declared": {"attempts": 9, "tokens": None, "wallclock_s": 990},
+            }],
+        )
+        counted = document["bounds"]["attempts"]["consumed"]
+        shown = document["laps"][0]["attempted"]
+        assert counted == 1 and shown is True, (
+            f"attempted={value!r}: summary counted {counted}, table showed {shown}"
+        )
+
+
+def test_the_integrity_note_does_not_claim_verification_reads_this_file():
+    """`bl verify` never opens receipt.md or receipt.json. The note said verification showed "the
+    file" was not carelessly edited — which is false, and false in the direction of reassurance."""
+    integrity = receipt_document(_metadata(Path("/tmp/x")), _entries())["integrity"]
+    assert "does not read this file" in integrity["note"]
+    assert "that the file was not carelessly edited" not in integrity["note"]
+
+
+def test_a_cleanup_that_could_not_delete_says_so_instead_of_claiming_success(tmp_path, capsys):
+    """The cleanup was best-effort and then printed "removed rather than left stale" regardless — an
+    audit called that lying about success. If a stale receipt survives, the reader must be told, in
+    the one case where the surviving file is a confident document about a run that has moved on.
+    """
+    import bounded_loops.application.receipt as receipt_module
+
+    (tmp_path / "receipt.md").write_text("# OLD MARKDOWN\n")
+    (tmp_path / "receipt.json").write_text("{}")
+
+    def _refuse(self: Path, *args: object, **kwargs: object) -> None:
+        raise OSError("operation not permitted")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(Path, "unlink", _refuse)
+    try:
+        receipt_module.write_receipt_artifacts_or_warn(
+            tmp_path, lambda: (_ for _ in ()).throw(RuntimeError("ledger unreadable")),
+        )
+    finally:
+        monkeypatch.undo()
+
+    err = capsys.readouterr().err
+    assert "could not remove" in err, f"the cleanup claimed a success it did not achieve: {err}"
+    assert "receipt.md" in err and "must not be trusted" in err
+    assert "removed rather than left stale" not in err
+    assert (tmp_path / "receipt.md").exists(), "fixture invalid: the file should have survived"

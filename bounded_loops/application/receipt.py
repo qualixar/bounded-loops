@@ -193,7 +193,15 @@ def _reason_from_ledger(entries: list) -> str:
     """
     if not entries:
         return ""
-    detail = _mapping(_mapping(entries[-1] if isinstance(entries[-1], dict) else {}).get("verdict")).get("detail")
+    last = _mapping(entries[-1] if isinstance(entries[-1], dict) else {})
+    decision = last.get("decision")
+    # A paused run's reason is STRUCTURAL, not the gate's sentence. The gate genuinely passed and the
+    # run then stopped for approval, so `**PAUSE** — gate passed (exit 0)` put a true clause where a
+    # reader reads "why", and the actual why — awaiting approval — appeared nowhere. The label comes
+    # from the hashed `decision`, so this adds no dependency on the unprotected summary file.
+    if decision == "pause":
+        return "awaiting-approval"
+    detail = _mapping(last.get("verdict")).get("detail")
     return detail if isinstance(detail, str) else ""
 
 
@@ -283,7 +291,11 @@ def receipt_document(metadata: dict, entries: list) -> dict:
                 "lap": entry.get("lap"),
                 "passed": _mapping(entry.get("verdict")).get("passed") is True,
                 "decision": entry.get("decision"),
-                "attempted": bool(entry.get("attempted", True)),
+                # The SAME rule the counter uses (`is not False`). These disagreed: the summary
+                # counted a malformed flag as an attempt while this table printed "no" for it, so one
+                # document rendered one field two ways. A receipt that contradicts itself is not
+                # evidence, whichever half happens to be right.
+                "attempted": entry.get("attempted", True) is not False,
                 "detail": _mapping(entry.get("verdict")).get("detail", ""),
             }
             for entry in entries
@@ -310,7 +322,8 @@ def receipt_document(metadata: dict, entries: list) -> dict:
                 "digest recorded above — it sits in this directory, so anyone who could edit the "
                 "ledger could edit it too. Supply the digest printed when the run ENDED, from your "
                 "terminal, your CI log, or wherever you kept it. Without a digest held outside "
-                "this directory, verification shows only that the file was not carelessly edited."
+                "this directory, verification shows only that the LEDGER was not carelessly "
+                "edited. It does not read this file at all."
             ),
         },
     }
@@ -480,11 +493,21 @@ def _write_atomically(path: Path, text: str) -> None:
             temp_path.unlink()
 
 
-def _remove_quietly(path: Path) -> None:
+def _remove_quietly(path: Path) -> bool:
+    """Delete if present. Returns whether the path is now GONE.
+
+    Returns a bool because the caller reports to a human: swallowing the failure and then printing
+    "removed rather than left stale" made the message a claim the code had not earned — an audit
+    called it best-effort that then lies that it succeeded. A stale receipt surviving a failed unlink
+    is exactly the case the message must not paper over.
+    """
     try:
         path.unlink()
+    except FileNotFoundError:
+        return True
     except (OSError, ValueError):
-        pass
+        return not path.exists()
+    return True
 
 
 def write_receipt_artifacts(run_dir: Path, metadata: dict, entries: list) -> list[Path]:
@@ -553,14 +576,25 @@ def write_receipt_artifacts_or_warn(
         # segment. That is stale by construction, so it goes regardless of how far the write got. The
         # narrower rule in `write_receipt_artifacts` protects explicit regeneration; this one protects
         # a reader from a confident document about a run that has since moved on.
-        for name in RECEIPT_FILES:
-            _remove_quietly(run_dir / name)
-        print(
-            f"[bounded-loops] could not write the receipt artifact ({type(exc).__name__}: {exc}). "
-            "Any earlier receipt here has been removed rather than left stale; run "
-            "`bl receipt <run-dir>` to re-derive it. The ledger is unaffected and remains the "
-            "authoritative record.",
-            file=sys.stderr,
-        )
+        survivors = [name for name in RECEIPT_FILES if not _remove_quietly(run_dir / name)]
+        if survivors:
+            # Louder, because this is the bad case: a document describing an earlier state of this
+            # run is still on disk and `bl verify` will not look at it.
+            print(
+                f"[bounded-loops] could not write the receipt artifact ({type(exc).__name__}: "
+                f"{exc}), AND could not remove {', '.join(survivors)}. Those files describe an "
+                "EARLIER state of this run and must not be trusted or attached to anything. Delete "
+                "them by hand, or run `bl receipt <run-dir>` to regenerate. The ledger is "
+                "unaffected and remains the authoritative record.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"[bounded-loops] could not write the receipt artifact ({type(exc).__name__}: "
+                f"{exc}). Any earlier receipt here has been removed rather than left stale; run "
+                "`bl receipt <run-dir>` to re-derive it. The ledger is unaffected and remains the "
+                "authoritative record.",
+                file=sys.stderr,
+            )
 
 
