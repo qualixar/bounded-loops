@@ -46,7 +46,17 @@ def _print_run_receipt(receipt: dict) -> None:
     metadata = receipt["metadata"]
     run_id = metadata.get("run_id", "?")
     status = metadata.get("status", "UNKNOWN")
-    reason = metadata.get("reason", "unknown")
+    # From the ledger, like the portable receipt. An audit noted this surface still printed
+    # metadata.json's copy, which `bl verify` reads and does NOT hash — so the one reader who runs
+    # `bl runs --show` instead of opening receipt.md saw the unprotected string. Two surfaces
+    # describing the same run must not draw it from different files.
+    entries = receipt["entries"]
+    ledger_reason = ""
+    if entries:
+        last = entries[-1] if isinstance(entries[-1], dict) else {}
+        detail = _mapping(last.get("verdict")).get("detail")
+        ledger_reason = detail if isinstance(detail, str) else ""
+    reason = ledger_reason or metadata.get("reason", "unknown")
     print(f"Run {run_id}: {status} ({reason})")
     print(f"Workspace: {metadata.get('workspace', 'unknown')}")
     print(f"Ledger: {metadata.get('ledger_path', 'unknown')}")

@@ -92,7 +92,11 @@ class TestDocument:
         # and a timestamp would come from `datetime`, so patching `time.time` alone left the two
         # clocks this codebase actually reads wide open.
         monkeypatch.setattr("time.monotonic", _forbidden)
-        monkeypatch.setattr("datetime.datetime", _forbidden)
+        # No `datetime` patch here, deliberately. `datetime.datetime` is an immutable C type, so
+        # `setattr` on it raises TypeError — the attempt to patch it broke this test rather than
+        # strengthening it. The clock property is enforced structurally instead, by
+        # `test_the_receipt_module_imports_no_clock` below: a module that never imports a clock
+        # cannot read one, which is a stronger guarantee than any monkeypatch and cannot go stale.
 
         first = receipt_document(_metadata(tmp_path), _entries())
         second = receipt_document(_metadata(tmp_path), _entries())
@@ -773,13 +777,18 @@ def test_every_persist_path_writes_the_receipt_because_they_share_one(tmp_path):
 
     write_run_metadata(
         loop_dir=loop_dir, run_id="viamcp",
-        outcome=Outcome(Status.DONE, "gate-passed", 1, directory / "ledger.jsonl", "abc"),
+        # HALT in the outcome, `done` in the ledger row above. They deliberately DISAGREE: an audit
+        # noted this test previously used DONE on both sides, so it would still pass if the headline
+        # regressed to reading unhashed metadata. The assertion below now pins the source.
+        outcome=Outcome(Status.HALT, "some-other-reason", 1, directory / "ledger.jsonl", "abc"),
         workspace=directory / "workspace",
     )
 
     for name in RECEIPT_FILES:
         assert (directory / name).is_file(), f"{name} not written by a non-CLI persist path"
-    assert json.loads((directory / "receipt.json").read_text())["run"]["status"] == "DONE"
+    document = json.loads((directory / "receipt.json").read_text())
+    assert document["run"]["status"] == "DONE", "the headline came from metadata, not the ledger"
+    assert document["run"]["status_in_metadata"] == "HALT"
 
 
 class TestHonestRunsAreNotAccused:
@@ -888,7 +897,7 @@ class TestStalenessIsNeverLeftBehind:
             calls["n"] += 1
             if calls["n"] == 2:
                 raise OSError("no space left on device")
-            real(path, text)
+            real(path, text)   # the FIRST write lands, so the pair is now mixed
 
         monkeypatch.setattr(receipt_module, "_write_atomically", _fail_on_second)
         with pytest.raises(OSError):
@@ -919,3 +928,94 @@ class TestStalenessIsNeverLeftBehind:
         write_receipt_artifacts(tmp_path, _metadata(tmp_path), _entries())
         assert "OLD MARKDOWN" not in (tmp_path / "receipt.md").read_text()
         assert json.loads((tmp_path / "receipt.json").read_text())["run"]["status"] == "DONE"
+
+
+def test_the_receipt_module_imports_no_clock_and_no_subprocess():
+    """Purity as a STRUCTURAL property, which is what the monkeypatch version could not deliver.
+
+    An audit noted the `datetime` half of the purity test was ineffective — and it turned out worse
+    than ineffective, since `datetime.datetime` is an immutable C type and patching it raises. A
+    module that never imports a clock cannot read one. This check cannot go stale, needs no fixture,
+    and fails the moment someone adds `import time` to stamp a receipt with a generation timestamp —
+    which would make two runs of the same ledger produce different receipts.
+    """
+    import ast
+
+    source = Path("bounded_loops/application/receipt.py").read_text(encoding="utf-8")
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+
+    forbidden = {"time", "datetime", "random", "subprocess", "socket", "requests", "urllib"}
+    assert not (imported & forbidden), (
+        f"the receipt builder imported {sorted(imported & forbidden)}; a receipt describes a run "
+        "that already finished, so it must not read a clock, a network, or entropy"
+    )
+    # Calibrated: the check must be looking at the real module, not an empty parse.
+    assert "json" in imported and "pathlib" in imported, f"parsed the wrong file? {sorted(imported)}"
+
+
+class TestRegenerationDoesNotDestroyACorrectReceipt:
+    """"Absence is honest" is right for a STALE artifact and wrong for a regeneration that simply
+    could not run. An audit caught the round-3 fix destroying a correct, ledger-accurate pair when
+    `bl receipt --write` failed on its FIRST write — nothing had been overwritten, so there was
+    nothing inconsistent to clean up. Deleting a true document is a defect this code did not have
+    before the fix that introduced it.
+    """
+
+    def _good_pair(self, tmp_path: Path) -> None:
+        write_receipt_artifacts(tmp_path, _metadata(tmp_path), _entries())
+
+    def test_a_failure_on_the_first_write_leaves_the_existing_pair_alone(self, tmp_path, monkeypatch):
+        import bounded_loops.application.receipt as receipt_module
+
+        self._good_pair(tmp_path)
+        before = (tmp_path / "receipt.md").read_text()
+
+        def _fail_immediately(path: Path, text: str) -> None:
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(receipt_module, "_write_atomically", _fail_immediately)
+        with pytest.raises(OSError):
+            write_receipt_artifacts(tmp_path, _metadata(tmp_path), _entries())
+
+        assert (tmp_path / "receipt.md").read_text() == before, (
+            "a correct receipt was destroyed by a regeneration that never wrote anything"
+        )
+        assert (tmp_path / "receipt.json").is_file()
+
+    def test_the_terminal_path_still_clears_a_stale_pair(self, tmp_path, capsys):
+        """The other direction must not regress: on a run's terminal path any receipt present
+        describes an EARLIER state of that same run, so it is stale by construction and goes."""
+        self._good_pair(tmp_path)
+
+        def _explode() -> tuple[dict, list]:
+            raise RuntimeError("ledger unreadable")
+
+        write_receipt_artifacts_or_warn(tmp_path, _explode)
+
+        assert not (tmp_path / "receipt.md").exists()
+        assert not (tmp_path / "receipt.json").exists()
+        assert "removed rather than left stale" in capsys.readouterr().err
+
+
+def test_spend_is_searched_per_dimension_not_per_row():
+    """A later row can carry one figure and not another. Taking the last row that had ANY figures
+    reported tokens as unknown when a `{"laps": 2}` row followed a row recording 205."""
+    rows = [
+        {"lap": 1, "verdict": {"passed": False, "detail": "a"}, "decision": "continue",
+         "attempted": True, "budget_spent": {"laps": 1, "tokens": 205, "wallclock_s": 1.5},
+         "budget_declared": {"attempts": 9, "tokens": None, "wallclock_s": 990}},
+        {"lap": 2, "verdict": {"passed": True, "detail": "b"}, "decision": "done",
+         "attempted": True, "budget_spent": {"laps": 2},
+         "budget_declared": {"attempts": 9, "tokens": None, "wallclock_s": 990}},
+    ]
+    bounds = receipt_document(
+        {"run_id": "x", "status": "DONE", "ledger_head": "h",
+         "ledger_path": "/tmp/x/ledger.jsonl"}, rows,
+    )["bounds"]
+    assert bounds["tokens"]["consumed"] == 205, "a partial later row hid the real token spend"
+    assert bounds["wallclock_s"]["consumed"] == 1.5

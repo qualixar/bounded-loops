@@ -93,6 +93,20 @@ def _segments(entries: list) -> list[list]:
     return segments
 
 
+def _last_value(segment: list, key: str) -> object:
+    """The most recent numeric value for one budget dimension within a segment.
+
+    Searched independently per dimension, because a row can carry one figure and not another. Within
+    a segment `budget_spent` accumulates, so the LAST row that reports this key is the segment total
+    for it.
+    """
+    for row in reversed(segment):
+        value = _mapping(row.get("budget_spent") if isinstance(row, dict) else {}).get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value
+    return None
+
+
 def _spend_across_segments(entries: list) -> dict:
     """Total spend for the RUN, not for its final segment.
 
@@ -109,17 +123,16 @@ def _spend_across_segments(entries: list) -> dict:
     saw_tokens = False
     saw_wallclock = False
     for segment in _segments(entries):
-        # The last row that actually CARRIES figures, not simply the last row. A killed run's final
-        # row is a pre-turn check written with `budget_spent={}` (see `run_loop._make_entry`), and a
-        # bound halt writes a wind-down row; taking the last row unconditionally reported a killed
-        # run's spend as unknown and silently dropped every token it had really spent. Under-
-        # reporting cost is the direction a receipt must never fail in.
-        last: dict = {}
-        for row in reversed(segment):
-            candidate = _mapping(row.get("budget_spent") if isinstance(row, dict) else {})
-            if candidate:
-                last = candidate
-                break
+        # PER DIMENSION, and that distinction is the whole point. Taking the last row that carried
+        # ANY figures was the previous fix, and an audit showed it under-reports: a later row holding
+        # only `{"laps": 2}` is non-empty, so it won the search and reported tokens as unknown while
+        # an earlier row in the same segment recorded 205. A killed run's final row is a pre-turn
+        # check written with `budget_spent={}`, and a bound halt writes a wind-down row, so "the last
+        # row" is the wrong answer for either dimension — but so is "the last row with anything".
+        # Under-reporting cost is the direction a receipt must never fail in.
+        last = {
+            key: _last_value(segment, key) for key in ("tokens", "wallclock_s")
+        }
         tokens = last.get("tokens")
         wallclock = last.get("wallclock_s")
         if isinstance(tokens, (int, float)) and not isinstance(tokens, bool):
@@ -497,10 +510,18 @@ def write_receipt_artifacts(run_dir: Path, metadata: dict, entries: list) -> lis
             _write_atomically(target, text)
             written.append(target)
     except BaseException:
-        # Includes the previous contents of whichever file was not reached: an older receipt for an
-        # earlier segment of a resumed run is exactly the document that must not survive here.
-        for name, _ in rendered:
-            _remove_quietly(run_dir / name)
+        # Only when a PARTIAL pair exists. An audit caught the previous version destroying a correct
+        # receipt: `bl receipt --write` on an unchanged ledger, failing on the FIRST write, deleted a
+        # pair that was accurate and consistent. Nothing had been overwritten at that point, so there
+        # was nothing inconsistent to clean up — "absence is honest" is right for a STALE artifact and
+        # wrong for a regeneration that simply could not run. Destroying a true document is a defect
+        # this code did not have before the fix that introduced it.
+        #
+        # A partial pair is different: one new file beside one old one is inconsistent by
+        # construction, and a paper attaches the markdown. That gets removed.
+        if written:
+            for name, _ in rendered:
+                _remove_quietly(run_dir / name)
         raise
     return written
 
@@ -527,6 +548,11 @@ def write_receipt_artifacts_or_warn(
     except KeyboardInterrupt:
         raise
     except BaseException as exc:  # noqa: BLE001 — see docstring
+        # This path is the TERMINAL path of a run that has just been persisted, so any receipt already
+        # sitting here describes an EARLIER state of this same run — for a resumed run, only its first
+        # segment. That is stale by construction, so it goes regardless of how far the write got. The
+        # narrower rule in `write_receipt_artifacts` protects explicit regeneration; this one protects
+        # a reader from a confident document about a run that has since moved on.
         for name in RECEIPT_FILES:
             _remove_quietly(run_dir / name)
         print(

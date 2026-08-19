@@ -50,7 +50,7 @@ def cmd_graph_lint(args: argparse.Namespace) -> int:
     # User-supplied path: symlinks intentionally allowed (local CLI, like `cat`).
     try:
         text = manifest_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         _err(f"graph lint: cannot read '{manifest_path}' — {exc}")
         if getattr(args, "json", False):
             print(json.dumps({"valid": False, "code": "io_error",
@@ -111,8 +111,17 @@ def cmd_graph_plan(args: argparse.Namespace) -> int:
     suffix = manifest_path.suffix.lower()
     # User-supplied path: symlinks intentionally allowed (local CLI, like `cat`).
     try:
+    # `(OSError, UnicodeDecodeError)` — they are SIBLINGS. `UnicodeDecodeError` is a `ValueError`, so
+    # an `OSError`-only handler let a non-UTF-8 manifest escape as a raw traceback with no exit code.
+    # Handing a user a stack trace for a file they can see is wrong, and it is the same
+    # widen-one-handler-and-miss-the-sibling defect the gate boundary hit twice.
+    #
+    # Scope, MEASURED rather than guessed: 72 `read_text(encoding="utf-8")` sites in this package have
+    # no decode guard. All but a handful read files the harness itself wrote, which are UTF-8 by
+    # construction. The five widened — here, the sibling site in this file, and three in `cli_graph.py`
+    # — are the paths a USER supplies. The rest are left deliberately, not overlooked.
         text = manifest_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         _err(f"graph plan: cannot read '{manifest_path}' — {exc}")
         return 2
 

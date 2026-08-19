@@ -69,11 +69,21 @@ class EvidenceError(BoundedLoopsError):
 
 
 class KillSwitchTripped(BoundedLoopsError):
-    """
-    Raised (or caught internally, depending on caller policy) when the
-    external kill switch is tripped between laps.
+    """Reserved for an adapter that prefers to RAISE when an external kill signal is seen.
 
-    The RunLoopUseCase catches this and returns Outcome(status=KILLED, ...).
-    Adapters that detect the trip via a signal or file sentinel raise this
-    to propagate it upward cleanly.
+    **Nothing in this engine raises it, and nothing catches it.** The kill switch is implemented by
+    POLLING: `KillSwitchPort.tripped()` returns a bool and `RunLoopUseCase` checks it at the top of
+    every lap before any work, recording a `decision: "killed"` row with `attempted: false`. That is
+    the whole mechanism.
+
+    This docstring previously claimed "The RunLoopUseCase catches this and returns
+    Outcome(status=KILLED, ...)" and that adapters raise it. Neither was true — the class is
+    referenced nowhere but here, its own test, and two architecture documents. Documentation
+    asserting behaviour that does not exist is the declared-versus-enforced defect this project
+    publishes about, committed in the one place a reader takes on trust.
+
+    Kept rather than deleted because it is imported by `tests/domain/test_errors.py` and named in
+    `docs/ARCHITECTURE.md` and the ports-and-adapters diagram, so removal would break an embedder
+    that imports it. An adapter that raises this instead of returning True from `tripped()` will NOT
+    be handled by the engine — the exception propagates. Use the port.
     """

@@ -126,7 +126,7 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
         return 2
     try:
         text = manifest_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         _err(f"graph run: cannot read '{manifest_path}' — {exc}")
         return 2
     connections_raw: list[object] = []
@@ -188,7 +188,7 @@ def _execute_manifest(args: argparse.Namespace, manifest: str, out_dir: Path) ->
     if getattr(args, "audit_plan", None):
         try:
             audit_plan_json_text = Path(args.audit_plan).read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             _err(f"graph run: cannot load --audit-plan — {exc}")
             return 2
 
@@ -279,7 +279,7 @@ def cmd_graph_run(args: argparse.Namespace) -> int:
     # User-supplied path: symlinks intentionally allowed (local CLI, like `cat`).
     try:
         text = manifest_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         _err(f"graph run: cannot read '{manifest_path}' — {exc}")
         return 2
 
