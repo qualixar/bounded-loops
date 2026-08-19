@@ -448,9 +448,32 @@ class LedgerEntry:
     #: or empty when none was written. Present so the receipt records that a run was wound down
     #: rather than merely cut off, and so a reader can find the evidence without knowing a convention.
     handoff:      str = ""
+    #: WHICH gate produced `verdict`, recorded by the harness — never by the gate.
+    #:
+    #: A verdict is only reviewable if the receipt says what decided it. Until this field existed
+    #: the ledger recorded the verdict and nothing about its source, so `GuardedGate.gate_kind`
+    #: and `.wraps` were computed on every run and read by nobody: a capability with no caller.
+    #:
+    #: Deliberately NOT folded into `verdict.evidence`, which is authored BY THE GATE. A
+    #: third-party gate writing its own provenance is not provenance — it is a claim, and the
+    #: reserved-kind refusal in `plugins._validated_kind` exists because that claim was forgeable.
+    #: These keys are derived from installed package metadata and the harness's own registry.
+    #:
+    #: Honest limits, because a receipt that overstates is worse than one that omits:
+    #:   * `implementation` is a class NAME the gate's own package chose. It says what ran, not
+    #:     that what ran is trustworthy. `source` and `distribution` are the load-bearing keys.
+    #:   * There is no `measured` key. Whether a gate would actually CATCH a regression needs a
+    #:     per-gate mutation corpus, which cannot be built for arbitrary third-party code. Claiming
+    #:     it here from anything less would be the exact declared-vs-enforced defect this project
+    #:     names in its own paper.
+    #:
+    #: Empty for ledgers written before this field existed, which still verify: the chain hashes
+    #: raw line text, so an additive field cannot invalidate a line it was never in.
+    gate:         dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "budget_spent", _freeze_value(self.budget_spent))
+        object.__setattr__(self, "gate", _freeze_value(self.gate))
 
 
 @dataclass(frozen=True)

@@ -40,6 +40,7 @@ from bounded_loops.graph.adapters.preflight.runner_preflight import (
 )
 from bounded_loops import __version__
 from bounded_loops.composition import wire
+from bounded_loops.cli_receipt import _print_run_receipt
 from bounded_loops.cli_preconditions import _confirm_trust, check_run_preconditions
 from bounded_loops.cli_retention import add_prune_parser
 from bounded_loops.cli_privacy import add_redact_argument, policy_from_args
@@ -729,31 +730,6 @@ def _cmd_runs(args: argparse.Namespace) -> int:
                     f"ledger={run['ledger_path']}"
                 )
     return 0
-
-
-def _print_run_receipt(receipt: dict) -> None:
-    metadata = receipt["metadata"]
-    run_id = metadata.get("run_id", "?")
-    status = metadata.get("status", "UNKNOWN")
-    reason = metadata.get("reason", "unknown")
-    print(f"Run {run_id}: {status} ({reason})")
-    print(f"Workspace: {metadata.get('workspace', 'unknown')}")
-    print(f"Ledger: {metadata.get('ledger_path', 'unknown')}")
-    print()
-    for entry in receipt["entries"]:
-        verdict = entry.get("verdict", {})
-        passed = verdict.get("passed") is True
-        state = "PASS" if passed else "FAIL"
-        budget = entry.get("budget_spent", {})
-        print(
-            f"Lap {entry.get('lap', '?')}: {state}  "
-            f"decision={entry.get('decision', '?')}  "
-            f"tokens={budget.get('tokens', '?')}  "
-            f"wallclock={budget.get('wallclock_s', '?')}s"
-        )
-        detail = verdict.get("detail")
-        if detail:
-            print(f"  {detail}")
 
 
 def _cmd_audit_loops(args: argparse.Namespace) -> int:

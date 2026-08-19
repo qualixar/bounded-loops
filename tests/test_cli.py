@@ -488,6 +488,57 @@ class TestBLShowAndGates:
         assert "Lap 2" in output and "PASS" in output and "done" in output
         assert "tokens=35" in output and "wallclock=2.75s" in output
 
+    def test_runs_show_names_the_gate_that_decided_each_lap(self, tmp_path, capsys):
+        """Drives the CLI, deliberately — the point of gate provenance is that a HUMAN reading a
+        receipt can see what decided it. A test that read the ledger file instead would pass while
+        the value reached no user-visible path, which is exactly how the wave-2 gate identity sat
+        unused: a unit test cannot catch an orphaned capability, because the test IS the missing
+        caller."""
+        run_dir = tmp_path / ".bounded-loops" / "runs" / "r1"
+        run_dir.mkdir(parents=True)
+        (run_dir / "metadata.json").write_text(json.dumps({
+            "run_id": "r1", "status": "DONE", "reason": "gate-passed", "laps": 1,
+            "workspace": str(run_dir / "workspace"),
+            "ledger_path": str(run_dir / "ledger.jsonl"),
+        }), encoding="utf-8")
+        (run_dir / "ledger.jsonl").write_text(json.dumps({
+            "lap": 1, "verdict": {"passed": True, "detail": "ok"}, "decision": "done",
+            "budget_spent": {"laps": 1, "tokens": 5, "wallclock_s": 0.1},
+            "gate": {"kind": "acme-check", "source": "plugin",
+                     "distribution": "acme-gates", "implementation": "AcmeGate"},
+        }) + "\n", encoding="utf-8")
+
+        code = main(["runs", str(tmp_path), "--show", "r1"])
+
+        output = capsys.readouterr().out
+        assert code == 0
+        assert "acme-check" in output, "the receipt does not say WHICH gate decided the lap"
+        assert "plugin" in output, "the receipt does not say the gate was third-party"
+        assert "acme-gates" in output, "the receipt does not name the distribution"
+
+    def test_runs_show_still_renders_a_receipt_written_before_provenance_existed(
+        self, tmp_path, capsys,
+    ):
+        """Calibration: the new line must be ABSENT, not the string "None", for older runs."""
+        run_dir = tmp_path / ".bounded-loops" / "runs" / "r1"
+        run_dir.mkdir(parents=True)
+        (run_dir / "metadata.json").write_text(json.dumps({
+            "run_id": "r1", "status": "DONE", "reason": "gate-passed", "laps": 1,
+            "workspace": str(run_dir / "workspace"),
+            "ledger_path": str(run_dir / "ledger.jsonl"),
+        }), encoding="utf-8")
+        (run_dir / "ledger.jsonl").write_text(json.dumps({
+            "lap": 1, "verdict": {"passed": True, "detail": "ok"}, "decision": "done",
+            "budget_spent": {"laps": 1, "tokens": 5, "wallclock_s": 0.1},
+        }) + "\n", encoding="utf-8")
+
+        code = main(["runs", str(tmp_path), "--show", "r1"])
+
+        output = capsys.readouterr().out
+        assert code == 0
+        assert "Lap 1" in output and "PASS" in output
+        assert "gate:" not in output and "None" not in output
+
     def test_lint_contrib_accepts_reference_loop(self):
         repo_root = Path(__file__).resolve().parents[1]
         code = main([

@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import uuid
 import shutil
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Mapping
 
 from bounded_loops.application.bounds import BoundsEnforcer
 from bounded_loops.application.handoff import (
@@ -76,6 +76,14 @@ class RunLoopDeps:
     killswitch: KillSwitchPort
     approval: ApprovalPort
     clock: ClockPort
+    #: WHICH gate this run wired, computed ONCE by `composition` from its own registry and from
+    #: installed package metadata — never asked of the gate. Stamped onto every ledger row so a
+    #: verdict in the receipt says what decided it.
+    #:
+    #: Pushed IN rather than derived here because `application` must not import `composition`
+    #: (see `test_layering`), and because the honest source for "which distribution" is the
+    #: entry-point scan that only the composer has done.
+    gate_provenance: Mapping[str, str] = field(default_factory=dict)
 
 
 def _make_entry(
@@ -83,7 +91,7 @@ def _make_entry(
     decision: Decision,
     verdict: Verdict,
     budget_spent: dict,
-    clock: ClockPort,
+    deps: RunLoopDeps,
     *,
     attempted: bool = True,
     handoff: str = "",
@@ -91,18 +99,25 @@ def _make_entry(
     """Build one ledger entry. `decision` is always a plain closed-set value —
     the halt/pause/kill REASON lives exclusively in Outcome.reason, never here.
 
+    Takes `deps`, not `deps.clock`. Both the timestamp and the gate provenance come from it, and a
+    signature that accepted only the clock would need every one of the seven call sites to remember
+    to pass provenance as well. "A fix reached one call site and its siblings kept the bug" is the
+    defect this codebase has committed most often; one parameter carrying both makes the omission
+    unrepresentable rather than merely discouraged.
+
     `attempted=False` is for the two pre-turn checks only (kill switch, budget ceiling). Those
     record a lap on which the worker was never invoked, so counting rows as attempts overstates
     consumption by one on exactly the runs where the ceiling bites.
     """
     return LedgerEntry(
         lap=lap,
-        ts=clock.now_iso(),
+        ts=deps.clock.now_iso(),
         verdict=verdict,
         decision=decision,
         budget_spent=budget_spent,
         attempted=attempted,
         handoff=handoff,
+        gate=dict(deps.gate_provenance),
     )
 
 
@@ -201,7 +216,7 @@ class RunLoopUseCase:
             # ── 1. Kill-switch check (highest priority) ──
             if d.killswitch.tripped():
                 entry = _make_entry(
-                    lap, "killed", Verdict(False, "killed"), {}, d.clock, attempted=False
+                    lap, "killed", Verdict(False, "killed"), {}, d, attempted=False
                 )
                 d.ledger.record(entry)
                 return Outcome(Status.KILLED, "killed", lap, d.ledger.path())
@@ -259,7 +274,7 @@ class RunLoopUseCase:
                 )
             except RunnerError as exc:
                 verdict = _error_verdict("runner", exc)
-                entry = _make_entry(lap, "error", verdict, _snap(d, lap), d.clock)
+                entry = _make_entry(lap, "error", verdict, _snap(d, lap), d)
                 d.ledger.record(entry)
                 return Outcome(Status.ERROR, verdict.detail, lap, d.ledger.path())
 
@@ -274,7 +289,7 @@ class RunLoopUseCase:
                 verdict = d.gate.check(ctx)
             except GateError as exc:
                 verdict = _error_verdict("gate", exc)
-                entry = _make_entry(lap, "error", verdict, _snap(d, lap), d.clock)
+                entry = _make_entry(lap, "error", verdict, _snap(d, lap), d)
                 d.ledger.record(entry)
                 return Outcome(Status.ERROR, verdict.detail, lap, d.ledger.path())
 
@@ -288,11 +303,11 @@ class RunLoopUseCase:
                 if rung_requires_approval(rung, bounds):
                     approval_granted = d.approval.granted(verdict, ctx)
                     if not approval_granted:
-                        entry = _make_entry(lap, "pause", verdict, _snap(d, lap), d.clock)
+                        entry = _make_entry(lap, "pause", verdict, _snap(d, lap), d)
                         d.ledger.record(entry)
                         return Outcome(Status.PAUSE, "awaiting-approval", lap, d.ledger.path())
 
-                entry = _make_entry(lap, "done", verdict, _snap(d, lap), d.clock)
+                entry = _make_entry(lap, "done", verdict, _snap(d, lap), d)
                 d.ledger.record(entry)
                 return Outcome(Status.DONE, "gate-passed", lap, d.ledger.path())
 
@@ -320,7 +335,7 @@ class RunLoopUseCase:
 
             # ── 8c. Continue ──
             d.memory.update(ctx, lap, verdict, "continue")
-            entry = _make_entry(lap, "continue", verdict, _snap(d, lap), d.clock)
+            entry = _make_entry(lap, "continue", verdict, _snap(d, lap), d)
             d.ledger.record(entry)
             # Loop back to top
 
@@ -374,7 +389,7 @@ class RunLoopUseCase:
         )
 
         entry = _make_entry(
-            lap, "halt", Verdict(False, reason), _snap(d, lap), d.clock,
+            lap, "halt", Verdict(False, reason), _snap(d, lap), d,
             attempted=attempted, handoff=handoff_name,
         )
         d.ledger.record(entry)

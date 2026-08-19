@@ -552,6 +552,69 @@ class GuardedGate:
         return self._validate(raw)
 
 
+#: Cap on any single provenance value. A class name is chosen by the gate's own package, so it is
+#: attacker-controlled length that ends up inside the ledger's hash chain. 200 is far past any real
+#: class name and far short of a value that makes a receipt unreadable.
+_PROVENANCE_VALUE_MAX = 200
+
+
+def _short_value(value: object) -> str | None:
+    """A provenance value, or None if it is not a usable short string."""
+    if not isinstance(value, str) or not value:
+        return None
+    cleaned = "".join(character for character in value if character.isprintable())
+    if not cleaned:
+        return None
+    return cleaned[:_PROVENANCE_VALUE_MAX]
+
+
+def gate_provenance(
+    gate: object, *, plugin_kinds: frozenset[str], distributions: Mapping[str, str],
+) -> dict[str, str]:
+    """WHICH gate produced a verdict, derived by the HARNESS and never supplied by the gate.
+
+    Written into ``LedgerEntry.gate`` — a sibling of ``verdict``, deliberately not a member of it,
+    because everything inside ``verdict`` is authored by the gate and provenance a gate can write is
+    not provenance.
+
+    Keys, and exactly how much each is worth:
+      ``kind``            the harness's own registry key. ``_validated_kind`` refuses the names the
+                          harness reserves for itself, so this cannot be squatted.
+      ``source``          ``shipped`` or ``plugin``, decided by the entry-point scan, not by the gate.
+      ``distribution``    for a plugin only, from installed package METADATA. Absent for shipped
+                          gates rather than hardcoded: ``source: shipped`` already says the gate came
+                          with bounded-loops, and inventing a literal here would be one more string
+                          to drift.
+      ``implementation``  the concrete class that ran. **Self-reported** — a name the gate's own
+                          package chose. Records WHAT ran, not that it is trustworthy.
+
+    There is no ``measured`` key and must not be one until a vacuity probe exists. Whether a gate
+    would actually catch a regression needs a per-gate mutation corpus, which cannot be built for
+    arbitrary third-party code.
+
+    NEVER RAISES. This runs on every lap while building a ledger row, and a provenance lookup that
+    killed a run would make the audit trail the thing that breaks the audited work. A hostile or
+    broken gate yields ``{}`` — an absent claim, which reads correctly, rather than a false one.
+    """
+    try:
+        kind = _short_value(getattr(gate, "gate_kind", None))
+        if kind is None:
+            return {}
+        record = {"kind": kind, "source": "plugin" if kind in plugin_kinds else "shipped"}
+        implementation = _short_value(type(getattr(gate, "wraps", gate)).__name__)
+        if implementation is not None:
+            record["implementation"] = implementation
+        if record["source"] == "plugin":
+            distribution = _short_value(distributions.get(kind))
+            if distribution is not None:
+                record["distribution"] = distribution
+        return record
+    except KeyboardInterrupt:
+        raise
+    except BaseException:  # noqa: BLE001 — see NEVER RAISES above
+        return {}
+
+
 def merged_gate_registry(
     shipped: Mapping[str, type], *, group: str = GATE_ENTRY_POINT_GROUP,
 ) -> "LoadedGates":

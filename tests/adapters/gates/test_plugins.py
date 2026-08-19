@@ -902,3 +902,94 @@ def test_a_well_formed_verdict_survives_validation_with_its_content_intact() -> 
     assert out.passed is True
     assert out.detail == "pytest: 42 passed"
     assert dict(out.evidence) == {"code": 0}
+
+
+# ── gate provenance: derived by the harness, never asked of the gate ───────────────────────
+
+
+def _prov(gate, *, plugin_kinds=frozenset(), distributions=None):
+    return gp.gate_provenance(
+        gate, plugin_kinds=plugin_kinds, distributions=distributions or {},
+    )
+
+
+def test_provenance_names_a_shipped_gate_without_inventing_a_distribution() -> None:
+    record = _prov(GuardedGate(_MarkerGate(), kind="pytest"))
+    assert record == {"kind": "pytest", "source": "shipped", "implementation": "_MarkerGate"}
+    assert "distribution" not in record, (
+        "a hardcoded distribution literal is one more string to drift; 'source: shipped' says it"
+    )
+
+
+def test_provenance_names_a_plugin_gate_and_its_distribution() -> None:
+    record = _prov(
+        GuardedGate(_MarkerGate(), kind="acme-check"),
+        plugin_kinds=frozenset({"acme-check"}),
+        distributions={"acme-check": "acme-gates"},
+    )
+    assert record["source"] == "plugin"
+    assert record["distribution"] == "acme-gates"
+
+
+def test_source_is_decided_by_the_entry_point_scan_not_by_the_gate() -> None:
+    """The gate supplies the KIND string only. Whether that kind is shipped or third-party is
+    decided by the plugin_kinds set the composer computed, which no gate can reach."""
+    gate = GuardedGate(_MarkerGate(), kind="pytest")
+    assert _prov(gate)["source"] == "shipped"
+    assert _prov(gate, plugin_kinds=frozenset({"pytest"}))["source"] == "plugin"
+
+
+def test_provenance_never_raises_on_a_hostile_gate() -> None:
+    """This runs on every lap while building a ledger row. A provenance lookup that killed a run
+    would make the audit trail the thing that breaks the audited work. An absent claim reads
+    correctly; a crash does not."""
+
+    class _Hostile:
+        @property
+        def gate_kind(self):
+            raise SystemExit("provenance lookup weaponised")
+
+    assert _prov(_Hostile()) == {}
+
+    class _NoKind:
+        pass
+
+    assert _prov(_NoKind()) == {}
+
+
+def test_provenance_values_cannot_bloat_the_hash_chain() -> None:
+    """A class name is chosen by the gate's own package, so it is attacker-controlled length
+    landing inside the ledger's hash chain."""
+    huge = type("X" * 5000, (), {"check": lambda self, ctx: None})
+    record = _prov(GuardedGate(huge(), kind="pytest"))
+    assert len(record["implementation"]) <= gp._PROVENANCE_VALUE_MAX
+
+
+def test_a_real_run_stamps_provenance_onto_every_ledger_row(tmp_path) -> None:
+    """End to end through `wire`, because the point of this field is that it reaches the RECEIPT.
+    Wave 2 computed `gate_kind` and `wraps` on every run and no user-visible path read them — an
+    orphaned capability, which a unit test can never catch because the test IS the missing caller.
+    """
+    import json
+    import shutil
+    from pathlib import Path
+
+    from bounded_loops import composition
+    from bounded_loops.application.manifest import load as load_manifest
+
+    loop_dir = tmp_path / "loop"
+    shutil.copytree(Path("loops/assertion-density"), loop_dir)
+    manifest = load_manifest(loop_dir)
+    use_case = composition.wire(manifest, run_id="prov")
+    use_case.run()
+
+    rows = [
+        json.loads(line)
+        for line in (loop_dir / ".bounded-loops/runs/prov/ledger.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert rows, "the run wrote no ledger rows"
+    for row in rows:
+        assert row["gate"]["kind"] == "command"
+        assert row["gate"]["source"] == "shipped"
+        assert row["gate"]["implementation"] == "CommandGate"

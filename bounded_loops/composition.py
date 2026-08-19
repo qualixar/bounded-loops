@@ -429,6 +429,13 @@ def wire(
             runner=runner, gate=gate, memory=memory, ledger=ledger,
             tracer=tracer, budget=budget, killswitch=kill_switch,
             approval=approval, clock=clock,
+            # Computed HERE, once per run, because this is the only layer that knows both the
+            # registry and the entry-point scan's distribution map — and `application` must not
+            # import this module. The gate is never asked to describe itself.
+            gate_provenance=_gate_plugins.gate_provenance(
+                gate, plugin_kinds=PLUGIN_GATE_KINDS,
+                distributions=_LOADED_GATES.distributions,
+            ),
         ),
         env_passthrough=resolved_env_passthrough,
         cleanup_workspace=(not keep_workspace and run_id is None),

@@ -129,6 +129,12 @@ def _serialise(entry: LedgerEntry, *, prev: str = GENESIS) -> str:
         # Names the handoff file when a bound wound the run down, so the receipt points at the
         # evidence rather than leaving a reader to know the convention.
         "handoff": str(entry.handoff or ""),
+        # WHICH gate produced the verdict. A sibling of "verdict", never a member of it: everything
+        # inside "verdict" is authored by the gate, and provenance a gate can write is not
+        # provenance. Emitted even when empty so every line written by this version has the same
+        # shape; lines written before the field existed simply lack the key and still verify,
+        # because the chain hashes raw line text and those lines are unchanged.
+        "gate": _json_value(entry.gate),
     }
     return json.dumps(d, ensure_ascii=False, separators=(",", ":"))
 
@@ -167,4 +173,8 @@ def _deserialise(line: str) -> LedgerEntry:
         budget_spent=d["budget_spent"],
         attempted=bool(d.get("attempted", True)),
         handoff=str(d.get("handoff", "")),
+        # `.get` with a default, like `attempted` and `handoff` before it: a ledger written before
+        # this field existed must still round-trip, or every pre-existing run directory becomes
+        # unreadable by the tool that is supposed to audit it.
+        gate=dict(d.get("gate") or {}),
     )
