@@ -51,6 +51,11 @@ class ReferenceGraph:
     approval_role: str
     #: What the publish node's irreversible effect is, in the domain's own language.
     publish_summary: str
+    #: Global repair-round budget. 0 means repair is off (the default for every graph that does not
+    #: declare it). When > 0 the renderer adds ``repair_budget`` to policies and emits
+    #: ``on_failure: {mode: repair, target: remediation_trigger}`` on the remediation node, covering
+    #: the repair code path that no other reference graph exercises.
+    repair_budget: int = 0
 
 
 #: `customer` and `personal-projects` have no `role:` tag on any shipped loop, which is why those
@@ -170,6 +175,33 @@ REFERENCE_GRAPHS: tuple[ReferenceGraph, ...] = (
         publish_summary="send the data-subject response",
     ),
     ReferenceGraph(
+        slug="operations-incident-gate",
+        graph_id="operations-incident-gate",
+        domain="operations",
+        summary=(
+            "An SRE incident-response release clears SLO error-budget, on-call coverage and "
+            "runbook completeness in parallel before a site-reliability lead approves the "
+            "incident plan. A failed on-call check routes to alert-runbook-link verification; if "
+            "that verification also fails, a single repair round re-runs the on-call check and "
+            "its descendants so the graph retries rather than sealing a potentially-transient gap."
+        ),
+        parallel_checks=(
+            LoopNodeSpec("check-slo", "slo-error-budget"),
+            LoopNodeSpec("check-oncall", "oncall-coverage"),
+            LoopNodeSpec("check-runbook", "runbook-completeness"),
+        ),
+        remediation=LoopNodeSpec("link-runbook", "alert-runbook-link"),
+        # A failed on-call schedule is what the alert-runbook-link check is meant to address; the
+        # repair routes back to it so a transient gap (schedule just updated) gets a second chance.
+        remediation_trigger="check-oncall",
+        approval_role="sre-lead",
+        publish_summary="send the incident-response notification",
+        # R = 1: the bound is (1 + 1) * Σ_v max_attempts_v. Every node has max_attempts: 1, so
+        # per_round = 7 and total_execution_bound = 14. One round is the minimum that exercises
+        # the repair code path without over-provisioning a reference graph.
+        repair_budget=1,
+    ),
+    ReferenceGraph(
         slug="solo-builder-ship",
         graph_id="solo-builder-ship",
         domain="personal",
@@ -200,8 +232,16 @@ def graphs_root(repo_root: Path) -> Path:
     return repo_root / "graphs"
 
 
-def _node_block(node_id: str, digest: str, *, outputs: str, inputs: str = "") -> str:
+def _node_block(node_id: str, digest: str, *, outputs: str, inputs: str = "", on_failure_target: str | None = None) -> str:
     declared = f"      {inputs}: internal\n" if inputs else ""
+    # on_failure is emitted only when the node declares repair. The object form is required for
+    # ``repair`` because the target must be named explicitly — the bare string cannot express which
+    # ancestor to re-execute, and a repair relation that is not written down cannot be bounded or
+    # checked at validation time.
+    on_failure_block = (
+        f"    on_failure:\n      mode: repair\n      target: {on_failure_target}\n"
+        if on_failure_target is not None else ""
+    )
     return (
         f"  - id: {node_id}\n"
         f"    kind: loop\n"
@@ -217,6 +257,7 @@ def _node_block(node_id: str, digest: str, *, outputs: str, inputs: str = "") ->
         f"      max_attempts: 1\n"
         f"      max_wallclock_s: 300\n"
         f"    effects: []\n"
+        f"{on_failure_block}"
         # process_restricted, NOT workspace_only. workspace_only maps to SandboxMechanism.NONE,
         # which returns UNWRAPPED argv — so every loop node in these graphs ran with egress, fs_read,
         # fs_write and net all "not_enforced" while loop_node_entry's docstring described a Seatbelt
@@ -255,10 +296,14 @@ def render_reference_graph(definition: ReferenceGraph, repo_root: Path) -> str:
     ]
     for check in definition.parallel_checks:
         lines.append(_node_block(check.node_id, digest_of(check.package), outputs="verdict").rstrip("\n"))
+    # The remediation node declares repair only when the graph sets a non-zero repair_budget.
+    # The target is the parallel check whose failure routes here: it is a strict ancestor, so
+    # the suffix-locality condition (descendants(target)) is well-defined and bounded.
     lines.append(
         _node_block(
             definition.remediation.node_id, digest_of(definition.remediation.package),
             outputs="reconciliation", inputs="source",
+            on_failure_target=definition.remediation_trigger if definition.repair_budget else None,
         ).rstrip("\n")
     )
     lines.extend([
@@ -335,6 +380,14 @@ def render_reference_graph(definition: ReferenceGraph, repo_root: Path) -> str:
         # validation refuses it outright.
         "  fail_mode: continue_declared",
         "  data_class: internal",
+        # repair_budget is omitted when 0 (the default) so pre-0.5 graphs keep their exact digests.
+        # When present it is the GLOBAL bound on repair rounds: the termination bound
+        # (1 + R) * Σ_v max_attempts_v carries this factor, so the value must be > 0 and within
+        # _MAX_REPAIR_ROUNDS (100) — validated by validate_graph._repair_budget.
+        *(
+            [f"  repair_budget: {definition.repair_budget}"]
+            if definition.repair_budget else []
+        ),
         "",
     ])
     return "\n".join(lines)
