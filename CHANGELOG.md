@@ -3,6 +3,33 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] — 2026-08-20
+
+One fix. The MCP server did not report its own version.
+
+### Fixed
+
+- **`serverInfo.version` was the empty string in the MCP initialize handshake.**
+  `MCPServer(...)` defaults `version` to `""` and it was never passed, so a client connecting
+  to `bounded-loops-mcp` was told the name and nothing else. `pyproject.toml`,
+  `bounded_loops/__init__.py`, the npm package, four plugin manifests and `CITATION.cff` all
+  reported the version correctly; the one surface an agent client actually reads did not.
+
+  No tool was affected. All 24 tools resolved and executed normally — this was a provenance
+  defect, not a functional one. It still matters: an engine whose subject is knowing which
+  version decided something should be able to say which version it is.
+
+  Found by driving the installed server over stdio after the 0.7.0 release rather than by
+  reading the code. The release contract has a test asserting that every version-bearing
+  **file** is covered, and this is a runtime value, so nothing was watching it. There is now
+  a regression test asserting the handshake version equals `__version__` — compared against
+  the constant rather than a literal, so a future bump cannot leave the test green while the
+  handshake goes stale. Removing the fix makes that test fail.
+
+  **Restart your MCP client after upgrading.** Editors spawn `bounded-loops-mcp` as a
+  long-lived child process at startup, so an upgrade alone does not replace the running
+  server.
+
 ## [0.7.0] — 2026-08-20
 
 Removals. Seven of the nine capabilities the engine shipped, tested and never called, the six

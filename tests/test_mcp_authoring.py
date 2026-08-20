@@ -650,3 +650,25 @@ def test_graph_save_writes_a_plain_new_name(
 
     assert result["ok"] is True and result["saved"] is True
     assert Path(result["path"]).read_text(encoding="utf-8") == reference_manifest
+
+
+def test_the_mcp_handshake_reports_the_engine_version() -> None:
+    """`serverInfo.version` must match `__version__`.
+
+    Regression for a defect found by driving the installed server over stdio after the 0.7.0
+    release: the handshake advertised `{"name": "bounded-loops", "version": ""}` because
+    `MCPServer(...)` defaults `version` to the empty string and it was never passed. Every
+    version-bearing FILE was covered by `tests/release/test_package_contract.py`; this is a
+    runtime value, so the contract could not see it.
+
+    Asserted against `__version__` rather than a literal, so a version bump cannot leave this
+    test passing while the handshake goes stale.
+    """
+    mcp_server = pytest.importorskip(
+        "bounded_loops.mcp_server",
+        reason="requires the optional 'mcp' extra; the dev dependency group installs it",
+    )
+    from bounded_loops import __version__
+
+    assert mcp_server.mcp.version == __version__
+    assert mcp_server.mcp.version, "an empty version is what this test exists to catch"

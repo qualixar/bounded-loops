@@ -38,6 +38,7 @@ except ImportError as _exc:  # pragma: no cover - only hit when the extra is abs
         "2026-07-28. Upgrade with:  pip install -U 'mcp>=2,<3'"
     ) from _exc
 
+from bounded_loops import __version__
 from bounded_loops.application.manifest import load as manifest_load
 from bounded_loops.application.introspection import list_gates, show_loop
 from bounded_loops.application.loop_audit import audit_loops
@@ -47,7 +48,14 @@ from bounded_loops.composition import _approval_required, wire
 from bounded_loops.domain.errors import BoundedLoopsError, ManifestError
 from bounded_loops.trust_store import _content_hash, record_trust
 
-mcp = MCPServer("bounded-loops")
+# `version` is NOT optional in practice even though the constructor defaults it to "".
+# Until 0.7.1 this was `MCPServer("bounded-loops")`, so the initialize handshake advertised
+# `serverInfo: {"name": "bounded-loops", "version": ""}` while pyproject, __init__, the npm
+# package, four plugin manifests and CITATION.cff all said 0.7.0. The release contract checks
+# every version-bearing FILE and this is a runtime value, so nothing was watching the one
+# surface an agent client actually reads. For an engine whose subject is provenance, refusing
+# to say which version decided something is the wrong defect to ship.
+mcp = MCPServer("bounded-loops", version=__version__)
 _log = logging.getLogger(__name__)
 
 #: Signs confirm tokens. Generated per server process, never persisted, never logged.
