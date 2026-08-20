@@ -12,7 +12,7 @@ guarantee stated in a docstring and enforced nowhere, which is the defect class 
 project exists to name. An out-of-workspace write probe is a real thing to add; until
 something runs it, the sentence claiming it is the bug.
 
-It runs anywhere a native sandbox exists (macOS Seatbelt, Linux bubblewrap) with
+It runs anywhere a native sandbox exists (macOS Seatbelt) with
 no Docker daemon and no root. If the host can only offer Docker, the built-in
 local-command demo says so honestly rather than failing cryptically.
 """
@@ -203,7 +203,10 @@ def run_sandbox_demo(out_dir: Path, *, json_out: bool = False) -> int:
         return _fail(
             json_out,
             "this host offers only Docker; the built-in demo runs a local command that needs a "
-            "native sandbox (macOS Seatbelt or Linux bubblewrap). Install bubblewrap, or run on macOS.",
+            "native sandbox, which on this release means macOS Seatbelt. Run the demo on macOS. "
+            "(0.7.0 removed the Linux bubblewrap mechanism: it was selected whenever bwrap was on "
+            "PATH and then could not promote the node's declared output, so telling you to install "
+            "bwrap was advice for a path that did not complete.)",
         )
 
     identity = GraphRunIdentity(

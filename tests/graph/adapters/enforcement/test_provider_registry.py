@@ -28,7 +28,10 @@ from bounded_loops.graph.domain.authoring import IsolationLevel
 from bounded_loops.graph.domain.errors import GraphValidationError
 
 _SEATBELT = PlatformCapabilities(platform="darwin", docker_available=False, process_groups=True, rlimits=True, seatbelt=True)
-_BWRAP = PlatformCapabilities(platform="linux", docker_available=False, process_groups=True, rlimits=True, bubblewrap=True)
+# A Linux host with the network-namespace fallback and nothing container-grade. This was
+# _BWRAP until 0.7.0 removed the bubblewrap mechanism; the case it exercises is unchanged —
+# a non-Seatbelt host that HAS a mechanism still fails closed for authorized egress.
+_UNSHARE = PlatformCapabilities(platform="linux", docker_available=False, process_groups=True, rlimits=True, net_namespace=True)
 _BARE = PlatformCapabilities(platform="linux", docker_available=False, process_groups=True, rlimits=True)
 
 
@@ -92,16 +95,33 @@ def test_native_allowlist_caged_on_seatbelt_with_proxy_else_fail_closed():
         tier=IsolationLevel.CONTAINER_RESTRICTED, network_mode=NetworkMode.ALLOWLIST,
     ).available
     # Without Seatbelt the loopback cage is not expressible → fail closed (never a fake).
-    for caps in (_BWRAP, _BARE):
+    for caps in (_UNSHARE, _BARE):
         assert not NativeProvider(caps).probe(
             tier=IsolationLevel.CONTAINER_RESTRICTED, network_mode=NetworkMode.ALLOWLIST,
         ).available
 
 
-def test_native_bubblewrap_controls():
-    prov = NativeProvider(_BWRAP)
-    c = prov.probe(tier=IsolationLevel.CONTAINER_RESTRICTED, network_mode=NetworkMode.DENY).controls
-    assert c.net is Control.ENFORCED and c.fs_write is Control.ENFORCED and c.user is Control.ENFORCED
+def test_native_declines_container_grade_on_linux():
+    """0.7.0 removed the only Linux container-grade native mechanism, so this must refuse.
+
+    Replaces test_native_bubblewrap_controls. bubblewrap was selected whenever `bwrap` was on
+    PATH and then failed to promote the node's declared output, so the capability is withdrawn
+    rather than documented. A Linux host must now get NO native container-grade mechanism —
+    the container provider may still offer Docker, which is a separate tier and says so.
+    """
+    probe = NativeProvider(_UNSHARE).probe(
+        tier=IsolationLevel.CONTAINER_RESTRICTED, network_mode=NetworkMode.DENY,
+    )
+    assert not probe.available
+
+    # PROCESS_RESTRICTED still works on Linux via the unshare fallback, which confines the
+    # network and honestly reports that it does not confine filesystem writes.
+    process = NativeProvider(_UNSHARE).probe(
+        tier=IsolationLevel.PROCESS_RESTRICTED, network_mode=NetworkMode.DENY,
+    )
+    assert process.available
+    assert process.controls.net is Control.ENFORCED
+    assert process.controls.fs_write is Control.NOT_ENFORCED
 
 
 # ── host_managed provider ─────────────────────────────────────────────────────

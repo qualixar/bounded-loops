@@ -22,16 +22,23 @@ from bounded_loops.graph.domain.audits import (
     AuditAssignment,
     AuditCell,
     AuditPlan,
-    AuditedArtifact,
     AuditResult,
-    RepairAttempt,
-    validate_repair_lineage,
 )
 from bounded_loops.graph.domain.errors import GraphValidationError
 
-# A branded frozenset that ONLY resolve_by_repair produces — so the type-checker rejects a raw
-# frozenset passed straight to reconcile_audit (the trust boundary is compiler-enforced, not just
-# documented). A caller cannot forge "these findings are repaired" without a validated lineage.
+# A branded frozenset marking "these findings were repaired", distinct from a bare set of ids.
+#
+# HONEST LIMIT, corrected in 0.7.0. This comment used to say the trust boundary was
+# "compiler-enforced, not just documented" and that "a caller cannot forge" a repaired set.
+# Both were false. `NewType` is erased at runtime, so `ValidatedRepairIds(frozenset({"F-2"}))`
+# constructs one in a single call, and a test in this repository has always done exactly that.
+# What the brand buys is that mypy rejects a bare `frozenset[str]` at this parameter — real
+# value, and only where mypy runs. CI had never reached its own mypy step until 0.6.9, so for
+# most of this type's life the enforcement it advertised was running nowhere at all.
+#
+# The producer this brand was paired with, `resolve_by_repair`, was removed in 0.7.0: it had no
+# engine caller, the repair flow was never wired end to end, and its own tests were its only
+# callers. Recoverable from tag `v0.6.10`.
 ValidatedRepairIds = NewType("ValidatedRepairIds", frozenset[str])
 
 _SEVERITY_RANK = {"none": 0, "S3": 1, "S2": 2, "S1": 3, "S0": 4}
@@ -92,10 +99,16 @@ def reconcile_audit(
 ) -> ReleaseDecision:
     """Reconcile per-cell audit results into a release decision.
 
-    ``repaired_finding_ids`` MUST be the output of ``resolve_by_repair`` (a validated repair
-    verdict) — its branded type makes the type-checker reject a raw frozenset (a compile-time
-    contract; NewType is erased at runtime).  Those findings no longer block, exactly as a
-    ``resolved`` disposition would, but severity is still preserved.
+    ``repaired_finding_ids`` names findings a repair has resolved. Its branded type makes the
+    type-checker reject a raw frozenset — a compile-time contract only, since ``NewType`` is
+    erased at runtime. Those findings no longer block, exactly as a ``resolved`` disposition
+    would, but severity is still preserved.
+
+    Until 0.7.0 this said the argument MUST be the output of ``resolve_by_repair``. That
+    producer had no engine caller and was removed; validating a repair's lineage before
+    trusting it is now the caller's obligation, and no caller performs it, because no caller
+    passes this argument. Anything that starts passing it must validate lineage first or the
+    ``resolved`` disposition becomes self-certifying.
 
     ``plan`` is optional.  When supplied:
     - ``plan.mandatory_cells`` overrides the ``cells`` positional argument.
@@ -183,17 +196,6 @@ def _is_blocking(result: AuditResult, repaired_finding_ids: frozenset[str]) -> b
         and finding.disposition != _RESOLVED
         and finding.finding_id not in repaired_finding_ids
     )
-
-
-def resolve_by_repair(original: AuditedArtifact, repair: RepairAttempt) -> ValidatedRepairIds:
-    """The repair VERDICT: validate the repair's lineage against the audited artifact
-    (`validate_repair_lineage` raises on a bad lineage — wrong input digest, no new output, or
-    a finding it never had), then return the finding IDs it legitimately resolves as the branded
-    `ValidatedRepairIds` that `reconcile_audit(..., repaired_finding_ids=...)` accepts, so a real
-    repair unblocks a release. A repair is never self-certifying: an invalid lineage resolves
-    nothing (it raises), and the branded return type stops a caller forging a raw set."""
-    validate_repair_lineage(original, repair)
-    return ValidatedRepairIds(frozenset(repair.addressed_finding_ids))
 
 
 def _outcome(result: AuditResult) -> str:

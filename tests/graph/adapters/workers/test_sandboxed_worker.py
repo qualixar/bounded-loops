@@ -124,8 +124,8 @@ def _read_artifact(store, digest):
 
 _LIVE = probe_platform()
 _needs_native = pytest.mark.skipif(
-    not (_LIVE.seatbelt or _LIVE.bubblewrap),
-    reason="no native OS sandbox (Seatbelt/bubblewrap) on this host",
+    not _LIVE.seatbelt,
+    reason="no native OS sandbox (macOS Seatbelt) on this host",
 )
 
 
@@ -144,7 +144,7 @@ def test_live_sandbox_denies_network_and_isolates_home(tmp_path):
     assert payload["network"] == "denied_by_sandbox", payload
     # HOME must be the per-node isolated home, never the operator's real HOME.
     assert payload["home"] and "/work/run-1/probe-" in payload["home"]
-    assert worker.mechanism_for("probe") in {"seatbelt", "bubblewrap"}
+    assert worker.mechanism_for("probe") == "seatbelt"
     # E3 receipt: the honest provider id + per-dimension controls are published.
     assert worker.provider_for("probe") == "native"
     controls = worker.controls_for("probe")

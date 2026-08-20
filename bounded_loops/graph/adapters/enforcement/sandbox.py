@@ -7,10 +7,11 @@ argv that a plain POSIX host can still enforce:
 * macOS  -> ``sandbox-exec`` (Seatbelt): ``(deny network*)`` denies outbound
   sockets and ``(deny file-write* (subpath "/"))`` confines writes to the
   workspace / HOME / TMPDIR. No root, no daemon.
-* Linux  -> ``bubblewrap`` (rootless user namespaces): an isolated network
-  namespace (no external interfaces) plus a read-only root filesystem with only
-  the workspace / HOME / TMPDIR writable; or ``unshare -n`` as a
-  network-namespace-only fallback.
+* Linux  -> ``unshare -n``: a network-namespace-only fallback. It denies the
+  network and does NOT confine filesystem writes beyond the workspace copy, and
+  the receipt says so. A ``bubblewrap`` mechanism was removed in 0.7.0 — see
+  ``providers/native.py`` for why a capability that could not promote its own
+  output was withdrawn rather than documented.
 * Docker -> a hardened ``docker run`` for hosts that prefer or require a
   container (one option among several — never the only path to isolation).
 
@@ -72,7 +73,6 @@ class SandboxMechanism(str, Enum):
 
     NONE = "none"  # floor only: process group + rlimits + scrubbed env + isolated HOME
     SEATBELT = "seatbelt"  # macOS sandbox-exec
-    BUBBLEWRAP = "bubblewrap"  # Linux rootless namespaces
     UNSHARE_NET = "unshare_net"  # Linux network-namespace-only fallback
     DOCKER = "docker"  # containerized isolation
 
@@ -139,37 +139,6 @@ def seatbelt_argv(profile: str, inner_argv: Sequence[str]) -> list[str]:
     if not inner_argv:
         raise ValueError("inner argv must not be empty")
     return [SEATBELT_BINARY, "-p", profile, *inner_argv]
-
-
-def bubblewrap_argv(
-    *,
-    inner_argv: Sequence[str],
-    workspace: Path,
-    home: Path,
-    tmpdir: Path,
-    deny_network: bool,
-) -> list[str]:
-    if not inner_argv:
-        raise ValueError("inner argv must not be empty")
-    work, hm, tmp = _canonical(workspace), _canonical(home), _canonical(tmpdir)
-    argv = [
-        "bwrap",
-        "--ro-bind", "/", "/",
-        "--dev", "/dev",
-        "--proc", "/proc",
-        "--tmpfs", "/tmp",
-        "--bind", work, work,
-        "--bind", hm, hm,
-        "--bind", tmp, tmp,
-        "--chdir", work,
-        "--unshare-user", "--unshare-ipc", "--unshare-pid",
-        "--unshare-uts", "--unshare-cgroup",
-        "--die-with-parent", "--new-session",
-    ]
-    argv.append("--unshare-net" if deny_network else "--share-net")
-    argv.append("--")
-    argv.extend(inner_argv)
-    return argv
 
 
 def unshare_net_argv(inner_argv: Sequence[str]) -> list[str]:
@@ -258,10 +227,6 @@ def wrap_argv(
     if mechanism is SandboxMechanism.SEATBELT:
         profile = build_seatbelt_profile(writable=[workspace, home, tmpdir], deny_network=deny)
         return seatbelt_argv(profile, inner_argv)
-    if mechanism is SandboxMechanism.BUBBLEWRAP:
-        return bubblewrap_argv(
-            inner_argv=inner_argv, workspace=workspace, home=home, tmpdir=tmpdir, deny_network=deny,
-        )
     if mechanism is SandboxMechanism.UNSHARE_NET:
         return unshare_net_argv(inner_argv)
     if mechanism is SandboxMechanism.DOCKER:

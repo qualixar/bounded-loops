@@ -187,7 +187,7 @@ def cmd_graph_arena(args: argparse.Namespace) -> int:
     if audit_plan_path.is_file() and not audit_plan_path.is_symlink():
         try:
             from bounded_loops.graph.adapters.persistence.artifact_store import LocalArtifactStore
-            from bounded_loops.graph.adapters.persistence.audit_store import plan_from_mapping
+            from bounded_loops.graph.domain.audit_serde import plan_from_mapping
             from bounded_loops.graph.application.audit_projection import read_audit_projection
 
             audit_plan_raw = json.loads(audit_plan_path.read_text(encoding="utf-8"))

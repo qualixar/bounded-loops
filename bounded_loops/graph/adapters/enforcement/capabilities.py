@@ -7,7 +7,7 @@ pretending to isolate.
 
 Crucially, isolation is decoupled from Docker. ``container_restricted`` means
 "OS-enforced network denial + filesystem write-confinement", and that guarantee
-is deliverable by a native sandbox (macOS Seatbelt or Linux bubblewrap) just as
+is deliverable by a native sandbox (macOS Seatbelt) just as
 well as by Docker. The matrix selects whichever mechanism the host can truly
 provide and names it in the published controls, so a receipt never claims a
 "container" when a Seatbelt profile did the work. Authorized (allowlist) egress
@@ -40,7 +40,6 @@ class PlatformCapabilities:
     process_groups: bool
     rlimits: bool
     seatbelt: bool = False  # macOS sandbox-exec (Seatbelt) present
-    bubblewrap: bool = False  # Linux bubblewrap (bwrap) present
     net_namespace: bool = False  # Linux `unshare -n` usable (network-namespace fallback)
     egress_proxy: bool = False
 
@@ -54,8 +53,6 @@ class PlatformCapabilities:
         """
         if self.seatbelt:
             return SandboxMechanism.SEATBELT
-        if self.bubblewrap:
-            return SandboxMechanism.BUBBLEWRAP
         if self.docker_available:
             return SandboxMechanism.DOCKER
         return None
@@ -64,8 +61,6 @@ class PlatformCapabilities:
         """A mechanism that can OS-enforce network denial for a process node."""
         if self.seatbelt:
             return SandboxMechanism.SEATBELT
-        if self.bubblewrap:
-            return SandboxMechanism.BUBBLEWRAP
         if self.net_namespace:
             return SandboxMechanism.UNSHARE_NET
         return None
@@ -85,7 +80,7 @@ class PlatformCapabilities:
                     "(destination allowlist + SSRF / DNS-rebind denial), which is not available on this host",
                 )
             # RC-LOCKDOWN: the loopback-only egress cage is expressible ONLY via Seatbelt today. Other
-            # container-grade mechanisms (docker / bubblewrap) cannot yet confine egress to the proxy,
+            # container-grade mechanisms (docker) cannot yet confine egress to the proxy,
             # so authorized egress fails closed on them rather than pretending.
             if not self.seatbelt:
                 return (
@@ -104,7 +99,7 @@ class PlatformCapabilities:
         if level is IsolationLevel.CONTAINER_RESTRICTED:
             mechanism = self._container_grade_mechanism()
             if mechanism is None:
-                return (None, "container_restricted requires docker, bubblewrap, or sandbox-exec; none available")
+                return (None, "container_restricted requires docker or sandbox-exec; none available")
             return (mechanism, "")
         if level is IsolationLevel.CUSTOMER_MANAGED_WORKER:
             return (None, "no admitted customer-managed worker transport is available")
@@ -153,11 +148,6 @@ class PlatformCapabilities:
                 "sandbox-exec (Seatbelt): outbound network denied (deny network*)",
                 "filesystem WRITES confined to workspace / HOME / TMPDIR (reads not confined)",
             ])
-        if mechanism is SandboxMechanism.BUBBLEWRAP:
-            return tuple(floor + [
-                "bubblewrap: isolated network namespace (no external interfaces)",
-                "read-only root filesystem; writes confined to workspace / HOME / TMPDIR",
-            ])
         if mechanism is SandboxMechanism.UNSHARE_NET:
             return tuple(floor + [
                 "unshare: isolated network namespace (network denied)",
@@ -183,7 +173,6 @@ def probe_platform(*, docker_timeout_s: float = 4.0) -> PlatformCapabilities:
         process_groups=hasattr(os, "setsid") and hasattr(os, "killpg"),
         rlimits=_rlimits_available(),
         seatbelt=_seatbelt_available(),
-        bubblewrap=shutil.which("bwrap") is not None,
         net_namespace=sys.platform.startswith("linux") and shutil.which("unshare") is not None,
         # RC-LOCKDOWN: the loopback egress proxy is an in-process capability, but caging a process to
         # it requires an OS mechanism that expresses "loopback-only egress" — today only Seatbelt. So

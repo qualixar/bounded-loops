@@ -23,8 +23,8 @@ from bounded_loops.graph.cli_graph import cmd_graph_run
 
 _LIVE = probe_platform()
 _needs_native = pytest.mark.skipif(
-    not (_LIVE.seatbelt or _LIVE.bubblewrap),
-    reason="no native OS sandbox (Seatbelt/bubblewrap) on this host",
+    not _LIVE.seatbelt,
+    reason="no native OS sandbox (macOS Seatbelt) on this host",
 )
 
 
@@ -37,7 +37,7 @@ def test_run_sandbox_demo_executes_for_real(tmp_path, capsys):
     assert "no Docker required" in out
     meta = json.loads((tmp_path / "run" / "run-meta.json").read_text())
     assert meta["sandbox_execution"] is True
-    assert meta["sandbox_mechanism"] in {"seatbelt", "bubblewrap"}
+    assert meta["sandbox_mechanism"] == "seatbelt"
     # A real content-addressed artifact was promoted.
     assert list((tmp_path / "run" / "artifacts" / "objects").iterdir())
 
@@ -56,7 +56,12 @@ def test_docker_only_host_is_honest(tmp_path, capsys, monkeypatch):
     rc = run_sandbox_demo(tmp_path / "run")
     err = capsys.readouterr().err
     assert rc == 2
-    assert "native sandbox" in err and "bubblewrap" in err
+    # Assert the ACTIONABLE advice, not the historical note. Until 0.7.0 this message told a
+    # Linux operator to install bwrap, which selected a mechanism that could not promote the
+    # node's output. Matching on the word "bubblewrap" would still pass against that old
+    # message, so it is not what this test should be watching.
+    assert "native sandbox" in err and "macOS" in err
+    assert "Install bubblewrap" not in err
 
 
 def test_no_mechanism_fails_closed(tmp_path, capsys, monkeypatch):

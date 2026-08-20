@@ -89,14 +89,6 @@ def test_seatbelt_opens_the_network_under_open_but_keeps_write_confinement(tmp_p
     assert "(deny network*)" in denied[2]
 
 
-def test_bubblewrap_shares_net_under_open(tmp_path):
-    argv = wrap_argv(
-        SandboxMechanism.BUBBLEWRAP, inner_argv=["/bin/echo", "hi"],
-        workspace=tmp_path, home=tmp_path, tmpdir=tmp_path, network_mode=NetworkMode.OPEN,
-    )
-    assert "--share-net" in argv and "--unshare-net" not in argv
-
-
 def test_wrap_argv_refuses_allowlist_without_an_egress_proxy_port(tmp_path):
     # RC-LOCKDOWN: ALLOWLIST opens the network ONLY to a loopback proxy; with no proxy port there is
     # nothing to open to, so it must refuse fail-closed (never open destination-blind).
@@ -111,7 +103,7 @@ def test_wrap_argv_refuses_allowlist_on_a_non_seatbelt_mechanism(tmp_path):
     # Only Seatbelt can express loopback-only egress today; other mechanisms refuse fail-closed.
     with pytest.raises(ValueError, match="only implemented via Seatbelt"):
         wrap_argv(
-            SandboxMechanism.BUBBLEWRAP, inner_argv=["/bin/echo"],
+            SandboxMechanism.UNSHARE_NET, inner_argv=["/bin/echo"],
             workspace=tmp_path, home=tmp_path, tmpdir=tmp_path,
             network_mode=NetworkMode.ALLOWLIST, egress_proxy_port=8080,
         )

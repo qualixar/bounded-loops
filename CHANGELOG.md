@@ -3,6 +3,71 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] — 2026-08-20
+
+Removals. Seven of the nine capabilities the engine shipped, tested and never called, the six
+serialisation helpers orphaned by taking one of them out, and one capability it advertised on
+Linux and could not complete. Nothing was left behind a documentation note.
+
+No total is given here on purpose. Three drafts of this line carried three different counts,
+because a removal also takes out request types, a Protocol, an enum member and a capability
+field, and "public symbol" is a judgement call. `git diff v0.6.10..v0.7.0` is the answer that
+cannot go stale.
+
+Two of the nine are kept on purpose and named at the bottom of this entry.
+
+This is a minor bump rather than a patch because importable public symbols are gone. Every
+one of them is recoverable from tag `v0.6.10`.
+
+### Removed
+
+- **Linux sandboxed execution via bubblewrap.** `bl graph run --execute` selected bubblewrap
+  whenever `bwrap` was on your PATH, and the node's declared output then never reached the
+  promoted workspace — so the run could not finish. Linux now refuses at preflight and says
+  why, instead of choosing a mechanism it cannot honour. `--execute` needs macOS Seatbelt on
+  this release; every other command is unchanged and platform-independent.
+
+  The previous release documented this as a known limitation. Documenting a capability that
+  does not work is not a substitute for either fixing or withdrawing it, so the claim is
+  withdrawn. A test now pins the removal, because the failure mode being restored is a run
+  that reports success having produced no output.
+
+- **The connection-admission lifecycle** — `register_connection`, `advance_connection`,
+  `authorize_route`, `compiler_connection_snapshot`. Four functions implementing
+  discover → admit → route → compile, with no caller anywhere in the engine. A
+  credential-negotiating admission lifecycle also contradicts this engine's posture of
+  no-secret connectors. The execution-grant path in the same module has real callers and is
+  untouched: a grant is still bound to one run, node, attempt and effect, and carries no
+  credential.
+
+- **The local audit-plan store** — `AuditPlanService`, `LocalAuditStore`, and the six audit
+  serialisation helpers that existed only for its read and write paths. The service deferred
+  its own wiring to "a parallel effort" that was never built. The one symbol anything imported
+  from the store, `plan_from_mapping`, lives in the domain layer and is imported from there now.
+
+- **`resolve_by_repair`.** The repair flow was never wired end to end. The
+  `repaired_finding_ids` parameter it fed remains, and its documentation now states plainly
+  that validating a repair's lineage is the caller's obligation.
+
+### Fixed
+
+- **A comment claimed compiler enforcement that Python does not provide.** `ValidatedRepairIds`
+  was described as making forgery impossible — "the trust boundary is compiler-enforced, not
+  just documented". `NewType` is erased at runtime, so a single call constructs one, and a test
+  in this repository had always done exactly that. What the brand actually buys is that mypy
+  rejects a bare `frozenset[str]` at that parameter. Corrected in place.
+
+### Kept, deliberately
+
+- `OutcomeLabel` and `label_node_outcome` have no caller either, and stay. They record whether
+  a node's output was *actually* correct, independent of the gate verdict — ground truth an
+  evaluation needs and currently gets by hand. Wiring them needs a labeling API surface and is
+  a feature, not a removal.
+
+- `validate_repair_lineage` lost its only caller to the removal above and stays for the same
+  kind of reason: `reconcile_audit` still accepts repaired finding ids, and deleting the one
+  function able to validate them would make that obligation impossible to meet.
+
 ## [0.6.10] — 2026-08-20
 
 One fix. `npx bounded-loops` could not install the engine on a managed Python.

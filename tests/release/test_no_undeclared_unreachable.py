@@ -30,56 +30,41 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # ── KNOWN_ORPHANED_CAPABILITIES ─────────────────────────────────────────────
 #
-# These nine symbols are CONFIRMED ORPHANED CAPABILITIES: implemented, tested,
-# but no engine caller. They are NOT in the allowlist because papering them over
-# would hide a real defect. They stay here as a loud reminder that wiring is due.
+# CONFIRMED ORPHANED CAPABILITIES: implemented, tested, but no engine caller. NOT in the
+# allowlist, because papering them over would hide a real defect. They stay here as a loud
+# reminder that wiring is due.
 #
-# For each symbol the defect is: test IS the missing caller. A unit test can
-# never catch the missing wiring because the test itself is what calls it.
+# For each symbol the defect is: the test IS the missing caller. A unit test can never catch
+# missing wiring, because the test itself is what calls it.
 #
-#   AuditPlanService   + LocalAuditStore
-#       The audit plan service and its concrete store adapter. audit_plan.py
-#       docstring says: "Controller/arena wiring (out of scope for this task —
-#       a parallel effort owns those files)." Wiring to a graph controller or
-#       Arena projection is the deferred work.
+# 0.7.0 removed seven of the nine that stood here. Removal, not wiring, was the right
+# disposition for all seven: none had a caller, none had a consumer waiting, and a subsystem
+# whose only exercise is its own unit tests is a capability the product claims and does not
+# deliver. Every one is recoverable from tag `v0.6.10`.
 #
-#   OutcomeLabel + label_node_outcome
-#       Ground-truth labeling: recording whether a node's output was actually
-#       correct, independent of the gate verdict. The labeling event type and
-#       function exist and are tested, but no graph controller appends a label.
-#       Wiring requires a labeling API surface (REST, CLI, MCP) to be added.
+#   AuditPlanService + LocalAuditStore     — removed 0.7.0. audit_plan.py deferred its wiring
+#       to "a parallel effort" that never existed. `plan_from_mapping` was the only symbol
+#       anything imported from audit_store, and it lives in domain/audit_serde.py; cli_arena
+#       now imports it from there.
+#   register_connection + advance_connection + authorize_route + compiler_connection_snapshot
+#       — removed 0.7.0. A four-function credential-negotiating admission lifecycle, which
+#       contradicts this engine's stated posture of no-secret connectors. The grant path in
+#       the same module HAS callers and stays.
+#   resolve_by_repair                      — removed 0.7.0. The repair flow was never wired
+#       end to end. `ValidatedRepairIds` stays, because reconcile_audit's signature uses it,
+#       with its overclaiming comment corrected.
 #
-#   register_connection + advance_connection + authorize_route
-#   + compiler_connection_snapshot
-#       The connection admission and routing subsystem. The four public functions
-#       implement the full connection lifecycle (discover → admit → route →
-#       compile) but no graph controller or composition entry point calls them.
-#       The graph BYOK subsystem (test_execute_graph_byok.py) tests them in
-#       isolation; wiring requires a controller that negotiates connections before
-#       dispatching nodes.
-#
-#   resolve_by_repair
-#       The repair-path companion to reconcile_audit. reconcile_audit accepts a
-#       ValidatedRepairIds argument whose type guarantees it came from
-#       resolve_by_repair; audit_projection.py calls reconcile_audit with the
-#       default (no repairs). Wiring requires the repair flow (RepairAttempt →
-#       resolve_by_repair → reconcile_audit) to be implemented end-to-end.
+# What remains is deliberate. OutcomeLabel and label_node_outcome record whether a node's
+# output was ACTUALLY correct, independent of the gate verdict — the ground truth an
+# evaluation needs and currently obtains from hand-scoring operators. Deleting it would throw
+# away the instrument; wiring it needs a labeling API surface (CLI, REST or MCP) and is a
+# feature, not a removal. It is the one orphan here worth keeping.
 #
 KNOWN_ORPHANED_CAPABILITIES: frozenset[str] = frozenset(
     {
-        # audit plan subsystem — wiring deferred to parallel effort
-        "AuditPlanService",
-        "LocalAuditStore",
-        # ground-truth labeling — no labeling API surface wired yet
+        # ground-truth labeling — no labeling API surface wired yet; worth wiring, not deleting
         "OutcomeLabel",
         "label_node_outcome",
-        # connection admission / routing subsystem — no controller wired yet
-        "register_connection",
-        "advance_connection",
-        "authorize_route",
-        "compiler_connection_snapshot",
-        # repair flow — reconcile_audit called without repairs in production
-        "resolve_by_repair",
     }
 )
 

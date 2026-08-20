@@ -19,8 +19,8 @@ from bounded_loops.graph.application.capability_report import (
 from bounded_loops.graph.application.execution_policy import NetworkMode
 from bounded_loops.graph.domain.authoring import IsolationLevel
 
-# A HYPOTHETICAL upper bound, deliberately not a real machine: no host has both Seatbelt (macOS)
-# and bubblewrap (Linux). It is the union of every mechanism this engine knows how to use, which is
+# A HYPOTHETICAL upper bound, deliberately not a real machine: it claims Seatbelt (macOS-only)
+# alongside Linux's unshare. It is the union of every mechanism this engine knows how to use, which is
 # what `available_anywhere` actually asks — "could ANY host deliver this tier", not "could one
 # particular host deliver all of them at once". A tier THIS cannot deliver is unavailable
 # everywhere, which is a far more useful statement than "unavailable on your laptop" and is the only
@@ -32,7 +32,7 @@ from bounded_loops.graph.domain.authoring import IsolationLevel
 # because `available_anywhere` was only ever evaluated under `DENY`.
 _MAXIMALLY_CAPABLE = PlatformCapabilities(
     platform="linux", docker_available=True, process_groups=True, rlimits=True,
-    seatbelt=True, bubblewrap=True, net_namespace=True, egress_proxy=True,
+    seatbelt=True, net_namespace=True, egress_proxy=True,
 )
 
 

@@ -235,8 +235,8 @@ bl graph demo --out ./demo-run
 bl graph status --run ./demo-run
 ```
 
-The next one is different: it enforces **real** OS isolation (macOS Seatbelt or Linux
-bubblewrap — see Known limitations, no Docker), still with no credential.
+The next one is different: it enforces **real** OS isolation (macOS Seatbelt, no Docker),
+still with no credential. `--execute` needs macOS; every other command runs anywhere.
 
 ```bash
 bl graph run --execute --out ./sandbox-demo
@@ -530,9 +530,9 @@ bl_graph_evidence(run_ref="...")
   and resumes via `bl graph approve`. Sandboxed arbitrary-tool nodes are a later phase.
 - The `ALLOWLIST` egress cage is a network-only restriction on macOS Seatbelt. A
   caged subprocess still has full filesystem access.
-- **`--execute` is verified on macOS Seatbelt only. Linux bubblewrap is selected and does not
-  yet complete** — the node's declared output never reaches the promoted workspace. Every other
-  command is platform-independent.
+- `--execute` needs a native OS sandbox, which on this release means **macOS Seatbelt**. On
+  other platforms it refuses at preflight rather than running unsandboxed. Every other command
+  is platform-independent.
 - The Arena's `LOCAL/UNVERIFIED` notice is accurate: local runs are not verified
   against a hosted receipt server.
 - `content-fact-gate` and OSV scans require network access; the quickstart is offline.

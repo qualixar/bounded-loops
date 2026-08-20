@@ -1,4 +1,13 @@
-"""Native OS-sandbox provider — macOS Seatbelt / Linux bubblewrap / unshare.
+"""Native OS-sandbox provider — macOS Seatbelt / Linux unshare.
+
+Linux bubblewrap was removed in 0.7.0. It was selected here whenever `bwrap` was on PATH,
+and sandboxed execution then failed to promote the node's declared output to the workspace —
+so a capability the engine advertised could not complete a run. It had never been exercised
+because continuous integration had no `bwrap` installed and always took the "this host offers
+only Docker" refusal, and a refusal is a passing outcome. Installing the binary so the gate
+could run is what exposed it. Rather than ship a documented defect, the claim is withdrawn:
+Linux now refuses at preflight instead of selecting a mechanism it cannot honour. The
+argv builder and the mechanism enum member went with it; both are recoverable from `v0.6.10`.
 
 The zero-dependency floor for standalone hosts (a laptop or CI with no host
 sandbox). It reuses the E2.2 mechanism builders (`wrap_argv`) and never uses
@@ -49,8 +58,6 @@ class NativeProvider:
                 return None
             if caps.seatbelt:
                 return SandboxMechanism.SEATBELT
-            if caps.bubblewrap:
-                return SandboxMechanism.BUBBLEWRAP
             # `unshare -n` can ONLY create an isolated (empty) net namespace — it cannot
             # honor OPEN, so it is not a valid mechanism for a network-open node.
             if caps.net_namespace and not open_network:
@@ -59,8 +66,6 @@ class NativeProvider:
         if tier is IsolationLevel.CONTAINER_RESTRICTED:
             if caps.seatbelt:
                 return SandboxMechanism.SEATBELT
-            if caps.bubblewrap:
-                return SandboxMechanism.BUBBLEWRAP
             return None  # no native container-grade mechanism (container provider may still)
         return None  # customer_managed_worker is not a native tier
 
@@ -87,16 +92,6 @@ class NativeProvider:
                 net=net, fs_write=Control.ENFORCED, fs_read=Control.NOT_ENFORCED,
                 pid=pid, user=Control.NOT_ENFORCED, kernel=Control.NOT_ENFORCED, egress=egress,
                 notes=(note,),
-            )
-        if mechanism is SandboxMechanism.BUBBLEWRAP:
-            return EnforcedControls(
-                net=net, fs_write=Control.ENFORCED, fs_read=Control.NOT_ENFORCED,
-                pid=Control.ENFORCED, user=Control.ENFORCED, kernel=Control.NOT_ENFORCED, egress=Control.NOT_ENFORCED,
-                notes=(
-                    "bubblewrap: outbound network OPEN (trusted-local, --share-net); read-only rootfs + rw workspace"
-                    if net_open else
-                    "bubblewrap: isolated network namespace; read-only rootfs + rw workspace",
-                ),
             )
         if mechanism is SandboxMechanism.UNSHARE_NET:
             return EnforcedControls(

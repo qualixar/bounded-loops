@@ -77,7 +77,7 @@ _UNSAFE_PATH_COMPONENT = re.compile(r"[^A-Za-z0-9._-]")
 # The concrete OS mechanism that actually launched, read from the wrapped
 # ``argv[0]`` (ground truth) — the human/receipt mechanism label that sits
 # alongside the provider id and the per-dimension controls.
-_MECHANISM_BY_ARGV0 = {SEATBELT_BINARY: "seatbelt", "bwrap": "bubblewrap", "unshare": "unshare_net", "docker": "docker"}
+_MECHANISM_BY_ARGV0 = {SEATBELT_BINARY: "seatbelt", "unshare": "unshare_net", "docker": "docker"}
 
 
 def _egress_log_sink(node_id: str) -> Callable[..., None]:
@@ -161,7 +161,7 @@ class SandboxedNodeWorker:
 
     def mechanism_for(self, node_id: str) -> str | None:
         """The concrete OS mechanism actually launched for *node_id* (seatbelt /
-        bubblewrap / unshare_net / docker), or the provider id for the floor."""
+        unshare_net / docker), or the provider id for the floor."""
         return self._mechanism_used.get(node_id)
 
     def provider_for(self, node_id: str) -> str | None:

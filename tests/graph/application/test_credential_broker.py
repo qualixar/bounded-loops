@@ -6,15 +6,13 @@ from datetime import datetime, timezone
 import pytest
 
 from bounded_loops.graph.application.connections import (
-    ConnectionAdmissionRequest,
     ExecutionGrantRequest,
-    advance_connection,
     issue_execution_grant,
-    register_connection,
 )
 from bounded_loops.graph.application.credential_broker import OpaqueCredentialBroker
 from bounded_loops.graph.domain.authoring import DataClass, Effect
 from bounded_loops.graph.domain.connections import (
+    AdmittedConnection,
     ConnectionState,
     CredentialBinding,
     CredentialKind,
@@ -27,11 +25,17 @@ def _digest(character: str) -> str:
     return "sha256:" + character * 64
 
 
-def _admitted_connection():
-    request = ConnectionAdmissionRequest(
+def _admitted_connection() -> AdmittedConnection:
+    """An admitted connection, constructed directly.
+
+    Built by walking ``register_connection`` and three ``advance_connection`` edges until
+    0.7.0 removed that lifecycle as an orphaned capability. The broker under test never
+    called it; only fixtures did. Constructing the end state directly is what the broker
+    actually receives in production, where nothing negotiates a connection at all.
+    """
+    return AdmittedConnection(
         connection_id="conn-1", organization_id="org-1", connector_id="codex-cli",
-        connector_version="1.0.0", local_session_ref="vendor-profile:opaque",
-        credential_ref=None, consent_digest=_digest("a"), evidence_digest=_digest("b"),
+        connector_version="1.0.0", consent_digest=_digest("a"), evidence_digest=_digest("f"),
         expires_at="2026-12-31T00:00:00Z", capabilities=frozenset({"text_generation"}),
         effects=frozenset({Effect.READ_ONLY}), transport="local_cli",
         data_path="host-managed vendor session",
@@ -40,11 +44,8 @@ def _admitted_connection():
             allowed_models=frozenset({"codex"}), allowed_regions=frozenset({"in"}),
             fallback_allowed=False, route_verifiable=True, data_class_max=DataClass.INTERNAL,
         ),
+        state=ConnectionState.ADMITTED,
     )
-    connection = register_connection(request)
-    connection = advance_connection(connection, ConnectionState.ADAPTER_VALIDATED, _digest("d"))
-    connection = advance_connection(connection, ConnectionState.SMOKE_PROVEN, _digest("e"))
-    return advance_connection(connection, ConnectionState.ADMITTED, _digest("f"))
 
 
 def _grant():

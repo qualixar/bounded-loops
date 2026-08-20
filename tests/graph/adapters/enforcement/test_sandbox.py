@@ -1,7 +1,7 @@
 """E2.2 — native sandbox mechanism selection + argv/profile builders.
 
 Selection is the honesty core: it decouples "container-grade" isolation from
-Docker (Seatbelt / bubblewrap satisfy it too) yet still fails closed when no
+Docker (Seatbelt satisfies it too) yet still fails closed when no
 mechanism can deliver the required tier, and it keeps authorized egress closed
 until an egress proxy exists. Injected capabilities keep every case
 deterministic on any platform.
@@ -16,7 +16,6 @@ import pytest
 from bounded_loops.graph.adapters.enforcement.capabilities import PlatformCapabilities
 from bounded_loops.graph.adapters.enforcement.sandbox import (
     SandboxMechanism,
-    bubblewrap_argv,
     build_seatbelt_profile,
     docker_argv,
     seatbelt_argv,
@@ -40,9 +39,12 @@ def test_container_grade_prefers_native_over_docker():
     seatbelt = _caps(platform="darwin", seatbelt=True, docker_available=True)
     mech, _ = seatbelt.select_mechanism(IsolationLevel.CONTAINER_RESTRICTED, NetworkMode.DENY)
     assert mech is SandboxMechanism.SEATBELT
-    bwrap = _caps(bubblewrap=True, docker_available=True)
-    mech, _ = bwrap.select_mechanism(IsolationLevel.CONTAINER_RESTRICTED, NetworkMode.DENY)
-    assert mech is SandboxMechanism.BUBBLEWRAP
+    # Linux has no container-grade NATIVE mechanism since 0.7.0 removed bubblewrap, so a
+    # Linux host with Docker gets Docker — the preference is real, not merely stated, and it
+    # can only be exercised where a native mechanism exists at all.
+    linux = _caps(docker_available=True, net_namespace=True)
+    mech, _ = linux.select_mechanism(IsolationLevel.CONTAINER_RESTRICTED, NetworkMode.DENY)
+    assert mech is SandboxMechanism.DOCKER
 
 
 def test_container_grade_falls_back_to_docker_then_fails_closed():
@@ -101,8 +103,10 @@ def test_enforced_controls_name_the_actual_mechanism():
     controls = seatbelt.enforced_controls(IsolationLevel.CONTAINER_RESTRICTED)
     assert any("Seatbelt" in c for c in controls)
     assert any("reads not confined" in c for c in controls)  # discloses the limitation
-    bwrap = _caps(bubblewrap=True)
-    assert any("bubblewrap" in c for c in bwrap.enforced_controls(IsolationLevel.CONTAINER_RESTRICTED))
+    unshare = _caps(net_namespace=True)
+    controls = unshare.enforced_controls(IsolationLevel.PROCESS_RESTRICTED)
+    assert any("unshare" in c for c in controls)
+    assert any("NOT confined" in c for c in controls)  # discloses the limitation
 
 
 # ── argv / profile builders ──────────────────────────────────────────────────
@@ -119,22 +123,6 @@ def test_seatbelt_profile_denies_network_and_confines_writes(tmp_path):
 def test_seatbelt_profile_can_leave_network_open_for_lower_tiers(tmp_path):
     profile = build_seatbelt_profile(writable=[tmp_path], deny_network=False)
     assert "(deny network*)" not in profile
-
-
-def test_bubblewrap_argv_isolates_network_and_binds_workspace(tmp_path):
-    argv = bubblewrap_argv(
-        inner_argv=["/usr/bin/python3", "x.py"],
-        workspace=tmp_path / "o", home=tmp_path / "h", tmpdir=tmp_path / "t",
-        deny_network=True,
-    )
-    assert argv[0] == "bwrap"
-    assert "--unshare-net" in argv and "--ro-bind" in argv
-    assert argv[-2:] == ["/usr/bin/python3", "x.py"]
-    shared = bubblewrap_argv(
-        inner_argv=["x"], workspace=tmp_path / "o", home=tmp_path / "h", tmpdir=tmp_path / "t",
-        deny_network=False,
-    )
-    assert "--share-net" in shared and "--unshare-net" not in shared
 
 
 def test_unshare_net_argv_shape():
@@ -191,3 +179,23 @@ def test_canonical_rejects_quotes_in_paths(tmp_path):
     evil = tmp_path / 'a"b'
     with pytest.raises(ValueError):
         build_seatbelt_profile(writable=[evil], deny_network=True)
+
+
+def test_bubblewrap_is_not_a_mechanism_this_release_offers():
+    """The 0.7.0 removal, pinned.
+
+    bubblewrap was selected whenever `bwrap` was on PATH and then did not promote the node's
+    declared output to the workspace — a capability the engine advertised and could not
+    complete. It had never been exercised because CI had no `bwrap` and always took the
+    "this host offers only Docker" refusal, and a refusal is a passing outcome.
+
+    Reintroducing it must be a deliberate act that fails this test, not a merge that quietly
+    restores a mechanism whose failure mode is a run that reports success with no output.
+    """
+    assert not hasattr(SandboxMechanism, "BUBBLEWRAP")
+    assert "bubblewrap" not in {mechanism.value for mechanism in SandboxMechanism}
+
+    # And no capability flag can bring it back: the field itself is gone, so a caller that
+    # tries to assert bwrap availability gets a TypeError rather than a silent no-op.
+    with pytest.raises(TypeError):
+        _caps(bubblewrap=True)

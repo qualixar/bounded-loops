@@ -1,11 +1,16 @@
 """Canonical serialisation of audit domain objects.
 
-Extracted from ``adapters/persistence/audit_store.py`` in P3. These functions are pure —
-mapping in, domain object out, no I/O — and the canonical field set of a domain object is
-domain knowledge, not a property of the store that happens to persist it. While they lived
-in the adapter, the read-side Arena projection (an application module) had to import from
-``adapters/`` to deserialize a result, which was one of the layering violations the P3
-tripwire now forbids.
+Extracted in P3 from the local audit store, which was removed in 0.7.0 as an orphaned
+capability. These functions are pure — mapping in, domain object out, no I/O — and the
+canonical field set of a domain object is domain knowledge, not a property of whatever
+persists it, which is why they outlived the store.
+
+Only the two read-side functions with real callers remain. The four ``*_to_dict`` writers
+and two further readers existed solely for the store's ``put_*``/``load_*`` pairs and went
+with it; they are recoverable from tag ``v0.6.10``. Their entries in
+``scripts/unreachable_allowlist.py`` declared them reachable via the store's private
+aliased imports, and that referrer no longer exists — a declared reason that outlives what
+it describes is worse than no entry.
 
 Every ``*_from_*`` function validates at the domain-object boundary and raises
 ``GraphValidationError`` rather than returning a half-built object, so a tampered or hostile
@@ -22,32 +27,8 @@ from bounded_loops.graph.domain.audits import (
     AuditFinding,
     AuditPlan,
     AuditResult,
-    AuditedArtifact,
-    RepairAttempt,
 )
 from bounded_loops.graph.domain.errors import GraphValidationError
-
-
-def plan_to_dict(plan: AuditPlan) -> dict[str, object]:
-    return {
-        "artifact_digest": plan.artifact_digest,
-        "rubric_digest": plan.rubric_digest,
-        "mandatory_cells": [
-            {"name": c.name, "mandatory": c.mandatory}
-            for c in plan.mandatory_cells
-        ],
-        "assignments": [
-            {
-                "cell": a.cell,
-                "independence": a.independence,
-                "model_id": a.model_id,
-                "rubric_digest": a.rubric_digest,
-                "tool_id": a.tool_id,
-                "version": a.version,
-            }
-            for a in plan.assignments
-        ],
-    }
 
 
 def plan_from_mapping(data: dict[str, object]) -> AuditPlan:
@@ -78,22 +59,6 @@ def plan_from_mapping(data: dict[str, object]) -> AuditPlan:
     )
 
 
-def result_to_dict(result: AuditResult) -> dict[str, object]:
-    finding_dict: dict[str, object] | None = None
-    if result.finding is not None:
-        finding_dict = {
-            "disposition": result.finding.disposition,
-            "finding_id": result.finding.finding_id,
-            "severity": result.finding.severity,
-        }
-    return {
-        "assessor": result.assessor,
-        "cell": result.cell,
-        "finding": finding_dict,
-        "producer": result.producer,
-    }
-
-
 def result_from_mapping(data: dict[str, object]) -> AuditResult:
     """Deserialize an :class:`AuditResult` from a JSON mapping (raises ``GraphValidationError`` on a
     malformed result so a hostile artifact fails closed at the read boundary)."""
@@ -117,41 +82,3 @@ def result_from_mapping(data: dict[str, object]) -> AuditResult:
     )
 
 
-def artifact_to_dict(artifact: AuditedArtifact) -> dict[str, object]:
-    return {
-        "artifact_digest": artifact.artifact_digest,
-        "finding_ids": list(artifact.finding_ids),
-    }
-
-
-def artifact_from_mapping(data: dict[str, object]) -> AuditedArtifact:
-    raw_ids = data["finding_ids"]
-    if not isinstance(raw_ids, list):
-        raise ValueError("finding_ids must be a list")
-    return AuditedArtifact(
-        artifact_digest=data["artifact_digest"],  # type: ignore[arg-type]
-        finding_ids=tuple(str(x) for x in raw_ids),
-    )
-
-
-def repair_to_dict(repair: RepairAttempt) -> dict[str, object]:
-    return {
-        "addressed_finding_ids": list(repair.addressed_finding_ids),
-        "input_artifact_digest": repair.input_artifact_digest,
-        "output_artifact_digest": repair.output_artifact_digest,
-        "regression_evidence_digest": repair.regression_evidence_digest,
-        "repair_id": repair.repair_id,
-    }
-
-
-def repair_from_mapping(data: dict[str, object]) -> RepairAttempt:
-    raw_addressed = data["addressed_finding_ids"]
-    if not isinstance(raw_addressed, list):
-        raise ValueError("addressed_finding_ids must be a list")
-    return RepairAttempt(
-        repair_id=data["repair_id"],  # type: ignore[arg-type]
-        input_artifact_digest=data["input_artifact_digest"],  # type: ignore[arg-type]
-        output_artifact_digest=data["output_artifact_digest"],  # type: ignore[arg-type]
-        addressed_finding_ids=tuple(str(x) for x in raw_addressed),
-        regression_evidence_digest=data["regression_evidence_digest"],  # type: ignore[arg-type]
-    )

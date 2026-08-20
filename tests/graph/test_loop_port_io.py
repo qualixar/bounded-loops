@@ -32,8 +32,8 @@ from bounded_loops.graph.loop_node_entry import _copy_loop_outputs, _overlay_inp
 
 _LIVE = probe_platform()
 _needs_native = pytest.mark.skipif(
-    not (_LIVE.seatbelt or _LIVE.bubblewrap),
-    reason="no native OS sandbox (Seatbelt/bubblewrap) on this host",
+    not _LIVE.seatbelt,
+    reason="no native OS sandbox (macOS Seatbelt) on this host",
 )
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────

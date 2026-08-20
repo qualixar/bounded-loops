@@ -111,38 +111,6 @@ ALLOWED: dict[str, str] = {
         "_resolve_env_passthrough(manifest)). Same alias-masking mechanism as register_plugin_gate_kinds."
     ),
 
-    # ── ALIAS_MASKED — verified in bounded_loops/graph/adapters/persistence/audit_store.py ──
-    # LocalAuditStore imports every serde helper under a private alias (e.g. plan_to_dict as
-    # _plan_to_dict). These functions were extracted from the adapter to the domain layer in P3
-    # precisely so the Arena projection (an application module) can deserialise without importing
-    # from the adapters layer; the Arena projection is not yet wired, so the current referrer
-    # is LocalAuditStore's aliased import. The public names are invisible to the audit script.
-    "plan_to_dict": (
-        "ALIAS_MASKED: imported in audit_store.py line 28 as '_plan_to_dict'. Extracted to the "
-        "domain layer in P3 so the Arena projection can deserialise AuditPlan without importing "
-        "from the adapters layer."
-    ),
-    "result_to_dict": (
-        "ALIAS_MASKED: imported in audit_store.py line 32 as '_result_to_dict'. Same extraction "
-        "rationale as plan_to_dict."
-    ),
-    "artifact_to_dict": (
-        "ALIAS_MASKED: imported in audit_store.py line 26 as '_artifact_to_dict'. Same extraction "
-        "rationale as plan_to_dict."
-    ),
-    "repair_to_dict": (
-        "ALIAS_MASKED: imported in audit_store.py line 30 as '_repair_to_dict'. Same extraction "
-        "rationale as plan_to_dict."
-    ),
-    "artifact_from_mapping": (
-        "ALIAS_MASKED: imported in audit_store.py line 25 as '_artifact_from_dict'. Same extraction "
-        "rationale as plan_to_dict."
-    ),
-    "repair_from_mapping": (
-        "ALIAS_MASKED: imported in audit_store.py line 29 as '_repair_from_dict'. Same extraction "
-        "rationale as plan_to_dict."
-    ),
-
     # ── SCRIPT_UTIL — verified in scripts/regenerate_reference_graphs.py ─────
     # Both functions are imported and called from scripts/regenerate_reference_graphs.py
     # (lines 29-40). That script lives in scripts/, which is outside bounded_loops/; the audit
@@ -183,6 +151,16 @@ ALLOWED: dict[str, str] = {
         "API: 'Pure, explicit migrations for portable graph-authoring documents.' A public "
         "migration function for tools that load bounded-loops.dev/graph/v0 documents and need "
         "to upgrade them to v1 before processing."
+    ),
+    "validate_repair_lineage": (
+        "API: 'Validate a repair attempt's lineage against the audited artifact.' A public "
+        "domain validation gate. It HAD an engine-side caller, resolve_by_repair, until 0.7.0 "
+        "removed that as an orphaned capability — so this function was orphaned BY a removal, "
+        "not left unwired by an author. It is kept rather than deleted because "
+        "reconcile_audit's repaired_finding_ids parameter survives, and its docstring now "
+        "obliges any future caller to validate lineage before passing it; deleting the only "
+        "function able to do that would make that obligation impossible to meet. Covered "
+        "directly in tests/graph/domain/test_audits.py, good path and two bad-lineage paths."
     ),
     "validate_audit_coverage": (
         "API: 'Fail release coverage on missing, self-only, or open S0/S1 cells.' A public "

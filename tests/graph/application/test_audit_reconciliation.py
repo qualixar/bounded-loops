@@ -9,7 +9,6 @@ import pytest
 from bounded_loops.graph.application.audit_reconciliation import (
     ValidatedRepairIds,
     reconcile_audit,
-    resolve_by_repair,
 )
 from bounded_loops.graph.domain.audits import (
     AuditCell,
@@ -135,14 +134,20 @@ def test_malformed_input_raises():
 
 
 def test_a_valid_repair_unblocks_a_release():
+    """A repaired finding stops blocking, and severity is still reported.
+
+    Until 0.7.0 the repaired set came from ``resolve_by_repair``, removed as an orphaned
+    capability. Lineage validation is covered directly against ``validate_repair_lineage``
+    in ``tests/graph/domain/test_audits.py``; what belongs here is ``reconcile_audit``'s
+    own behaviour once a finding is marked repaired.
+    """
     cells = (_cell("security"),)
     results = (_result("security", "a1", "p1", _finding("S0", "open", finding_id="F-1")),)
     assert reconcile_audit(cells, results).released is False  # blocked before repair
 
-    resolved = resolve_by_repair(_artifact("F-1"), _repair(("F-1",)))
-    assert resolved == frozenset({"F-1"})
-
-    decision = reconcile_audit(cells, results, repaired_finding_ids=resolved)
+    decision = reconcile_audit(
+        cells, results, repaired_finding_ids=ValidatedRepairIds(frozenset({"F-1"})),
+    )
     assert decision.released is True
     assert decision.verdicts[0].highest_severity == "S0"  # a repair unblocks; it never lowers severity
 
@@ -153,12 +158,6 @@ def test_a_repair_for_a_different_finding_does_not_unblock():
     decision = reconcile_audit(cells, results, repaired_finding_ids=ValidatedRepairIds(frozenset({"F-2"})))
     assert decision.released is False
     assert decision.verdicts[0].blocking_finding_ids == ("F-1",)
-
-
-def test_an_invalid_repair_lineage_raises_and_resolves_nothing():
-    # a "repair" that produces no new artifact (output digest == input) is not a real repair
-    with pytest.raises(GraphValidationError):
-        resolve_by_repair(_artifact("F-1"), _repair(("F-1",), out="a"))
 
 
 def test_reports_blocking_finding_ids():

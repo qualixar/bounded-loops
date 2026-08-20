@@ -84,10 +84,10 @@ def default_registry(
 
     Precedence — first available provider whose controls meet the tier wins:
     ``host_managed`` (probe-backed ambient sandbox) → ``native`` (Seatbelt /
-    bubblewrap floor) → ``container`` (hardened local Docker) → ``microvm``
+    unshare floor) → ``container`` (hardened local Docker) → ``microvm``
     (E2B / Firecracker own-kernel) → ``openshell`` (NVIDIA NemoClaw).
 
-    Cheap-local-first: for ``container_restricted`` a native Seatbelt / bwrap
+    Cheap-local-first: for ``container_restricted`` a native Seatbelt
     sandbox is chosen before spinning up Docker or a remote worker. The remote
     providers only win when the local ones cannot deliver the tier (e.g.
     ``customer_managed_worker``, which needs own-kernel isolation). Every remote
