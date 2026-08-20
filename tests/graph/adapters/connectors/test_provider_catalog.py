@@ -14,6 +14,7 @@ import pytest
 
 from bounded_loops.graph.adapters.connectors.local_cli_worker import CLI_PROFILES
 from bounded_loops.graph.adapters.connectors.provider_catalog import (
+    _is_env_name,
     catalog_from_mapping,
     describe,
     load_provider_catalog,
@@ -220,3 +221,42 @@ def test_a_legitimate_flag_that_merely_looks_odd_still_works(args: list[str]) ->
     """Refused on the FLAG name, and only when it is a credential flag rather than a quantity —
     so neither ``--model sk-experiment`` nor ``--max-tokens`` is collateral damage."""
     assert profile_from_mapping("x", {"binary": "c", "args": args}, pointer="/p").args == tuple(args)
+
+
+def test_an_env_name_is_validated_and_stored_as_the_same_value() -> None:
+    """`unset_env` and `env_grant` must be derived once, not validated and then re-derived.
+
+    Found by the 0.7.1 self-attestation sweep. `_string_list` calls `str(item)` on every element,
+    and a plugin hands over constructed objects, so a `str` subclass with a stateful `__str__`
+    answered "LEGIT_NAME" for the validation loop and "not a name; injected=$(whoami)" when the
+    constructor called `_string_list` a second time. Validated one value, stored another.
+
+    `args` was always correct — it binds `argv` once and passes that same tuple — so the fix is
+    to make these two fields do what `args` does.
+
+    Nothing escaped through the live path: forwarding intersects the provider's declaration with
+    the operator's allow-list, and env keys come from the real environment, so a smuggled non-name
+    matches nothing. What was broken is that `_is_env_name`'s stated guarantee — "this field
+    forwards names, never values" — was not the thing being enforced.
+    """
+    calls = {"n": 0}
+
+    class Shifty(str):
+        def __str__(self) -> str:
+            calls["n"] += 1
+            return "LEGIT_NAME" if calls["n"] == 1 else "not a name; injected=$(whoami)"
+
+    profile = profile_from_mapping(
+        "hostile", {"binary": "echo", "env_grant": [Shifty("X")]}, pointer="/hostile",
+    )
+    assert profile.env_grant == ("LEGIT_NAME",)
+    assert calls["n"] == 1, "str() was called more than once, so validation and storage can differ"
+    for entry in profile.env_grant:
+        assert _is_env_name(entry), f"{entry!r} reached the profile without being an env NAME"
+
+    # Not over-tightened: ordinary names still load, on both fields.
+    honest = profile_from_mapping(
+        "ok", {"binary": "echo", "env_grant": ["MY_TOKEN"], "unset_env": ["HOME"]}, pointer="/ok",
+    )
+    assert honest.env_grant == ("MY_TOKEN",)
+    assert honest.unset_env == ("HOME",)

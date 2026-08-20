@@ -3,6 +3,54 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.2] — 2026-08-21
+
+Two fixes from an audit for one specific defect shape: a check whose criterion is applied to a
+value the party under scrutiny controls. Both were confirmed by writing the exploit first.
+
+### Fixed
+
+- **A forged evidence digest passed verdict validation and reached the receipt.** A graph gate's
+  verdict carries an `evidence_digest` whose whole job is to make the externalized verdict
+  tamper-evident. `validated_verdict_or_none` already read every field exactly once into a local
+  — the documented fix for validating one read and acting on another — and that was necessary
+  but not sufficient, because the object still owned every method the check called. A `str`
+  subclass overriding `startswith`, `__len__` and `__getitem__` satisfied the format test while
+  its real bytes were `not a digest at all`, and that string was stored in the verdict and
+  written into the receipt.
+
+  Fixed with `str.__str__` as an unbound builtin, which a subclass cannot intercept: normalise
+  first, validate the normalised value, store that. The same field is now guaranteed to be a
+  plain `str` in the receipt rather than whatever object a gate handed over. An empty reason
+  disguised by a lying `__len__` is refused for the same reason.
+
+  This remedy already existed in this codebase, applied to the loop-gate boundary in 0.6.9. It
+  did not reach the graph-gate boundary.
+
+- **`unset_env` and `env_grant` were validated and then re-derived.** `profile_from_mapping`
+  called `_string_list` once to validate these two fields and again in the constructor.
+  `_string_list` calls `str(item)`, and a provider plugin hands over constructed objects, so a
+  `str` subclass with a stateful `__str__` answered `LEGIT_NAME` for the validation loop and
+  something else entirely for the constructor. They are now derived once and reused, which is
+  what `args` always did.
+
+  Nothing escaped through the live path: env forwarding intersects the provider's declaration
+  with the operator's allow-list, and env keys come from the real environment, so a smuggled
+  non-name matches nothing and is logged as refused. The defect is that `_is_env_name`'s stated
+  guarantee — this field forwards names, never values — was not the thing being enforced.
+
+Both fixes carry a regression test that fails when the fix is reverted.
+
+### Audited and found correct
+
+Recorded because "we looked and it was fine" is worth as much as a fix, and because the
+reasoning is reusable. The provider-plugin `set_env` guard is belt-and-braces over a data
+round-trip that drops the field entirely, which is the real defence. Price fields are read once
+and returned unchanged, and correctly reject `bool` as an `int` subclass. Gate provenance
+derives `kind` from the harness registry. And provenance's `implementation` field documents
+itself as self-reported rather than pretending otherwise — when a value can only come from the
+subject, saying so in the record is the honest handling.
+
 ## [0.7.1] — 2026-08-20
 
 One fix. The MCP server did not report its own version.

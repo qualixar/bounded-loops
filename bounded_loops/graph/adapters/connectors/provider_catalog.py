@@ -143,8 +143,21 @@ def profile_from_mapping(name: str, raw: object, *, pointer: str) -> CliProfile:
         if not isinstance(raw[key], str):
             raise _error(f"{pointer}/{key}", "must be a string")
 
-    for key in sorted(set(raw) & {"unset_env", "env_grant"}):
-        for index, entry in enumerate(_string_list(raw[key], f"{pointer}/{key}")):
+    # Derived ONCE and reused below. `_string_list` calls `str(item)` on every element, and a
+    # plugin-supplied `str` subclass can answer differently on each call: calling it here to
+    # validate and AGAIN in the constructor validated "LEGIT_NAME" and stored
+    # "not a name; injected=$(whoami)". `args` was always right — it binds `argv` once and passes
+    # the same tuple — and these two fields re-derived. Reproduced with a stateful __str__.
+    #
+    # Nothing escaped: forwarding intersects with the operator's allow-list and env keys come from
+    # the real environment, so a smuggled non-name matches nothing and is logged as refused. The
+    # defect is that _is_env_name's stated guarantee was not the thing being enforced.
+    name_lists = {
+        key: _string_list(raw[key], f"{pointer}/{key}")
+        for key in sorted(set(raw) & {"unset_env", "env_grant"})
+    }
+    for key, entries in name_lists.items():
+        for index, entry in enumerate(entries):
             if not _is_env_name(entry):
                 raise _error(
                     f"{pointer}/{key}/{index}",
@@ -191,8 +204,8 @@ def profile_from_mapping(name: str, raw: object, *, pointer: str) -> CliProfile:
         binary=str(raw["binary"]),
         args=argv,
         prompt_via=prompt_via,
-        unset_env=_string_list(raw.get("unset_env", []), f"{pointer}/unset_env"),
-        env_grant=_string_list(raw.get("env_grant", []), f"{pointer}/env_grant"),
+        unset_env=name_lists.get("unset_env", ()),
+        env_grant=name_lists.get("env_grant", ()),
         usage_args=_string_list(raw.get("usage_args", []), f"{pointer}/usage_args"),
         envelope=envelope,
         post_prompt_args=_string_list(

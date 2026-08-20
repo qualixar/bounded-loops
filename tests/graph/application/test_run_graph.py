@@ -1155,3 +1155,63 @@ def test_a_resumed_run_does_not_re_open_a_SKIPPED_branch(tmp_path):
         continue_on_failure=True,
     )
     assert states["b"] is NodeState.SKIPPED
+
+
+def test_a_forged_evidence_digest_cannot_pass_verdict_validation() -> None:
+    """A `str` subclass must not satisfy the digest format check by overriding its methods.
+
+    Found by the 0.7.1 self-attestation sweep. `validated_verdict_or_none` already read every
+    field exactly once into a local — the documented fix for the check/use split — and that was
+    necessary but NOT sufficient: the object still owned every method the check called. A
+    subclass overriding `startswith`, `__len__` and `__getitem__` satisfied
+
+        digest.startswith("sha256:") and len(digest) == 71 and all(c in hexdigits for c in digest[7:])
+
+    while its real bytes were "not a digest at all", and that string was stored in the fresh
+    GateVerdict and written into the receipt by `verdict_body` — defeating the only thing the
+    field exists for.
+
+    The remedy is `str.__str__` as an UNBOUND builtin, which a subclass cannot intercept:
+    normalise first, validate the normalised value, store that.
+    """
+    from bounded_loops.graph.application.node_contracts import GateVerdict
+    from bounded_loops.graph.application.node_receipts import (
+        validated_verdict_or_none,
+        verdict_body,
+        verdict_is_wellformed,
+    )
+
+    class ForgedDigest(str):
+        def startswith(self, *args: object, **kwargs: object) -> bool:
+            return True
+
+        def __len__(self) -> int:
+            return 71
+
+        def __getitem__(self, item: object) -> str:
+            return "a" * 64 if isinstance(item, slice) else "a"
+
+    forged = GateVerdict(
+        passed=True, reason="looks fine", evidence_digest=ForgedDigest("not a digest at all"),
+    )
+    assert validated_verdict_or_none(forged) is None
+    assert verdict_is_wellformed(forged) is False
+
+    class LyingReason(str):
+        """Empty bytes, non-zero length: the non-empty check must not consult the object."""
+
+        def __len__(self) -> int:
+            return 9
+
+    assert validated_verdict_or_none(
+        GateVerdict(passed=True, reason=LyingReason(""), evidence_digest=None),
+    ) is None
+
+    # Not over-tightened: a genuine digest is still accepted, and what gets STORED is a plain
+    # `str` rather than whatever object the gate handed over.
+    honest = GateVerdict(passed=True, reason="ok", evidence_digest="sha256:" + "a" * 64)
+    validated = validated_verdict_or_none(honest)
+    assert validated is not None
+    assert type(validated.evidence_digest) is str
+    assert type(validated.reason) is str
+    assert verdict_body(validated)["evidence_digest"] == "sha256:" + "a" * 64

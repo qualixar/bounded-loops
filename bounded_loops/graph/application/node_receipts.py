@@ -137,17 +137,38 @@ def validated_verdict_or_none(verdict: object) -> GateVerdict | None:
     reason = verdict.reason
     digest = verdict.evidence_digest
 
+    # Reading once is necessary and was NOT sufficient. A `str` subclass still owns every method
+    # the checks below would call: overriding `startswith`, `__len__` and `__getitem__` satisfied
+    # the digest format test while the object's real bytes were "not a digest at all", and that
+    # string reached the receipt — defeating the only thing the field exists for. One read closes
+    # the check/use split; it does not stop a lying method.
+    #
+    # `str.__str__` and `str.strip` as UNBOUND builtins cannot be intercepted by a subclass and
+    # return a genuine `str`. Normalise FIRST, then validate the normalised value, and store that.
+    # Same remedy as `GuardedGate._validate`; it belongs here too and did not arrive with it.
     if not isinstance(passed, bool):
         return None
-    if not isinstance(reason, str) or not reason:
+    if not isinstance(reason, str):
         return None
-    if digest is not None and not (
-        isinstance(digest, str)
-        and digest.startswith("sha256:")
-        and len(digest) == 71
-        and all(character in "0123456789abcdef" for character in digest[7:])
-    ):
+    try:
+        reason = str.__str__(reason)
+    except TypeError:
+        return None  # an object whose __class__ merely CLAIMS str is not one
+    if not reason:
         return None
+    if digest is not None:
+        if not isinstance(digest, str):
+            return None
+        try:
+            digest = str.__str__(digest)
+        except TypeError:
+            return None
+        if not (
+            digest.startswith("sha256:")
+            and len(digest) == 71
+            and all(character in "0123456789abcdef" for character in digest[7:])
+        ):
+            return None
     return GateVerdict(passed=passed, reason=reason, evidence_digest=digest)
 
 
