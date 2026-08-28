@@ -102,10 +102,17 @@ def _print_summary(report: Mapping[str, Any]) -> None:
           f"{', '.join(policies['refused'])}")
     print()
 
-    statuses = report["terminal_statuses"]
-    print("TERMINAL STATUSES")
-    print(f"  success:     {', '.join(statuses['success'])}")
-    print(f"  NOT success: {', '.join(statuses['not_success'])}")
+    loop_statuses = report["loop_statuses"]
+    print("LOOP STATUSES")
+    print(f"  success:     {', '.join(loop_statuses['success'])}")
+    print(f"  NOT success: {', '.join(loop_statuses['not_success'])}")
+    print()
+
+    graph_states = report["graph_run_states"]
+    print("GRAPH RUN STATES")
+    print(f"  success:      {', '.join(graph_states['success'])}")
+    print(f"  NOT success:  {', '.join(graph_states['not_success'])}")
+    print(f"  non-terminal: {', '.join(graph_states['non_terminal'])}")
     print()
 
     print(f"REFUSALS: {report['refusals']['count']} — see `bl capabilities --refusals`")
