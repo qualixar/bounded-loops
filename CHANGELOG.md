@@ -3,6 +3,18 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.3] — 2026-08-28
+
+### Fixed
+
+- **`bl capabilities` crashed after printing most of its report.** The shared
+  capability document was corrected in 0.7.2 to publish separate
+  `loop_statuses` and `graph_run_states`, but the human-readable CLI renderer
+  still indexed the removed `terminal_statuses` key. The JSON/MCP contract was
+  correct; the primary diagnostic command was not. The renderer now prints the
+  loop and graph vocabularies separately, including graph non-terminal states,
+  and a regression test exercises the complete summary path.
+
 ## [0.7.2] — 2026-08-21
 
 Two fixes from an audit for one specific defect shape: a check whose criterion is applied to a
