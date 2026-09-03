@@ -3,6 +3,15 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.6] — 2026-09-03
+
+### Fixed
+
+- **Native Antigravity lifecycle hooks.** The plugin now ships the root-level
+  `hooks.json` required by current Antigravity. It preserves the existing
+  additive skill, agent, command, and MCP pack while making bounded-loop
+  verification available to the host lifecycle.
+
 ## [0.7.5] — Hermes public-install compatibility repair
 
 ### Fixed

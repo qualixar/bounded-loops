@@ -35,7 +35,7 @@ _AGENT_SCHEMA = {
 _UNSAFE = re.compile(r"[;&|`$<>\n\r]")
 _ACTIVE_GRAPH_RE = re.compile(r"(?:PENDING|RUNNING)\b")
 _PLUGIN_ROOT = Path(__file__).resolve().parent
-REQUIRED_RUNTIME_VERSION = "0.7.5"
+REQUIRED_RUNTIME_VERSION = "0.7.6"
 LOOP_DIGEST_WARNING = (
     "This edit targets a bounded-loop package and changes its content digest. "
     "Re-lint and re-digest the package before using it in a graph."

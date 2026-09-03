@@ -1,5 +1,5 @@
 name: bounded-loops
-version: 0.7.5
+version: 0.7.6
 description: "Native bounded-loops commands, guarded lifecycle hooks, skills, and child-agent roles for Hermes."
 author: "Varun Pratap Bhardwaj"
 manifest_version: 1

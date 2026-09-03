@@ -1,4 +1,4 @@
-"""Native Hermes pack contract for bounded-loops 0.7.5.
+"""Native Hermes pack contract for bounded-loops 0.7.6.
 
 These tests deliberately inspect the produced plugin as Hermes will load it:
 it is self-contained, has no Python dependency declaration, routes every
@@ -27,7 +27,7 @@ PLUGIN = ROOT / "plugins" / "hermes"
 def test_native_hermes_pack_has_a_complete_additive_manifest() -> None:
     manifest = yaml.safe_load((PLUGIN / "plugin.yaml").read_text(encoding="utf-8"))
     assert manifest["name"] == "bounded-loops"
-    assert manifest["version"] == "0.7.5"
+    assert manifest["version"] == "0.7.6"
     assert manifest["manifest_version"] == 1
     assert manifest["api_version"] == 1
     assert manifest["python_dependencies"] == []
@@ -111,7 +111,7 @@ def test_hermes_refuses_to_run_a_non_074_runtime(monkeypatch) -> None:
 
     result = module._command("lint example.yaml", "owned-bl")
 
-    assert "requires bounded-loops 0.7.5 exactly" in result
+    assert "requires bounded-loops 0.7.6 exactly" in result
     assert calls == [["owned-bl", "--version"]]
 
 
@@ -128,7 +128,7 @@ def test_hermes_hooks_return_actual_directives_and_discover_workspace_runs(monke
     def fake_run(argv, **kwargs):
         calls.append(argv)
         if argv[-1] == "--version":
-            return types.SimpleNamespace(stdout="bl 0.7.5\n", stderr="", returncode=0)
+            return types.SimpleNamespace(stdout="bl 0.7.6\n", stderr="", returncode=0)
         return types.SimpleNamespace(stdout="run_state: RUNNING", stderr="", returncode=0)
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)
@@ -173,7 +173,7 @@ def test_register_activates_the_packaged_skill_and_honours_executable_setting(mo
     def fake_run(argv, **kwargs):
         calls["argv"] = argv
         if argv[-1] == "--version":
-            return types.SimpleNamespace(stdout="bl 0.7.5\n", stderr="", returncode=0)
+            return types.SimpleNamespace(stdout="bl 0.7.6\n", stderr="", returncode=0)
         return types.SimpleNamespace(stdout="ok", stderr="", returncode=0)
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)

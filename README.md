@@ -71,7 +71,7 @@ allowed to stop.
 **Claude Code**
 
 ```bash
-pip install --upgrade "bounded-loops[mcp]==0.7.5"
+pip install --upgrade "bounded-loops[mcp]==0.7.6"
 git clone https://github.com/qualixar/bounded-loops && cd bounded-loops
 claude plugin marketplace add ./plugins/claude-code
 claude plugin install bounded-loops@bounded-loops
