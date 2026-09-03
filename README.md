@@ -92,7 +92,7 @@ codex plugin add bounded-loops@bounded-loops
 pip install "bounded-loops[mcp]"
 curl --fail --location --proto '=https' --tlsv1.2 \
   -o /tmp/qualixar-agent-reliability-hermes-pack-v1.yaml \
-  https://github.com/qualixar/superlocalmemory/releases/download/v4.1.12/qualixar-agent-reliability-hermes-pack-v1.yaml
+  https://raw.githubusercontent.com/qualixar/superlocalmemory/main/hermes-pack-v1.yaml
 hermes plugins pack show /tmp/qualixar-agent-reliability-hermes-pack-v1.yaml
 hermes plugins pack install /tmp/qualixar-agent-reliability-hermes-pack-v1.yaml
 hermes plugins enable bounded-loops
