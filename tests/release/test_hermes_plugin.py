@@ -28,7 +28,7 @@ def test_native_hermes_pack_has_a_complete_additive_manifest() -> None:
     manifest = yaml.safe_load((PLUGIN / "plugin.yaml").read_text(encoding="utf-8"))
     assert manifest["name"] == "bounded-loops"
     assert manifest["version"] == "0.7.4"
-    assert manifest["manifest_version"] == 2
+    assert manifest["manifest_version"] == 1
     assert manifest["api_version"] == 1
     assert manifest["python_dependencies"] == []
     assert manifest["provides_hooks"] == [

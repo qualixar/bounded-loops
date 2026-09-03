@@ -2,7 +2,7 @@ name: bounded-loops
 version: 0.7.4
 description: "Native bounded-loops commands, guarded lifecycle hooks, skills, and child-agent roles for Hermes."
 author: "Varun Pratap Bhardwaj"
-manifest_version: 2
+manifest_version: 1
 api_version: 1
 license: Apache-2.0
 homepage: https://github.com/qualixar/bounded-loops
