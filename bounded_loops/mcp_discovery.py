@@ -174,6 +174,24 @@ def register(mcp: object) -> None:
                 "reason": exc.public_reason,
             }
 
+    @tool()
+    def bl_graph_execution_evidence(run_ref: str) -> dict:
+        """Additive v2 verified execution-learning evidence for one finished graph run.
+
+        v1 remains available and observation-only. V2 transports only bounded
+        receipt identifiers and a fixed-vocabulary execution eligibility signal;
+        it never transports prompts, paths, commands, gate prose, or artifacts.
+        """
+        from bounded_loops.graph.application.slm_bridge import EvidenceUnavailable
+        from bounded_loops.graph.application.slm_bridge_v2 import CONTRACT_ID as V2_CONTRACT_ID
+        from bounded_loops.graph.slm_evidence import learning_evidence_for_run
+        from bounded_loops.workspace import discover
+
+        try:
+            return {"status": "ok", "evidence": learning_evidence_for_run(discover(), run_ref)}
+        except EvidenceUnavailable as exc:
+            return {"status": "unavailable", "contract": V2_CONTRACT_ID, "reason": exc.public_reason}
+
 
 # ── pure logic, reusable by the CLI and the UI ────────────────────────────────
 

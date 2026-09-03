@@ -3,6 +3,20 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.4] — 2026-09-03
+
+### Added
+
+- Native Hermes support: additive plugin-local commands for every public `bl`
+  top-level command, the canonical skill, two Hermes child-agent roles, and
+  lifecycle hooks that protect loop-digest integrity and prevent false completion
+  while a graph is active. The plugin runs the owned `bl` console script as
+  argv tokens and never installs into or imports from Hermes's Python runtime.
+- `bounded-loops.dev/slm-bridge/v2`, advertised alongside unchanged v1. V2
+  exposes only fixed-vocabulary, receipt-derived execution eligibility for
+  reversible reliability learning; it never carries prompts, paths, commands,
+  gate prose, or artifacts.
+
 ## [0.7.3] — 2026-08-28
 
 ### Fixed

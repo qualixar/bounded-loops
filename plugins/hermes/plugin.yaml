@@ -1,0 +1,22 @@
+name: bounded-loops
+version: 0.7.4
+description: "Native bounded-loops commands, guarded lifecycle hooks, skills, and child-agent roles for Hermes."
+author: "Varun Pratap Bhardwaj"
+manifest_version: 2
+api_version: 1
+license: Apache-2.0
+homepage: https://github.com/qualixar/bounded-loops
+tags: [agents, reliability, gates, loops, hermes]
+python_dependencies: []
+provides_tools:
+  - bounded_loops_agent
+provides_hooks:
+  - pre_tool_call
+  - pre_verify
+  - transform_llm_output
+  - post_tool_call
+  - on_session_finalize
+config_schema:
+  executable:
+    type: string
+    description: "Owned bounded-loops console script; defaults to bl."

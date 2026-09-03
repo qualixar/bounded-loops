@@ -18,7 +18,7 @@ Every run leaves a hash-chained record you can re-verify afterwards.</p>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-2563eb" alt="Apache-2.0 license"/></a>
 </p>
 
-<p align="center"><em>Works with Claude Code, OpenAI Codex, Antigravity, or no agent at all.</em></p>
+<p align="center"><em>Works with Hermes, Claude Code, OpenAI Codex, Antigravity, or no agent at all.</em></p>
 
 ![Ungated agent claim compared with a gate-verified bounded loop](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/demo.gif)
 
@@ -63,7 +63,7 @@ Everything else in this document is those three things applied to harder shapes.
 
 ---
 
-## Use it with Claude Code or Codex
+## Use it with Hermes, Claude Code, or Codex
 
 You keep the agent you already use. bounded-loops becomes the thing that decides when it is
 allowed to stop.
@@ -85,6 +85,25 @@ git clone https://github.com/qualixar/bounded-loops && cd bounded-loops
 codex plugin marketplace add .
 codex plugin add bounded-loops@bounded-loops
 ```
+
+**Hermes**
+
+```bash
+pip install "bounded-loops[mcp]"
+curl --fail --location --proto '=https' --tlsv1.2 \
+  -o /tmp/qualixar-agent-reliability-hermes-pack.yaml \
+  https://github.com/qualixar/superlocalmemory/releases/download/v4.1.12/qualixar-agent-reliability-hermes-pack.yaml
+hermes plugins pack show /tmp/qualixar-agent-reliability-hermes-pack.yaml
+hermes plugins pack install /tmp/qualixar-agent-reliability-hermes-pack.yaml
+hermes plugins enable bounded-loops
+```
+
+Hermes support is additive: it registers the bounded-loops commands, skill,
+agents, and lifecycle hooks without replacing your existing Hermes settings.
+The release pack pins every plugin to an exact 40-character Git commit; Hermes
+shows it before installation and keeps per-plugin capability consent intact.
+See the [Hermes plugin guide](plugins/README.md#hermes) for optional MCP bridge
+setup.
 
 Then, inside your agent, ask it to run a gated task instead of grading itself:
 

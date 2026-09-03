@@ -59,6 +59,19 @@ def evidence_for_run(workspace: Workspace, run_ref: str) -> dict[str, Any]:
     )
 
 
+def learning_evidence_for_run(workspace: Workspace, run_ref: str) -> dict[str, Any]:
+    """The additive v2 execution-learning document for one terminal graph run."""
+    from bounded_loops.graph.application.slm_bridge_v2 import execution_evidence_document
+
+    document = execution_evidence_document(evidence_for_run(workspace, run_ref))
+    if document["eligible_for_learning"] is not True:
+        raise EvidenceUnavailable(
+            "this terminal run is not eligible for execution learning",
+            public_reason="this run has no verified execution-learning signal",
+        )
+    return document
+
+
 def terminal_runs(workspace: Workspace, *, limit: int = 100) -> list[dict[str, Any]]:
     """Every terminal run in `workspace`, newest first — the discovery half of the contract.
 

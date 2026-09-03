@@ -30,6 +30,20 @@ that reads `bounded-loops.dev/slm-bridge/v1` keeps working across 0.7, 1.0 and 2
 Inside v1: fields may be **added**; no required field changes meaning or disappears. A `v2`
 would be advertised alongside v1, not in place of it.
 
+## V2 execution-learning companion
+
+`bounded-loops.dev/slm-bridge/v2` is advertised alongside v1 through
+`bl_capabilities`, with `bl_graph_execution_evidence` as its read-only fetch
+tool. It derives a fixed-vocabulary execution-reliability eligibility signal
+from the same reconciled terminal receipt. V1 remains exactly observation-only
+with `eligible_for_learning: false`.
+
+V2 never contains prompts, paths, commands, gate prose, artifact contents, or
+user/assistant text. It can identify a verified gate success or a gate
+rejection, but it cannot establish semantic facts, preferences, authorization,
+or shared/global promotion. Consumers must validate the immutable receipt and
+may rebuild or delete their derived learning independently.
+
 ## Two tools
 
 ```

@@ -84,7 +84,12 @@ def test_capabilities_advertises_the_contract_and_its_tool() -> None:
             "id": "bounded-loops.dev/slm-bridge/v1",
             "tool": "bl_graph_evidence",
             "operation": "observe_terminal_run",
-        }
+        },
+        {
+            "id": "bounded-loops.dev/slm-bridge/v2",
+            "tool": "bl_graph_execution_evidence",
+            "operation": "observe_verified_terminal_run",
+        },
     ]
 
 

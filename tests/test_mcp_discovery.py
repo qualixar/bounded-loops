@@ -54,7 +54,7 @@ class _RecordingMcp:
 #: existence — dropping one is a breaking change to something outside this repository.
 _DISCOVERY_TOOLS = [
     "bl_capabilities", "bl_catalog", "bl_search_loops",
-    "bl_graph_terminal_runs", "bl_graph_evidence",
+    "bl_graph_terminal_runs", "bl_graph_evidence", "bl_graph_execution_evidence",
 ]
 
 
@@ -81,7 +81,7 @@ def test_BOTH_handshake_paths_expose_the_evidence_contract_tools() -> None:
     failure the 0.6.0 confirm-token bug had: a tool that existed and could never be reached.
     """
     names = _shipped_tool_names()
-    assert {"bl_graph_evidence", "bl_graph_terminal_runs"} <= names
+    assert {"bl_graph_evidence", "bl_graph_terminal_runs", "bl_graph_execution_evidence"} <= names
 
 
 def test_no_discovery_tool_accepts_anything_secret_shaped() -> None:

@@ -90,6 +90,34 @@ agy plugin list
 Verified on 2026-07-13 with `agy 1.0.16` in a temporary home. Validation and
 installation both processed one skill, one command, and one MCP server.
 
+## Hermes
+
+Install the pinned release pack, inspect its exact immutable pins, then enable
+bounded-loops explicitly. Hermes keeps plugins disabled until you choose to
+enable them, and enabling bounded-loops adds only its plugin-local
+registrations.
+
+```bash
+curl --fail --location --proto '=https' --tlsv1.2 \
+  -o /tmp/qualixar-agent-reliability-hermes-pack.yaml \
+  https://github.com/qualixar/superlocalmemory/releases/download/v4.1.12/qualixar-agent-reliability-hermes-pack.yaml
+hermes plugins pack show /tmp/qualixar-agent-reliability-hermes-pack.yaml
+hermes plugins pack install /tmp/qualixar-agent-reliability-hermes-pack.yaml
+hermes plugins enable bounded-loops
+```
+
+The pack schema requires every entry to pin an exact 40-character commit SHA.
+`pack show` displays those pins before any install; `pack install` still asks
+for capability consent per plugin and cannot pre-grant it. The GitHub release
+asset is the public install contract — do not substitute a branch, tag, or a
+repository-subdirectory shorthand.
+
+Grant the separately configured `bounded-loops` MCP server only if you want
+cross-product bridge observation. The plugin itself needs no Python dependency
+inside Hermes. It provides `/bl <command> [args]`, every `/bl-<command>` alias,
+and `/bl-agent <composer|gatekeeper> <goal>`. Arguments are executed through
+the owned `bl` console script without a shell; shell operators are refused.
+
 ## Direct MCP client configuration
 
 Claude Code and Cursor accept the same stdio server definition (place it in the

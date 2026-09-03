@@ -25,6 +25,9 @@ from typing import Any, Mapping
 
 from bounded_loops import __version__
 from bounded_loops.graph.application.slm_bridge import contract_advertisement
+from bounded_loops.graph.application.slm_bridge_v2 import (
+    v2_contract_advertisement,
+)
 from bounded_loops.application.introspection import list_gates
 from bounded_loops.domain.models import Status
 from bounded_loops.graph.application.refusals import REFUSALS
@@ -129,7 +132,7 @@ def capability_report(*, platform: PlatformSnapshot) -> Mapping[str, Any]:
         # above is provenance — it says which build produced a document, not what a consumer
         # is entitled to expect. A consumer that pins our semver breaks on every release; one
         # that branches on the contract id keeps working across them, which is the whole point.
-        "evidence_contracts": [contract_advertisement()],
+        "evidence_contracts": [contract_advertisement(), v2_contract_advertisement()],
         "node_kinds": _node_kinds(schema),
         "gates": _gates(),
         "isolation": _isolation(platform),

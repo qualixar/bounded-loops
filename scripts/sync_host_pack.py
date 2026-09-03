@@ -25,11 +25,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SHARED = REPO_ROOT / "plugins" / "shared"
-HOSTS = ("claude-code", "codex", "antigravity")
+HOSTS = ("claude-code", "codex", "antigravity", "hermes")
 
-#: Directories mirrored to each host. `docs/` is deliberately absent: the refusal reference is
-#: shared reading material for humans, not a file a host loads, and duplicating it three times
-#: means three copies to drift.
+#: Directories mirrored to every host. Hermes also receives the refusal
+#: reference because its canonical skill links to it inside a standalone pack.
 MIRRORED = ("commands", "agents", "skills")
 
 
@@ -37,7 +36,8 @@ def _pairs() -> list[tuple[Path, Path]]:
     """Every (canonical, host) file pair that should be identical."""
     pairs: list[tuple[Path, Path]] = []
     for host in HOSTS:
-        for folder in MIRRORED:
+        folders = MIRRORED + (("docs",) if host == "hermes" else ())
+        for folder in folders:
             source_dir = SHARED / folder
             if not source_dir.is_dir():
                 continue

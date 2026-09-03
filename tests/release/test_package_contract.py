@@ -104,7 +104,13 @@ def test_readme_puts_verified_quick_start_above_the_fold() -> None:
     #
     # Each links OUT for depth — the MCP section, plugins/README.md, docs/ARCHITECTURE.md — and
     # none of them inlines documentation, which is the condition this guard actually cares about.
-    assert len(readme.split()) <= 3600
+    #
+    # Raised to 3700 for 0.7.4's native Hermes pack install. The old two-line
+    # repository-subdirectory shorthand was not a verified public contract.
+    # The replacement must show the release asset, dry-run its SHA-pinned
+    # contents, and install it; those are executable supply-chain steps, not
+    # prose that belongs in a second document.
+    assert len(readme.split()) <= 3700
     assert "actions/workflows/ci.yml/badge.svg" in readme
     assert "tests-678_passing" not in readme
 
