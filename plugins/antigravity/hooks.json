@@ -1,0 +1,25 @@
+{
+  "bounded-loops-lifecycle": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "bounded-loops-hook verify antigravity"
+      },
+      {
+        "type": "command",
+        "command": "bounded-loops-hook graph-run-stop antigravity"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "write_to_file|replace_file_content|multi_replace_file_content|notebook_edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bounded-loops-hook pretooluse-loop-package antigravity"
+          }
+        ]
+      }
+    ]
+  }
+}
