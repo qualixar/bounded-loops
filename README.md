@@ -71,7 +71,7 @@ allowed to stop.
 **Claude Code**
 
 ```bash
-pip install "bounded-loops[mcp]"
+pip install --upgrade "bounded-loops[mcp]==0.7.5"
 git clone https://github.com/qualixar/bounded-loops && cd bounded-loops
 claude plugin marketplace add ./plugins/claude-code
 claude plugin install bounded-loops@bounded-loops
@@ -91,10 +91,10 @@ codex plugin add bounded-loops@bounded-loops
 ```bash
 pip install "bounded-loops[mcp]"
 curl --fail --location --proto '=https' --tlsv1.2 \
-  -o /tmp/qualixar-agent-reliability-hermes-pack-v1.yaml \
-  https://raw.githubusercontent.com/qualixar/superlocalmemory/main/hermes-pack-v1.yaml
-hermes plugins pack show /tmp/qualixar-agent-reliability-hermes-pack-v1.yaml
-hermes plugins pack install /tmp/qualixar-agent-reliability-hermes-pack-v1.yaml
+  -o /tmp/qualixar-agent-reliability-hermes-pack.yaml \
+  https://github.com/qualixar/superlocalmemory/releases/download/v4.1.13/qualixar-agent-reliability-hermes-pack.yaml
+hermes plugins pack show /tmp/qualixar-agent-reliability-hermes-pack.yaml
+hermes plugins pack install /tmp/qualixar-agent-reliability-hermes-pack.yaml
 hermes plugins enable bounded-loops
 ```
 

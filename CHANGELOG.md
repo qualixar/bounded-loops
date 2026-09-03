@@ -3,6 +3,15 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.5] — Hermes public-install compatibility repair
+
+### Fixed
+
+- **Public Hermes installation.** The native plugin uses Hermes manifest v1
+  and the paired immutable release pack. Upgrade with `pip install --upgrade
+  bounded-loops==0.7.5`; users of 0.7.4 should upgrade before installing the
+  native Hermes plugin.
+
 ## [0.7.4] — 2026-09-03
 
 ### Added
