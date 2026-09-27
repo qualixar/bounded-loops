@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import sys
 import types
+from typing import Any
 
 import yaml
 
@@ -87,7 +88,7 @@ def test_hermes_child_request_uses_host_valid_leaf_role_and_preserves_product_ro
 
     fake_agent = types.ModuleType("agent")
     fake_lifecycle = types.ModuleType("agent.subagent_lifecycle")
-    fake_lifecycle.SubagentLaunchRequest = Request
+    setattr(fake_lifecycle, "SubagentLaunchRequest", Request)
     monkeypatch.setitem(sys.modules, "agent", fake_agent)
     monkeypatch.setitem(sys.modules, "agent.subagent_lifecycle", fake_lifecycle)
 
@@ -149,7 +150,7 @@ def test_active_graph_discovery_is_silent_when_workspace_has_no_run(tmp_path) ->
 
 def test_register_activates_the_packaged_skill_and_honours_executable_setting(monkeypatch) -> None:
     module = _load_plugin()
-    calls = {"commands": {}, "hooks": {}, "skills": []}
+    calls: dict[str, Any] = {"commands": {}, "hooks": {}, "skills": []}
 
     class Context:
         subagent_lifecycle = object()

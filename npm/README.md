@@ -1,5 +1,7 @@
 # bounded-loops
 
+**Research paper:** [Bounded Loops · arXiv:2609.27871](https://arxiv.org/abs/2609.27871). The paper's experiments use v0.6.6; the current software is v0.7.6.
+
 [![PyPI version](https://img.shields.io/pypi/v/bounded-loops)](https://pypi.org/project/bounded-loops/)
 [![npm version](https://img.shields.io/npm/v/bounded-loops)](https://www.npmjs.com/package/bounded-loops)
 [![Python versions](https://img.shields.io/pypi/pyversions/bounded-loops)](https://pypi.org/project/bounded-loops/)
