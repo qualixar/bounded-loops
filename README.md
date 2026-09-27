@@ -22,7 +22,7 @@ Every run leaves a hash-chained record you can re-verify afterwards.</p>
 
 <p align="center"><em>Works with Hermes, Claude Code, OpenAI Codex, Antigravity, or no agent at all.</em></p>
 
-![Light-theme HTML replay of the shipped ungated claim and pytest-gated bounded loop](assets/launch-loop-proof-light.gif)
+![Light-theme HTML replay of the shipped ungated claim and pytest-gated bounded loop](https://raw.githubusercontent.com/qualixar/bounded-loops/bc752dd21512e8c3f68e0504bc93443b2414fecd/assets/launch-loop-proof-light.gif)
 
 *Replay of the shipped keyless reference example: the worker is a stub, and the pytest gate is real.*
 
@@ -32,20 +32,14 @@ bl loops install bug-fix-red-green
 bl run .bounded-loops/loops/bug-fix-red-green --yes   # a real planted bug, a real pytest gate, no API key
 ```
 
-69 loop packages ship **inside the wheel**; 65 need no API key. Seven digest-pinned reference
-graphs ship in this repository for multi-step workflows. `bl loops list` shows the loops and
-`bl loops install` copies one into your project — nothing is downloaded, so this works offline.
-Installing is a step because `bl run` writes its ledger beside the loop, and `site-packages` is
-the wrong place to keep run receipts.
+The wheel includes 69 loop packages; 65 need no API key. This repository also ships seven
+digest-pinned graphs. `bl loops install` copies a package offline into your project, where
+`bl run` can write its ledger. Try a [failing test](loops/bug-fix-red-green/),
+[retail margin rule](loops/price-margin-floor/), or [invoice match](loops/invoice-3way-match/).
+Use a graph for joins, repair routes, or approval before an effect.
 
-Start with one verified agent loop: a [failing test](loops/bug-fix-red-green/), a
-[retail margin rule](loops/price-margin-floor/), or an
-[invoice match](loops/invoice-3way-match/). Use a bounded agent graph when independent checks
-must join, a failure needs a declared repair route, or a human must approve an effect.
-
-**Research scope.** The published [bounded-loops paper](https://arxiv.org/abs/2609.27871)
-evaluates version 0.6.6. This repository is version 0.7.6; changes after 0.6.6 are documented
-and tested here, and are not represented as paper results.
+**Research scope.** The [paper](https://arxiv.org/abs/2609.27871) evaluates v0.6.6;
+the current software is v0.7.6. Later changes are not paper results.
 
 ---
 
@@ -138,20 +132,17 @@ API key.
 
 ## See it working
 
-This light-theme HTML replay was made from an archived local `solo-builder-ship` run dated
-18 August 2026. Its controller log records three successful loop checks, a successful join,
-an approval pause, and a local effect receipt. The raw graph log contains machine-local
-metadata and is not distributed in this repository, so the animation is explanatory rather
-than an independently verifiable graph receipt. For a checked-in real-agent loop receipt,
-see the [Codex citation example](docs/real-run-example/).
+This HTML replay follows an archived local `solo-builder-ship` run from 18 August 2026:
+three passing checks, a join, approval pause, and local effect receipt. Its raw log contains
+machine-local metadata and is not distributed here, so the replay is explanatory. A
+[real-agent loop receipt](docs/real-run-example/) is checked in separately.
 
-![Light-theme replay of the archived seven-node local graph run](assets/launch-graph-replay-light.gif)
+![Light-theme replay of the archived seven-node local graph run](https://raw.githubusercontent.com/qualixar/bounded-loops/bc752dd21512e8c3f68e0504bc93443b2414fecd/assets/launch-graph-replay-light.gif)
 
-**The actual monitor UI is below.** This existing product screenshot shows a saved graph run
-selected, with its checks, join, approval, and publish nodes visible. It retains the current
-monitor styling; the replay above is a separate launch illustration.
+**Actual monitor UI:** the existing screenshot shows a selected saved graph, including
+checks, join, approval, and publish nodes.
 
-![Actual bounded-loops monitor UI with a completed seven-node graph selected](assets/screenshots/monitor-dag.png)
+![Actual bounded-loops monitor UI with a completed seven-node graph selected](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/screenshots/monitor-dag.png)
 
 To execute a reference graph yourself, use a host that can enforce the manifest's declared
 isolation:
@@ -166,11 +157,9 @@ the recorded isolation tier, gate verdict and reason, and artifact digest. A hum
 shows **no gate verdict** until its gate runs; its approval panel names the downstream effects
 the decision releases. `bl graph arena --run <dir>` writes a self-contained read-only report.
 
-The repository also retains the earlier [node detail](assets/screenshots/monitor-node-detail.png),
-[approval panel](assets/screenshots/monitor-approval-preview.png), and
-[Arena report](assets/screenshots/arena-report.png) screenshots for readers who want to inspect
-the current UI. Those screenshots are existing repository artifacts and are not represented
-as fresh captures of the archived run above.
+Existing [node detail](assets/screenshots/monitor-node-detail.png),
+[approval](assets/screenshots/monitor-approval-preview.png), and
+[Arena](assets/screenshots/arena-report.png) screenshots show more of the current UI.
 
 ---
 
@@ -296,7 +285,7 @@ A local web UI over the run directory — live DAG, per-node evidence, spend, an
 controls. It detects which agent CLIs you already have logged in and lists your runs; it never
 asks for a credential of its own.
 
-![Actual monitor UI showing a selected graph node, its gate verdict, isolation tier, and artifact digest](assets/screenshots/monitor-node-detail.png)
+![Actual monitor UI showing a selected graph node, its gate verdict, isolation tier, and artifact digest](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/screenshots/monitor-node-detail.png)
 
 The [empty workspace view](assets/screenshots/monitor-workspace.png) is available for setup context;
 the selected-run screenshots above show the graph and its evidence.
