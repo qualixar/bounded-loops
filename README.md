@@ -579,8 +579,22 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). A contributed loop needs a real failing
 seed, a passing fix, a testable done-condition, and `bl lint --contrib` compliance.
 Never use "an LLM decides" as the gate.
 
-Research citation metadata is in [CITATION.cff](CITATION.cff). Report gate
-bypasses or sandbox escapes privately through [SECURITY.md](SECURITY.md).
+For the research paper, copy this BibTeX entry:
+
+```bibtex
+@article{bhardwaj2026boundedloops,
+  title={Bounded Loops: Pre-Run Spend Bounds, Proved Termination, and Verified Completion for Agent Harnesses},
+  author={Bhardwaj, Varun Pratap and Singh, Garima and Bhardwaj, Arun Pratap},
+  year={2026},
+  eprint={2609.27871},
+  archivePrefix={arXiv},
+  primaryClass={cs.SE},
+  url={https://arxiv.org/abs/2609.27871}
+}
+```
+
+[CITATION.cff](CITATION.cff) cites the software. Report gate bypasses or sandbox
+escapes privately through [SECURITY.md](SECURITY.md).
 
 [Apache-2.0](LICENSE). Copyright &copy; 2026 Varun Pratap Bhardwaj / Qualixar,
 an independent AI Reliability Engineering research initiative.
