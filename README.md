@@ -2,9 +2,11 @@
   <img src="https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/bounded-loops-logo.svg" alt="bounded-loops logo" width="170"/>
 </p>
 
-<h1 align="center">bounded-loops</h1>
+<h1 align="center">bounded-loops: Bounded Loops &amp; Graphs</h1>
 
-<p align="center"><strong>An AI coding agent can tell you it finished when it did not.</strong></p>
+<p align="center"><a href="https://arxiv.org/abs/2609.27871"><strong>Read the paper · arXiv:2609.27871</strong></a><br/><small>Research experiments: v0.6.6 · Current software: v0.7.6</small></p>
+
+<p align="center"><strong>AI agents can claim done. Bounded Loops &amp; Graphs verify the result.</strong></p>
 
 <p align="center">bounded-loops runs your agent until a check it cannot edit or grade says the work<br/>
 actually passes — and stops at a limit you set before the run starts.<br/>
@@ -20,7 +22,9 @@ Every run leaves a hash-chained record you can re-verify afterwards.</p>
 
 <p align="center"><em>Works with Hermes, Claude Code, OpenAI Codex, Antigravity, or no agent at all.</em></p>
 
-![Ungated agent claim compared with a gate-verified bounded loop](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/demo.gif)
+![Light-theme HTML replay of the shipped ungated claim and pytest-gated bounded loop](assets/launch-loop-proof-light.gif)
+
+*Replay of the shipped keyless reference example: the worker is a stub, and the pytest gate is real.*
 
 ```bash
 pip install bounded-loops
@@ -28,10 +32,20 @@ bl loops install bug-fix-red-green
 bl run .bounded-loops/loops/bug-fix-red-green --yes   # a real planted bug, a real pytest gate, no API key
 ```
 
-69 loop packages ship **inside the wheel**; 65 need no API key. `bl loops list` shows them all
-and `bl loops install` copies one into your project — nothing is downloaded, so this works
-offline. Installing is a step because `bl run` writes its ledger beside the loop, and
-`site-packages` is the wrong place to keep run receipts.
+69 loop packages ship **inside the wheel**; 65 need no API key. Seven digest-pinned reference
+graphs ship in this repository for multi-step workflows. `bl loops list` shows the loops and
+`bl loops install` copies one into your project — nothing is downloaded, so this works offline.
+Installing is a step because `bl run` writes its ledger beside the loop, and `site-packages` is
+the wrong place to keep run receipts.
+
+Start with one verified agent loop: a [failing test](loops/bug-fix-red-green/), a
+[retail margin rule](loops/price-margin-floor/), or an
+[invoice match](loops/invoice-3way-match/). Use a bounded agent graph when independent checks
+must join, a failure needs a declared repair route, or a human must approve an effect.
+
+**Research scope.** The published [bounded-loops paper](https://arxiv.org/abs/2609.27871)
+evaluates version 0.6.6. This repository is version 0.7.6; changes after 0.6.6 are documented
+and tested here, and are not represented as paper results.
 
 ---
 
@@ -124,46 +138,39 @@ API key.
 
 ## See it working
 
-Every screenshot below is a real run of a shipped reference graph on a laptop, with no
-credential and no network. Nothing is mocked or staged.
+This light-theme HTML replay was made from an archived local `solo-builder-ship` run dated
+18 August 2026. Its controller log records three successful loop checks, a successful join,
+an approval pause, and a local effect receipt. The raw graph log contains machine-local
+metadata and is not distributed in this repository, so the animation is explanatory rather
+than an independently verifiable graph receipt. For a checked-in real-agent loop receipt,
+see the [Codex citation example](docs/real-run-example/).
+
+![Light-theme replay of the archived seven-node local graph run](assets/launch-graph-replay-light.gif)
+
+**The actual monitor UI is below.** This existing product screenshot shows a saved graph run
+selected, with its checks, join, approval, and publish nodes visible. It retains the current
+monitor styling; the replay above is a separate launch illustration.
+
+![Actual bounded-loops monitor UI with a completed seven-node graph selected](assets/screenshots/monitor-dag.png)
+
+To execute a reference graph yourself, use a host that can enforce the manifest's declared
+isolation:
 
 ```bash
 bl graph run --execute graphs/solo-builder-ship/graph.yaml
 bl monitor                 # opens on 127.0.0.1, loopback only, one-time token
 ```
 
-### The monitor
+`bl monitor` is a local view over the same run directory the CLI reads. A node detail shows
+the recorded isolation tier, gate verdict and reason, and artifact digest. A human hold
+shows **no gate verdict** until its gate runs; its approval panel names the downstream effects
+the decision releases. `bl graph arena --run <dir>` writes a self-contained read-only report.
 
-`bl monitor` is a local web UI over the same run directory the CLI reads. It holds no state
-of its own — close it and nothing is lost, because the receipt log was always the truth.
-
-![The bounded-loops monitor showing a completed seven-node graph run](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/screenshots/monitor-dag.png)
-
-### What the engine actually recorded
-
-Click a node and you get what the receipts say, not a summary of them: the isolation tier the
-OS really enforced, the independent gate's own verdict **and its reason**, and the artifact
-digest.
-
-![Node detail showing enforced isolation controls, the gate verdict, and the artifact digest](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/screenshots/monitor-node-detail.png)
-
-### A human gate, and what saying yes releases
-
-An approval node declares no effects of its own, so "approve this" reads as harmless right up
-until the publish it lets through. The confirm panel names the effects downstream of the gate
-and flags the ones stopping the run will not take back.
-
-Note the gate line: **"no verdict — the gate has not evaluated this node."** A human hold is
-not a gate pass, and the UI says so rather than painting a green check.
-
-![The approval panel naming external_write as an effect that cannot be undone](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/screenshots/monitor-approval-preview.png)
-
-### A shareable report
-
-`bl graph arena --run <dir>` writes one self-contained HTML file. No server, no network, no
-build step — send it to someone who was not there.
-
-![The Arena report for a completed run](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/screenshots/arena-report.png)
+The repository also retains the earlier [node detail](assets/screenshots/monitor-node-detail.png),
+[approval panel](assets/screenshots/monitor-approval-preview.png), and
+[Arena report](assets/screenshots/arena-report.png) screenshots for readers who want to inspect
+the current UI. Those screenshots are existing repository artifacts and are not represented
+as fresh captures of the archived run above.
 
 ---
 
@@ -289,7 +296,10 @@ A local web UI over the run directory — live DAG, per-node evidence, spend, an
 controls. It detects which agent CLIs you already have logged in and lists your runs; it never
 asks for a credential of its own.
 
-![The monitor's workspace rail listing detected orchestrators and runs](https://raw.githubusercontent.com/qualixar/bounded-loops/main/assets/screenshots/monitor-workspace.png)
+![Actual monitor UI showing a selected graph node, its gate verdict, isolation tier, and artifact digest](assets/screenshots/monitor-node-detail.png)
+
+The [empty workspace view](assets/screenshots/monitor-workspace.png) is available for setup context;
+the selected-run screenshots above show the graph and its evidence.
 
 It is a **view**, not a service. Loopback bind, a token per invocation that never touches disk,
 and a same-origin requirement on every data route — so a page in another tab cannot drive it
@@ -425,7 +435,7 @@ review.** The cross-model audit engine (`--audit-plan`) is the overlay for that.
 |---|---|
 | Gate-verified DAG (worker ≠ gate, controller-enforced identity check) | Shipped — object-identity check only: one object cannot hold both roles, but gate logic is not proven independent ([detail](#the-engine-loop)) |
 | Local-CLI + BYOK/HTTPS connectors via `bl graph run --execute` | Shipped |
-| `kind: loop` nodes executable via `bl graph run --execute` | Shipped — digest-pinned package, receipt-verifying gate. `isolation` is per-node and never defaulted; the six reference graphs pin `process_restricted`. `workspace_only` is NOT an OS sandbox |
+| `kind: loop` nodes executable via `bl graph run --execute` | Shipped — digest-pinned package, receipt-verifying gate. `isolation` is per-node and never defaulted; the seven reference graphs pin `process_restricted`. `workspace_only` is NOT an OS sandbox |
 | No-secret egress broker (single-use leases; SSRF / DNS-rebind denied) | Shipped |
 | Hash-chained event log; on resume, full chain re-verified | Shipped — local runs marked `LOCAL/UNVERIFIED` |
 | Cross-model audit coverage gate (`--audit-plan` → Arena verdict) | Shipped — read-side; independence is receipt-asserted |

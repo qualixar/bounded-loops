@@ -25,11 +25,12 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://qualixar.com"
+Homepage = "https://github.com/qualixar/bounded-loops"
 Repository = "https://github.com/qualixar/bounded-loops"
 Documentation = "https://github.com/qualixar/bounded-loops/tree/main/docs"
 Changelog = "https://github.com/qualixar/bounded-loops/blob/main/CHANGELOG.md"
 Issues = "https://github.com/qualixar/bounded-loops/issues"
+Paper = "https://arxiv.org/abs/2609.27871"
 
 [project.optional-dependencies]
 qualixar-gates = [

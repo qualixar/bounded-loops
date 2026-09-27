@@ -1,5 +1,7 @@
 # Reference graphs
 
+For the research model behind bounded loops composed as graphs, read the [paper on arXiv](https://arxiv.org/abs/2609.27871). Its reported experiments use v0.6.6; this guide describes the current v0.7.6 repository.
+
 Each directory here is one portable graph that **composes loop packages from [`loops/`](../loops/)**.
 Nothing here is a new example: every node's gate is a real mechanical check that shipped and was
 validated before the graph engine could run it.
@@ -17,7 +19,7 @@ so the generator and the test read one definition rather than two that agree by 
 
 ## What ships
 
-Six graphs, one per domain, composing **24 distinct shipped loop packages**. Every one has the same
+Seven graphs across seven workflow domains, composing **28 distinct shipped loop packages**. Every one has the same
 skeleton — three parallel checks → join → approval → one irreversible effect, plus a conditional
 `when: failed` branch to a remediation loop — because that skeleton is what exercises the engine:
 fan-out, cross-node causality, the guard grammar, a human checkpoint, and exactly one effect.
@@ -29,6 +31,7 @@ fan-out, cross-node causality, the guard grammar, a human checkpoint, and exactl
 [`marketing-campaign-release`](marketing-campaign-release/) | marketing | content-editor | publish the campaign page |
 [`engineering-release-gate`](engineering-release-gate/) | IT / development | release-manager | cut the release tag |
 [`customer-data-request`](customer-data-request/) | customer | privacy-officer | send the data-subject response |
+[`operations-incident-gate`](operations-incident-gate/) | operations | sre-lead | send the incident-response notification |
 [`solo-builder-ship`](solo-builder-ship/) | personal projects | maintainer | ship the release notes |
 
 No shipped loop carries a `customer`, `personal-projects` or `marketing` `role:` tag. Those three
@@ -37,11 +40,20 @@ on why the domain belongs to the graph.
 
 ## Running a graph end to end
 
-All six reference graphs run end to end, keyless, with no spend — **from a checkout**.
+The seven reference graphs use keyless stub workers and mechanical gates. They need no
+metered model calls, but execution requires a host that can enforce each node's declared
+isolation. An explicit parameterized test executes each reference graph
+through its loop gates and join to the human approval checkpoint; separate approval
+tests cover the resume-and-publish control path.
 Every loop node pins its package by content digest, and the `loops/` catalog ships in the
 repository, not in the wheel, so a `pip install` alone leaves nothing for those digests to
 resolve against. `git clone` first, or pass `--loop-roots` pointing at your own catalog.
-`tests/graphs/test_reference_graphs.py` runs all six on every CI push.
+The structural and digest checks run in the default test suite. The execution-to-approval checks are
+marked `external_tool` and must be selected explicitly on a capable host:
+
+```bash
+uv run pytest -q -m external_tool tests/graphs/test_reference_graphs.py
+```
 
 ```bash
 bl graph run graphs/finance-payment-assurance/graph.yaml --execute --out /tmp/bl-run
