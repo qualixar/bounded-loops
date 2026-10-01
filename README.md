@@ -32,15 +32,13 @@ bl loops install bug-fix-red-green --dest ./loops
 bl run loops/bug-fix-red-green --yes --run-id first-proof  # stub worker, real pytest gate
 ```
 
-The wheel includes 69 loop packages; 65 need no API key. This repository also ships seven
-digest-pinned graphs. `bl loops install` copies a package offline into your project, where
-`bl run` can write its ledger. Try a [failing test](loops/bug-fix-red-green/),
-[retail margin rule](loops/price-margin-floor/), or [invoice match](loops/invoice-3way-match/).
-Use a graph for joins, repair routes, or approval before an effect.
+The wheel ships 69 loops (65 keyless); the repository adds seven digest-pinned graphs. Install offline;
+run locally. Try [tests](loops/bug-fix-red-green/), [margin rules](loops/price-margin-floor/),
+or [invoice matching](loops/invoice-3way-match/). Graphs support joins, repairs and approvals.
 
-**[Verify the receipt](docs/QUICK_PROOF.md)** · **[Qualixar product guide](https://qualixar.com/products/bounded-loops)** · **[Author and research context](https://www.varunpratap.com/products/bounded-loops)**
+**[Verify receipts](docs/QUICK_PROOF.md)** · **[Product guide](https://qualixar.com/products/bounded-loops)** · **[Author](https://www.varunpratap.com/products/bounded-loops)**
 
-If the independent gate is useful in your workflow, [star the repository](https://github.com/qualixar/bounded-loops) to find it again. Installation, examples and research remain open without a star.
+Useful in your workflow? [Star the repository](https://github.com/qualixar/bounded-loops). Access remains open without starring.
 
 **Research scope.** The [paper](https://arxiv.org/abs/2609.27871) evaluates v0.6.6;
 the current software is v0.7.6. Later changes are not paper results.
