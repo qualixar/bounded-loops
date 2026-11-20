@@ -105,6 +105,22 @@ def _stop(server: ConsoleServer) -> None:
         thread.join(timeout=5)
 
 
+def _await_resolved_and_idle(server: ConsoleServer, timeout: float = 5.0) -> bool:
+    """Wait for the server to mark itself resolved-and-idle after a GET.
+
+    The server flips the flag only AFTER it has written the GET response (see
+    `ConsoleServer.maybe_auto_stop`), so the client can hold the page a moment
+    before the flag is set. Asserting the instant `_get` returns is a race on a
+    slow runner; this waits, bounded, and still fails if the flag never flips.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if server.resolved_and_idle:
+            return True
+        time.sleep(0.01)
+    return bool(server.resolved_and_idle)
+
+
 @pytest.fixture()
 def console(tmp_path: Path):
     run_dir = _paused_run(tmp_path)
@@ -287,7 +303,7 @@ def test_post_approve_with_correct_origin_and_token_resolves_the_run(console) ->
 
     # The single-gate manifest has nothing left pending — the server marks itself
     # resolved-and-idle so it does not linger forever after the only decision is made.
-    assert server.resolved_and_idle is True
+    assert _await_resolved_and_idle(server)
 
 
 def test_post_reject_fails_the_run_closed(console) -> None:
@@ -302,7 +318,7 @@ def test_post_reject_fails_the_run_closed(console) -> None:
     get_status, _headers2, body = _get(server, headers["Location"])
     assert get_status == 200
     assert "FAILED" in body
-    assert server.resolved_and_idle is True
+    assert _await_resolved_and_idle(server)
 
 
 # ── 9: input validation on the POST body ──────────────────────────────────────
@@ -491,7 +507,7 @@ def test_two_gate_manifest_stays_up_until_both_gates_decided(tmp_path: Path) -> 
         get_status2, _headers4, body2 = _get(server, headers2["Location"])
         assert get_status2 == 200
         assert "Nothing is currently awaiting approval" in body2
-        assert server.resolved_and_idle is True
+        assert _await_resolved_and_idle(server)
     finally:
         _stop(server)
 
@@ -662,7 +678,7 @@ def test_record_decision_and_maybe_auto_stop_share_one_lock(console) -> None:
 
     get_status, _headers2, _body2 = _get(server, headers["Location"])
     assert get_status == 200
-    assert server.resolved_and_idle is True
+    assert _await_resolved_and_idle(server)
 
 
 # FIX 2 (Muse): redirect Location must percent-encode '/' in BOTH token and

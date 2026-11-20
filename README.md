@@ -4,7 +4,7 @@
 
 <h1 align="center">Bounded Loops &amp; Graphs — independent gates for AI agent loops</h1>
 
-<p align="center"><a href="https://arxiv.org/abs/2609.27871"><strong>Read the paper · arXiv:2609.27871</strong></a><br/><small>Research experiments: v0.6.6 · Current software: v0.7.6</small></p>
+<p align="center"><a href="https://arxiv.org/abs/2609.27871"><strong>Read the paper · arXiv:2609.27871</strong></a><br/><small>Research experiments: v0.6.6 · Current software: v0.7.7</small></p>
 
 <p align="center"><strong>AI agents can claim done. Bounded Loops &amp; Graphs verify the result.</strong></p>
 
@@ -41,7 +41,7 @@ or [invoice matching](loops/invoice-3way-match/). Graphs support joins, repairs 
 Useful in your workflow? [Star the repository](https://github.com/qualixar/bounded-loops). Access remains open without starring.
 
 **Research scope.** The [paper](https://arxiv.org/abs/2609.27871) evaluates v0.6.6;
-the current software is v0.7.6. Later changes are not paper results.
+the current software is v0.7.7. Later changes are not paper results.
 
 ---
 
@@ -81,7 +81,7 @@ allowed to stop.
 **Claude Code**
 
 ```bash
-pip install --upgrade "bounded-loops[mcp]==0.7.6"
+pip install --upgrade "bounded-loops[mcp]==0.7.7"
 git clone https://github.com/qualixar/bounded-loops && cd bounded-loops
 claude plugin marketplace add ./plugins/claude-code
 claude plugin install bounded-loops@bounded-loops

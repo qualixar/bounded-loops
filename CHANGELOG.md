@@ -3,6 +3,38 @@
 All notable changes to bounded-loops are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.7] — 2026-11-20
+
+### Security
+
+- **Dependency advisories closed.** The MCP extra and the telemetry
+  dependencies now require patched releases, closing 22 published advisories
+  in the versions they replace. A dependency audit of the locked graph
+  reports none.
+- **Patched HTTP client.** The locked HTTP client moves to its patched
+  release.
+- **Test runner floor.** The default install now requires a test runner
+  release without a published advisory.
+- **Source package no longer carries a checkout pointer.** A source package
+  built from a git worktree included the one-line `.git` file, which names the
+  builder's local folder. It is now excluded, and a release test builds from a
+  worktree-shaped copy to keep it out. The wheel was never affected.
+
+### Fixed
+
+- **Console tests no longer race the server.** The approval console marks
+  itself idle only after it has written the page, by design, so the browser's
+  follow-up request never meets a closed socket. Four tests checked that flag
+  the instant the page arrived and failed on slow runners; they now wait for
+  it, bounded at five seconds. The console itself is unchanged.
+
+### Changed
+
+- Documentation: a keyless quick-proof guide, a copyable citation for the
+  paper, a shorter package README, and portable image links.
+- Package links: the homepage now points to the repository, and the paper
+  has its own link.
+
 ## [0.7.6] — 2026-09-03
 
 ### Fixed

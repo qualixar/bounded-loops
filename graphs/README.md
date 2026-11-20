@@ -1,6 +1,6 @@
 # Reference graphs
 
-For the research model behind bounded loops composed as graphs, read the [paper on arXiv](https://arxiv.org/abs/2609.27871). Its reported experiments use v0.6.6; this guide describes the current v0.7.6 repository.
+For the research model behind bounded loops composed as graphs, read the [paper on arXiv](https://arxiv.org/abs/2609.27871). Its reported experiments use v0.6.6; this guide describes the current v0.7.7 repository.
 
 Each directory here is one portable graph that **composes loop packages from [`loops/`](../loops/)**.
 Nothing here is a new example: every node's gate is a real mechanical check that shipped and was
