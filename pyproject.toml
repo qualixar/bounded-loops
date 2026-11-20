@@ -1,6 +1,6 @@
 [project]
 name = "bounded-loops"
-version = "0.7.6"
+version = "0.7.7"
 description = "A graph engine for reliable AI agents: a DAG of independently-gated bounded loops (69-loop catalog, 65 keyless) with no-secret connectors and receipt-backed audit trails."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,7 +21,7 @@ classifiers = [
 dependencies = [
     "pyyaml>=6.0",
     "jsonschema>=4.0",
-    "pytest>=8.0",
+    "pytest>=9.0.3",
 ]
 
 [project.urls]
@@ -37,30 +37,32 @@ qualixar-gates = [
     # optional Qualixar gate adapters (not bundled by default)
 ]
 otel = [
-    "opentelemetry-sdk>=1.27",
-    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.45.2",
+    "opentelemetry-api>=1.45.2",
 ]
 dev = [
     "build>=1.2",
     "mypy>=1.10",
-    "opentelemetry-api>=1.27",
-    "opentelemetry-sdk>=1.27",
+    "opentelemetry-api>=1.45.2",
+    "opentelemetry-sdk>=1.45.2",
     "ruff>=0.5,<0.16",
     "types-PyYAML",
 ]
 mcp = [
-    "mcp>=2,<3",
+    "mcp>=2.2,<3",
+    "pyjwt>=2.15",
 ]
 
 [dependency-groups]
 dev = [
     "build>=1.2",
     "mypy>=1.10",
-    "opentelemetry-api>=1.27",
-    "opentelemetry-sdk>=1.27",
+    "opentelemetry-api>=1.45.2",
+    "opentelemetry-sdk>=1.45.2",
     "ruff>=0.5,<0.16",
     "types-PyYAML",
-    "mcp>=2,<3",
+    "mcp>=2.2,<3",
+    "pyjwt>=2.15",
 ]
 
 [project.scripts]
@@ -87,7 +89,7 @@ build-backend = "hatchling.build"
 # opens. `.github/` is NOT excluded wholesale: it holds `workflows/ci.yml`, which belongs in an
 # sdist, so only the agent-instruction files inside it are named.
 exclude = [
-  ".backup/", "audit/", "*.db",
+  "/.git", ".backup/", "audit/", "*.db",
   ".agent/", ".agents/", ".claude/", ".cursor/", ".vscode/",
   ".github/copilot-instructions.md", ".github/instructions/", ".github/prompts/",
 ]

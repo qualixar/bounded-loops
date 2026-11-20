@@ -22,7 +22,7 @@ from bounded_loops.graph.adapters.connectors.local_cli_worker import (
 )
 from bounded_loops.graph.domain.events import GraphRunIdentity
 
-_SECRETS = {"AZURE_HM_API_KEY": "[test-secret-1]", "GITHUB_TOKEN": "[test-secret-2]"}
+_SECRETS = {"EXAMPLE_PROVIDER_API_KEY": "[test-secret-1]", "GITHUB_TOKEN": "[test-secret-2]"}
 _BENIGN = {"PATH": "/usr/bin:.", "HOME": "/Users/someone", "TERM": "xterm", "USER": "someone"}
 
 
@@ -70,22 +70,22 @@ def test_forwarding_a_name_takes_both_the_provider_declaration_and_the_operator_
     and the permissive one was the path that runs a network-connected agent CLI over data the
     operator did not necessarily write.
     """
-    declared = CliProfile("codex", env_grant=("AZURE_HM_API_KEY",))
-    allow = {"BOUNDED_LOOPS_ENV_PASSTHROUGH_ALLOW": "AZURE_HM_API_KEY"}
+    declared = CliProfile("codex", env_grant=("EXAMPLE_PROVIDER_API_KEY",))
+    allow = {"BOUNDED_LOOPS_ENV_PASSTHROUGH_ALLOW": "EXAMPLE_PROVIDER_API_KEY"}
 
     both = _worker({**_BENIGN, **_SECRETS, **allow})._child_env(declared)
 
-    assert both["AZURE_HM_API_KEY"] == _SECRETS["AZURE_HM_API_KEY"]
+    assert both["EXAMPLE_PROVIDER_API_KEY"] == _SECRETS["EXAMPLE_PROVIDER_API_KEY"]
     assert "GITHUB_TOKEN" not in both, "a grant must not widen beyond the names granted"
 
 
 def test_a_provider_declaration_alone_forwards_nothing() -> None:
     """A hostile or careless provider entry cannot open the channel by itself."""
     env = _worker({**_BENIGN, **_SECRETS})._child_env(
-        CliProfile("codex", env_grant=("AZURE_HM_API_KEY",)),
+        CliProfile("codex", env_grant=("EXAMPLE_PROVIDER_API_KEY",)),
     )
 
-    assert "AZURE_HM_API_KEY" not in env
+    assert "EXAMPLE_PROVIDER_API_KEY" not in env
 
 
 def test_an_operator_grant_alone_forwards_nothing() -> None:
@@ -95,7 +95,7 @@ def test_an_operator_grant_alone_forwards_nothing() -> None:
     env = _worker(source)._child_env(CliProfile("claude"))
 
     assert "GITHUB_TOKEN" not in env
-    assert "AZURE_HM_API_KEY" not in env
+    assert "EXAMPLE_PROVIDER_API_KEY" not in env
 
 
 def test_the_legacy_cli_grant_variable_still_works_on_this_path() -> None:
@@ -104,11 +104,11 @@ def test_the_legacy_cli_grant_variable_still_works_on_this_path() -> None:
     Deprecated, not broken: silently dropping a security grant on upgrade makes a working
     deployment fail for reasons that point nowhere near the rename.
     """
-    source = {**_BENIGN, **_SECRETS, "BOUNDED_LOOPS_CLI_ENV_GRANT": "AZURE_HM_API_KEY"}
+    source = {**_BENIGN, **_SECRETS, "BOUNDED_LOOPS_CLI_ENV_GRANT": "EXAMPLE_PROVIDER_API_KEY"}
 
-    env = _worker(source)._child_env(CliProfile("codex", env_grant=("AZURE_HM_API_KEY",)))
+    env = _worker(source)._child_env(CliProfile("codex", env_grant=("EXAMPLE_PROVIDER_API_KEY",)))
 
-    assert env["AZURE_HM_API_KEY"] == _SECRETS["AZURE_HM_API_KEY"]
+    assert env["EXAMPLE_PROVIDER_API_KEY"] == _SECRETS["EXAMPLE_PROVIDER_API_KEY"]
 
 
 def test_the_base_engine_does_not_honour_the_graph_specific_legacy_alias() -> None:
@@ -169,8 +169,8 @@ def test_the_legacy_alias_does_not_restore_the_old_one_key_behaviour_for_a_SHIPP
     """
     from bounded_loops.graph.adapters.connectors.local_cli_worker import CLI_PROFILES
 
-    source = {**_BENIGN, **_SECRETS, "BOUNDED_LOOPS_CLI_ENV_GRANT": "AZURE_HM_API_KEY"}
+    source = {**_BENIGN, **_SECRETS, "BOUNDED_LOOPS_CLI_ENV_GRANT": "EXAMPLE_PROVIDER_API_KEY"}
 
     env = _worker(source)._child_env(CLI_PROFILES["codex"])
 
-    assert "AZURE_HM_API_KEY" not in env
+    assert "EXAMPLE_PROVIDER_API_KEY" not in env
